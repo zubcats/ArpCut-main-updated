@@ -44,6 +44,8 @@ class LagSwitchDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._main = parent
+        # Only pull timings from MainWindow when the panel is opened (after hide), not on every showEvent.
+        self._reload_timing_on_next_show = True
         self.setWindowTitle('Lag Switch')
         self.setModal(False)
         self.setMinimumWidth(350)
@@ -94,6 +96,8 @@ class LagSwitchDialog(QDialog):
         self.normalSpin.setValue(1500)
         self.normalSpin.setSuffix(' ms')
         timing_layout.addRow('Normal duration (allow time)', self.normalSpin)
+        self.lagSpin.valueChanged.connect(self._on_timing_spin_changed)
+        self.normalSpin.valueChanged.connect(self._on_timing_spin_changed)
 
         layout.addWidget(self.timing_group)
 
@@ -131,8 +135,14 @@ class LagSwitchDialog(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._load_timing_from_main()
+        if self._reload_timing_on_next_show:
+            self._load_timing_from_main()
+            self._reload_timing_on_next_show = False
         self.refresh_toggle_state()
+
+    def hideEvent(self, event):
+        self._reload_timing_on_next_show = True
+        super().hideEvent(event)
 
     def _load_timing_from_main(self):
         if not self._main:
@@ -163,10 +173,26 @@ class LagSwitchDialog(QDialog):
         self.dirOutgoing.blockSignals(False)
 
     def _set_timing_controls_enabled(self, enabled):
+        """Lock direction/presets while lagging this device; block/allow ms stay editable."""
         self.dir_group.setEnabled(enabled)
-        self.timing_group.setEnabled(enabled)
         for b in self._preset_buttons:
             b.setEnabled(enabled)
+        self.timing_group.setEnabled(True)
+
+    def _on_timing_spin_changed(self, *_):
+        main = self._main
+        if not main or not main.lag_active or not main.lag_device_mac:
+            return
+        if not main.tableScan.selectedItems():
+            return
+        try:
+            dev = main.current_index()
+        except Exception:
+            return
+        if dev['mac'] != main.lag_device_mac:
+            return
+        lag_ms, normal_ms, direction = self.values()
+        main.applyLagSwitchSettings(lag_ms, normal_ms, direction)
 
     def refresh_toggle_state(self):
         """Sync checkbox and locked state with the main window (e.g. after row change or stop)."""
@@ -1355,11 +1381,23 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.lag_release_ms = release_ms
         self.lag_direction = direction
 
+    def _refresh_lag_timing_from_dialog(self):
+        """Keep lag_block_ms / lag_release_ms in sync with the panel (each phase and while editing)."""
+        d = getattr(self, 'lag_switch_dialog', None)
+        if d is None or not d.isVisible():
+            return
+        try:
+            lag_ms, normal_ms, direction = d.values()
+            self.applyLagSwitchSettings(lag_ms, normal_ms, direction)
+        except Exception:
+            pass
+
     def startLagSwitch(self, device):
         if self.lag_active:
             self.stopLagSwitch(refresh_dialog=False)
         self.lag_device_mac = device['mac']
         self.lag_active = True
+        self._refresh_lag_timing_from_dialog()
         self.btnLagSwitch.setText('■ LAGGING')
         self.btnLagSwitch.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         dir_text = {'both': 'all', 'in': 'incoming', 'out': 'outgoing'}[self.lag_direction]
@@ -1382,6 +1420,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
     def _lag_phase_tick(self):
         if not self.lag_active:
             return
+        self._refresh_lag_timing_from_dialog()
         device = self._get_device_by_mac(self.lag_device_mac)
         if not device:
             self.stopLagSwitch()
