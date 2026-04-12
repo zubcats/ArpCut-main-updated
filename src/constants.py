@@ -43,6 +43,10 @@ DUMMY_ROUTER = {
 
 DUMMY_IFACE = {'name': 'NULL', 'mac': GLOBAL_MAC, 'guid': 'NULL', 'ips': ['0.0.0.0']}
 
+# Lag switch: seconds between ARP poison sends while cycling. Default kill() uses 2.0; a shorter
+# interval re-poisons quickly after each allow window so timings match the UI parameters.
+LAG_SWITCH_ARP_WAIT_SEC = 0.35
+
 HKEY_AUTOSTART_PATH = 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run'
 
 SETTINGS_KEYS = ['dark', 'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'nicknames']
