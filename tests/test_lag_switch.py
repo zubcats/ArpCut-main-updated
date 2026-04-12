@@ -167,22 +167,14 @@ The lag switch in the GUI works as follows:
 3. Dialog appears to set block/release durations
 4. On confirm:
    - lag_active = True
-   - A QTimer starts with interval = block + release
-   - _lag_cycle() is called immediately and on each timeout
-   
-5. _lag_cycle():
-   - Calls killer.kill(device) to block traffic
-   - Schedules _lag_release() after block_ms
-   
-6. _lag_release():
-   - Calls killer.unkill(device) to restore traffic
-   
-7. Cycle repeats until user clicks 'Stop Lag'
-
-8. stopLagSwitch():
-   - Stops the timer
-   - Unkills the device if still killed
-   - Resets lag_active to False
+   - Single-shot QTimer alternates block_ms then release_ms (allow window)
+   - _lag_apply_block() keeps ARP spoof on and adds firewall/pf block for the lag phase
+5. _lag_phase_tick():
+   - After block_ms: unblock_ip (allow traffic) and start timer for release_ms
+   - After release_ms: _lag_apply_block() again and start timer for block_ms
+6. Cycle repeats until lag switch is turned off
+7. stopLagSwitch():
+   - Stops the timer, unblock_ip, unkill if needed, lag_active = False
 """)
 
 if __name__ == '__main__':

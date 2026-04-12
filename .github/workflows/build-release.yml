@@ -23,6 +23,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore build.py and src/constants.py for CI
+        shell: bash
+        run: |
+          cp .github/ci-blessed/constants.py src/constants.py
+          cp .github/ci-blessed/build.py build.py
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -70,6 +76,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore build.py and src/constants.py for CI
+        shell: bash
+        run: |
+          cp .github/ci-blessed/constants.py src/constants.py
+          cp .github/ci-blessed/build.py build.py
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -102,6 +114,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Restore build.py and src/constants.py for CI
+        shell: bash
+        run: |
+          cp .github/ci-blessed/constants.py src/constants.py
+          cp .github/ci-blessed/build.py build.py
 
       - name: Set up Python
         uses: actions/setup-python@v5

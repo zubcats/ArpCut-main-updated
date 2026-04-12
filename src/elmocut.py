@@ -1,12 +1,6 @@
 from sys import argv, exit
 import sys as _sys, os as _os
-
-# Frozen (PyInstaller): modules live under sys._MEIPASS. Dev: src/ next to this file.
-if getattr(_sys, 'frozen', False) and hasattr(_sys, '_MEIPASS'):
-    _sys.path.insert(0, _sys._MEIPASS)
-else:
-    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-
+_sys.path.append(_os.path.dirname(__file__))
 from PyQt5.QtWidgets import QApplication
 
 from tools.utils import goto

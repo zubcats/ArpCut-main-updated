@@ -14,6 +14,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GitHub "edit file" uploads often destroy Python indentation; restore known-good copies.
+      - name: Restore build.py and src/constants.py for CI
+        shell: bash
+        run: |
+          cp .github/ci-blessed/constants.py src/constants.py
+          cp .github/ci-blessed/build.py build.py
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -26,9 +33,7 @@ jobs:
           pip install pyinstaller pillow
 
       - name: Verify build script syntax
-        run: |
-          python -m py_compile build.py
-          python -m py_compile src/constants.py
+        run: python -m py_compile build.py
 
       - name: Build Windows EXE (PyInstaller via build.py)
         run: python build.py
