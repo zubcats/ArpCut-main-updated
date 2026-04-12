@@ -1387,21 +1387,14 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         victim_ip = device['ip']
         block_ip(iface, victim_ip, self.lag_direction)
         
-        # Schedule allow phase after lag (block) duration
+        # Schedule unblock after lag duration
         QTimer.singleShot(self.lag_block_ms, lambda: self._lag_release(victim_ip))
 
     def _lag_release(self, victim_ip):
         if not self.lag_active:
             return
+        # Unblock traffic
         unblock_ip(victim_ip)
-        # End ARP spoof for this allow window so traffic flows normally until next cycle.
-        # (Keeping killer.killed set during "allow" made the device stay dead — same as Kill ON.)
-        device = self._get_device_by_mac(self.lag_device_mac)
-        if device and device['mac'] in self.killer.killed:
-            victim = self._victim_record_for_mac(device['mac']) or device
-            self.killer.unkill(victim)
-        self._sync_killed_devices()
-        self._updateKillButtonState()
 
     def stopLagSwitch(self, refresh_dialog=True):
         if not self.lag_active:

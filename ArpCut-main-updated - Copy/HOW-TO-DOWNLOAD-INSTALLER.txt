@@ -1,0 +1,59 @@
+================================================================================
+  HOW TO GET THE INSTALLER (no Python, no build tools on your PC)
+================================================================================
+
+GitHub builds the installer for you in the cloud. You only click download.
+
+ONE-TIME SETUP
+--------------
+1. Put this project on GitHub (if it is not already):
+   - Create a free account at https://github.com
+   - Click "+" → New repository → create it (any name)
+   - Upload this folder, or use GitHub Desktop / git push
+
+2. The first time only: open your repo on GitHub → tab "Actions".
+   If it asks to enable workflows, click "I understand my workflows, go ahead and enable them".
+
+EVERY TIME YOU WANT THE INSTALLER
+---------------------------------
+1. Open your repository on GitHub in the browser.
+
+2. Click the "Actions" tab at the top.
+
+3. In the left sidebar, pick a workflow:
+   - "Build Windows installer only" — fastest; Windows .exe + installer only.
+   - "Build Release" — also builds macOS and Linux (takes longer).
+
+   If the sidebar is hidden, open directly (replace USER/REPO):
+   https://github.com/USER/REPO/actions/workflows/build-windows-installer.yml
+
+4. For "Build Release", click that name; for Windows-only, click "Build Windows installer only".
+
+5. Click the gray "Run workflow" button (on the right), then the green "Run workflow".
+   Wait about 5–15 minutes for a green checkmark.
+
+6. Click the finished workflow run (the top one in the list).
+
+7. Scroll down to "Artifacts".
+
+8. Click "ArpCutUpdated-Windows-Installer" to download a ZIP file.
+
+9. Open the ZIP, take out the file ending in .exe — that IS the installer.
+   Double-click it and install like any normal Windows program.
+
+Note: GitHub zips artifacts; you unzip once to get the real installer .exe.
+
+OPTIONAL — OFFICIAL "RELEASES" DOWNLOAD BUTTON
+-----------------------------------------------
+If you create a git tag like v1.1.0 and push it, this same workflow can attach
+the installer to the "Releases" page (with a clear download button). That is
+optional; Artifacts from steps 7–8 above are enough to install the app.
+
+IF THE WORKFLOW FAILS (especially "Verify Python syntax" or "build.py")
+-----------------------------------------------------------------------
+Files on GitHub may have broken indentation — common if build.py or
+constants.py were pasted in the GitHub web editor. Push the real files
+from your PC with GitHub Desktop (or re-upload the whole project folder),
+do not hand-edit Python on github.com.
+
+================================================================================
