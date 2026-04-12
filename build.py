@@ -12,7 +12,7 @@ import platform
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, os.path.join(_ROOT, 'src'))
-from constants import APP_BUNDLE_NAME
+from src.constants import APP_BUNDLE_NAME
 
 # All the imports PyInstaller is too dumb to find on its own
 HIDDEN_IMPORTS = [
