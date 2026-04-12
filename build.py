@@ -12,7 +12,7 @@ import platform
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, os.path.join(_ROOT, 'src'))
-from constants import APP_BUNDLE_NAME
+from src.constants import APP_BUNDLE_NAME
 
 # All the imports PyInstaller is too dumb to find on its own
 HIDDEN_IMPORTS = [
@@ -40,7 +40,7 @@ COLLECT_ALL = [
 def build():
     system = platform.system()
     
-    # Base command (name must match constants.APP_BUNDLE_NAME for installer / autostart)
+    # Base command (name must match src.constants.APP_BUNDLE_NAME for installer / autostart)
     # Use python -m PyInstaller so CI and venvs do not rely on a Scripts\pyinstaller.exe on PATH
     cmd = [sys.executable, '-m', 'PyInstaller', '--name', APP_BUNDLE_NAME]
     
