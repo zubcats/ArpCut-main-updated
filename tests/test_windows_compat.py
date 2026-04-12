@@ -22,7 +22,7 @@ def fail(msg):
 all_passed = True
 
 print("="*50)
-print(" ELMOCUT COMPATIBILITY TEST")
+print(" ZUBCUT COMPATIBILITY TEST")
 print("="*50)
 print(f"Platform: {sys.platform}")
 print(f"Python: {sys.version}")

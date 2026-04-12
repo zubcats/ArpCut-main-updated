@@ -224,7 +224,7 @@ class Ui_MainWindow(object):
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
-        MainWindow.setWindowTitle(_translate("MainWindow", "ArpCut"))
+        MainWindow.setWindowTitle(_translate("MainWindow", "ZubCut"))
         self.btnScanEasy.setShortcut(_translate("MainWindow", "Space"))
         self.lblleft.setText(_translate("MainWindow", "IDLE"))
         self.lblright.setText(_translate("MainWindow", "0 devices"))

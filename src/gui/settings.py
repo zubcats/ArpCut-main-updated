@@ -68,8 +68,8 @@ class Settings(QMainWindow, Ui_MainWindow):
         # Make sure that real-time killed devices are included
         # If its user's first time to apply remember option
         killed_from_json = get_settings('killed')
-        killed_from_elmo = list(self.elmocut.killer.killed)
-        killed_all = list(set(killed_from_json + killed_from_elmo)) * is_remember
+        killed_live = list(self.elmocut.killer.killed)
+        killed_all = list(set(killed_from_json + killed_live)) * is_remember
 
         export_settings(
             [
@@ -108,7 +108,7 @@ class Settings(QMainWindow, Ui_MainWindow):
                 f'{APP_DISPLAY_NAME} will restart to apply new interface.'
             )
 
-            # Restart elmoCut via restart.exe
+            # Restart app via restart.exe
             __import__('os').system('start "" restart.exe')
             self.elmocut.quit_all()
         
@@ -184,7 +184,7 @@ class Settings(QMainWindow, Ui_MainWindow):
         MsgType.INFO(
             self,
             'Updates Disabled',
-            'Update checking is disabled for this fork.\nVisit github.com/elmoiv/elmocut for the original.'
+            'Update checking is disabled for this build.'
         )
     
     def loadInterfaces(self):

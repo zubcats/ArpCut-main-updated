@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 cd /d "%~dp0.."
 
-echo === Build ArpCutUpdated.exe (PyInstaller^) ===
+echo === Build ZubCut.exe (PyInstaller^) ===
 python build.py
 if errorlevel 1 (
   echo.
@@ -22,9 +22,9 @@ if not defined ISCC (
 
 echo.
 echo === Compile installer (Inno Setup^) ===
-"%ISCC%" "%~dp0ArpCutUpdated.iss"
+"%ISCC%" "%~dp0ZubCut.iss"
 if errorlevel 1 exit /b 1
 
 echo.
-echo Done. Open the "output" folder for ArpCutUpdated-Setup-*.exe
+echo Done. Open the "output" folder for ZubCut-Setup-*.exe
 endlocal

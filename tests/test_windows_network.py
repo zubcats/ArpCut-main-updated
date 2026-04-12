@@ -35,7 +35,7 @@ results = {
 }
 
 print("="*60)
-print(" ELMOCUT NETWORK DIAGNOSTIC")
+print(" ZUBCUT NETWORK DIAGNOSTIC")
 print("="*60)
 print(f"Platform: {sys.platform}")
 print(f"Python: {sys.version}")

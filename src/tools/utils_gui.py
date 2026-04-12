@@ -1,4 +1,5 @@
 from os import path, makedirs, rename
+import shutil
 from json import dump, load, JSONDecodeError
 import ctypes
 import sys
@@ -30,10 +31,8 @@ def npcap_exists():
     # macOS/Linux uses libpcap (bundled); always True
     return True
 
-def duplicate_elmocut():
-    """
-    One may implement this in the future
-    """
+def duplicate_zubcut():
+    """Single-instance guard (reserved; not implemented)."""
     return False
 
 def check_documents_dir():
@@ -76,7 +75,7 @@ def get_settings(key):
 
 def repair_settings():
     """
-    Rescue elmocut from new settings not found after updates
+    Merge defaults when settings are missing keys or JSON is invalid.
     """
     original = dict(zip(SETTINGS_KEYS, SETTINGS_VALS))
     
@@ -90,19 +89,26 @@ def repair_settings():
     export_settings(list(original.values()))
 
 def migrate_settings_file():
-    old_exists = path.exists(OLD_SETTINGS_PATH)
-    new_exists = path.exists(SETTINGS_PATH)
-    if old_exists and not new_exists:
+    if path.exists(SETTINGS_PATH):
+        return
+    makedirs(DOCUMENTS_PATH, exist_ok=True)
+    if path.exists(OLD_SETTINGS_PATH):
         try:
-            makedirs(DOCUMENTS_PATH, exist_ok=True)
             rename(OLD_SETTINGS_PATH, SETTINGS_PATH)
+            return
         except Exception as e:
             print(f'Migrating settings error: {e}')
-            print('New settings file created instead.')
+    for legacy in LEGACY_SETTINGS_CANDIDATES:
+        if legacy and path.exists(legacy):
+            try:
+                shutil.copy2(legacy, SETTINGS_PATH)
+                return
+            except Exception as e:
+                print(f'Migrating settings from {legacy}: {e}')
 
 def add_to_startup(exe_path):
     """
-    Add ArpCut to autostart
+    Add ZubCut to autostart (Windows).
     """
     if sys.platform.startswith('win') and winreg:
         key = winreg.OpenKey(
@@ -120,7 +126,7 @@ def add_to_startup(exe_path):
 
 def remove_from_startup():
     """
-    Remove ArpCut from autostart
+    Remove ZubCut from autostart (Windows).
     """
     if sys.platform.startswith('win') and winreg:
         key = winreg.OpenKey(

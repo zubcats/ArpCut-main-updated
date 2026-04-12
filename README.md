@@ -1,8 +1,6 @@
-# ArpCut
+# ZubCut
 
 Cross-platform network control tool for ARP spoofing. Works on Windows and macOS.
-
-Based on [elmoCut](https://github.com/elmoiv/elmocut) by Khaled El-Morshedy (elmoiv).
 
 **Author:** Mvgnus (Magnus Ohle)
 
@@ -13,15 +11,15 @@ Based on [elmoCut](https://github.com/elmoiv/elmocut) by Khaled El-Morshedy (elm
 
 ## Download
 
-Pre-built binaries are available in [Releases](https://github.com/Mvgnu/ArpCut/releases).
+Pre-built binaries are available from the **Releases** tab on this repository.
 
-**Your own fork (this “ArpCut Updated” tree):** you do not have to install Python or Inno Setup. Push the repo to GitHub, open the **Actions** tab, run workflow **Build Release**, then download artifact **ArpCutUpdated-Windows-Installer** from the completed run. Step-by-step: see **`HOW-TO-DOWNLOAD-INSTALLER.txt`** in the repo root.
+**CI builds:** Push the repo to GitHub, open the **Actions** tab, run workflow **Build Release** (or **Build Windows installer only**), then download artifact **ZubCut-Windows-Installer** from the completed run. Step-by-step: **`HOW-TO-DOWNLOAD-INSTALLER.txt`** in the repo root.
 
 | Platform | File | Notes |
 |----------|------|-------|
-| Windows | `ArpCut.exe` | Requires [Npcap](https://npcap.com/) |
-| macOS | `ArpCut-macOS.zip` | Unzip and run |
-| Linux | `ArpCut` | Experimental |
+| Windows | `ZubCut.exe` | Requires [Npcap](https://npcap.com/) |
+| macOS | `ZubCut-macOS.zip` | Unzip and run |
+| Linux | `ZubCut` | Experimental |
 
 **Requirements:** Administrator/root privileges required.
 
@@ -43,6 +41,7 @@ If the pre-built binaries don't work on your machine, build from source (see bel
 
 **Advanced**
 - Lag Switch - Intermittent blocking with configurable timing and direction (incoming/outgoing/both)
+- Dupe - One-shot lag for a fixed duration (ms), then full stop (no repeat)
 - Port Blocker - Block specific ports with instant toggle, preset gaming ports included
 - Traffic Monitor - Real-time bandwidth per device
 
@@ -63,12 +62,12 @@ If the pre-built binaries don't work on your machine, build from source (see bel
 3. Clone and run:
 
 ```cmd
-git clone https://github.com/Mvgnu/ArpCut.git
-cd ArpCut
+git clone <your-repository-url>
+cd <repo-folder>
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
-python src\elmocut.py
+python src\zubcut.py
 ```
 
 Run as Administrator.
@@ -82,12 +81,12 @@ brew install python@3.11
 
 2. Clone and run:
 ```bash
-git clone https://github.com/Mvgnu/ArpCut.git
-cd ArpCut
+git clone <your-repository-url>
+cd <repo-folder>
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-sudo python3 src/elmocut.py
+sudo python3 src/zubcut.py
 ```
 
 ---
@@ -104,11 +103,11 @@ python build.py
 That's it. Works on Windows, macOS, and Linux.
 
 Output:
-- Windows: `dist/ArpCutUpdated.exe` (this fork; separate from stock `ArpCut.exe`)
-- macOS: `dist/ArpCutUpdated.app`
-- Linux: `dist/ArpCutUpdated`
+- Windows: `dist/ZubCut.exe`
+- macOS: `dist/ZubCut.app`
+- Linux: `dist/ZubCut`
 
-**Windows installer (optional):** Install [Inno Setup 6](https://jrsoftware.org/isdl.php), then run `installer\Build-Installer.bat`. The setup wizard installs to `Program Files\ArpCut Updated` and writes settings under `%APPDATA%\ArpCutUpdated` so it does not replace an existing ArpCut install. See `installer/HOWTO-INSTALLER.txt`.
+**Windows installer (optional):** Install [Inno Setup 6](https://jrsoftware.org/isdl.php), then run `installer\Build-Installer.bat`. The setup wizard installs under `Program Files\ZubCut` and stores settings under `%APPDATA%\ZubCut`. See `installer/HOWTO-INSTALLER.txt`.
 
 ---
 
@@ -122,7 +121,8 @@ Output:
 | Unkill | Restore selected device |
 | Kill All | Block all devices |
 | Unkill All | Restore all devices |
-| Lag Switch | Toggle intermittent blocking |
+| Lag Switch | Intermittent blocking (cycles) |
+| Dupe | One-shot timed lag, then stop |
 | Full Kill | Complete firewall block |
 | One-Way Kill | Block outgoing only |
 | Port Blocker | Block specific ports |
@@ -150,7 +150,6 @@ Only use on networks you own or have explicit permission to test. Unauthorized u
 
 ## Credits
 
-- [elmoCut](https://github.com/elmoiv/elmocut) by elmoiv (Khaled El-Morshedy)
 - Mvgnus (Magnus Ohle)
 
 ---

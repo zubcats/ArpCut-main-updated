@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build script for ArpCut
+Build script for ZubCut
 Run: python build.py
 """
 
@@ -48,15 +48,18 @@ def build():
     if system == 'Windows':
         cmd.extend(['--onefile', '--windowed'])
         cmd.extend(['--add-data', 'exe/manuf;manuf'])
-        cmd.extend(['--icon', 'exe/icon.ico'])
+        cmd.extend(['--add-data', 'exe/zubcut_icon.png;.'])
+        cmd.extend(['--icon', 'exe/zubcut_icon.png'])
         cmd.extend(['--uac-admin'])  # Force admin elevation prompt
     elif system == 'Darwin':  # macOS
         cmd.extend(['--onedir', '--windowed'])
         cmd.extend(['--add-data', 'exe/manuf:manuf'])
-        cmd.extend(['--icon', 'exe/icon.ico'])
+        cmd.extend(['--add-data', 'exe/zubcut_icon.png:.'])
+        cmd.extend(['--icon', 'exe/zubcut_icon.png'])
     else:  # Linux
         cmd.extend(['--onefile'])
         cmd.extend(['--add-data', 'exe/manuf:manuf'])
+        cmd.extend(['--add-data', 'exe/zubcut_icon.png:.'])
     
     # Add hidden imports
     for imp in HIDDEN_IMPORTS:
@@ -67,7 +70,7 @@ def build():
         cmd.extend(['--collect-all', pkg])
     
     # Entry point
-    cmd.append('src/elmocut.py')
+    cmd.append('src/zubcut.py')
     
     print(f"Building for {system}...")
     print(f"Command: {' '.join(cmd)}")

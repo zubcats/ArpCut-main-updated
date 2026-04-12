@@ -1,11 +1,11 @@
 from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QHBoxLayout
-from PyQt5.QtGui import QPixmap, QFont, QCursor
+from PyQt5.QtGui import QPixmap, QFont
 from PyQt5.QtCore import Qt
 
 from ui.ui_about import Ui_MainWindow
 from tools.qtools import clickable
 from tools.utils import goto
-from assets import twitter_icon, linkedin_icon, github_icon, reddit_icon, app_icon
+from assets import twitter_icon, linkedin_icon, github_icon, app_icon
 from constants import APP_DISPLAY_NAME
 
 class About(QMainWindow, Ui_MainWindow):
@@ -57,23 +57,17 @@ class About(QMainWindow, Ui_MainWindow):
         self.lblGitHub.setStyleSheet('color: #6cc644; font-size: 12px;')
         clickable(self.lblGitHub).connect(self.user_github)
         
-        # Reddit -> Original elmoCut credits
-        self.lblReddit.setText('📦 elmoCut')
-        self.lblReddit.setStyleSheet('color: #ff4500; font-size: 12px;')
-        self.lblReddit.setToolTip('View original elmoCut project')
-        clickable(self.lblReddit).connect(self.original_project)
+        self.lblReddit.setText('')
+        self.lblReddit.hide()
         
         # Add credits label at bottom
         self.add_credits_section()
     
     def add_credits_section(self):
-        """Add original elmoCut credits at the bottom."""
         credits = QLabel(self.centralwidget)
-        credits.setText('Based on elmoCut by Khaled El-Morshedy (elmoiv)')
+        credits.setText('ZubCut')
         credits.setAlignment(Qt.AlignCenter)
         credits.setStyleSheet('color: gray; font-size: 10px; margin-top: 15px;')
-        credits.setCursor(QCursor(Qt.PointingHandCursor))
-        clickable(credits).connect(self.original_project)
         self.gridLayout.addWidget(credits, 5, 0, 1, 4)
     
     def showEvent(self, event):
@@ -101,6 +95,3 @@ class About(QMainWindow, Ui_MainWindow):
     def user_github(self):
         goto(f'https://github.com/{self.USER_GITHUB}')
     
-    # Original project link
-    def original_project(self):
-        goto('https://github.com/elmoiv/elmocut')

@@ -3,13 +3,11 @@
 from os import path, environ
 import sys
 
-# This fork installs/runs as "ArpCut Updated" so it does not overwrite the stock ArpCut
-# executable, %APPDATA%\arpcut settings, or autostart registry entries.
-APP_BUNDLE_NAME = 'ArpCutUpdated'
-APP_EXE_NAME = 'ArpCutUpdated.exe'
-APP_DISPLAY_NAME = 'ArpCut Updated'
-AUTOSTART_REG_VALUE = 'ArpCutUpdated'
-APP_USER_DATA_DIR = 'ArpCutUpdated'
+APP_BUNDLE_NAME = 'ZubCut'
+APP_EXE_NAME = 'ZubCut.exe'
+APP_DISPLAY_NAME = 'ZubCut'
+AUTOSTART_REG_VALUE = 'ZubCut'
+APP_USER_DATA_DIR = 'ZubCut'
 
 # Cross-platform settings paths
 if sys.platform.startswith('win'):
@@ -24,7 +22,16 @@ else:
     OLD_DOCUMENTS_PATH = path.join(home, '.config', 'elmocut') if sys.platform != 'darwin' else path.join(home, 'Library', 'Application Support', 'elmocut')
 
 OLD_SETTINGS_PATH = path.join(OLD_DOCUMENTS_PATH, 'elmocut.json')
-SETTINGS_PATH = path.join(DOCUMENTS_PATH, 'arpcut.json')
+SETTINGS_PATH = path.join(DOCUMENTS_PATH, 'zubcut.json')
+
+# Extra legacy settings to migrate if zubcut.json is missing (Windows)
+LEGACY_SETTINGS_CANDIDATES = []
+if sys.platform.startswith('win'):
+    _ad = environ.get('APPDATA', '')
+    LEGACY_SETTINGS_CANDIDATES = [
+        path.join(_ad, 'ArpCutUpdated', 'arpcut.json'),
+        path.join(_ad, 'ZubCut', 'arpcut.json'),
+    ]
 
 TABLE_HEADER_LABELS = ['IP Address', 'MAC Address', 'Vendor', 'Type', 'Nickname']
 

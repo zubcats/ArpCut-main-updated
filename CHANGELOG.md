@@ -44,5 +44,5 @@
 - Fixed an adapter specific bug causing "connection lost".
 
 ## [1.0.0] - 2021-01-27
-- First version of elmoCut
+- First public release (upstream lineage)
 - Compatible with 64 bit Windows only

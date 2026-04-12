@@ -1,7 +1,7 @@
 # Windows installer only — does not run macOS/Linux (faster, fewer failure points).
 # Use this if you only need the Windows setup .exe.
 #
-# After a successful run: Artifacts → ArpCutUpdated-Windows-Installer (zip).
+# After a successful run: Artifacts → ZubCut-Windows-Installer (zip).
 
 name: Build Windows installer only
 
@@ -47,16 +47,16 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after Inno install" }
-          & $iscc "installer\ArpCutUpdated.iss"
+          & $iscc "installer\ZubCut.iss"
 
       - name: Upload portable EXE
         uses: actions/upload-artifact@v4
         with:
-          name: ArpCutUpdated-Windows-Portable
-          path: dist/ArpCutUpdated.exe
+          name: ZubCut-Windows-Portable
+          path: dist/ZubCut.exe
 
       - name: Upload installer EXE
         uses: actions/upload-artifact@v4
         with:
-          name: ArpCutUpdated-Windows-Installer
-          path: output/ArpCutUpdated-Setup-*.exe
+          name: ZubCut-Windows-Installer
+          path: output/ZubCut-Setup-*.exe

@@ -5,9 +5,10 @@ from PyQt5.QtWidgets import QMainWindow, QTableWidgetItem, QMessageBox, \
                             QMenu, QSystemTrayIcon, QAction, QPushButton, \
                             QDialog, QFormLayout, QDialogButtonBox, QSpinBox, \
                             QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, \
-                            QComboBox, QCheckBox, QLabel, QGroupBox, QLineEdit, QWidget
-from PyQt5.QtGui import QPixmap, QIcon
-from PyQt5.QtCore import Qt, QTimer
+                            QComboBox, QCheckBox, QLabel, QGroupBox, QLineEdit, QWidget, \
+                            QSizePolicy
+from PyQt5.QtGui import QPixmap, QIcon, QFont
+from PyQt5.QtCore import Qt, QTimer, QSize
 try:
     from PyQt5.QtWinExtras import QWinTaskbarButton
 except Exception:
@@ -51,12 +52,14 @@ class LagSwitchDialog(QDialog):
         self.setMinimumWidth(350)
         layout = QVBoxLayout(self)
 
-        self.enableLag = QCheckBox('Lag switch active (selected device)')
-        self.enableLag.setToolTip(
-            'When enabled, intermittently blocks traffic for the device selected in the main list.'
+        self.btnLagStartStop = QPushButton('Start', self)
+        self.btnLagStartStop.setMinimumHeight(50)
+        self.btnLagStartStop.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btnLagStartStop.setToolTip(
+            'Start or stop intermittent lag for the device selected in the main list.'
         )
-        self.enableLag.toggled.connect(self._on_lag_enable_toggled)
-        layout.addWidget(self.enableLag)
+        self.btnLagStartStop.clicked.connect(self._on_lag_start_stop_clicked)
+        layout.addWidget(self.btnLagStartStop)
 
         # Direction selection
         self.dir_group = QGroupBox('Traffic Direction to Block')
@@ -196,7 +199,7 @@ class LagSwitchDialog(QDialog):
         main.applyLagSwitchSettings(lag_ms, normal_ms, direction)
 
     def refresh_toggle_state(self):
-        """Sync checkbox and locked state with the main window (e.g. after row change or stop)."""
+        """Sync Start/Stop button and locked state with the main window (e.g. after row change or stop)."""
         if not self._main:
             return
         main = self._main
@@ -207,37 +210,43 @@ class LagSwitchDialog(QDialog):
                 on = main.lag_active and main.lag_device_mac == dev['mac']
             except Exception:
                 on = False
-        self.enableLag.blockSignals(True)
-        self.enableLag.setChecked(on)
-        self.enableLag.blockSignals(False)
+        self.btnLagStartStop.blockSignals(True)
+        if on:
+            self.btnLagStartStop.setText('Stop')
+            self.btnLagStartStop.setStyleSheet(main.BUTTON_ACTIVE_STYLE)
+        else:
+            self.btnLagStartStop.setText('Start')
+            self.btnLagStartStop.setStyleSheet(main.BUTTON_NORMAL_STYLE)
+        self.btnLagStartStop.blockSignals(False)
         self._set_timing_controls_enabled(not on)
 
     def _reject_enable(self):
-        self.enableLag.blockSignals(True)
-        self.enableLag.setChecked(False)
-        self.enableLag.blockSignals(False)
-        self._set_timing_controls_enabled(True)
+        self.refresh_toggle_state()
 
-    def _on_lag_enable_toggled(self, checked):
+    def _on_lag_start_stop_clicked(self):
         main = self._main
         if not main:
             return
-        if checked:
-            if not main.tableScan.selectedItems():
-                self._reject_enable()
-                main.log('No device selected', 'red')
-                return
-            device = main.current_index()
-            if device['admin']:
-                self._reject_enable()
-                main.log('Cannot lag admin device', 'orange')
-                return
-            lag_ms, normal_ms, direction = self.values()
-            main.applyLagSwitchSettings(lag_ms, normal_ms, direction)
-            main.startLagSwitch(device)
-            self._set_timing_controls_enabled(False)
-        else:
+        running_here = False
+        if main.tableScan.selectedItems():
+            try:
+                dev = main.current_index()
+                running_here = main.lag_active and main.lag_device_mac == dev['mac']
+            except Exception:
+                pass
+        if running_here:
             main.stopLagSwitch()
+            return
+        if not main.tableScan.selectedItems():
+            main.log('No device selected', 'red')
+            return
+        device = main.current_index()
+        if device['admin']:
+            main.log('Cannot lag admin device', 'orange')
+            return
+        lag_ms, normal_ms, direction = self.values()
+        main.applyLagSwitchSettings(lag_ms, normal_ms, direction)
+        main.startLagSwitch(device)
 
     def _on_both_toggled(self, checked):
         if checked:
@@ -258,6 +267,165 @@ class LagSwitchDialog(QDialog):
         elif self.dirIncoming.isChecked() and self.dirOutgoing.isChecked():
             direction = 'both'
         return self.lagSpin.value(), self.normalSpin.value(), direction
+
+
+class DupeDialog(QDialog):
+    """One-shot timed block: lag for N ms, then fully release (no repeat)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._main = parent
+        self._reload_on_next_show = True
+        self.setWindowTitle('Dupe')
+        self.setModal(False)
+        self.setMinimumWidth(350)
+        layout = QVBoxLayout(self)
+
+        self.btnDupeRun = QPushButton('Run', self)
+        self.btnDupeRun.setMinimumHeight(50)
+        self.btnDupeRun.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btnDupeRun.setToolTip(
+            'Run a single lag burst for the device selected in the main list, then stop completely.'
+        )
+        self.btnDupeRun.clicked.connect(self._on_run_clicked)
+        layout.addWidget(self.btnDupeRun)
+
+        self.dir_group = QGroupBox('Traffic Direction to Block')
+        dir_layout = QVBoxLayout(self.dir_group)
+        self.dirBoth = QCheckBox('Both directions (full lag)')
+        self.dirBoth.setChecked(True)
+        self.dirIncoming = QCheckBox('Incoming only (receive lag)')
+        self.dirOutgoing = QCheckBox('Outgoing only (send lag)')
+        self.dirBoth.toggled.connect(self._on_both_toggled)
+        dir_layout.addWidget(self.dirBoth)
+        dir_layout.addWidget(self.dirIncoming)
+        dir_layout.addWidget(self.dirOutgoing)
+        layout.addWidget(self.dir_group)
+
+        self.timing_group = QGroupBox('Duration')
+        timing_layout = QFormLayout(self.timing_group)
+        self.dupeSpin = QSpinBox(self)
+        self.dupeSpin.setRange(1, 2147483647)
+        self.dupeSpin.setSingleStep(100)
+        self.dupeSpin.setValue(5000)
+        self.dupeSpin.setSuffix(' ms')
+        timing_layout.addRow('Lag duration (one shot)', self.dupeSpin)
+        layout.addWidget(self.timing_group)
+
+        info = QLabel(
+            'Runs one block window for the duration above, then removes firewall rules and ARP spoof. '
+            'Does not repeat — use Lag Switch for on/off cycles.'
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet('color: gray; font-size: 10px; padding: 5px;')
+        layout.addWidget(info)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, self)
+        buttons.rejected.connect(self.hide)
+        layout.addWidget(buttons)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._reload_on_next_show:
+            self._load_from_main()
+            self._reload_on_next_show = False
+        self.refresh_toggle_state()
+
+    def hideEvent(self, event):
+        self._reload_on_next_show = True
+        super().hideEvent(event)
+
+    def _load_from_main(self):
+        m = self._main
+        if not m:
+            return
+        self.dupeSpin.setValue(getattr(m, 'dupe_duration_ms', 5000))
+        self._apply_direction_to_ui(getattr(m, 'dupe_direction', 'both'))
+
+    def _apply_direction_to_ui(self, direction):
+        self.dirBoth.blockSignals(True)
+        self.dirIncoming.blockSignals(True)
+        self.dirOutgoing.blockSignals(True)
+        if direction == 'in':
+            self.dirBoth.setChecked(False)
+            self.dirIncoming.setChecked(True)
+            self.dirOutgoing.setChecked(False)
+        elif direction == 'out':
+            self.dirBoth.setChecked(False)
+            self.dirIncoming.setChecked(False)
+            self.dirOutgoing.setChecked(True)
+        else:
+            self.dirBoth.setChecked(True)
+            self.dirIncoming.setChecked(False)
+            self.dirOutgoing.setChecked(False)
+        self.dirBoth.blockSignals(False)
+        self.dirIncoming.blockSignals(False)
+        self.dirOutgoing.blockSignals(False)
+
+    def _on_both_toggled(self, checked):
+        if checked:
+            self.dirIncoming.setChecked(False)
+            self.dirOutgoing.setChecked(False)
+
+    def _set_controls_enabled(self, enabled):
+        self.dir_group.setEnabled(enabled)
+
+    def refresh_toggle_state(self):
+        main = self._main
+        if not main:
+            return
+        on = False
+        if main.tableScan.selectedItems():
+            try:
+                dev = main.current_index()
+                on = main.dupe_active and main.dupe_device_mac == dev['mac']
+            except Exception:
+                on = False
+        self.btnDupeRun.blockSignals(True)
+        if on:
+            self.btnDupeRun.setText('Stop')
+            self.btnDupeRun.setStyleSheet(main.BUTTON_ACTIVE_STYLE)
+        else:
+            self.btnDupeRun.setText('Run')
+            self.btnDupeRun.setStyleSheet(main.BUTTON_NORMAL_STYLE)
+        self.btnDupeRun.blockSignals(False)
+        self._set_controls_enabled(not on)
+
+    def values(self):
+        direction = 'both'
+        if self.dirIncoming.isChecked() and not self.dirOutgoing.isChecked():
+            direction = 'in'
+        elif self.dirOutgoing.isChecked() and not self.dirIncoming.isChecked():
+            direction = 'out'
+        elif self.dirIncoming.isChecked() and self.dirOutgoing.isChecked():
+            direction = 'both'
+        return self.dupeSpin.value(), direction
+
+    def _on_run_clicked(self):
+        main = self._main
+        if not main:
+            return
+        running_here = False
+        if main.tableScan.selectedItems():
+            try:
+                dev = main.current_index()
+                running_here = main.dupe_active and main.dupe_device_mac == dev['mac']
+            except Exception:
+                pass
+        if running_here:
+            main.stopDupe()
+            return
+        if not main.tableScan.selectedItems():
+            main.log('No device selected', 'red')
+            return
+        device = main.current_index()
+        if device['admin']:
+            main.log('Cannot dupe admin device', 'orange')
+            return
+        ms, direction = self.values()
+        main.dupe_duration_ms = ms
+        main.dupe_direction = direction
+        main.startDupe(device, ms, direction)
 
 
 class PortBlockerDialog(QDialog):
@@ -642,10 +810,10 @@ class PortBlockerDialog(QDialog):
 
 
 class ElmoCut(QMainWindow, Ui_MainWindow):
-    def __init__(self):
+    def __init__(self, window_icon=None):
         super().__init__()
         self.version = '1.1.0'
-        self.icon = self.processIcon(app_icon)
+        self.icon = window_icon if window_icon is not None else self.processIcon(app_icon)
 
         # Add window icon
         self.setWindowIcon(self.icon)
@@ -671,6 +839,15 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.lag_timer.timeout.connect(self._lag_phase_tick)
         # False: firewall block is active (victim is in "lag" phase). True: allow window (rules cleared).
         self._lag_in_allow_phase = False
+
+        self.dupe_active = False
+        self.dupe_device_mac = None
+        self.dupe_direction = 'both'
+        self.dupe_duration_ms = 5000
+        self.dupe_timer = QTimer(self)
+        self.dupe_timer.setSingleShot(True)
+        self.dupe_timer.setTimerType(Qt.PreciseTimer)
+        self.dupe_timer.timeout.connect(self._dupe_timer_fired)
         
         # Button active state styles
         self.BUTTON_ACTIVE_STYLE = "background-color: #c0392b; color: white; font-weight: bold;"
@@ -715,6 +892,13 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             btn.clicked.connect(btn_func)
             btn.setIcon(self.processIcon(btn_icon))
 
+        self.btnKill.setMinimumWidth(130)
+        self.btnKill.setIconSize(QSize(44, 44))
+        kill_font = QFont(self.btnKill.font())
+        kill_font.setPointSize(11)
+        kill_font.setBold(True)
+        self.btnKill.setFont(kill_font)
+
         # Additional controls with tooltips - toggleable buttons
         self.btnLagSwitch = QPushButton('Lag Switch', self)
         self.btnLagSwitch.setMinimumHeight(50)
@@ -723,6 +907,15 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         )
         self.gridLayout.addWidget(self.btnLagSwitch, 5, 1, 1, 2)
         self.btnLagSwitch.clicked.connect(self.openLagSwitchDialog)
+
+        self.btnDupe = QPushButton('Dupe', self)
+        self.btnDupe.setMinimumHeight(50)
+        self.btnDupe.setToolTip(
+            'Dupe — One-shot lag for a set time (ms), then full stop. '
+            'Does not repeat; use Lag Switch for cycles.'
+        )
+        self.gridLayout.addWidget(self.btnDupe, 5, 5, 1, 2)
+        self.btnDupe.clicked.connect(self.openDupeDialog)
 
         self.btnOneWayKill = QPushButton('One-Way Kill', self)
         self.btnOneWayKill.setMinimumHeight(50)
@@ -738,9 +931,9 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.btnPortBlocker.clicked.connect(self.openPortBlocker)
         self.port_blocker_dialog = None  # Lazy init
         self.lag_switch_dialog = None
+        self.dupe_switch_dialog = None
 
-        # "Based on elmoCut" label instead of donate button
-        self.lblDonate.setText("Based on elmoCut")
+        self.lblDonate.setText('ZubCut')
         
         self.pgbar.setVisible(False)
 
@@ -940,7 +1133,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
 
     def tray_clicked(self, event):
         """
-        Show elmoCut when tray icon is left-clicked
+        Show main window when tray icon is left-clicked
         """
         if event == QSystemTrayIcon.Trigger:
             self.trayShowClicked()
@@ -959,6 +1152,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         """
         self.killer.unkill_all()
         self.stopLagSwitch()
+        self.stopDupe(log=False)
         self.settings_window.close()
         self.about_window.close()
         self.tray_icon.hide()
@@ -990,6 +1184,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         Run in background if self.minimize is True else exit
         """
         self.stopLagSwitch()
+        self.stopDupe(log=False)
         # If event recieved from tray icon
         if self.from_tray:
             event.accept()
@@ -1052,13 +1247,17 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.btnUnkill.setEnabled(not_enabled)
         self.btnOneWayKill.setEnabled(not_enabled)
         self.btnLagSwitch.setEnabled(not_enabled)
+        self.btnDupe.setEnabled(not_enabled)
         
         # Update toggle button visual states for selected device
         self._updateKillButtonState()
         self._updateOneWayButtonState()
         self._updateLagSwitchButtonState()
+        self._updateDupeButtonState()
         if getattr(self, 'lag_switch_dialog', None) and self.lag_switch_dialog.isVisible():
             self.lag_switch_dialog.refresh_toggle_state()
+        if getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
+            self.dupe_switch_dialog.refresh_toggle_state()
 
     def _updateLagSwitchButtonState(self):
         """Update lag switch button based on whether it's active for selected device."""
@@ -1164,6 +1363,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             self._updateKillButtonState()
             self._updateOneWayButtonState()
             self._updateLagSwitchButtonState()
+            self._updateDupeButtonState()
             self.lblcenter.setText('Nothing Selected')
     
     def processDevices(self):
@@ -1227,9 +1427,10 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
     def unkill(self):
         """
         Disable ARP spoofing on previously spoofed devices.
-        Also clears any active one-way kill or lag switch.
+        Also clears any active one-way kill, lag switch, or dupe burst.
         """
         self.stopLagSwitch()
+        self.stopDupe(log=False)
         if not self.connected():
             return
         
@@ -1263,6 +1464,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         Kill all scanned devices except admins
         """
         self.stopLagSwitch()
+        self.stopDupe(log=False)
         if not self.connected():
             return
         
@@ -1277,9 +1479,10 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
     def unkillAll(self):
         """
         Unkill all killed devices except admins.
-        Clears all one-way kills and lag switches.
+        Clears all one-way kills, lag switches, and dupe bursts.
         """
         self.stopLagSwitch()
+        self.stopDupe(log=False)
         if not self.connected():
             return
         
@@ -1313,6 +1516,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         Scan Thread Starter
         """
         self.stopLagSwitch()
+        self.stopDupe(log=False)
         if not self.connected(show_msg_box=True):
             return
 
@@ -1378,6 +1582,22 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.lag_switch_dialog.raise_()
         self.lag_switch_dialog.activateWindow()
 
+    def openDupeDialog(self):
+        if not self.connected():
+            return
+        if not self.tableScan.selectedItems():
+            self.log('No device selected', 'red')
+            return
+        device = self.current_index()
+        if device['admin']:
+            self.log('Cannot dupe admin device', 'orange')
+            return
+        if self.dupe_switch_dialog is None:
+            self.dupe_switch_dialog = DupeDialog(self)
+        self.dupe_switch_dialog.show()
+        self.dupe_switch_dialog.raise_()
+        self.dupe_switch_dialog.activateWindow()
+
     def applyLagSwitchSettings(self, block_ms, release_ms, direction):
         self.lag_block_ms = block_ms
         self.lag_release_ms = release_ms
@@ -1395,6 +1615,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             pass
 
     def startLagSwitch(self, device):
+        self.stopDupe(refresh_dialog=True, log=False)
         if self.lag_active:
             self.stopLagSwitch(refresh_dialog=False)
         self.lag_device_mac = device['mac']
@@ -1413,9 +1634,8 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         if self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
             self.lag_switch_dialog.refresh_toggle_state()
 
-    def _refresh_lag_victim_row(self):
-        """Update table row colors for the lag target without rebuilding the whole table."""
-        mac = self.lag_device_mac
+    def _refresh_table_row_for_mac(self, mac):
+        """Update table row colors for one MAC without rebuilding the whole table."""
         if not mac:
             return
         for row, d in enumerate(self.scanner.devices):
@@ -1423,12 +1643,16 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
                 self.fillTableRow(row, d)
                 break
 
-    def _lag_enter_allow_phase(self, device):
-        """
-        Allow window (bottom spin): drop firewall rules and stop ARP spoof for this victim.
-        If we only removed firewall rules while still MITM'd, traffic would still flow through
-        this PC — and on Windows IP forwarding is often off, so the victim stays broken.
-        """
+    def _apply_victim_block(self, device, direction):
+        if device['mac'] not in self.killer.killed:
+            self.killer.kill(device)
+        iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+        block_ip(iface, device['ip'], direction)
+        self._sync_killed_devices()
+        self._refresh_table_row_for_mac(device['mac'])
+        self._updateKillButtonState()
+
+    def _clear_victim_block(self, device):
         try:
             unblock_ip(device['ip'])
         except Exception:
@@ -1440,18 +1664,23 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
         self._sync_killed_devices()
-        self._refresh_lag_victim_row()
+        self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
         self._updateOneWayButtonState()
 
+    def _lag_enter_allow_phase(self, device):
+        """
+        Allow window (bottom spin): drop firewall rules and stop ARP spoof for this victim.
+        If we only removed firewall rules while still MITM'd, traffic would still flow through
+        this PC — and on Windows IP forwarding is often off, so the victim stays broken.
+        """
+        try:
+            self._clear_victim_block(device)
+        except Exception:
+            pass
+
     def _lag_apply_block(self, device):
-        if device['mac'] not in self.killer.killed:
-            self.killer.kill(device)
-        iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-        block_ip(iface, device['ip'], self.lag_direction)
-        self._sync_killed_devices()
-        self._refresh_lag_victim_row()
-        self._updateKillButtonState()
+        self._apply_victim_block(device, self.lag_direction)
 
     def _lag_phase_tick(self):
         if not self.lag_active:
@@ -1505,6 +1734,57 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.log('Lag switch OFF', 'lime')
         if refresh_dialog and self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
             self.lag_switch_dialog.refresh_toggle_state()
+
+    def startDupe(self, device, duration_ms, direction):
+        self.stopLagSwitch(refresh_dialog=True)
+        self.stopDupe(refresh_dialog=False, log=False)
+        self.dupe_device_mac = device['mac']
+        self.dupe_active = True
+        self.dupe_direction = direction
+        self.dupe_duration_ms = duration_ms
+        self._apply_victim_block(device, direction)
+        self.btnDupe.setText('■ DUPE')
+        self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
+        dir_text = {'both': 'all', 'in': 'incoming', 'out': 'outgoing'}[direction]
+        self.log(f'Dupe: {duration_ms}ms ({dir_text}), then full stop', 'orange')
+        self.dupe_timer.start(max(1, int(duration_ms)))
+        if getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
+            self.dupe_switch_dialog.refresh_toggle_state()
+
+    def _dupe_timer_fired(self):
+        self.stopDupe(log_message='Dupe finished')
+
+    def stopDupe(self, refresh_dialog=True, log=True, log_message='Dupe stopped'):
+        if not self.dupe_active:
+            return
+        self.dupe_timer.stop()
+        device = self._get_device_by_mac(self.dupe_device_mac)
+        if device:
+            try:
+                self._clear_victim_block(device)
+            except Exception:
+                pass
+        self.dupe_active = False
+        self.dupe_device_mac = None
+        self.btnDupe.setText('Dupe')
+        self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        if log:
+            self.log(log_message, 'lime')
+        if refresh_dialog and getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
+            self.dupe_switch_dialog.refresh_toggle_state()
+
+    def _updateDupeButtonState(self):
+        if not self.tableScan.selectedItems():
+            self.btnDupe.setText('Dupe')
+            self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+            return
+        device = self.current_index()
+        if self.dupe_active and self.dupe_device_mac == device['mac']:
+            self.btnDupe.setText('■ DUPE')
+            self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
+        else:
+            self.btnDupe.setText('Dupe')
+            self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
 
     def toggleOneWayKill(self):
         if not self.connected():
@@ -1564,6 +1844,8 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         is_active = self.killed_devices.get(mac, mac in self.killer.killed)
 
         if is_active:
+            if self.dupe_active and self.dupe_device_mac == mac:
+                self.stopDupe(log=False)
             victim = self._victim_record_for_mac(mac)
             if not victim:
                 self._sync_killed_devices()

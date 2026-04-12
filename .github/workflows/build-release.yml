@@ -5,7 +5,7 @@
 #   2. Open the repo on GitHub → tab "Actions".
 #   3. Click "Build Release" → "Run workflow" → Run workflow.
 #   4. When it finishes (green), open that run → scroll to "Artifacts" →
-#      download "ArpCutUpdated-Windows-Installer" (zip). Unzip once → double-click the .exe setup.
+#      download "ZubCut-Windows-Installer" (zip). Unzip once → double-click the .exe setup.
 #
 # Creating a version tag (e.g. v1.1.0) also runs this workflow and attaches files to a GitHub Release.
 
@@ -57,19 +57,19 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after Inno install" }
-          & $iscc "installer\ArpCutUpdated.iss"
+          & $iscc "installer\ZubCut.iss"
 
       - name: Upload portable EXE
         uses: actions/upload-artifact@v4
         with:
-          name: ArpCutUpdated-Windows-Portable
-          path: dist/ArpCutUpdated.exe
+          name: ZubCut-Windows-Portable
+          path: dist/ZubCut.exe
 
       - name: Upload installer EXE
         uses: actions/upload-artifact@v4
         with:
-          name: ArpCutUpdated-Windows-Installer
-          path: output/ArpCutUpdated-Setup-*.exe
+          name: ZubCut-Windows-Installer
+          path: output/ZubCut-Setup-*.exe
 
   build-macos:
     runs-on: macos-latest
@@ -102,13 +102,13 @@ jobs:
         run: python build.py
 
       - name: Create ZIP
-        run: cd dist && zip -r ../ArpCutUpdated-macOS.zip ArpCutUpdated.app
+        run: cd dist && zip -r ../ZubCut-macOS.zip ZubCut.app
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ArpCutUpdated-macOS
-          path: ArpCutUpdated-macOS.zip
+          name: ZubCut-macOS
+          path: ZubCut-macOS.zip
 
   build-linux:
     runs-on: ubuntu-latest
@@ -148,8 +148,8 @@ jobs:
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ArpCutUpdated-Linux
-          path: dist/ArpCutUpdated
+          name: ZubCut-Linux
+          path: dist/ZubCut
 
   release:
     needs: [build-windows, build-macos, build-linux]
@@ -170,10 +170,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/ArpCutUpdated-Windows-Installer/ArpCutUpdated-Setup-*.exe
-            artifacts/ArpCutUpdated-Windows-Portable/ArpCutUpdated.exe
-            artifacts/ArpCutUpdated-macOS/ArpCutUpdated-macOS.zip
-            artifacts/ArpCutUpdated-Linux/ArpCutUpdated
+            artifacts/ZubCut-Windows-Installer/ZubCut-Setup-*.exe
+            artifacts/ZubCut-Windows-Portable/ZubCut.exe
+            artifacts/ZubCut-macOS/ZubCut-macOS.zip
+            artifacts/ZubCut-Linux/ZubCut
           draft: false
           prerelease: false
           generate_release_notes: true

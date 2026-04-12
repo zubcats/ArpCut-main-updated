@@ -1,14 +1,11 @@
-; Inno Setup 6 script — builds a Windows installer for "ArpCut Updated"
-; (separate from stock ArpCut: different folder, AppData, uninstall entry).
-;
-; Prereq: run `python build.py` from the repo root so dist\ArpCutUpdated.exe exists.
-; Then: Build → Compile in Inno IDE, or run installer\Build-Installer.bat
+; Inno Setup 6 — ZubCut Windows installer
+; Prereq: python build.py → dist\ZubCut.exe
 
-#define MyAppName "ArpCut Updated"
+#define MyAppName "ZubCut"
 #define MyAppVersion "1.1.0"
 #define MyAppPublisher "Local build"
-#define MyAppExeName "ArpCutUpdated.exe"
-#define MyAppURL "https://github.com/Mvgnu/ArpCut"
+#define MyAppExeName "ZubCut.exe"
+#define MyAppURL "https://github.com/"
 
 [Setup]
 AppId={{E4B9F5C2-8D3A-4F1E-9C7B-2A6D8E0F1A3C}
@@ -21,7 +18,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=..\output
-OutputBaseFilename=ArpCutUpdated-Setup-{#MyAppVersion}
+OutputBaseFilename=ZubCut-Setup-{#MyAppVersion}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
@@ -45,6 +42,4 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; shellexec: PyInstaller is built with --uac-admin (requireAdministrator manifest).
-; CreateProcess would fail with error 740; ShellExecute lets Windows show the UAC prompt.
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent shellexec

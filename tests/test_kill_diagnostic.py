@@ -38,7 +38,7 @@ results = {
 }
 
 print("="*60)
-print(" ELMOCUT KILL FUNCTIONALITY DIAGNOSTIC")
+print(" ZUBCUT KILL FUNCTIONALITY DIAGNOSTIC")
 print("="*60)
 print(f"Platform: {sys.platform}")
 print(f"Python: {sys.version}")

@@ -36,7 +36,7 @@ EVERY TIME YOU WANT THE INSTALLER
 
 7. Scroll down to "Artifacts".
 
-8. Click "ArpCutUpdated-Windows-Installer" to download a ZIP file.
+8. Click "ZubCut-Windows-Installer" to download a ZIP file.
 
 9. Open the ZIP, take out the file ending in .exe — that IS the installer.
    Double-click it and install like any normal Windows program.

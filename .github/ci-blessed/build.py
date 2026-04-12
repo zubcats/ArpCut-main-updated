@@ -1,7 +1,7 @@
 # CI copy of repo-root build.py. Copied to ./build.py before CI runs PyInstaller.
 #!/usr/bin/env python3
 """
-Build script for ArpCut
+Build script for ZubCut
 Run: python build.py
 """
 
@@ -15,6 +15,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from src.constants import APP_BUNDLE_NAME
 
+# All the imports PyInstaller is too dumb to find on its own
 HIDDEN_IMPORTS = [
     'PyQt5',
     'PyQt5.QtWidgets',
@@ -41,20 +42,24 @@ COLLECT_ALL = [
 def build():
     system = platform.system()
 
+    # Base command (name must match constants.APP_BUNDLE_NAME for installer / autostart)
     cmd = [sys.executable, '-m', 'PyInstaller', '--name', APP_BUNDLE_NAME]
 
     if system == 'Windows':
         cmd.extend(['--onefile', '--windowed'])
         cmd.extend(['--add-data', 'exe/manuf;manuf'])
-        cmd.extend(['--icon', 'exe/icon.ico'])
+        cmd.extend(['--add-data', 'exe/zubcut_icon.png;.'])
+        cmd.extend(['--icon', 'exe/zubcut_icon.png'])
         cmd.extend(['--uac-admin'])
     elif system == 'Darwin':
         cmd.extend(['--onedir', '--windowed'])
         cmd.extend(['--add-data', 'exe/manuf:manuf'])
-        cmd.extend(['--icon', 'exe/icon.ico'])
+        cmd.extend(['--add-data', 'exe/zubcut_icon.png:.'])
+        cmd.extend(['--icon', 'exe/zubcut_icon.png'])
     else:
         cmd.extend(['--onefile'])
         cmd.extend(['--add-data', 'exe/manuf:manuf'])
+        cmd.extend(['--add-data', 'exe/zubcut_icon.png:.'])
 
     for imp in HIDDEN_IMPORTS:
         cmd.extend(['--hidden-import', imp])
@@ -62,7 +67,7 @@ def build():
     for pkg in COLLECT_ALL:
         cmd.extend(['--collect-all', pkg])
 
-    cmd.append('src/elmocut.py')
+    cmd.append('src/zubcut.py')
 
     print(f"Building for {system}...")
     print(f"Command: {' '.join(cmd)}")
