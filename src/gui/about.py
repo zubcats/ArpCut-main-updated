@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget, QHBoxLayout
-from PyQt5.QtGui import QPixmap, QFont
+from PyQt5.QtGui import QPixmap, QFont, QIcon
 from PyQt5.QtCore import Qt
 
 from ui.ui_about import Ui_MainWindow
@@ -23,14 +23,15 @@ class About(QMainWindow, Ui_MainWindow):
         self.setWindowIcon(icon)
         self.setupUi(self)
         
-        # Increase window size to fit new content
-        self.setMinimumSize(400, 500)
-        self.setMaximumSize(400, 550)
-        self.resize(400, 500)
+        self.setMinimumSize(420, 620)
+        self.setMaximumSize(480, 720)
+        self.resize(420, 640)
 
-        # App icon clicks to user's GitHub
         clickable(self.lblAppIcon).connect(self.user_github)
-        self.setImage(self.lblAppIcon, app_icon)
+        self.lblAppIcon.setAlignment(Qt.AlignCenter)
+        self.lblAppIcon.setScaledContents(False)
+        self.lblAppIcon.setMinimumSize(360, 280)
+        self.lblAppIcon.setMaximumHeight(340)
 
         # Set app info
         self.lblAppName.setText(f'{APP_DISPLAY_NAME} v{self.elmocut.version}')
@@ -71,13 +72,30 @@ class About(QMainWindow, Ui_MainWindow):
         self.gridLayout.addWidget(credits, 5, 0, 1, 4)
     
     def showEvent(self, event):
+        super().showEvent(event)
         self.setStyleSheet(self.elmocut.styleSheet())
+        self._refresh_about_logo()
         event.accept()
-    
-    def setImage(self, label, icon_data):
-        pix = QPixmap()
-        pix.loadFromData(icon_data)
-        label.setPixmap(pix)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_about_logo()
+
+    def _refresh_about_logo(self):
+        label = self.lblAppIcon
+        w, h = label.width(), label.height()
+        if w < 8 or h < 8:
+            return
+        dpr = label.devicePixelRatioF()
+        tw = max(1, int(w * dpr))
+        th = max(1, int(h * dpr))
+        pm = self.icon.pixmap(tw, th, QIcon.Normal, QIcon.Off)
+        if pm.isNull() or pm.width() < 2:
+            pm = QPixmap()
+            pm.loadFromData(app_icon)
+        pm = pm.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        pm.setDevicePixelRatio(dpr)
+        label.setPixmap(pm)
 
     # User's social links
     def user_twitter(self):

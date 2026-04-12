@@ -2,10 +2,11 @@ from sys import argv, exit
 import sys as _sys, os as _os
 _sys.path.append(_os.path.dirname(__file__))
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import Qt
 
 from tools.utils import goto
 from tools.utils_gui import npcap_exists, duplicate_zubcut, repair_settings, migrate_settings_file
+from tools.branding import load_application_qicon, qicon_is_empty
 from tools.qtools import msg_box, Buttons, MsgIcon
 
 from gui.main import ElmoCut
@@ -15,29 +16,19 @@ from constants import *
 
 
 def _load_window_icon():
-    """Prefer bundled ZubCut PNG; fall back to embedded legacy bytes."""
-    base = _os.path.dirname(_os.path.abspath(__file__))
-    candidates = [
-        _os.path.join(base, '..', 'exe', 'zubcut_icon.png'),
-        _os.path.join(_os.path.dirname(base), 'exe', 'zubcut_icon.png'),
-    ]
-    if getattr(_sys, 'frozen', False):
-        meipass = getattr(_sys, '_MEIPASS', None)
-        if meipass:
-            candidates.insert(0, _os.path.join(meipass, 'zubcut_icon.png'))
-        candidates.insert(0, _os.path.join(_os.path.dirname(_sys.executable), 'zubcut_icon.png'))
-    for p in candidates:
-        rp = _os.path.normpath(p)
-        if _os.path.isfile(rp):
-            return QIcon(rp)
-    return ElmoCut.processIcon(app_icon)
+    icon = load_application_qicon()
+    if qicon_is_empty(icon):
+        return ElmoCut.processIcon(app_icon)
+    return icon
 
 
 # import debug.test
 
 if __name__ == "__main__":
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(argv)
     icon = _load_window_icon()
+    app.setWindowIcon(icon)
 
     # Check if Npcap is installed (Windows only)
     if not npcap_exists():

@@ -26,6 +26,7 @@ from networking.killer import Killer
 
 from tools.qtools import colored_item, MsgType, Buttons, clickable
 from tools.utils_gui import set_settings, get_settings
+from tools.branding import load_application_qicon, qicon_is_empty
 from tools.utils import goto, is_connected, get_default_iface
 from tools.pfctl import (block_port, unblock_port, is_port_blocked, list_blocked_ports, clear_all_port_blocks, clear_anchor,
                          block_ip, unblock_ip, list_blocked_ips, last_error)
@@ -813,7 +814,12 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
     def __init__(self, window_icon=None):
         super().__init__()
         self.version = '1.1.0'
-        self.icon = window_icon if window_icon is not None else self.processIcon(app_icon)
+        if window_icon is not None:
+            self.icon = window_icon
+        else:
+            self.icon = load_application_qicon()
+            if qicon_is_empty(self.icon):
+                self.icon = self.processIcon(app_icon)
 
         # Add window icon
         self.setWindowIcon(self.icon)
@@ -884,13 +890,15 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             (self.btnKillAll,    self.killAll,       killall_icon,    'Kill All - Block internet access for ALL devices on the network'),
             (self.btnUnkillAll,  self.unkillAll,     unkillall_icon,  'Unkill All - Restore internet access for all blocked devices'),
             (self.btnSettings,   self.openSettings,  settings_icon,   'Settings - Configure scan options, interface, and appearance'),
-            (self.btnAbout,      self.openAbout,     about_icon,      f'About {APP_DISPLAY_NAME} - View credits and version info')
+            (self.btnAbout,      self.openAbout,     None,            f'About {APP_DISPLAY_NAME} - View credits and version info')
         ] 
         
         for btn, btn_func, btn_icon, btn_tip in self.buttons:
             btn.setToolTip(btn_tip)
             btn.clicked.connect(btn_func)
-            btn.setIcon(self.processIcon(btn_icon))
+            if btn_icon is not None:
+                btn.setIcon(self.processIcon(btn_icon))
+        self.btnAbout.setIcon(self.icon)
 
         self.btnKill.setMinimumWidth(130)
         self.btnKill.setIconSize(QSize(44, 44))
@@ -990,12 +998,20 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
     @staticmethod
     def processIcon(icon_data):
         """
-        Create icon pixmap object from raw data
+        Create QIcon from embedded image bytes with a size ladder (better tray/title scaling).
         """
         pix = QPixmap()
         icon = QIcon()
         pix.loadFromData(icon_data)
-        icon.addPixmap(pix)
+        if pix.isNull():
+            return icon
+        for s in (16, 24, 32, 48, 64, 128, 256):
+            icon.addPixmap(
+                pix.scaled(s, s, Qt.KeepAspectRatio, Qt.SmoothTransformation),
+                QIcon.Normal,
+                QIcon.Off,
+            )
+        icon.addPixmap(pix, QIcon.Normal, QIcon.Off)
         return icon
     
     def setImage(self, widget, raw_image):
