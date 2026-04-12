@@ -11,8 +11,10 @@ import sys
 import platform
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
-if _ROOT not in sys.path:
-    sys.path.insert(0, os.path.join(_ROOT, 'src'))
+_SRC = os.path.join(_ROOT, "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+
 from constants import APP_BUNDLE_NAME
 
 HIDDEN_IMPORTS = [
