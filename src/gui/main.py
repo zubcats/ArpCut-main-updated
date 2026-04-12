@@ -102,7 +102,8 @@ class LagSwitchDialog(QDialog):
         layout.addWidget(self.timing_group)
 
         info = QLabel(
-            'Cycle: Block selected traffic → Wait lag time → Allow all → Wait normal time → Repeat'
+            'Cycle: Lag time (top) = block + MITM on. Normal time (bottom) = full allow '
+            '(firewall off and ARP restored so traffic bypasses this PC). Then repeat.'
         )
         info.setWordWrap(True)
         info.setStyleSheet('color: gray; font-size: 10px; padding: 5px;')
@@ -1412,11 +1413,45 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         if self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
             self.lag_switch_dialog.refresh_toggle_state()
 
+    def _refresh_lag_victim_row(self):
+        """Update table row colors for the lag target without rebuilding the whole table."""
+        mac = self.lag_device_mac
+        if not mac:
+            return
+        for row, d in enumerate(self.scanner.devices):
+            if d['mac'] == mac:
+                self.fillTableRow(row, d)
+                break
+
+    def _lag_enter_allow_phase(self, device):
+        """
+        Allow window (bottom spin): drop firewall rules and stop ARP spoof for this victim.
+        If we only removed firewall rules while still MITM'd, traffic would still flow through
+        this PC — and on Windows IP forwarding is often off, so the victim stays broken.
+        """
+        try:
+            unblock_ip(device['ip'])
+        except Exception:
+            pass
+        if device['mac'] in self.killer.killed:
+            try:
+                victim = self._victim_record_for_mac(device['mac']) or device
+                self.killer.unkill(victim)
+            except Exception:
+                pass
+        self._sync_killed_devices()
+        self._refresh_lag_victim_row()
+        self._updateKillButtonState()
+        self._updateOneWayButtonState()
+
     def _lag_apply_block(self, device):
         if device['mac'] not in self.killer.killed:
             self.killer.kill(device)
         iface = self.scanner.iface.name if self.scanner.iface else 'en0'
         block_ip(iface, device['ip'], self.lag_direction)
+        self._sync_killed_devices()
+        self._refresh_lag_victim_row()
+        self._updateKillButtonState()
 
     def _lag_phase_tick(self):
         if not self.lag_active:
@@ -1426,14 +1461,13 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         if not device:
             self.stopLagSwitch()
             return
-        victim_ip = device['ip']
         block_ms = max(1, int(self.lag_block_ms))
         allow_ms = max(1, int(self.lag_release_ms))
 
         if not self._lag_in_allow_phase:
             # Block interval (top spin) just finished -> allow traffic for bottom spin duration.
             try:
-                unblock_ip(victim_ip)
+                self._lag_enter_allow_phase(device)
             except Exception:
                 pass
             self._lag_in_allow_phase = True
