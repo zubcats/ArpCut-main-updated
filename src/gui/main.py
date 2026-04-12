@@ -1,11 +1,9 @@
-from qdarkstyle import load_stylesheet
-from pyperclip import copy
+﻿from pyperclip import copy
 
 from PyQt5.QtWidgets import QMainWindow, QTableWidgetItem, QMessageBox, \
                             QMenu, QSystemTrayIcon, QAction, QPushButton, \
                             QDialog, QFormLayout, QDialogButtonBox, QSpinBox, \
-                            QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, \
-                            QComboBox, QCheckBox, QLabel, QGroupBox, QLineEdit, QWidget, \
+                            QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QGroupBox, \
                             QSizePolicy
 from PyQt5.QtGui import QPixmap, QIcon, QFont
 from PyQt5.QtCore import Qt, QTimer, QSize
@@ -25,11 +23,20 @@ from networking.scanner import Scanner
 from networking.killer import Killer
 
 from tools.qtools import colored_item, MsgType, Buttons, clickable
-from tools.utils_gui import set_settings, get_settings
-from tools.branding import load_application_qicon, qicon_is_empty
+from tools.utils_gui import (
+    set_settings,
+    get_settings,
+    zubcut_dark_stylesheet,
+    sync_translucent_chrome,
+)
+from tools.branding import (
+    load_application_qicon,
+    qicon_is_empty,
+    crop_logo_content,
+    LOGO_UI_CONTENT_FRACTION,
+)
 from tools.utils import goto, is_connected, get_default_iface
-from tools.pfctl import (block_port, unblock_port, is_port_blocked, list_blocked_ports, clear_all_port_blocks, clear_anchor,
-                         block_ip, unblock_ip, list_blocked_ips, last_error)
+from tools.pfctl import block_ip, unblock_ip
 
 from assets import *
 
@@ -429,386 +436,6 @@ class DupeDialog(QDialog):
         main.startDupe(device, ms, direction)
 
 
-class PortBlockerDialog(QDialog):
-    """Dialog for managing blocked ports for a specific device."""
-    
-    # Common gaming/application ports for quick access
-    COMMON_PORTS = [
-        (80, 'HTTP'),
-        (443, 'HTTPS'),
-        (3074, 'Xbox Live'),
-        (3478, 'PlayStation Network'),
-        (3479, 'PlayStation Network'),
-        (3480, 'PlayStation Network'),
-        (27015, 'Steam/Source Games'),
-        (27016, 'Steam/Source Games'),
-        (6672, 'GTA Online'),
-        (61455, 'GTA Online'),
-        (61456, 'GTA Online'),
-        (61457, 'GTA Online'),
-        (61458, 'GTA Online'),
-        (53, 'DNS'),
-        (25565, 'Minecraft'),
-        (19132, 'Minecraft Bedrock'),
-        (30000, 'Generic Game'),
-        (30001, 'Generic Game'),
-        (7777, 'Game Server'),
-        (7778, 'Game Server'),
-    ]
-    
-    # Common IPs to block for game exploits
-    COMMON_IPS = [
-        ('192.81.241.171', 'Rockstar Save Servers'),
-    ]
-    
-    def __init__(self, parent=None, iface=None, target_ip=None, target_mac=None, killer=None, spoof_callback=None):
-        super().__init__(parent)
-        self.iface = iface or 'en0'
-        self.target_ip = target_ip  # The device we're blocking ports for
-        self.target_mac = target_mac  # MAC of the target device
-        self.killer = killer  # Reference to Killer for checking spoof status
-        self.spoof_callback = spoof_callback  # Callback to trigger spoofing
-        self._update_title()
-        self.setModal(False)
-        self.setMinimumSize(400, 550)
-        self.setup_ui()
-        self.refresh_list()
-        self._update_spoof_status()
-    
-    def set_target(self, target_ip, target_mac=None):
-        """Update the target device IP and MAC."""
-        self.target_ip = target_ip
-        self.target_mac = target_mac
-        self._update_title()
-        self._update_spoof_status()
-        self.refresh_list()
-    
-    def _update_title(self):
-        if self.target_ip:
-            self.setWindowTitle(f'Port Blocker - {self.target_ip}')
-        else:
-            self.setWindowTitle('Port Blocker - No device selected')
-        self._update_target_label()
-    
-    def _update_target_label(self):
-        if hasattr(self, 'targetLabel'):
-            if self.target_ip:
-                self.targetLabel.setText(f'Target Device: {self.target_ip}')
-                self.targetLabel.setStyleSheet('font-weight: bold; font-size: 14px; padding: 5px; background-color: #27ae60; color: white; border-radius: 3px;')
-            else:
-                self.targetLabel.setText('No device selected - select one from main window')
-                self.targetLabel.setStyleSheet('font-weight: bold; font-size: 14px; padding: 5px; background-color: #c0392b; color: white; border-radius: 3px;')
-    
-    def _is_device_spoofed(self):
-        """Check if the target device is currently being ARP spoofed."""
-        if not self.killer or not self.target_mac:
-            return False
-        return self.target_mac in self.killer.killed
-    
-    def _update_spoof_status(self):
-        """Update the spoof status warning banner."""
-        if not hasattr(self, 'spoofStatusWidget'):
-            return
-        
-        if not self.target_ip or not self.target_mac:
-            self.spoofStatusWidget.hide()
-            return
-        
-        self.spoofStatusWidget.show()
-        
-        if self._is_device_spoofed():
-            self.spoofStatusLabel.setText('✓ Device is spoofed - port blocking active')
-            self.spoofStatusLabel.setStyleSheet('font-weight: bold; padding: 5px; background-color: #27ae60; color: white; border-radius: 3px;')
-            self.spoofNowBtn.hide()
-        else:
-            self.spoofStatusLabel.setText('⚠ Device NOT spoofed - port blocking won\'t work!')
-            self.spoofStatusLabel.setStyleSheet('font-weight: bold; padding: 5px; background-color: #e74c3c; color: white; border-radius: 3px;')
-            self.spoofNowBtn.show()
-    
-    def _on_spoof_clicked(self):
-        """Handle the Spoof Now button click."""
-        if self.spoof_callback:
-            self.spoof_callback()
-            self._update_spoof_status()
-    
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        
-        # Target device header
-        self.targetLabel = QLabel()
-        self.targetLabel.setStyleSheet('font-weight: bold; font-size: 14px; padding: 5px; background-color: #2c3e50; color: white; border-radius: 3px;')
-        self._update_target_label()
-        layout.addWidget(self.targetLabel)
-        
-        # Spoof status warning
-        self.spoofStatusWidget = QWidget()
-        spoof_layout = QHBoxLayout(self.spoofStatusWidget)
-        spoof_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.spoofStatusLabel = QLabel()
-        self.spoofStatusLabel.setStyleSheet('font-weight: bold; padding: 5px;')
-        spoof_layout.addWidget(self.spoofStatusLabel, stretch=1)
-        
-        self.spoofNowBtn = QPushButton('Spoof Now')
-        self.spoofNowBtn.setStyleSheet('background-color: #e67e22; color: white; font-weight: bold;')
-        self.spoofNowBtn.clicked.connect(self._on_spoof_clicked)
-        spoof_layout.addWidget(self.spoofNowBtn)
-        
-        layout.addWidget(self.spoofStatusWidget)
-        
-        # Quick block section
-        quick_group = QGroupBox('Quick Block Port')
-        quick_layout = QHBoxLayout(quick_group)
-        
-        self.portInput = QSpinBox()
-        self.portInput.setRange(1, 65535)
-        self.portInput.setValue(443)
-        quick_layout.addWidget(QLabel('Port:'))
-        quick_layout.addWidget(self.portInput)
-        
-        self.protoCombo = QComboBox()
-        self.protoCombo.addItems(['TCP', 'UDP', 'Both'])
-        quick_layout.addWidget(QLabel('Proto:'))
-        quick_layout.addWidget(self.protoCombo)
-        
-        self.dirCombo = QComboBox()
-        self.dirCombo.addItems(['Both', 'In', 'Out'])
-        quick_layout.addWidget(QLabel('Dir:'))
-        quick_layout.addWidget(self.dirCombo)
-        
-        self.blockBtn = QPushButton('Block')
-        self.blockBtn.clicked.connect(self.quick_block)
-        self.blockBtn.setStyleSheet('background-color: #c0392b; color: white;')
-        quick_layout.addWidget(self.blockBtn)
-        
-        layout.addWidget(quick_group)
-        
-        # IP blocking section
-        ip_group = QGroupBox('Block IP Address')
-        ip_layout = QHBoxLayout(ip_group)
-        
-        self.ipInput = QLineEdit()
-        self.ipInput.setPlaceholderText('e.g. 192.168.1.100')
-        ip_layout.addWidget(QLabel('IP:'))
-        ip_layout.addWidget(self.ipInput)
-        
-        self.ipDirCombo = QComboBox()
-        self.ipDirCombo.addItems(['Both', 'In', 'Out'])
-        ip_layout.addWidget(QLabel('Dir:'))
-        ip_layout.addWidget(self.ipDirCombo)
-        
-        self.blockIpBtn = QPushButton('Block IP')
-        self.blockIpBtn.clicked.connect(self.block_ip_clicked)
-        self.blockIpBtn.setStyleSheet('background-color: #c0392b; color: white;')
-        ip_layout.addWidget(self.blockIpBtn)
-        
-        layout.addWidget(ip_group)
-        
-        # IP Presets (for game exploits)
-        ip_preset_group = QGroupBox('IP Presets (Click to Toggle)')
-        ip_preset_layout = QVBoxLayout(ip_preset_group)
-        
-        self.ipPresetList = QListWidget()
-        self.ipPresetList.setAlternatingRowColors(True)
-        self.ipPresetList.setMaximumHeight(80)
-        for ip, desc in self.COMMON_IPS:
-            item = QListWidgetItem(f'{ip} - {desc}')
-            item.setData(Qt.UserRole, ip)
-            item.setCheckState(Qt.Unchecked)
-            self.ipPresetList.addItem(item)
-        self.ipPresetList.itemChanged.connect(self.on_ip_preset_changed)
-        ip_preset_layout.addWidget(self.ipPresetList)
-        
-        layout.addWidget(ip_preset_group)
-        
-        # Common ports with checkboxes
-        common_group = QGroupBox('Common Ports (Click to Toggle)')
-        common_layout = QVBoxLayout(common_group)
-        
-        self.portList = QListWidget()
-        self.portList.setAlternatingRowColors(True)
-        for port, desc in self.COMMON_PORTS:
-            item = QListWidgetItem(f'{port} - {desc}')
-            item.setData(Qt.UserRole, port)
-            item.setCheckState(Qt.Unchecked)
-            self.portList.addItem(item)
-        self.portList.itemChanged.connect(self.on_item_changed)
-        common_layout.addWidget(self.portList)
-        
-        layout.addWidget(common_group)
-        
-        # Currently blocked ports
-        blocked_group = QGroupBox('Currently Blocked')
-        blocked_layout = QVBoxLayout(blocked_group)
-        
-        self.blockedList = QListWidget()
-        self.blockedList.setAlternatingRowColors(True)
-        blocked_layout.addWidget(self.blockedList)
-        
-        unblock_btn = QPushButton('Unblock Selected')
-        unblock_btn.clicked.connect(self.unblock_selected)
-        blocked_layout.addWidget(unblock_btn)
-        
-        layout.addWidget(blocked_group)
-        
-        # Bottom buttons
-        btn_layout = QHBoxLayout()
-        
-        refresh_btn = QPushButton('Refresh')
-        refresh_btn.clicked.connect(self.refresh_list)
-        btn_layout.addWidget(refresh_btn)
-        
-        clear_btn = QPushButton('Unblock All')
-        clear_btn.clicked.connect(self.clear_all)
-        clear_btn.setStyleSheet('background-color: #27ae60; color: white;')
-        btn_layout.addWidget(clear_btn)
-        
-        close_btn = QPushButton('Close')
-        close_btn.clicked.connect(self.close)
-        btn_layout.addWidget(close_btn)
-        
-        layout.addLayout(btn_layout)
-    
-    def quick_block(self):
-        if not self.target_ip:
-            QMessageBox.warning(self, 'No Device', 'Select a device first from the main window.')
-            return
-        
-        port = self.portInput.value()
-        proto = self.protoCombo.currentText().lower()
-        direction = self.dirCombo.currentText().lower()
-        
-        success = False
-        if proto == 'both':
-            success = block_port(self.iface, port, 'tcp', direction, self.target_ip) and block_port(self.iface, port, 'udp', direction, self.target_ip)
-        else:
-            success = block_port(self.iface, port, proto, direction, self.target_ip)
-        
-        self.refresh_list()
-        if not success:
-            QMessageBox.warning(self, 'Block Failed', f'Failed to block port.\n\n{last_error() or "On macOS, run with sudo. On Windows, run as Administrator."}')
-    
-    def block_ip_clicked(self):
-        ip = self.ipInput.text().strip()
-        if not ip:
-            return
-        direction = self.ipDirCombo.currentText().lower()
-        success = block_ip(self.iface, ip, direction)
-        self.ipInput.clear()
-        self.refresh_list()
-        # Verify rule presence
-        blocked_ips = set(i[0] for i in list_blocked_ips())
-        if not success or ip not in blocked_ips:
-            QMessageBox.warning(self, 'Block Failed', f'Failed to block IP.\n\n{last_error() or "On macOS, run with sudo. On Windows, run as Administrator."}')
-    
-    def on_item_changed(self, item):
-        if not self.target_ip:
-            # Revert and warn
-            self.portList.blockSignals(True)
-            item.setCheckState(Qt.Unchecked)
-            self.portList.blockSignals(False)
-            QMessageBox.warning(self, 'No Device', 'Select a device first from the main window.')
-            return
-        
-        port = item.data(Qt.UserRole)
-        if item.checkState() == Qt.Checked:
-            # Block this port for target device (both TCP and UDP)
-            success = block_port(self.iface, port, 'tcp', 'both', self.target_ip) and block_port(self.iface, port, 'udp', 'both', self.target_ip)
-            if not success:
-                # Revert checkbox
-                self.portList.blockSignals(True)
-                item.setCheckState(Qt.Unchecked)
-                self.portList.blockSignals(False)
-                QMessageBox.warning(self, 'Block Failed', f'Failed to block port.\n\n{last_error() or "On macOS, run with sudo. On Windows, run as Administrator."}')
-        else:
-            # Unblock this port
-            unblock_port(port, 'tcp')
-            unblock_port(port, 'udp')
-        self.refresh_blocked_list()
-    
-    def on_ip_preset_changed(self, item):
-        """Handle IP preset checkbox changes - blocks server IPs directly (no device needed)."""
-        ip = item.data(Qt.UserRole)
-        if item.checkState() == Qt.Checked:
-            # Block this IP (blocks traffic to/from this server)
-            success = block_ip(self.iface, ip, 'both')
-            if not success:
-                # Revert checkbox
-                self.ipPresetList.blockSignals(True)
-                item.setCheckState(Qt.Unchecked)
-                self.ipPresetList.blockSignals(False)
-                QMessageBox.warning(self, 'Block Failed', f'Failed to block IP.\n\n{last_error() or "On macOS, run with sudo. On Windows, run as Administrator."}')
-        else:
-            # Unblock this IP
-            unblock_ip(ip)
-        self.refresh_blocked_list()
-    
-    def refresh_list(self):
-        """Refresh the blocked ports list and update checkboxes."""
-        self.refresh_blocked_list()
-        
-        # Update port checkbox states
-        blocked = list_blocked_ports()
-        blocked_ports = set(p[0] for p in blocked)
-        
-        self.portList.blockSignals(True)
-        for i in range(self.portList.count()):
-            item = self.portList.item(i)
-            port = item.data(Qt.UserRole)
-            item.setCheckState(Qt.Checked if port in blocked_ports else Qt.Unchecked)
-        self.portList.blockSignals(False)
-        
-        # Update IP preset checkbox states
-        blocked_ips = set(ip for ip, _ in list_blocked_ips())
-        
-        self.ipPresetList.blockSignals(True)
-        for i in range(self.ipPresetList.count()):
-            item = self.ipPresetList.item(i)
-            ip = item.data(Qt.UserRole)
-            item.setCheckState(Qt.Checked if ip in blocked_ips else Qt.Unchecked)
-        self.ipPresetList.blockSignals(False)
-    
-    def refresh_blocked_list(self):
-        """Refresh just the blocked ports and IPs display."""
-        self.blockedList.clear()
-        
-        # Add blocked ports
-        blocked_ports = list_blocked_ports()
-        seen = set()
-        for port, proto, direction in blocked_ports:
-            key = (port, proto)
-            if key not in seen:
-                seen.add(key)
-                item = QListWidgetItem(f'Port {port} ({proto.upper()}) - {direction}')
-                item.setData(Qt.UserRole, ('port', port, proto))
-                self.blockedList.addItem(item)
-        
-        # Add blocked IPs
-        blocked_ips = list_blocked_ips()
-        seen_ips = set()
-        for ip, direction in blocked_ips:
-            if ip not in seen_ips:
-                seen_ips.add(ip)
-                item = QListWidgetItem(f'IP {ip} - {direction}')
-                item.setData(Qt.UserRole, ('ip', ip))
-                self.blockedList.addItem(item)
-    
-    def unblock_selected(self):
-        for item in self.blockedList.selectedItems():
-            data = item.data(Qt.UserRole)
-            if data[0] == 'port':
-                _, port, proto = data
-                unblock_port(port, proto)
-            elif data[0] == 'ip':
-                _, ip = data
-                unblock_ip(ip)
-        self.refresh_list()
-    
-    def clear_all(self):
-        # Clear entire anchor file (removes all port and IP blocks)
-        clear_anchor()
-        self.refresh_list()
-
 
 class ElmoCut(QMainWindow, Ui_MainWindow):
     def __init__(self, window_icon=None):
@@ -819,21 +446,18 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         else:
             self.icon = load_application_qicon()
             if qicon_is_empty(self.icon):
-                self.icon = self.processIcon(app_icon)
+                self.icon = self.processIcon(app_icon, crop_margins=True)
 
         # Add window icon
         self.setWindowIcon(self.icon)
         self.setupUi(self)
         self.setWindowTitle(APP_DISPLAY_NAME)
-        # stylesheet = build_stylesheet('dark_teal.xml', 0, {}, 'theme')
-        # self.setStyleSheet(stylesheet)
-        self.setStyleSheet(load_stylesheet())
+        self.setStyleSheet(zubcut_dark_stylesheet())
         
         # Main Props
         self.scanner = Scanner()
         self.killer = Killer()
         self.killed_devices = {}  # MAC -> bool kill toggle state
-        self.one_way_kills = set()  # MACs with one-way kill active
         self.lag_active = False
         self.lag_block_ms = 1500
         self.lag_release_ms = 1500
@@ -881,15 +505,23 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.device_window = Device(self, self.icon)
         self.traffic_window = Traffic(self, self.icon)
 
+        sync_translucent_chrome(
+            [
+                self,
+                self.settings_window,
+                self.about_window,
+                self.device_window,
+                self.traffic_window,
+            ],
+        )
+
         # Connect buttons with icons and tooltips
         self.buttons = [
             (self.btnScanEasy,   self.scanEasy,      scan_easy_icon,  'ARP Scan - Fast network scan using ARP requests (may miss some devices)'),
             (self.btnScanHard,   self.scanHard,      scan_hard_icon,  'Ping Scan - Thorough scan using ICMP ping (slower but finds all devices)'),
-            (self.btnKill,       self.toggleKill,    kill_icon,       'Kill Toggle - Click to turn blocking on or off for the selected device'),
-            (self.btnUnkill,     self.unkill,        unkill_icon,     'Unkill - Restore internet access for the selected device'),
             (self.btnKillAll,    self.killAll,       killall_icon,    'Kill All - Block internet access for ALL devices on the network'),
             (self.btnUnkillAll,  self.unkillAll,     unkillall_icon,  'Unkill All - Restore internet access for all blocked devices'),
-            (self.btnSettings,   self.openSettings,  settings_icon,   'Settings - Configure scan options, interface, and appearance'),
+            (self.btnSettings,   self.openSettings,  settings_icon,   'Settings - Configure scan options and network interface'),
             (self.btnAbout,      self.openAbout,     None,            f'About {APP_DISPLAY_NAME} - View credits and version info')
         ] 
         
@@ -899,45 +531,51 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             if btn_icon is not None:
                 btn.setIcon(self.processIcon(btn_icon))
         self.btnAbout.setIcon(self.icon)
+        self.btnAbout.setIconSize(QSize(48, 48))
 
+        self.btnKill = QPushButton(self.centralwidget)
+        self.btnKill.setObjectName('btnKill')
+        self.btnKill.setMinimumHeight(88)
+        self.btnKill.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btnKill.setToolTip('Kill toggle — Turn blocking on or off for the selected device.')
+        self.btnKill.setIcon(self.processIcon(kill_icon))
         self.btnKill.setMinimumWidth(130)
-        self.btnKill.setIconSize(QSize(44, 44))
+        self.btnKill.setIconSize(QSize(56, 56))
         kill_font = QFont(self.btnKill.font())
-        kill_font.setPointSize(11)
+        kill_font.setPointSize(13)
         kill_font.setBold(True)
         self.btnKill.setFont(kill_font)
+        self.btnKill.clicked.connect(self.toggleKill)
 
-        # Additional controls with tooltips - toggleable buttons
         self.btnLagSwitch = QPushButton('Lag Switch', self)
-        self.btnLagSwitch.setMinimumHeight(50)
+        self.btnLagSwitch.setMinimumHeight(88)
+        self.btnLagSwitch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnLagSwitch.setToolTip(
             'Lag Switch — Opens a window where you set lag / allow times and toggle intermittent blocking on or off.'
         )
-        self.gridLayout.addWidget(self.btnLagSwitch, 5, 1, 1, 2)
+        self.gridLayout.addWidget(self.btnLagSwitch, 5, 1, 1, 3)
         self.btnLagSwitch.clicked.connect(self.openLagSwitchDialog)
+        lag_font = QFont(self.btnLagSwitch.font())
+        lag_font.setPointSize(14)
+        lag_font.setBold(True)
+        self.btnLagSwitch.setFont(lag_font)
+
+        self.gridLayout.addWidget(self.btnKill, 5, 4, 1, 2)
 
         self.btnDupe = QPushButton('Dupe', self)
-        self.btnDupe.setMinimumHeight(50)
+        self.btnDupe.setMinimumHeight(88)
+        self.btnDupe.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        dupe_font = QFont(self.btnDupe.font())
+        dupe_font.setPointSize(14)
+        dupe_font.setBold(True)
+        self.btnDupe.setFont(dupe_font)
         self.btnDupe.setToolTip(
             'Dupe — One-shot lag for a set time (ms), then full stop. '
             'Does not repeat; use Lag Switch for cycles.'
         )
-        self.gridLayout.addWidget(self.btnDupe, 5, 5, 1, 2)
+        self.gridLayout.addWidget(self.btnDupe, 5, 6, 1, 3)
         self.btnDupe.clicked.connect(self.openDupeDialog)
 
-        self.btnOneWayKill = QPushButton('One-Way Kill', self)
-        self.btnOneWayKill.setMinimumHeight(50)
-        self.btnOneWayKill.setToolTip('One-Way Kill - Block outgoing traffic only (can receive but not send).\nClick to activate, click again to remove.')
-        self.gridLayout.addWidget(self.btnOneWayKill, 5, 3, 1, 2)
-        self.btnOneWayKill.clicked.connect(self.toggleOneWayKill)
-
-        # Port Blocker button
-        self.btnPortBlocker = QPushButton('Port Blocker', self)
-        self.btnPortBlocker.setMinimumHeight(50)
-        self.btnPortBlocker.setToolTip('Port Blocker - Block specific ports instantly.\nUseful for game exploits and traffic control.')
-        self.gridLayout.addWidget(self.btnPortBlocker, 5, 7, 1, 2)
-        self.btnPortBlocker.clicked.connect(self.openPortBlocker)
-        self.port_blocker_dialog = None  # Lazy init
         self.lag_switch_dialog = None
         self.dupe_switch_dialog = None
 
@@ -962,7 +600,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         hide_option = QAction('Hide', self)
         quit_option = QAction('Quit', self)
         kill_option = QAction(self.processIcon(kill_icon), '&Kill All', self)
-        unkill_option = QAction(self.processIcon(unkill_icon),'&Unkill All', self)
+        unkill_option = QAction(self.processIcon(unkillall_icon), '&Unkill All', self)
         
         show_option.triggered.connect(self.trayShowClicked)
         hide_option.triggered.connect(self.hide_all)
@@ -996,15 +634,18 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.applySettings()
     
     @staticmethod
-    def processIcon(icon_data):
+    def processIcon(icon_data, crop_margins=False):
         """
         Create QIcon from embedded image bytes with a size ladder (better tray/title scaling).
+        crop_margins: only for the ZubCut mark (same padded artwork as zubcut_icon.png).
         """
         pix = QPixmap()
         icon = QIcon()
         pix.loadFromData(icon_data)
         if pix.isNull():
             return icon
+        if crop_margins:
+            pix = crop_logo_content(pix, LOGO_UI_CONTENT_FRACTION)
         for s in (16, 24, 32, 48, 64, 128, 256):
             icon.addPixmap(
                 pix.scaled(s, s, Qt.KeepAspectRatio, Qt.SmoothTransformation),
@@ -1058,44 +699,6 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.about_window.hide()
         self.about_window.show()
     
-    def openPortBlocker(self):
-        """
-        Open port blocker dialog for selected device
-        """
-        # Get selected device IP and MAC
-        target_ip = None
-        target_mac = None
-        selected_device = None
-        if self.tableScan.selectedItems():
-            device = self.current_index()
-            if not device.get('admin'):
-                target_ip = device['ip']
-                target_mac = device['mac']
-                selected_device = device
-        
-        iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-        
-        # Create callback to spoof the selected device
-        def spoof_callback():
-            if selected_device and target_mac not in self.killer.killed:
-                self.killer.kill(selected_device)
-                self.log(f'Started spoofing {target_ip}', 'orange')
-        
-        if self.port_blocker_dialog is None:
-            self.port_blocker_dialog = PortBlockerDialog(
-                self, iface, target_ip, target_mac, 
-                self.killer, spoof_callback
-            )
-        else:
-            self.port_blocker_dialog.iface = iface
-            self.port_blocker_dialog.killer = self.killer
-            self.port_blocker_dialog.spoof_callback = spoof_callback
-            self.port_blocker_dialog.set_target(target_ip, target_mac)
-        
-        self.port_blocker_dialog.show()
-        self.port_blocker_dialog.raise_()
-        self.port_blocker_dialog.refresh_list()
-
     def openTraffic(self):
         if not self.tableScan.selectedItems():
             self.log('No device selected', 'red')
@@ -1254,20 +857,15 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
 
     def deviceClicked(self):
         """
-        Disable kill, unkill buttons when admins are selected.
-        Update toggle button states based on selected device.
+        Disable per-device controls when an admin row is selected.
         """
         not_enabled = not self.current_index()['admin']
         
         self.btnKill.setEnabled(not_enabled)
-        self.btnUnkill.setEnabled(not_enabled)
-        self.btnOneWayKill.setEnabled(not_enabled)
         self.btnLagSwitch.setEnabled(not_enabled)
         self.btnDupe.setEnabled(not_enabled)
         
-        # Update toggle button visual states for selected device
         self._updateKillButtonState()
-        self._updateOneWayButtonState()
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
         if getattr(self, 'lag_switch_dialog', None) and self.lag_switch_dialog.isVisible():
@@ -1377,7 +975,6 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             self.deviceClicked()
         else:
             self._updateKillButtonState()
-            self._updateOneWayButtonState()
             self._updateLagSwitchButtonState()
             self._updateDupeButtonState()
             self.lblcenter.setText('Nothing Selected')
@@ -1442,8 +1039,8 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
     # @check_connection
     def unkill(self):
         """
-        Disable ARP spoofing on previously spoofed devices.
-        Also clears any active one-way kill, lag switch, or dupe burst.
+        Disable ARP spoofing on the selected device (internal / API).
+        Clears lag switch and dupe burst for that flow.
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
@@ -1461,17 +1058,13 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             return
 
         victim = self._victim_record_for_mac(device['mac']) or device
-        # Unkilling process - clear all kill types
         self.killer.unkill(victim)
         self.killed_devices[device['mac']] = False
-        self.one_way_kills.discard(device['mac'])
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
         self.log('Unkilled ' + device['ip'], 'lime')
 
-        # Update button states
         self._updateKillButtonState()
-        self._updateOneWayButtonState()
         self.showDevices()
     
     # @check_connection
@@ -1495,7 +1088,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
     def unkillAll(self):
         """
         Unkill all killed devices except admins.
-        Clears all one-way kills, lag switches, and dupe bursts.
+        Clears lag switches and dupe bursts.
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
@@ -1504,14 +1097,11 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         
         self.killer.unkill_all()
         self.killed_devices.clear()
-        self.one_way_kills.clear()
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
         self.log('Unkilled All devices', 'lime')
 
-        # Update button states
         self._updateKillButtonState()
-        self._updateOneWayButtonState()
         self.showDevices()
 
     def scanEasy(self):
@@ -1682,7 +1272,6 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
-        self._updateOneWayButtonState()
 
     def _lag_enter_allow_phase(self, device):
         """
@@ -1801,49 +1390,6 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         else:
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-
-    def toggleOneWayKill(self):
-        if not self.connected():
-            return
-        if not self.tableScan.selectedItems():
-            self.log('No device selected', 'red')
-            return
-        device = self.current_index()
-        if device['admin']:
-            self.log('Cannot one-way kill admin device', 'orange')
-            return
-        
-        mac = device['mac']
-        if mac in self.one_way_kills:
-            # Turn OFF - unkill the device
-            self.killer.unkill(device)
-            self.one_way_kills.discard(mac)
-            self._sync_killed_devices()
-            self._updateKillButtonState()
-            self._updateOneWayButtonState()
-            self.log(f'One-way kill OFF for {device["ip"]}', 'lime')
-        else:
-            # Turn ON
-            self.killer.one_way_kill(device)
-            self.one_way_kills.add(mac)
-            self._sync_killed_devices()
-            self._updateKillButtonState()
-            self._updateOneWayButtonState()
-            self.log(f'One-way kill ON for {device["ip"]}', 'orange')
-
-    def _updateOneWayButtonState(self):
-        """Update button appearance based on whether selected device has one-way kill."""
-        if not self.tableScan.selectedItems():
-            self.btnOneWayKill.setText('One-Way Kill')
-            self.btnOneWayKill.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-            return
-        device = self.current_index()
-        if device['mac'] in self.one_way_kills:
-            self.btnOneWayKill.setText('■ ONE-WAY ON')
-            self.btnOneWayKill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
-        else:
-            self.btnOneWayKill.setText('One-Way Kill')
-            self.btnOneWayKill.setStyleSheet(self.BUTTON_NORMAL_STYLE)
 
     def toggleKill(self):
         if not self.connected():

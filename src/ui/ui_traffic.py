@@ -6,6 +6,7 @@ class Ui_Traffic(object):
         MainWindow.setObjectName("TrafficWindow")
         MainWindow.resize(700, 420)
         self.centralwidget = QtWidgets.QWidget(MainWindow)
+        self.centralwidget.setObjectName("centralwidget")
         self.verticalLayout = QtWidgets.QVBoxLayout(self.centralwidget)
         self.lblVictim = QtWidgets.QLabel(self.centralwidget)
         self.lblVictim.setAlignment(QtCore.Qt.AlignCenter)

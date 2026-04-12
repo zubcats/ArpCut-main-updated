@@ -2,7 +2,7 @@
 
 Cross-platform network control tool for ARP spoofing. Works on Windows and macOS.
 
-**Author:** Mvgnus (Magnus Ohle)
+**Author:** ZubOnTop
 
 <img width="879" height="625" alt="Bildschirmfoto 2025-12-11 um 16 31 27" src="https://github.com/user-attachments/assets/5bedfb0d-ee48-42e5-bbb5-1353c71a4ab9" />
 
@@ -34,16 +34,13 @@ If the pre-built binaries don't work on your machine, build from source (see bel
 - Ping Scan - Thorough scan, finds all devices
 
 **Device Control**
-- Kill / Unkill - Block or restore individual device access
-- Kill All / Unkill All - Mass control
-- Full Kill - Complete traffic block via system firewall
-- One-Way Kill - Block outgoing only
+- Kill toggle (bottom bar) — block or restore the selected device
+- Kill All / Unkill All — mass control (tray menu includes Unkill All)
 
 **Advanced**
-- Lag Switch - Intermittent blocking with configurable timing and direction (incoming/outgoing/both)
-- Dupe - One-shot lag for a fixed duration (ms), then full stop (no repeat)
-- Port Blocker - Block specific ports with instant toggle, preset gaming ports included
-- Traffic Monitor - Real-time bandwidth per device
+- Lag Switch — Intermittent blocking with configurable timing and direction (incoming/outgoing/both)
+- Dupe — One-shot lag for a fixed duration (ms), then full stop (no repeat)
+- Traffic Monitor — Real-time bandwidth per device
 
 **Other**
 - Dark theme
@@ -117,15 +114,11 @@ Output:
 |--------|--------|
 | ARP Scan | Fast network scan |
 | Ping Scan | Thorough scan |
-| Kill | Block selected device |
-| Unkill | Restore selected device |
 | Kill All | Block all devices |
 | Unkill All | Restore all devices |
-| Lag Switch | Intermittent blocking (cycles) |
-| Dupe | One-shot timed lag, then stop |
-| Full Kill | Complete firewall block |
-| One-Way Kill | Block outgoing only |
-| Port Blocker | Block specific ports |
+| Lag Switch (bottom) | Intermittent blocking (cycles) |
+| Kill toggle (bottom) | Block or restore selected device |
+| Dupe (bottom) | One-shot timed lag, then stop |
 
 ---
 
@@ -150,7 +143,7 @@ Only use on networks you own or have explicit permission to test. Unauthorized u
 
 ## Credits
 
-- Mvgnus (Magnus Ohle)
+- ZubOnTop
 
 ---
 

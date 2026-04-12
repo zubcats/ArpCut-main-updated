@@ -18,7 +18,7 @@ from constants import *
 def _load_window_icon():
     icon = load_application_qicon()
     if qicon_is_empty(icon):
-        return ElmoCut.processIcon(app_icon)
+        return ElmoCut.processIcon(app_icon, crop_margins=True)
     return icon
 
 

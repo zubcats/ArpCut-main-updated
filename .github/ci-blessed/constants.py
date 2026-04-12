@@ -54,6 +54,6 @@ DUMMY_IFACE = {'name': 'NULL', 'mac': GLOBAL_MAC, 'guid': 'NULL', 'ips': ['0.0.0
 
 HKEY_AUTOSTART_PATH = 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run'
 
-SETTINGS_KEYS = ['dark', 'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'nicknames']
+SETTINGS_KEYS = ['count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'nicknames']
 
-SETTINGS_VALS = [True, 255, False, True, False, [], True, 12, '', {}]
+SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}]

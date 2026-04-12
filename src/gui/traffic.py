@@ -35,6 +35,10 @@ class Traffic(QMainWindow):
         self.ui.chkForward.stateChanged.connect(self.toggle_forward)
         # Add a simple toggle button in mode label area by reusing text as action hint
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.setStyleSheet(self.parent.styleSheet())
+
     def start(self, victim_ip: str, iface: str):
         self.ui.lblVictim.setText(victim_ip)
         # Observe-only message when not root

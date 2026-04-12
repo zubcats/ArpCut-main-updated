@@ -1,12 +1,12 @@
 from PyQt5.QtWidgets import QMainWindow
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt
-from qdarkstyle import load_stylesheet
 import os
 import sys
 
 from tools.utils_gui import import_settings, export_settings, get_settings, \
-                      is_admin, add_to_startup, remove_from_startup, set_settings
+                      is_admin, add_to_startup, remove_from_startup, set_settings, \
+                      zubcut_dark_stylesheet, sync_translucent_chrome
 from tools.qtools import MsgType, Buttons
 from tools.utils import goto, get_ifaces, get_default_iface, get_iface_by_name, terminal
 
@@ -49,7 +49,6 @@ class Settings(QMainWindow, Ui_MainWindow):
 
         count         =  self.spinCount.value()
         threads       =  self.spinThreads.value()
-        is_dark       =  self.rdbDark.isChecked()
         is_autostart  =  self.chkAutostart.isChecked()
         is_minimized  =  self.chkMinimized.isChecked()
         is_remember   =  self.chkRemember.isChecked()
@@ -73,7 +72,6 @@ class Settings(QMainWindow, Ui_MainWindow):
 
         export_settings(
             [
-            is_dark,
             count,
             is_autostart,
             is_minimized,
@@ -157,10 +155,18 @@ class Settings(QMainWindow, Ui_MainWindow):
         
         self.elmocut.setStyleSheet(self.styleSheet())
         self.elmocut.about_window.setStyleSheet(self.styleSheet())
+        sync_translucent_chrome(
+            [
+                self.elmocut,
+                self.elmocut.about_window,
+                self,
+                self.elmocut.device_window,
+                self.elmocut.traffic_window,
+            ],
+        )
 
     def currentSettings(self):
         s = import_settings()
-        [self.rdbLight, self.rdbDark][s['dark']].setChecked(True)
         self.chkAutostart.setChecked(s['autostart'])
         self.chkMinimized.setChecked(s['minimized'])
         self.chkRemember.setChecked(s['remember'])
@@ -177,7 +183,7 @@ class Settings(QMainWindow, Ui_MainWindow):
         index = self.comboInterface.findText(s['iface'], Qt.MatchFixedString)
         self.comboInterface.setCurrentIndex(index * (index >= 0))
         
-        self.setStyleSheet(load_stylesheet() if s['dark'] else '')
+        self.setStyleSheet(zubcut_dark_stylesheet())
     
     def checkUpdate(self):
         # Update checking disabled for this fork

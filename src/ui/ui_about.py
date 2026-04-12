@@ -72,7 +72,7 @@ class Ui_MainWindow(object):
         sizePolicy.setHeightForWidth(self.lblAppIcon.sizePolicy().hasHeightForWidth())
         self.lblAppIcon.setSizePolicy(sizePolicy)
         self.lblAppIcon.setMinimumSize(QtCore.QSize(0, 154))
-        self.lblAppIcon.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        self.lblAppIcon.setCursor(QtGui.QCursor(QtCore.Qt.ArrowCursor))
         self.lblAppIcon.setAlignment(QtCore.Qt.AlignCenter)
         self.lblAppIcon.setObjectName("lblAppIcon")
         self.gridLayout.addWidget(self.lblAppIcon, 0, 0, 1, 4)

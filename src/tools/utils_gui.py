@@ -8,8 +8,33 @@ try:
 except Exception:
     winreg = None
 
+from qdarkstyle import load_stylesheet
+from PyQt5.QtCore import Qt
+
 from tools.utils import terminal
 from constants import *
+
+# Main window chrome: ~15% opacity (alpha 38/255) so the desktop shows through.
+_TRANSLUCENT_TINT = "rgba(34, 38, 46, 38)"
+TRANSLUCENT_MAIN_CHROME_QSS = f"""
+QMainWindow {{
+    background-color: {_TRANSLUCENT_TINT};
+}}
+QWidget#centralwidget {{
+    background-color: {_TRANSLUCENT_TINT};
+}}
+"""
+
+
+def zubcut_dark_stylesheet():
+    return load_stylesheet() + "\n" + TRANSLUCENT_MAIN_CHROME_QSS
+
+
+def sync_translucent_chrome(windows):
+    """Per-pixel alpha with the desktop behind the dark theme chrome."""
+    for w in windows:
+        if w is not None:
+            w.setAttribute(Qt.WA_TranslucentBackground, True)
 
 
 
@@ -63,9 +88,14 @@ def set_settings(key, value):
     """
     Update certain setting item
     """
-    s = import_settings()
-    s[key] = value
-    export_settings(list(s.values()))
+    defaults = dict(zip(SETTINGS_KEYS, SETTINGS_VALS))
+    try:
+        s = import_settings()
+    except (JSONDecodeError, OSError):
+        s = {}
+    merged = {**defaults, **{k: s[k] for k in SETTINGS_KEYS if k in s}}
+    merged[key] = value
+    export_settings([merged[k] for k in SETTINGS_KEYS])
 
 def get_settings(key):
     """
@@ -78,15 +108,14 @@ def repair_settings():
     Merge defaults when settings are missing keys or JSON is invalid.
     """
     original = dict(zip(SETTINGS_KEYS, SETTINGS_VALS))
-    
     try:
         s = import_settings()
-        for key in s:
-            original[key] = s[key]
-    except JSONDecodeError:
+        for key in SETTINGS_KEYS:
+            if key in s:
+                original[key] = s[key]
+    except (JSONDecodeError, OSError):
         pass
-        
-    export_settings(list(original.values()))
+    export_settings([original[k] for k in SETTINGS_KEYS])
 
 def migrate_settings_file():
     if path.exists(SETTINGS_PATH):
