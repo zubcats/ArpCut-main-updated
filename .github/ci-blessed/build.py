@@ -15,7 +15,7 @@ _SRC = os.path.join(_ROOT, "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from constants import APP_BUNDLE_NAME
+from src.constants import APP_BUNDLE_NAME
 
 HIDDEN_IMPORTS = [
     'PyQt5',
