@@ -666,9 +666,10 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.lag_direction = 'both'  # 'both', 'in', or 'out'
         self.lag_timer = QTimer(self)
         self.lag_timer.setSingleShot(True)
+        self.lag_timer.setTimerType(Qt.PreciseTimer)
         self.lag_timer.timeout.connect(self._lag_phase_tick)
-        # True: next timeout ends the block phase (unblock). False: next timeout ends allow phase (block again).
-        self._lag_phase_ends_block = True
+        # False: firewall block is active (victim is in "lag" phase). True: allow window (rules cleared).
+        self._lag_in_allow_phase = False
         
         # Button active state styles
         self.BUTTON_ACTIVE_STYLE = "background-color: #c0392b; color: white; font-weight: bold;"
@@ -1406,8 +1407,8 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             'orange',
         )
         self._lag_apply_block(device)
-        self._lag_phase_ends_block = True
-        self.lag_timer.start(self.lag_block_ms)
+        self._lag_in_allow_phase = False
+        self.lag_timer.start(max(1, int(self.lag_block_ms)))
         if self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
             self.lag_switch_dialog.refresh_toggle_state()
 
@@ -1426,14 +1427,28 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             self.stopLagSwitch()
             return
         victim_ip = device['ip']
-        if self._lag_phase_ends_block:
-            unblock_ip(victim_ip)
-            self._lag_phase_ends_block = False
-            self.lag_timer.start(self.lag_release_ms)
+        block_ms = max(1, int(self.lag_block_ms))
+        allow_ms = max(1, int(self.lag_release_ms))
+
+        if not self._lag_in_allow_phase:
+            # Block interval (top spin) just finished -> allow traffic for bottom spin duration.
+            try:
+                unblock_ip(victim_ip)
+            except Exception:
+                pass
+            self._lag_in_allow_phase = True
+            next_ms = allow_ms
         else:
-            self._lag_apply_block(device)
-            self._lag_phase_ends_block = True
-            self.lag_timer.start(self.lag_block_ms)
+            # Allow interval (bottom spin) just finished -> block again for top spin duration.
+            try:
+                self._lag_apply_block(device)
+            except Exception:
+                pass
+            self._lag_in_allow_phase = False
+            next_ms = block_ms
+
+        if self.lag_active:
+            self.lag_timer.start(next_ms)
 
     def stopLagSwitch(self, refresh_dialog=True):
         if not self.lag_active:
@@ -1450,6 +1465,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self._sync_killed_devices()
         self.lag_active = False
         self.lag_device_mac = None
+        self._lag_in_allow_phase = False
         self.btnLagSwitch.setText('Lag Switch')
         self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         self.log('Lag switch OFF', 'lime')

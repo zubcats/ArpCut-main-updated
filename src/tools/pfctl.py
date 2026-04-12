@@ -385,15 +385,23 @@ def unblock_ip(ip: str) -> bool:
             _set_err(str(e))
             return False
     elif sys.platform.startswith('win'):
-        rule_name = f'arpcut_ip_{ip.replace(".", "_")}'
-        res_in = _exec(f'netsh advfirewall firewall delete rule name="{rule_name}_in"')
-        res_out = _exec(f'netsh advfirewall firewall delete rule name="{rule_name}_out"')
-        ok = (res_in.returncode == 0) or (res_out.returncode == 0)
-        if not ok:
-            _set_err((res_in.stderr or '') + '\n' + (res_out.stderr or ''))
+        # Delete both rules even if only one exists (directional block); try both every time.
+        rule_base = f'arpcut_ip_{ip.replace(".", "_")}'
+        last_err = ''
+        any_ok = False
+        for suffix in ('_in', '_out'):
+            res = _exec(
+                f'netsh advfirewall firewall delete rule name="{rule_base}{suffix}"'
+            )
+            if res.returncode == 0:
+                any_ok = True
+            elif res.stderr or res.stdout:
+                last_err = (res.stderr or res.stdout or '').strip()
+        if not any_ok and last_err:
+            _set_err(last_err)
         else:
             _set_err('')
-        return ok
+        return any_ok
     return False
 
 
