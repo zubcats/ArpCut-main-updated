@@ -16,6 +16,10 @@ ONE-TIME SETUP
 
 EVERY TIME YOU WANT THE INSTALLER
 ---------------------------------
+The workflow builds the files in your repo as you pushed them (root build.py and
+src/constants.py). Push your changes from your PC, then run the workflow — you
+do not need to update any separate "CI copy" of those files.
+
 1. Open your repository on GitHub in the browser.
 
 2. Click the "Actions" tab at the top.

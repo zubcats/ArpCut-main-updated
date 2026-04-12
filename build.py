@@ -9,7 +9,16 @@ import subprocess
 import sys
 import platform
 
-_ROOT = os.path.dirname(os.path.abspath(__file__))
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+# Support running as ./build.py (repo root) or a copy under .github/ci-blessed/
+if (
+    os.path.basename(_THIS_DIR) == 'ci-blessed'
+    and os.path.basename(os.path.dirname(_THIS_DIR)) == '.github'
+):
+    _ROOT = os.path.abspath(os.path.join(_THIS_DIR, '..', '..'))
+else:
+    _ROOT = _THIS_DIR
+_SRC = os.path.join(_ROOT, 'src')
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from src.constants import APP_BUNDLE_NAME
@@ -29,6 +38,9 @@ HIDDEN_IMPORTS = [
     'pyperclip',
     'requests',
     'six',
+    'constants',
+    'assets',
+    'bridge',
 ]
 
 COLLECT_ALL = [
@@ -37,12 +49,19 @@ COLLECT_ALL = [
     'qdarkstyle',
 ]
 
+# App code under src/; without --paths, analysis misses tools/gui/... and the exe fails at runtime.
+SUBMODULE_PKGS = ['tools', 'gui', 'networking', 'ui']
+
+
 def build():
     system = platform.system()
     
     # Base command (name must match constants.APP_BUNDLE_NAME for installer / autostart)
     # Use python -m PyInstaller so CI and venvs do not rely on a Scripts\pyinstaller.exe on PATH
     cmd = [sys.executable, '-m', 'PyInstaller', '--name', APP_BUNDLE_NAME]
+    cmd.extend(['--paths', os.path.normpath(_SRC)])
+    for pkg in SUBMODULE_PKGS:
+        cmd.extend(['--collect-submodules', pkg])
     
     # Platform-specific options
     if system == 'Windows':

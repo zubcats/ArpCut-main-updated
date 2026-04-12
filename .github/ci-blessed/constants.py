@@ -1,5 +1,5 @@
-# CI copy of src/constants.py (GitHub web UI often breaks indentation on the real file).
-# Workflows copy this to src/constants.py before building. Edit the real src/constants.py first, then mirror changes here.
+# Optional mirror of src/constants.py. GitHub Actions builds whatever you push at src/constants.py
+# (this file is not copied over the repo during CI anymore).
 from os import path, environ
 import sys
 

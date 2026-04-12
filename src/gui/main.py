@@ -638,11 +638,9 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.lag_release_ms = 1500
         self.lag_device_mac = None
         self.lag_direction = 'both'  # 'both', 'in', or 'out'
-        self.lag_phase_timer = QTimer(self)
-        self.lag_phase_timer.setSingleShot(True)
-        self.lag_phase_timer.setTimerType(Qt.PreciseTimer)
-        self.lag_phase_timer.timeout.connect(self._lag_on_phase_timer)
-        self._lag_waiting_to_enter_allow = True
+        self.lag_timer = QTimer(self)
+        self.lag_timer.setSingleShot(False)
+        self.lag_timer.timeout.connect(self._lag_cycle)
         
         # Button active state styles
         self.BUTTON_ACTIVE_STYLE = "background-color: #c0392b; color: white; font-weight: bold;"
@@ -1367,59 +1365,41 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             f'Lag switch ON: {self.lag_block_ms}ms lag ({dir_text}) / {self.lag_release_ms}ms normal',
             'orange',
         )
-        self._lag_waiting_to_enter_allow = True
-        self._lag_apply_block()
-        self.lag_phase_timer.start(self.lag_block_ms)
+        self._lag_cycle()
+        self.lag_timer.start(self.lag_block_ms + self.lag_release_ms)
         if self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
             self.lag_switch_dialog.refresh_toggle_state()
 
-    def _lag_on_phase_timer(self):
-        """Single timer chain: block for lag_block_ms, then allow for lag_release_ms, repeat."""
-        if not self.lag_active:
-            return
-        if self._lag_waiting_to_enter_allow:
-            self._lag_apply_allow()
-            self._lag_waiting_to_enter_allow = False
-            self.lag_phase_timer.start(self.lag_release_ms)
-        else:
-            self._lag_apply_block()
-            self._lag_waiting_to_enter_allow = True
-            self.lag_phase_timer.start(self.lag_block_ms)
-
-    def _lag_apply_block(self):
+    def _lag_cycle(self):
         if not self.lag_active:
             return
         device = self._get_device_by_mac(self.lag_device_mac)
         if not device:
             self.stopLagSwitch()
             return
-
+        
+        # Ensure device is being ARP spoofed
         if device['mac'] not in self.killer.killed:
-            self.killer.kill(device, LAG_SWITCH_ARP_WAIT_SEC)
-
+            self.killer.kill(device)
+        
+        # Block traffic using pf (kernel level, instant)
         iface = self.scanner.iface.name if self.scanner.iface else 'en0'
         victim_ip = device['ip']
         block_ip(iface, victim_ip, self.lag_direction)
+        
+        # Schedule unblock after lag duration
+        QTimer.singleShot(self.lag_block_ms, lambda: self._lag_release(victim_ip))
 
-    def _lag_apply_allow(self):
+    def _lag_release(self, victim_ip):
         if not self.lag_active:
             return
-        device = self._get_device_by_mac(self.lag_device_mac)
-        if not device:
-            self.stopLagSwitch()
-            return
-        victim_ip = device['ip']
+        # Unblock traffic
         unblock_ip(victim_ip)
-        if device['mac'] in self.killer.killed:
-            victim = self._victim_record_for_mac(device['mac']) or device
-            self.killer.unkill(victim)
-        self._sync_killed_devices()
-        self._updateKillButtonState()
 
     def stopLagSwitch(self, refresh_dialog=True):
         if not self.lag_active:
             return
-        self.lag_phase_timer.stop()
+        self.lag_timer.stop()
         device = self._get_device_by_mac(self.lag_device_mac)
         if device:
             # Remove any pf blocks
