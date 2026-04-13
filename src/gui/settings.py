@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import QMainWindow
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt
 import os
 import sys
@@ -13,6 +13,8 @@ from tools.utils import goto, get_ifaces, get_default_iface, get_iface_by_name, 
 from ui.ui_settings import Ui_MainWindow
 
 from networking.nicknames import Nicknames
+
+from tools.keybinds import keyseq_from_setting
 
 from constants import *
 
@@ -55,6 +57,32 @@ class Settings(QMainWindow, Ui_MainWindow):
         is_autoupdate =  self.chkAutoupdate.isChecked()
         iface         =  self.comboInterface.currentText()
 
+        def _portable_key(ks_edit):
+            qs = ks_edit.keySequence()
+            if qs.isEmpty():
+                return None
+            return qs.toString(QKeySequence.PortableText)
+
+        k_kill = _portable_key(self.keySeqKill)
+        k_lag = _portable_key(self.keySeqLag)
+        k_dupe = _portable_key(self.keySeqDupe)
+        if not k_kill or not k_lag or not k_dupe:
+            MsgType.WARN(
+                self,
+                'Keyboard shortcuts',
+                'Each shortcut must have a key assigned.',
+                Buttons.OK,
+            )
+            return
+        if len({k_kill, k_lag, k_dupe}) < 3:
+            MsgType.WARN(
+                self,
+                'Keyboard shortcuts',
+                'Kill, Lag Switch, and Dupe shortcuts must all be different.',
+                Buttons.OK,
+            )
+            return
+
         if getattr(sys, 'frozen', False):
             exe_path = sys.executable
         else:
@@ -80,7 +108,10 @@ class Settings(QMainWindow, Ui_MainWindow):
             is_autoupdate,
             threads,
             iface,
-            nicknames.nicknames_database
+            nicknames.nicknames_database,
+            k_kill,
+            k_lag,
+            k_dupe,
             ]
         )
 
@@ -132,7 +163,7 @@ class Settings(QMainWindow, Ui_MainWindow):
         if nickname_prompt == Buttons.NO:
             nicknames = Nicknames()
             vals = SETTINGS_VALS[:]
-            vals[-1] = nicknames.nicknames_database
+            vals[SETTINGS_KEYS.index('nicknames')] = nicknames.nicknames_database
             export_settings(vals)
         else:
             export_settings()
@@ -164,6 +195,7 @@ class Settings(QMainWindow, Ui_MainWindow):
                 self.elmocut.traffic_window,
             ],
         )
+        self.elmocut.refresh_keyboard_shortcuts_from_settings()
 
     def currentSettings(self):
         s = import_settings()
@@ -182,6 +214,10 @@ class Settings(QMainWindow, Ui_MainWindow):
         
         index = self.comboInterface.findText(s['iface'], Qt.MatchFixedString)
         self.comboInterface.setCurrentIndex(index * (index >= 0))
+
+        self.keySeqKill.setKeySequence(keyseq_from_setting(s.get('key_kill'), Qt.Key_L))
+        self.keySeqLag.setKeySequence(keyseq_from_setting(s.get('key_lag'), Qt.Key_M))
+        self.keySeqDupe.setKeySequence(keyseq_from_setting(s.get('key_dupe'), Qt.Key_P))
         
         self.setStyleSheet(zubcut_dark_stylesheet())
     

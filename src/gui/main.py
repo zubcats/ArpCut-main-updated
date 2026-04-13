@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QSizePolicy, QShortcut, QAbstractSpinBox, QLineEdit, \
                             QTextEdit, QPlainTextEdit
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence
-from PyQt5.QtCore import Qt, QTimer, QSize, QElapsedTimer, QEvent
+from PyQt5.QtCore import Qt, QTimer, QSize, QElapsedTimer
 try:
     from PyQt5.QtWinExtras import QWinTaskbarButton
 except Exception:
@@ -27,9 +27,11 @@ from tools.qtools import colored_item, MsgType, Buttons, clickable
 from tools.utils_gui import (
     set_settings,
     get_settings,
+    import_settings,
     zubcut_dark_stylesheet,
     sync_translucent_chrome,
 )
+from tools.keybinds import keyseq_from_setting
 from tools.branding import (
     load_application_qicon,
     qicon_is_empty,
@@ -73,12 +75,12 @@ class LagSwitchDialog(QDialog):
         self.btnLagStartStop.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnLagStartStop.setToolTip(
             'Start or stop intermittent lag for the device selected in the main list. '
-            'Shortcut: L when this window is active (not in ms fields).'
+            'Shortcut: M when this window is active (not in ms fields).'
         )
         self.btnLagStartStop.clicked.connect(self._on_lag_start_stop_clicked)
-        self._shortcut_l = QShortcut(QKeySequence(Qt.Key_L), self)
-        self._shortcut_l.setContext(Qt.WindowShortcut)
-        self._shortcut_l.activated.connect(self._on_l_key_pressed)
+        self._shortcut_m = QShortcut(QKeySequence(Qt.Key_M), self)
+        self._shortcut_m.setContext(Qt.WindowShortcut)
+        self._shortcut_m.activated.connect(self._on_m_key_pressed)
         layout.addWidget(self.btnLagStartStop)
 
         # Direction selection
@@ -157,7 +159,9 @@ class LagSwitchDialog(QDialog):
         buttons.rejected.connect(self.hide)
         layout.addWidget(buttons)
 
-    def _on_l_key_pressed(self):
+    def _on_m_key_pressed(self):
+        if QApplication.activeWindow() is not self:
+            return
         if _focus_widget_absorbs_letter_key(self.focusWidget()):
             return
         self._on_lag_start_stop_clicked()
@@ -168,14 +172,10 @@ class LagSwitchDialog(QDialog):
             self._load_timing_from_main()
             self._reload_timing_on_next_show = False
         self.refresh_toggle_state()
-        if self._main:
-            QTimer.singleShot(0, self._main._reconcile_l_shortcuts)
 
     def hideEvent(self, event):
         self._reload_timing_on_next_show = True
         super().hideEvent(event)
-        if self._main:
-            QTimer.singleShot(0, self._main._reconcile_l_shortcuts)
 
     def _load_timing_from_main(self):
         if not self._main:
@@ -315,7 +315,7 @@ class DupeDialog(QDialog):
         self.btnDupeRun.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnDupeRun.setToolTip(
             'Run a single lag burst for the device selected in the main list, then stop completely. '
-            'Shortcut: L when this window is active (not in ms fields).'
+            'Shortcut: P when this window is active (not in ms fields).'
         )
         self.btnDupeRun.clicked.connect(self._on_run_clicked)
         layout.addWidget(self.btnDupeRun)
@@ -330,9 +330,9 @@ class DupeDialog(QDialog):
         self.lblDupeCountdown.setVisible(False)
         layout.addWidget(self.lblDupeCountdown)
 
-        self._shortcut_l = QShortcut(QKeySequence(Qt.Key_L), self)
-        self._shortcut_l.setContext(Qt.WindowShortcut)
-        self._shortcut_l.activated.connect(self._on_l_key_pressed)
+        self._shortcut_p = QShortcut(QKeySequence(Qt.Key_P), self)
+        self._shortcut_p.setContext(Qt.WindowShortcut)
+        self._shortcut_p.activated.connect(self._on_p_key_pressed)
 
         self.dir_group = QGroupBox('Traffic Direction to Block')
         dir_layout = QVBoxLayout(self.dir_group)
@@ -368,7 +368,9 @@ class DupeDialog(QDialog):
         buttons.rejected.connect(self.hide)
         layout.addWidget(buttons)
 
-    def _on_l_key_pressed(self):
+    def _on_p_key_pressed(self):
+        if QApplication.activeWindow() is not self:
+            return
         if _focus_widget_absorbs_letter_key(self.focusWidget()):
             return
         self._on_run_clicked()
@@ -379,14 +381,10 @@ class DupeDialog(QDialog):
             self._load_from_main()
             self._reload_on_next_show = False
         self.refresh_toggle_state()
-        if self._main:
-            QTimer.singleShot(0, self._main._reconcile_l_shortcuts)
 
     def hideEvent(self, event):
         self._reload_on_next_show = True
         super().hideEvent(event)
-        if self._main:
-            QTimer.singleShot(0, self._main._reconcile_l_shortcuts)
 
     def _load_from_main(self):
         m = self._main
@@ -528,9 +526,6 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self._shortcut_kill_l = QShortcut(QKeySequence(Qt.Key_L), self)
         self._shortcut_kill_l.setContext(Qt.WindowShortcut)
         self._shortcut_kill_l.activated.connect(self._shortcut_main_l)
-        app = QApplication.instance()
-        if app is not None:
-            app.focusChanged.connect(self._reconcile_l_shortcuts)
 
         # Main Props
         self.scanner = Scanner()
@@ -621,7 +616,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.btnKill.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnKill.setToolTip(
             'Kill toggle — Turn blocking on or off for the selected device. '
-            'Shortcut: L only when the main window is focused and Lag/Dupe panels are closed.'
+            'Shortcut: L (only while the main ZubCut window is the active window).'
         )
         self.btnKill.setIcon(self.processIcon(kill_icon))
         self.btnKill.setMinimumWidth(130)
@@ -637,7 +632,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.btnLagSwitch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnLagSwitch.setToolTip(
             'Lag Switch — Opens a window where you set lag / allow times and toggle intermittent blocking on or off. '
-            'L starts/stops lag only while the Lag Switch window is the active (focused) window.'
+            'Shortcut: M starts/stops while the Lag Switch window is active (L is Kill on the main window).'
         )
         self.gridLayout.addWidget(self.btnLagSwitch, 5, 1, 1, 3)
         self.btnLagSwitch.clicked.connect(self.openLagSwitchDialog)
@@ -658,13 +653,15 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.btnDupe.setToolTip(
             'Dupe — One-shot lag for a set time (ms), then full stop. '
             'Does not repeat; use Lag Switch for cycles. '
-            'L runs/stops dupe only while the Dupe window is the active (focused) window.'
+            'Shortcut: P runs/stops while the Dupe window is active.'
         )
         self.gridLayout.addWidget(self.btnDupe, 5, 6, 1, 3)
         self.btnDupe.clicked.connect(self.openDupeDialog)
 
         self.lag_switch_dialog = None
         self.dupe_switch_dialog = None
+
+        self.refresh_keyboard_shortcuts_from_settings()
 
         self.lblDonate.setText('ZubCut')
         
@@ -719,7 +716,6 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.taskbar_progress = None
 
         self.applySettings()
-        QTimer.singleShot(0, self._reconcile_l_shortcuts)
 
     @staticmethod
     def processIcon(icon_data, crop_margins=False):
@@ -1270,39 +1266,55 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         if self.btnScanEasy.isEnabled():
             self.scanEasy()
 
+    def refresh_keyboard_shortcuts_from_settings(self):
+        """Apply key_kill / key_lag / key_dupe from settings to shortcuts and tooltips."""
+        s = import_settings()
+        k_kill = keyseq_from_setting(s.get('key_kill'), Qt.Key_L)
+        k_lag = keyseq_from_setting(s.get('key_lag'), Qt.Key_M)
+        k_dupe = keyseq_from_setting(s.get('key_dupe'), Qt.Key_P)
+        self._shortcut_kill_l.setKey(k_kill)
+        nk = k_kill.toString(QKeySequence.NativeText)
+        nl = k_lag.toString(QKeySequence.NativeText)
+        np = k_dupe.toString(QKeySequence.NativeText)
+        self.btnKill.setToolTip(
+            'Kill toggle — Turn blocking on or off for the selected device. '
+            'Shortcut: %s (only while the main ZubCut window is the active window).' % nk
+        )
+        self.btnLagSwitch.setToolTip(
+            'Lag Switch — Opens a window where you set lag / allow times and toggle intermittent blocking on or off. '
+            'Shortcut: %s starts/stops while the Lag Switch window is active (%s is Kill on the main window).'
+            % (nl, nk)
+        )
+        self.btnDupe.setToolTip(
+            'Dupe — One-shot lag for a set time (ms), then full stop. '
+            'Does not repeat; use Lag Switch for cycles. '
+            'Shortcut: %s runs/stops while the Dupe window is active.' % np
+        )
+        lag = self.lag_switch_dialog
+        if lag:
+            lag._shortcut_m.setKey(k_lag)
+            lag.btnLagStartStop.setToolTip(
+                'Start or stop intermittent lag for the device selected in the main list. '
+                'Shortcut: %s when this window is active (not in ms fields).' % nl
+            )
+        dupe = self.dupe_switch_dialog
+        if dupe:
+            dupe._shortcut_p.setKey(k_dupe)
+            dupe.btnDupeRun.setToolTip(
+                'Run a single lag burst for the device selected in the main list, then stop completely. '
+                'Shortcut: %s when this window is active (not in ms fields).' % np
+            )
+
     def _shortcut_main_l(self):
-        """Kill toggle — L on main; _reconcile_l_shortcuts disables this while Lag/Dupe panels are up."""
+        """Kill toggle when the main window is active (focused), using the configured shortcut."""
+        if QApplication.activeWindow() is not self:
+            return
+        if not self.isActiveWindow():
+            return
         if _focus_widget_absorbs_letter_key(self.focusWidget()):
             return
         if self.btnKill.isEnabled():
             self.toggleKill()
-
-    def _reconcile_l_shortcuts(self):
-        """Exactly one L shortcut active: Kill only on bare main; panel L only when that panel is active."""
-        aw = QApplication.activeWindow()
-        lag_d = getattr(self, 'lag_switch_dialog', None)
-        dupe_d = getattr(self, 'dupe_switch_dialog', None)
-        lag_vis = lag_d is not None and lag_d.isVisible()
-        dupe_vis = dupe_d is not None and dupe_d.isVisible()
-        panel_open = lag_vis or dupe_vis
-
-        if getattr(self, '_shortcut_kill_l', None):
-            if panel_open:
-                kill_on = False
-            else:
-                kill_on = aw is None or (aw is self and self.isActiveWindow())
-            self._shortcut_kill_l.setEnabled(bool(kill_on))
-
-        if lag_d and getattr(lag_d, '_shortcut_l', None):
-            lag_d._shortcut_l.setEnabled(lag_vis and aw is lag_d)
-
-        if dupe_d and getattr(dupe_d, '_shortcut_l', None):
-            dupe_d._shortcut_l.setEnabled(dupe_vis and aw is dupe_d)
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() == QEvent.ActivationChange:
-            QTimer.singleShot(0, self._reconcile_l_shortcuts)
 
     def openLagSwitchDialog(self):
         if not self.connected():
@@ -1316,10 +1328,10 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             return
         if self.lag_switch_dialog is None:
             self.lag_switch_dialog = LagSwitchDialog(self)
+            self.refresh_keyboard_shortcuts_from_settings()
         self.lag_switch_dialog.show()
         self.lag_switch_dialog.raise_()
         self.lag_switch_dialog.activateWindow()
-        QTimer.singleShot(0, self._reconcile_l_shortcuts)
 
     def openDupeDialog(self):
         if not self.connected():
@@ -1333,10 +1345,10 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             return
         if self.dupe_switch_dialog is None:
             self.dupe_switch_dialog = DupeDialog(self)
+            self.refresh_keyboard_shortcuts_from_settings()
         self.dupe_switch_dialog.show()
         self.dupe_switch_dialog.raise_()
         self.dupe_switch_dialog.activateWindow()
-        QTimer.singleShot(0, self._reconcile_l_shortcuts)
 
     def applyLagSwitchSettings(self, block_ms, release_ms, direction):
         self.lag_block_ms = block_ms

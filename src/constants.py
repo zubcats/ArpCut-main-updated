@@ -52,6 +52,10 @@ DUMMY_IFACE = {'name': 'NULL', 'mac': GLOBAL_MAC, 'guid': 'NULL', 'ips': ['0.0.0
 
 HKEY_AUTOSTART_PATH = 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run'
 
-SETTINGS_KEYS = ['count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'nicknames']
+SETTINGS_KEYS = [
+    'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'nicknames',
+    'key_kill', 'key_lag', 'key_dupe',
+]
 
-SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}]
+# key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
+SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P']
