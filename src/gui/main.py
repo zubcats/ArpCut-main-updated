@@ -1,12 +1,13 @@
 ﻿from pyperclip import copy
 
-from PyQt5.QtWidgets import QMainWindow, QTableWidgetItem, QMessageBox, \
+from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessageBox, \
                             QMenu, QSystemTrayIcon, QAction, QPushButton, \
                             QDialog, QFormLayout, QDialogButtonBox, QSpinBox, \
                             QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QGroupBox, \
-                            QSizePolicy
-from PyQt5.QtGui import QPixmap, QIcon, QFont
-from PyQt5.QtCore import Qt, QTimer, QSize
+                            QSizePolicy, QShortcut, QAbstractSpinBox, QLineEdit, \
+                            QTextEdit, QPlainTextEdit
+from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence
+from PyQt5.QtCore import Qt, QTimer, QSize, QElapsedTimer
 try:
     from PyQt5.QtWinExtras import QWinTaskbarButton
 except Exception:
@@ -47,6 +48,13 @@ from constants import *
 # from qt_material import build_stylesheet
 
 
+def _focus_widget_absorbs_letter_key(widget):
+    """Avoid stealing L while typing in numeric/text fields."""
+    if widget is None:
+        return False
+    return isinstance(widget, (QAbstractSpinBox, QLineEdit, QTextEdit, QPlainTextEdit))
+
+
 class LagSwitchDialog(QDialog):
     """Non-modal panel: edit lag / allow times, then toggle lag switch on or off."""
 
@@ -64,9 +72,13 @@ class LagSwitchDialog(QDialog):
         self.btnLagStartStop.setMinimumHeight(50)
         self.btnLagStartStop.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnLagStartStop.setToolTip(
-            'Start or stop intermittent lag for the device selected in the main list.'
+            'Start or stop intermittent lag for the device selected in the main list. '
+            'Shortcut: L (only while this window is focused; not in ms fields).'
         )
         self.btnLagStartStop.clicked.connect(self._on_lag_start_stop_clicked)
+        sc_l = QShortcut(QKeySequence(Qt.Key_L), self)
+        sc_l.setContext(Qt.WindowShortcut)
+        sc_l.activated.connect(self._on_l_key_pressed)
         layout.addWidget(self.btnLagStartStop)
 
         # Direction selection
@@ -144,6 +156,13 @@ class LagSwitchDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Close, self)
         buttons.rejected.connect(self.hide)
         layout.addWidget(buttons)
+
+    def _on_l_key_pressed(self):
+        if not self.isActiveWindow():
+            return
+        if _focus_widget_absorbs_letter_key(self.focusWidget()):
+            return
+        self._on_lag_start_stop_clicked()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -293,10 +312,25 @@ class DupeDialog(QDialog):
         self.btnDupeRun.setMinimumHeight(50)
         self.btnDupeRun.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnDupeRun.setToolTip(
-            'Run a single lag burst for the device selected in the main list, then stop completely.'
+            'Run a single lag burst for the device selected in the main list, then stop completely. '
+            'Shortcut: L (only while this window is focused; not in ms fields).'
         )
         self.btnDupeRun.clicked.connect(self._on_run_clicked)
         layout.addWidget(self.btnDupeRun)
+
+        self.lblDupeCountdown = QLabel(self)
+        self.lblDupeCountdown.setAlignment(Qt.AlignCenter)
+        self.lblDupeCountdown.setWordWrap(True)
+        cd_font = QFont(self.lblDupeCountdown.font())
+        cd_font.setPointSize(13)
+        cd_font.setBold(True)
+        self.lblDupeCountdown.setFont(cd_font)
+        self.lblDupeCountdown.setVisible(False)
+        layout.addWidget(self.lblDupeCountdown)
+
+        sc_l = QShortcut(QKeySequence(Qt.Key_L), self)
+        sc_l.setContext(Qt.WindowShortcut)
+        sc_l.activated.connect(self._on_l_key_pressed)
 
         self.dir_group = QGroupBox('Traffic Direction to Block')
         dir_layout = QVBoxLayout(self.dir_group)
@@ -331,6 +365,13 @@ class DupeDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Close, self)
         buttons.rejected.connect(self.hide)
         layout.addWidget(buttons)
+
+    def _on_l_key_pressed(self):
+        if not self.isActiveWindow():
+            return
+        if _focus_widget_absorbs_letter_key(self.focusWidget()):
+            return
+        self._on_run_clicked()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -398,6 +439,26 @@ class DupeDialog(QDialog):
             self.btnDupeRun.setStyleSheet(main.BUTTON_NORMAL_STYLE)
         self.btnDupeRun.blockSignals(False)
         self._set_controls_enabled(not on)
+        if on and main and getattr(main, 'dupe_active', False):
+            self.set_dupe_countdown(main.dupe_remaining_ms())
+        else:
+            self.set_dupe_countdown(None)
+
+    def set_dupe_countdown(self, left_ms):
+        """Show remaining dupe time; pass None when idle."""
+        if left_ms is None:
+            self.lblDupeCountdown.setVisible(False)
+            self.lblDupeCountdown.setText('')
+            return
+        self.lblDupeCountdown.setVisible(True)
+        left_ms = max(0, int(left_ms))
+        sec = left_ms / 1000.0
+        if sec >= 60:
+            whole = int(sec)
+            m, s = divmod(whole, 60)
+            self.lblDupeCountdown.setText(f'Time left: {m}:{s:02d}')
+        else:
+            self.lblDupeCountdown.setText(f'Time left: {sec:.1f} s')
 
     def values(self):
         direction = 'both'
@@ -453,7 +514,17 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.setupUi(self)
         self.setWindowTitle(APP_DISPLAY_NAME)
         self.setStyleSheet(zubcut_dark_stylesheet())
-        
+
+        # Space was bound in the .ui to ARP scan; only fire when the main window is foreground.
+        self.btnScanEasy.setShortcut(QKeySequence())
+        sc_arp_space = QShortcut(QKeySequence(Qt.Key_Space), self)
+        sc_arp_space.setContext(Qt.WindowShortcut)
+        sc_arp_space.activated.connect(self._shortcut_scan_easy)
+
+        sc_kill_l = QShortcut(QKeySequence(Qt.Key_L), self)
+        sc_kill_l.setContext(Qt.WindowShortcut)
+        sc_kill_l.activated.connect(self._shortcut_main_l)
+
         # Main Props
         self.scanner = Scanner()
         self.killer = Killer()
@@ -478,7 +549,11 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.dupe_timer.setSingleShot(True)
         self.dupe_timer.setTimerType(Qt.PreciseTimer)
         self.dupe_timer.timeout.connect(self._dupe_timer_fired)
-        
+        self._dupe_elapsed = QElapsedTimer()
+        self._dupe_countdown_timer = QTimer(self)
+        self._dupe_countdown_timer.setInterval(100)
+        self._dupe_countdown_timer.timeout.connect(self._tick_dupe_countdown)
+
         # Button active state styles
         self.BUTTON_ACTIVE_STYLE = "background-color: #c0392b; color: white; font-weight: bold;"
         self.BUTTON_NORMAL_STYLE = ""
@@ -517,7 +592,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
 
         # Connect buttons with icons and tooltips
         self.buttons = [
-            (self.btnScanEasy,   self.scanEasy,      scan_easy_icon,  'ARP Scan - Fast network scan using ARP requests (may miss some devices)'),
+            (self.btnScanEasy,   self.scanEasy,      scan_easy_icon,  'ARP Scan - Fast network scan using ARP requests (may miss some devices). Shortcut: Space (only while this main window is focused).'),
             (self.btnScanHard,   self.scanHard,      scan_hard_icon,  'Ping Scan - Thorough scan using ICMP ping (slower but finds all devices)'),
             (self.btnKillAll,    self.killAll,       killall_icon,    'Kill All - Block internet access for ALL devices on the network'),
             (self.btnUnkillAll,  self.unkillAll,     unkillall_icon,  'Unkill All - Restore internet access for all blocked devices'),
@@ -537,7 +612,10 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.btnKill.setObjectName('btnKill')
         self.btnKill.setMinimumHeight(88)
         self.btnKill.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.btnKill.setToolTip('Kill toggle — Turn blocking on or off for the selected device.')
+        self.btnKill.setToolTip(
+            'Kill toggle — Turn blocking on or off for the selected device. '
+            'Shortcut: L (only while the main ZubCut window is focused).'
+        )
         self.btnKill.setIcon(self.processIcon(kill_icon))
         self.btnKill.setMinimumWidth(130)
         self.btnKill.setIconSize(QSize(56, 56))
@@ -551,7 +629,8 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.btnLagSwitch.setMinimumHeight(88)
         self.btnLagSwitch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnLagSwitch.setToolTip(
-            'Lag Switch — Opens a window where you set lag / allow times and toggle intermittent blocking on or off.'
+            'Lag Switch — Opens a window where you set lag / allow times and toggle intermittent blocking on or off. '
+            'Use L in that window to start/stop (main window uses L for Kill).'
         )
         self.gridLayout.addWidget(self.btnLagSwitch, 5, 1, 1, 3)
         self.btnLagSwitch.clicked.connect(self.openLagSwitchDialog)
@@ -571,7 +650,8 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.btnDupe.setFont(dupe_font)
         self.btnDupe.setToolTip(
             'Dupe — One-shot lag for a set time (ms), then full stop. '
-            'Does not repeat; use Lag Switch for cycles.'
+            'Does not repeat; use Lag Switch for cycles. '
+            'Use L in that window to run/stop (main window uses L for Kill).'
         )
         self.gridLayout.addWidget(self.btnDupe, 5, 6, 1, 3)
         self.btnDupe.clicked.connect(self.openDupeDialog)
@@ -1172,6 +1252,27 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         """
         pass  # Update checking disabled for this fork
     
+    def _main_window_is_foreground(self):
+        aw = QApplication.activeWindow()
+        return aw is not None and aw is self
+
+    def _shortcut_scan_easy(self):
+        if not self._main_window_is_foreground():
+            return
+        if self.btnScanEasy.isEnabled():
+            self.scanEasy()
+
+    def _shortcut_main_l(self):
+        """Kill toggle — L only on main window (Lag/Dupe panels have their own L shortcuts)."""
+        if not self._main_window_is_foreground():
+            return
+        if not self.isActiveWindow():
+            return
+        if _focus_widget_absorbs_letter_key(self.focusWidget()):
+            return
+        if self.btnKill.isEnabled():
+            self.toggleKill()
+
     def openLagSwitchDialog(self):
         if not self.connected():
             return
@@ -1352,9 +1453,29 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         dir_text = {'both': 'all', 'in': 'incoming', 'out': 'outgoing'}[direction]
         self.log(f'Dupe: {duration_ms}ms ({dir_text}), then full stop', 'orange')
+        self._dupe_elapsed.start()
         self.dupe_timer.start(max(1, int(duration_ms)))
+        self._dupe_countdown_timer.start()
+        self._tick_dupe_countdown()
         if getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
             self.dupe_switch_dialog.refresh_toggle_state()
+
+    def dupe_remaining_ms(self):
+        if not self.dupe_active:
+            return None
+        return max(0, int(self.dupe_duration_ms - self._dupe_elapsed.elapsed()))
+
+    def _tick_dupe_countdown(self):
+        if not self.dupe_active:
+            self._dupe_countdown_timer.stop()
+            dlg = getattr(self, 'dupe_switch_dialog', None)
+            if dlg:
+                dlg.set_dupe_countdown(None)
+            return
+        rem = self.dupe_remaining_ms()
+        dlg = getattr(self, 'dupe_switch_dialog', None)
+        if dlg and dlg.isVisible():
+            dlg.set_dupe_countdown(rem)
 
     def _dupe_timer_fired(self):
         self.stopDupe(log_message='Dupe finished')
@@ -1362,7 +1483,11 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
     def stopDupe(self, refresh_dialog=True, log=True, log_message='Dupe stopped'):
         if not self.dupe_active:
             return
+        self._dupe_countdown_timer.stop()
         self.dupe_timer.stop()
+        dlg = getattr(self, 'dupe_switch_dialog', None)
+        if dlg:
+            dlg.set_dupe_countdown(None)
         device = self._get_device_by_mac(self.dupe_device_mac)
         if device:
             try:
