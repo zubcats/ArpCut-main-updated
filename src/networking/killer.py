@@ -119,7 +119,15 @@ class Killer:
             # Send packets using persistent socket
             self._send_packet(to_victim)
             self._send_packet(to_router)
-            sleep(wait_after)
+            # Sleep in short slices so OFF takes effect quickly (avoid UI/backend desync feel).
+            total_wait = max(0.05, float(wait_after))
+            slept = 0.0
+            step = 0.05
+            while slept < total_wait:
+                if victim['mac'] not in self.killed or self.iface.name == 'NULL':
+                    break
+                sleep(step)
+                slept += step
 
         self._stop_forwarder(victim['mac'])
 
