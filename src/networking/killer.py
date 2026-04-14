@@ -38,6 +38,12 @@ class Killer:
         self.forwarders = {}
         self.pf_blocks = set()
         self._socket = None  # Persistent L2 socket
+        self._op_seq = {}  # MAC -> operation generation to cancel stale workers
+
+    def _next_op_seq(self, mac):
+        seq = int(self._op_seq.get(mac, 0)) + 1
+        self._op_seq[mac] = seq
+        return seq
     
     def _get_socket(self):
         """Get or create persistent L2 socket - prevents Windows socket exhaustion"""
@@ -88,11 +94,12 @@ class Killer:
         """
         if victim['mac'] in self.killed:
             return
+        seq = self._next_op_seq(victim['mac'])
         self.killed[victim['mac']] = victim
-        self._kill_arp_worker(victim, wait_after)
+        self._kill_arp_worker(victim, wait_after, seq)
 
     @threaded
-    def _kill_arp_worker(self, victim, wait_after=2):
+    def _kill_arp_worker(self, victim, wait_after=2, seq=0):
         # Send ARP reply (is-at) with proper Ethernet destination to poison caches
         # Unicast to specific MAC, not broadcast - avoids switch storm detection
 
@@ -114,8 +121,11 @@ class Killer:
             hwdst=self.router['mac']
         )
 
-        while victim['mac'] in self.killed \
-            and self.iface.name != 'NULL':
+        while (
+            victim['mac'] in self.killed
+            and self.iface.name != 'NULL'
+            and self._op_seq.get(victim['mac']) == seq
+        ):
             # Send packets using persistent socket
             self._send_packet(to_victim)
             self._send_packet(to_router)
@@ -124,12 +134,17 @@ class Killer:
             slept = 0.0
             step = 0.05
             while slept < total_wait:
-                if victim['mac'] not in self.killed or self.iface.name == 'NULL':
+                if (
+                    victim['mac'] not in self.killed
+                    or self.iface.name == 'NULL'
+                    or self._op_seq.get(victim['mac']) != seq
+                ):
                     break
                 sleep(step)
                 slept += step
 
-        self._stop_forwarder(victim['mac'])
+        if victim['mac'] not in self.killed:
+            self._stop_forwarder(victim['mac'])
 
     def unkill(self, victim):
         """
@@ -138,12 +153,13 @@ class Killer:
         Removes from ``self.killed`` on the caller thread before ARP restore runs
         in the background, so the UI does not race with _sync_killed_devices().
         """
+        seq = self._next_op_seq(victim['mac'])
         if victim['mac'] in self.killed:
             self.killed.pop(victim['mac'])
-        self._unkill_restore_worker(victim)
+        self._unkill_restore_worker(victim, seq)
 
     @threaded
-    def _unkill_restore_worker(self, victim):
+    def _unkill_restore_worker(self, victim, seq=0):
         # Restore Victim and Router with correct mappings
         to_victim = Ether(dst=victim['mac'])/ARP(
             op=2,
@@ -164,11 +180,14 @@ class Killer:
         if self.iface.name != 'NULL':
             # Send restore packets 3 times
             for _ in range(3):
+                if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
+                    break
                 self._send_packet(to_victim)
                 self._send_packet(to_router)
                 sleep(0.1)
-        self._stop_forwarder(victim['mac'])
-        self._remove_pf_block(victim['ip'])
+        if self._op_seq.get(victim['mac']) == seq and victim['mac'] not in self.killed:
+            self._stop_forwarder(victim['mac'])
+            self._remove_pf_block(victim['ip'])
 
     def kill_all(self, device_list):
         """
@@ -185,6 +204,7 @@ class Killer:
         Safely unkill all devices killed previously
         """
         for mac in list(self.killed):
+            self._next_op_seq(mac)
             self.killed.pop(mac)
             self._stop_forwarder(mac)
         for ip in list(self.pf_blocks):
