@@ -156,11 +156,12 @@ class Killer:
         seq = self._next_op_seq(victim['mac'])
         if victim['mac'] in self.killed:
             self.killed.pop(victim['mac'])
+        # Apply one immediate restore burst on caller thread so UI OFF matches network quickly.
+        self._restore_arp_now(victim, seq, repeats=1, delay_s=0.0)
         self._unkill_restore_worker(victim, seq)
 
-    @threaded
-    def _unkill_restore_worker(self, victim, seq=0):
-        # Restore Victim and Router with correct mappings
+    def _restore_arp_now(self, victim, seq=0, repeats=1, delay_s=0.1):
+        """Best-effort ARP restore; aborts if a newer op supersedes this sequence."""
         to_victim = Ether(dst=victim['mac'])/ARP(
             op=2,
             psrc=self.router['ip'],
@@ -177,14 +178,20 @@ class Killer:
             hwdst=self.router['mac']
         )
 
-        if self.iface.name != 'NULL':
-            # Send restore packets 3 times
-            for _ in range(3):
-                if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
-                    break
-                self._send_packet(to_victim)
-                self._send_packet(to_router)
-                sleep(0.1)
+        if self.iface.name == 'NULL':
+            return
+        for _ in range(max(1, int(repeats))):
+            if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
+                break
+            self._send_packet(to_victim)
+            self._send_packet(to_router)
+            if delay_s > 0:
+                sleep(delay_s)
+
+    @threaded
+    def _unkill_restore_worker(self, victim, seq=0):
+        # Follow-up restore bursts to reinforce cache correction.
+        self._restore_arp_now(victim, seq, repeats=2, delay_s=0.1)
         if self._op_seq.get(victim['mac']) == seq and victim['mac'] not in self.killed:
             self._stop_forwarder(victim['mac'])
             self._remove_pf_block(victim['ip'])
