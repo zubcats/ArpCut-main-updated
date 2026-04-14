@@ -8,19 +8,24 @@ import ctypes
 import sys
 from typing import Optional, Tuple, Union
 
-from PyQt5.QtCore import QSize, Qt
-from PyQt5.QtGui import QCursor, QIcon
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QCursor, QFont, QIcon
 from PyQt5.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QSizePolicy,
-    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
+
+# Title-bar control glyphs (styled via QSS color; standard pixmaps cannot be tinted).
+_GLYPH_MIN = "\u2212"  # minus
+_GLYPH_MAX = "\u25A1"  # square (maximize)
+_GLYPH_RESTORE = "\u2750"  # restore
+_GLYPH_CLOSE = "\u00D7"  # close
 
 # —— Windows resize borders (client coords, logical pixels) ——
 _BORDER = 5
@@ -137,18 +142,33 @@ class CustomTitleBar(QFrame):
                 font-size: 13px;
             }
             QFrame#zubcutTitleBar QToolButton {
-                background: transparent;
-                border: none;
+                background-color: transparent;
+                border: 1px solid #000000;
                 border-radius: 4px;
-                padding: 4px;
+                padding: 3px;
                 min-width: 28px;
-                min-height: 28px;
+                min-height: 24px;
+                color: #8b909a;
             }
             QFrame#zubcutTitleBar QToolButton:hover {
-                background-color: #454d5c;
+                background-color: #40454f;
+                border: 1px solid #000000;
+                color: #aeb4bf;
+            }
+            QFrame#zubcutTitleBar QToolButton:pressed {
+                background-color: #353942;
+                border: 1px solid #000000;
+                color: #8b909a;
             }
             QFrame#zubcutTitleBar QToolButton#closeButton:hover {
                 background-color: #c0392b;
+                border: 1px solid #000000;
+                color: #f2f2f2;
+            }
+            QFrame#zubcutTitleBar QToolButton#closeButton:pressed {
+                background-color: #a93226;
+                border: 1px solid #000000;
+                color: #f2f2f2;
             }
             """
         )
@@ -171,23 +191,29 @@ class CustomTitleBar(QFrame):
         self._title.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._icon_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
-        style = self.style()
+        _cap_font = QFont(self.font())
+        _cap_font.setPointSize(13)
+        _cap_font.setBold(True)
+
         self._btn_min = QToolButton(self)
-        self._btn_min.setIcon(style.standardIcon(QStyle.SP_TitleBarMinButton))
-        self._btn_min.setIconSize(QSize(14, 14))
+        self._btn_min.setText(_GLYPH_MIN)
+        self._btn_min.setIcon(QIcon())
+        self._btn_min.setFont(_cap_font)
         self._btn_min.clicked.connect(self._window.showMinimized)
 
         self._btn_max = QToolButton(self)
-        self._btn_max.setIcon(style.standardIcon(QStyle.SP_TitleBarMaxButton))
-        self._btn_max.setIconSize(QSize(14, 14))
+        self._btn_max.setText(_GLYPH_MAX)
+        self._btn_max.setIcon(QIcon())
+        self._btn_max.setFont(_cap_font)
         self._btn_max.clicked.connect(self._toggle_max)
         if not maximizable:
             self._btn_max.hide()
 
         self._btn_close = QToolButton(self)
         self._btn_close.setObjectName("closeButton")
-        self._btn_close.setIcon(style.standardIcon(QStyle.SP_TitleBarCloseButton))
-        self._btn_close.setIconSize(QSize(14, 14))
+        self._btn_close.setText(_GLYPH_CLOSE)
+        self._btn_close.setIcon(QIcon())
+        self._btn_close.setFont(_cap_font)
         self._btn_close.clicked.connect(self._window.close)
 
         row.addWidget(self._icon_label)
@@ -209,12 +235,9 @@ class CustomTitleBar(QFrame):
     def _sync_max_icon(self) -> None:
         if not self._maximizable:
             return
-        ic = (
-            QStyle.SP_TitleBarNormalButton
-            if self._window.isMaximized()
-            else QStyle.SP_TitleBarMaxButton
+        self._btn_max.setText(
+            _GLYPH_RESTORE if self._window.isMaximized() else _GLYPH_MAX
         )
-        self._btn_max.setIcon(self.style().standardIcon(ic))
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:

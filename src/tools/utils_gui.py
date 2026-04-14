@@ -14,17 +14,17 @@ from PyQt5.QtCore import Qt, QObject, QEvent
 from tools.utils import terminal
 from constants import *
 
-# Main window chrome: ~15% opacity (alpha 38/255) so the desktop shows through.
-_TRANSLUCENT_TINT = "rgba(34, 38, 46, 38)"
+# Solid black behind qdarkstyle so “dead space” is opaque (no desktop bleed-through).
+_MAIN_CHROME_BG = "#000000"
 # Whole-window outline only (not per-widget). Windows 11 also gets native rounding via DWM below.
 _WINDOW_CORNER_RADIUS_PX = 12
 TRANSLUCENT_MAIN_CHROME_QSS = f"""
 QMainWindow {{
-    background-color: {_TRANSLUCENT_TINT};
+    background-color: {_MAIN_CHROME_BG};
     border-radius: {_WINDOW_CORNER_RADIUS_PX}px;
 }}
 QWidget#centralwidget {{
-    background-color: {_TRANSLUCENT_TINT};
+    background-color: {_MAIN_CHROME_BG};
     border-radius: {_WINDOW_CORNER_RADIUS_PX}px;
 }}
 """
