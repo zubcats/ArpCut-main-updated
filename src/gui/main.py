@@ -260,13 +260,8 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         if not self._main:
             return
         main = self._main
-        on = False
-        if main.tableScan.selectedItems():
-            try:
-                dev = main.current_index()
-                on = main.lag_active and main.lag_device_mac == dev['mac']
-            except Exception:
-                on = False
+        # Show the real active state, even if selection changed/lost.
+        on = bool(main.lag_active and main.lag_device_mac)
         self.btnLagStartStop.blockSignals(True)
         if on:
             self.btnLagStartStop.setText('Stop')
@@ -284,26 +279,22 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         main = self._main
         if not main:
             return
+        # If lag is active, any toggle press means STOP active lag immediately.
+        if main.lag_active and main.lag_device_mac:
+            lag_edge = 'stop'
+            if main._ignore_duplicate_toggle_edge('lag', main.lag_device_mac, lag_edge):
+                return
+            main.stopLagSwitch()
+            return
+
         deb_mac = None
         if main.tableScan.selectedItems():
             try:
                 deb_mac = main.current_index()['mac']
             except Exception:
                 pass
-        if deb_mac is None:
-            deb_mac = main.lag_device_mac
-        running_here = False
-        if main.tableScan.selectedItems():
-            try:
-                dev = main.current_index()
-                running_here = main.lag_active and main.lag_device_mac == dev['mac']
-            except Exception:
-                pass
-        lag_edge = 'stop' if running_here else 'start'
+        lag_edge = 'start'
         if main._ignore_duplicate_toggle_edge('lag', deb_mac, lag_edge):
-            return
-        if running_here:
-            main.stopLagSwitch()
             return
         if not main.tableScan.selectedItems():
             main.log('No device selected', 'red')
@@ -484,13 +475,8 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         main = self._main
         if not main:
             return
-        on = False
-        if main.tableScan.selectedItems():
-            try:
-                dev = main.current_index()
-                on = main.dupe_active and main.dupe_device_mac == dev['mac']
-            except Exception:
-                on = False
+        # Show actual active state regardless of current selection.
+        on = bool(main.dupe_active and main.dupe_device_mac)
         self.btnDupeRun.blockSignals(True)
         if on:
             self.btnDupeRun.setText('Stop')
@@ -535,26 +521,22 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         main = self._main
         if not main:
             return
+        # If dupe is active, any toggle press means STOP active dupe immediately.
+        if main.dupe_active and main.dupe_device_mac:
+            dupe_edge = 'stop'
+            if main._ignore_duplicate_toggle_edge('dupe', main.dupe_device_mac, dupe_edge):
+                return
+            main.stopDupe()
+            return
+
         deb_mac = None
         if main.tableScan.selectedItems():
             try:
                 deb_mac = main.current_index()['mac']
             except Exception:
                 pass
-        if deb_mac is None:
-            deb_mac = main.dupe_device_mac
-        running_here = False
-        if main.tableScan.selectedItems():
-            try:
-                dev = main.current_index()
-                running_here = main.dupe_active and main.dupe_device_mac == dev['mac']
-            except Exception:
-                pass
-        dupe_edge = 'stop' if running_here else 'start'
+        dupe_edge = 'start'
         if main._ignore_duplicate_toggle_edge('dupe', deb_mac, dupe_edge):
-            return
-        if running_here:
-            main.stopDupe()
             return
         if not main.tableScan.selectedItems():
             main.log('No device selected', 'red')
@@ -1039,10 +1021,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _updateLagSwitchButtonState(self):
         """Update lag switch button based on whether it's active for selected device."""
-        if not self.tableScan.selectedItems():
-            return
-        device = self.current_index()
-        if self.lag_active and self.lag_device_mac == device['mac']:
+        if self.lag_active and self.lag_device_mac:
             self.btnLagSwitch.setText('■ LAGGING')
             self.btnLagSwitch.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         else:
@@ -1639,12 +1618,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.dupe_switch_dialog.refresh_toggle_state()
 
     def _updateDupeButtonState(self):
-        if not self.tableScan.selectedItems():
-            self.btnDupe.setText('Dupe')
-            self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-            return
-        device = self.current_index()
-        if self.dupe_active and self.dupe_device_mac == device['mac']:
+        if self.dupe_active and self.dupe_device_mac:
             self.btnDupe.setText('■ DUPE')
             self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         else:
@@ -1685,8 +1659,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log('Cannot kill admin device', 'orange')
             return
 
+        self._sync_killed_devices()
         mac = device['mac']
-        is_active = bool(self.killed_devices.get(mac, False))
+        # Explicit kill toggles only (exclude lag/dupe ARP entries).
+        explicit_active = [
+            m for m, on in self.killed_devices.items() if on and m in self.killer.killed
+        ]
+        active_mac = explicit_active[0] if explicit_active else None
+        is_active = bool(self.killed_devices.get(mac, False) and mac in self.killer.killed)
 
         if is_active:
             if self.dupe_active and self.dupe_device_mac == mac:
@@ -1699,6 +1679,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.killer.unkill(victim)
             self.killed_devices[mac] = False
             self.log('Kill OFF for ' + victim['ip'], 'lime')
+        elif active_mac:
+            # Keep toggle state deterministic on rapid presses: stop the currently active kill first.
+            victim = self._victim_record_for_mac(active_mac)
+            if victim:
+                self.killer.unkill(victim)
+            self.killed_devices[active_mac] = False
+            self.log('Kill OFF for ' + victim['ip'] if victim else 'Kill OFF', 'lime')
         else:
             self.killer.kill(device)
             self.killed_devices[mac] = True
