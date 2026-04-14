@@ -1536,8 +1536,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def stopLagSwitch(self, refresh_dialog=True):
         if not self.lag_active:
             return
+        prev_mac = self.lag_device_mac
+        # Tear down active state first so any concurrent timer tick becomes a no-op.
+        self.lag_active = False
+        self.lag_device_mac = None
+        self._lag_in_allow_phase = False
         self.lag_timer.stop()
-        device = self._get_device_by_mac(self.lag_device_mac)
+        device = self._get_device_by_mac(prev_mac)
         if device:
             # Remove any pf blocks
             unblock_ip(device['ip'])
@@ -1546,9 +1551,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 victim = self._victim_record_for_mac(device['mac']) or device
                 self.killer.unkill(victim)
         self._sync_killed_devices()
-        self.lag_active = False
-        self.lag_device_mac = None
-        self._lag_in_allow_phase = False
         self.btnLagSwitch.setText('Lag Switch')
         self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         self.log('Lag switch OFF', 'lime')
@@ -1597,19 +1599,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def stopDupe(self, refresh_dialog=True, log=True, log_message='Dupe stopped'):
         if not self.dupe_active:
             return
+        prev_mac = self.dupe_device_mac
+        # Mark inactive first to prevent re-entrant timer paths from reapplying state.
+        self.dupe_active = False
+        self.dupe_device_mac = None
         self._dupe_countdown_timer.stop()
         self.dupe_timer.stop()
         dlg = getattr(self, 'dupe_switch_dialog', None)
         if dlg:
             dlg.set_dupe_countdown(None)
-        device = self._get_device_by_mac(self.dupe_device_mac)
+        device = self._get_device_by_mac(prev_mac)
         if device:
             try:
                 self._clear_victim_block(device)
             except Exception:
                 pass
-        self.dupe_active = False
-        self.dupe_device_mac = None
         self.btnDupe.setText('Dupe')
         self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         if log:
@@ -1659,37 +1663,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log('Cannot kill admin device', 'orange')
             return
 
-        self._sync_killed_devices()
         mac = device['mac']
-        # Explicit kill toggles only (exclude lag/dupe ARP entries).
-        explicit_active = [
-            m for m, on in self.killed_devices.items() if on and m in self.killer.killed
-        ]
-        active_mac = explicit_active[0] if explicit_active else None
-        is_active = bool(self.killed_devices.get(mac, False) and mac in self.killer.killed)
+        # Click parity: every click flips the selected device's explicit kill intent.
+        desired_on = not bool(self.killed_devices.get(mac, False))
+        self.killed_devices[mac] = desired_on
 
-        if is_active:
+        if desired_on:
+            self.killer.kill(device)
+            self.log('Kill ON for ' + device['ip'], 'fuchsia')
+        else:
             if self.dupe_active and self.dupe_device_mac == mac:
                 self.stopDupe(log=False)
-            victim = self._victim_record_for_mac(mac)
-            if not victim:
-                self._sync_killed_devices()
-                self._updateKillButtonState()
-                return
+            # Always attempt unkill, even if victim lookup races.
+            victim = self._victim_record_for_mac(mac) or device
             self.killer.unkill(victim)
             self.killed_devices[mac] = False
             self.log('Kill OFF for ' + victim['ip'], 'lime')
-        elif active_mac:
-            # Keep toggle state deterministic on rapid presses: stop the currently active kill first.
-            victim = self._victim_record_for_mac(active_mac)
-            if victim:
-                self.killer.unkill(victim)
-            self.killed_devices[active_mac] = False
-            self.log('Kill OFF for ' + victim['ip'] if victim else 'Kill OFF', 'lime')
-        else:
-            self.killer.kill(device)
-            self.killed_devices[mac] = True
-            self.log('Kill ON for ' + device['ip'], 'fuchsia')
 
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
