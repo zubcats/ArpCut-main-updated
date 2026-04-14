@@ -48,7 +48,8 @@ def _update_top_level_round_mask(widget):
     r = min(float(_WINDOW_CORNER_RADIUS), max(2.0, min(float(w), float(h)) / 2.0 - 1.0))
     path = QPainterPath()
     path.addRoundedRect(QRectF(0, 0, float(w), float(h)), r, r)
-    widget.setMask(QRegion(path.toFillPolygon()))
+    # QRegion expects an integer polygon on PyQt5; PolygonF can raise at runtime.
+    widget.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
 
 class _WindowChromeEventFilter(QObject):
