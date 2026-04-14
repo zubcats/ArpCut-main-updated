@@ -6,7 +6,8 @@ import sys
 
 from tools.utils_gui import import_settings, export_settings, get_settings, \
                       is_admin, add_to_startup, remove_from_startup, set_settings, \
-                      zubcut_dark_stylesheet, sync_translucent_chrome
+                      zubcut_dark_stylesheet, sync_translucent_chrome, register_window_surface_effects
+from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
 from tools.qtools import MsgType, Buttons
 from tools.utils import goto, get_ifaces, get_default_iface, get_iface_by_name, terminal
 
@@ -18,7 +19,7 @@ from tools.keybinds import keyseq_from_setting
 
 from constants import *
 
-class Settings(QMainWindow, Ui_MainWindow):
+class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def __init__(self, elmocut, icon):
         super().__init__()
         self.elmocut = elmocut
@@ -45,7 +46,10 @@ class Settings(QMainWindow, Ui_MainWindow):
         self.btnUpdate.setText("Updates Disabled")
         self.chkAutoupdate.setEnabled(False)
         self.chkAutoupdate.setChecked(False)
-    
+
+        setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
+        register_window_surface_effects(self)
+
     def Apply(self, silent_apply=False):
         nicknames = Nicknames()
 
@@ -186,15 +190,24 @@ class Settings(QMainWindow, Ui_MainWindow):
         
         self.elmocut.setStyleSheet(self.styleSheet())
         self.elmocut.about_window.setStyleSheet(self.styleSheet())
-        sync_translucent_chrome(
-            [
-                self.elmocut,
-                self.elmocut.about_window,
-                self,
-                self.elmocut.device_window,
-                self.elmocut.traffic_window,
-            ],
-        )
+        for _dlg in (
+            getattr(self.elmocut, 'lag_switch_dialog', None),
+            getattr(self.elmocut, 'dupe_switch_dialog', None),
+        ):
+            if _dlg is not None:
+                _dlg.setStyleSheet(self.elmocut.styleSheet())
+        _w = [
+            self.elmocut,
+            self.elmocut.about_window,
+            self,
+            self.elmocut.device_window,
+            self.elmocut.traffic_window,
+        ]
+        _w.extend(d for d in (
+            getattr(self.elmocut, 'lag_switch_dialog', None),
+            getattr(self.elmocut, 'dupe_switch_dialog', None),
+        ) if d is not None)
+        sync_translucent_chrome(_w)
         self.elmocut.refresh_keyboard_shortcuts_from_settings()
 
     def currentSettings(self):

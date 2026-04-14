@@ -2,8 +2,11 @@ from PyQt5.QtWidgets import QMainWindow
 from PyQt5.QtGui import QPalette, QColor
 from networking.nicknames import Nicknames
 from ui.ui_device import Ui_MainWindow
+from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
+from tools.utils_gui import register_window_surface_effects
 
-class Device(QMainWindow, Ui_MainWindow):
+
+class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def __init__(self, elmocut, icon):
         super().__init__()
         self.elmocut = elmocut
@@ -23,7 +26,10 @@ class Device(QMainWindow, Ui_MainWindow):
         self.btnReset.clicked.connect(self.resetName)
         # On Enter Pressed
         self.txtNickname.returnPressed.connect(self.changeName)
-    
+
+        setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
+        register_window_surface_effects(self)
+
     def load(self, device, current_row):
         self.lblIP.setText(device['ip'])
         self.lblMAC.setText(device['mac'])

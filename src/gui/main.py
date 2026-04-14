@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QDialog, QFormLayout, QDialogButtonBox, QSpinBox, \
                             QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QGroupBox, \
                             QSizePolicy, QShortcut, QAbstractSpinBox, QLineEdit, \
-                            QTextEdit, QPlainTextEdit
+                            QTextEdit, QPlainTextEdit, QWidget
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer, QSize, QElapsedTimer
 try:
@@ -32,6 +32,12 @@ from tools.utils_gui import (
     import_settings,
     zubcut_dark_stylesheet,
     sync_translucent_chrome,
+    register_window_surface_effects,
+)
+from tools.frameless_chrome import (
+    FramelessResizableMixin,
+    setup_frameless_main_window,
+    CustomTitleBar,
 )
 from tools.keybinds import keyseq_from_setting
 from tools.branding import (
@@ -59,7 +65,7 @@ def _focus_widget_absorbs_letter_key(widget):
     return isinstance(widget, (QAbstractSpinBox, QLineEdit, QTextEdit, QPlainTextEdit))
 
 
-class LagSwitchDialog(QDialog):
+class LagSwitchDialog(FramelessResizableMixin, QDialog):
     """Non-modal panel: edit lag / allow times, then toggle lag switch on or off."""
 
     def __init__(self, parent=None):
@@ -67,12 +73,22 @@ class LagSwitchDialog(QDialog):
         self._main = parent
         # Only pull timings from MainWindow when the panel is opened (after hide), not on every showEvent.
         self._reload_timing_on_next_show = True
+        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self.setWindowTitle('Lag Switch')
         self.setModal(False)
         self.setMinimumWidth(350)
-        layout = QVBoxLayout(self)
 
-        self.btnLagStartStop = QPushButton('Start', self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        lag_icon = parent.icon if parent else None
+        root.addWidget(CustomTitleBar(self, 'Lag Switch', lag_icon, maximizable=False))
+
+        body = QWidget(self)
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        self.btnLagStartStop = QPushButton('Start', body)
         self.btnLagStartStop.setMinimumHeight(50)
         self.btnLagStartStop.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnLagStartStop.setToolTip(
@@ -87,7 +103,7 @@ class LagSwitchDialog(QDialog):
         layout.addWidget(self.btnLagStartStop)
 
         # Direction selection
-        self.dir_group = QGroupBox('Traffic Direction to Block')
+        self.dir_group = QGroupBox('Traffic Direction to Block', body)
         dir_layout = QVBoxLayout(self.dir_group)
 
         self.dirBoth = QCheckBox('Both directions (full lag)')
@@ -108,17 +124,17 @@ class LagSwitchDialog(QDialog):
         layout.addWidget(self.dir_group)
 
         # Timing section
-        self.timing_group = QGroupBox('Timing')
+        self.timing_group = QGroupBox('Timing', body)
         timing_layout = QFormLayout(self.timing_group)
 
-        self.lagSpin = QSpinBox(self)
+        self.lagSpin = QSpinBox(self.timing_group)
         self.lagSpin.setRange(1, 2147483647)
         self.lagSpin.setSingleStep(100)
         self.lagSpin.setValue(1500)
         self.lagSpin.setSuffix(' ms')
         timing_layout.addRow('Lag duration (block time)', self.lagSpin)
 
-        self.normalSpin = QSpinBox(self)
+        self.normalSpin = QSpinBox(self.timing_group)
         self.normalSpin.setRange(1, 2147483647)
         self.normalSpin.setSingleStep(100)
         self.normalSpin.setValue(1500)
@@ -131,7 +147,8 @@ class LagSwitchDialog(QDialog):
 
         info = QLabel(
             'Cycle: Lag time (top) = block + MITM on. Normal time (bottom) = full allow '
-            '(firewall off and ARP restored so traffic bypasses this PC). Then repeat.'
+            '(firewall off and ARP restored so traffic bypasses this PC). Then repeat.',
+            body,
         )
         info.setWordWrap(True)
         info.setStyleSheet('color: gray; font-size: 10px; padding: 5px;')
@@ -158,9 +175,14 @@ class LagSwitchDialog(QDialog):
 
         layout.addLayout(preset_layout)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Close, self)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, body)
         buttons.rejected.connect(self.hide)
         layout.addWidget(buttons)
+
+        root.addWidget(body, 1)
+        if parent is not None:
+            self.setStyleSheet(parent.styleSheet())
+        register_window_surface_effects(self)
 
     def _on_m_key_pressed(self):
         if QApplication.activeWindow() is not self:
@@ -315,19 +337,29 @@ class LagSwitchDialog(QDialog):
         return self.lagSpin.value(), self.normalSpin.value(), direction
 
 
-class DupeDialog(QDialog):
+class DupeDialog(FramelessResizableMixin, QDialog):
     """One-shot timed block: lag for N ms, then fully release (no repeat)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._main = parent
         self._reload_on_next_show = True
+        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self.setWindowTitle('Dupe')
         self.setModal(False)
         self.setMinimumWidth(350)
-        layout = QVBoxLayout(self)
 
-        self.btnDupeRun = QPushButton('Run', self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        dupe_icon = parent.icon if parent else None
+        root.addWidget(CustomTitleBar(self, 'Dupe', dupe_icon, maximizable=False))
+
+        body = QWidget(self)
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        self.btnDupeRun = QPushButton('Run', body)
         self.btnDupeRun.setMinimumHeight(50)
         self.btnDupeRun.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnDupeRun.setToolTip(
@@ -337,7 +369,7 @@ class DupeDialog(QDialog):
         self.btnDupeRun.clicked.connect(self._on_run_clicked)
         layout.addWidget(self.btnDupeRun)
 
-        self.lblDupeCountdown = QLabel(self)
+        self.lblDupeCountdown = QLabel(body)
         self.lblDupeCountdown.setAlignment(Qt.AlignCenter)
         self.lblDupeCountdown.setWordWrap(True)
         cd_font = QFont(self.lblDupeCountdown.font())
@@ -352,7 +384,7 @@ class DupeDialog(QDialog):
         self._shortcut_p.setAutoRepeat(False)
         self._shortcut_p.activated.connect(self._on_p_key_pressed)
 
-        self.dir_group = QGroupBox('Traffic Direction to Block')
+        self.dir_group = QGroupBox('Traffic Direction to Block', body)
         dir_layout = QVBoxLayout(self.dir_group)
         self.dirBoth = QCheckBox('Both directions (full lag)')
         self.dirBoth.setChecked(True)
@@ -364,9 +396,9 @@ class DupeDialog(QDialog):
         dir_layout.addWidget(self.dirOutgoing)
         layout.addWidget(self.dir_group)
 
-        self.timing_group = QGroupBox('Duration')
+        self.timing_group = QGroupBox('Duration', body)
         timing_layout = QFormLayout(self.timing_group)
-        self.dupeSpin = QSpinBox(self)
+        self.dupeSpin = QSpinBox(self.timing_group)
         self.dupeSpin.setRange(1, 2147483647)
         self.dupeSpin.setSingleStep(100)
         self.dupeSpin.setValue(5000)
@@ -376,15 +408,21 @@ class DupeDialog(QDialog):
 
         info = QLabel(
             'Runs one block window for the duration above, then removes firewall rules and ARP spoof. '
-            'Does not repeat — use Lag Switch for on/off cycles.'
+            'Does not repeat — use Lag Switch for on/off cycles.',
+            body,
         )
         info.setWordWrap(True)
         info.setStyleSheet('color: gray; font-size: 10px; padding: 5px;')
         layout.addWidget(info)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Close, self)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, body)
         buttons.rejected.connect(self.hide)
         layout.addWidget(buttons)
+
+        root.addWidget(body, 1)
+        if parent is not None:
+            self.setStyleSheet(parent.styleSheet())
+        register_window_surface_effects(self)
 
     def _on_p_key_pressed(self):
         if QApplication.activeWindow() is not self:
@@ -532,7 +570,7 @@ class DupeDialog(QDialog):
 
 
 
-class ElmoCut(QMainWindow, Ui_MainWindow):
+class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def __init__(self, window_icon=None):
         super().__init__()
         self.version = '1.1.0'
@@ -615,16 +653,6 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.about_window = About(self, self.icon)
         self.device_window = Device(self, self.icon)
         self.traffic_window = Traffic(self, self.icon)
-
-        sync_translucent_chrome(
-            [
-                self,
-                self.settings_window,
-                self.about_window,
-                self.device_window,
-                self.traffic_window,
-            ],
-        )
 
         # Connect buttons with icons and tooltips
         self.buttons = [
@@ -748,6 +776,16 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         # Taskbar button (Windows only)
         self.taskbar_button = None
         self.taskbar_progress = None
+
+        setup_frameless_main_window(self, APP_DISPLAY_NAME, self.icon, maximizable=True)
+        _chrome_windows = [
+            self,
+            self.settings_window,
+            self.about_window,
+            self.device_window,
+            self.traffic_window,
+        ]
+        sync_translucent_chrome(_chrome_windows)
 
         self.applySettings()
 

@@ -5,9 +5,12 @@ from networking.sniffer import TrafficSniffer
 from networking.forwarder import MitmForwarder
 from tools.pfctl import ensure_pf_enabled, install_anchor, block_dst, unblock_dst, export_rules, import_rules, is_blocked, pf_self_check, list_rules
 from ui.ui_traffic import Ui_Traffic
+from constants import APP_DISPLAY_NAME
+from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
+from tools.utils_gui import register_window_surface_effects
 
 
-class Traffic(QMainWindow):
+class Traffic(FramelessResizableMixin, QMainWindow):
     def __init__(self, parent, icon):
         super().__init__()
         self.parent = parent
@@ -15,6 +18,9 @@ class Traffic(QMainWindow):
         self.setWindowIcon(icon)
         self.ui = Ui_Traffic()
         self.ui.setupUi(self)
+        self.setWindowTitle(f'{APP_DISPLAY_NAME} — Traffic')
+        setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=True)
+        register_window_surface_effects(self)
         self.sniffer = TrafficSniffer()
         self.forwarder = MitmForwarder()
         self.flows = {}

@@ -8,12 +8,14 @@ from tools.utils import goto
 from tools.branding import resolve_zubcut_png_path
 from assets import app_icon
 from constants import APP_DISPLAY_NAME
+from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
+from tools.utils_gui import register_window_surface_effects
 
 DISCORD_URL = 'https://discord.gg/zub'
 LINKTREE_URL = 'https://linktr.ee/zubcastle'
 
 
-class About(QMainWindow, Ui_MainWindow):
+class About(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def __init__(self, elmocut, icon):
         super().__init__()
         self.elmocut = elmocut
@@ -58,6 +60,9 @@ class About(QMainWindow, Ui_MainWindow):
         _path = resolve_zubcut_png_path()
         if _path:
             self._about_logo_full.load(_path)
+
+        setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
+        register_window_surface_effects(self)
 
     def add_credits_section(self):
         credits = QLabel(self.centralwidget)
