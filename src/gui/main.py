@@ -1,4 +1,6 @@
-﻿from pyperclip import copy
+﻿import time
+
+from pyperclip import copy
 
 from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessageBox, \
                             QMenu, QSystemTrayIcon, QAction, QPushButton, \
@@ -80,6 +82,7 @@ class LagSwitchDialog(QDialog):
         self.btnLagStartStop.clicked.connect(self._on_lag_start_stop_clicked)
         self._shortcut_m = QShortcut(QKeySequence(Qt.Key_M), self)
         self._shortcut_m.setContext(Qt.WindowShortcut)
+        self._shortcut_m.setAutoRepeat(False)
         self._shortcut_m.activated.connect(self._on_m_key_pressed)
         layout.addWidget(self.btnLagStartStop)
 
@@ -162,8 +165,11 @@ class LagSwitchDialog(QDialog):
     def _on_m_key_pressed(self):
         if QApplication.activeWindow() is not self:
             return
+        if not self.isActiveWindow():
+            return
         if _focus_widget_absorbs_letter_key(self.focusWidget()):
             return
+        # Same path as btnLagStartStop.clicked
         self._on_lag_start_stop_clicked()
 
     def showEvent(self, event):
@@ -256,6 +262,14 @@ class LagSwitchDialog(QDialog):
         main = self._main
         if not main:
             return
+        deb_mac = None
+        if main.tableScan.selectedItems():
+            try:
+                deb_mac = main.current_index()['mac']
+            except Exception:
+                pass
+        if deb_mac is None:
+            deb_mac = main.lag_device_mac
         running_here = False
         if main.tableScan.selectedItems():
             try:
@@ -263,6 +277,9 @@ class LagSwitchDialog(QDialog):
                 running_here = main.lag_active and main.lag_device_mac == dev['mac']
             except Exception:
                 pass
+        lag_edge = 'stop' if running_here else 'start'
+        if main._ignore_duplicate_toggle_edge('lag', deb_mac, lag_edge):
+            return
         if running_here:
             main.stopLagSwitch()
             return
@@ -332,6 +349,7 @@ class DupeDialog(QDialog):
 
         self._shortcut_p = QShortcut(QKeySequence(Qt.Key_P), self)
         self._shortcut_p.setContext(Qt.WindowShortcut)
+        self._shortcut_p.setAutoRepeat(False)
         self._shortcut_p.activated.connect(self._on_p_key_pressed)
 
         self.dir_group = QGroupBox('Traffic Direction to Block')
@@ -371,8 +389,11 @@ class DupeDialog(QDialog):
     def _on_p_key_pressed(self):
         if QApplication.activeWindow() is not self:
             return
+        if not self.isActiveWindow():
+            return
         if _focus_widget_absorbs_letter_key(self.focusWidget()):
             return
+        # Same path as btnDupeRun.clicked
         self._on_run_clicked()
 
     def showEvent(self, event):
@@ -476,6 +497,14 @@ class DupeDialog(QDialog):
         main = self._main
         if not main:
             return
+        deb_mac = None
+        if main.tableScan.selectedItems():
+            try:
+                deb_mac = main.current_index()['mac']
+            except Exception:
+                pass
+        if deb_mac is None:
+            deb_mac = main.dupe_device_mac
         running_here = False
         if main.tableScan.selectedItems():
             try:
@@ -483,6 +512,9 @@ class DupeDialog(QDialog):
                 running_here = main.dupe_active and main.dupe_device_mac == dev['mac']
             except Exception:
                 pass
+        dupe_edge = 'stop' if running_here else 'start'
+        if main._ignore_duplicate_toggle_edge('dupe', deb_mac, dupe_edge):
+            return
         if running_here:
             main.stopDupe()
             return
@@ -521,10 +553,12 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         self.btnScanEasy.setShortcut(QKeySequence())
         sc_arp_space = QShortcut(QKeySequence(Qt.Key_Space), self)
         sc_arp_space.setContext(Qt.WindowShortcut)
+        sc_arp_space.setAutoRepeat(False)
         sc_arp_space.activated.connect(self._shortcut_scan_easy)
 
         self._shortcut_kill_l = QShortcut(QKeySequence(Qt.Key_L), self)
         self._shortcut_kill_l.setContext(Qt.WindowShortcut)
+        self._shortcut_kill_l.setAutoRepeat(False)
         self._shortcut_kill_l.activated.connect(self._shortcut_main_l)
 
         # Main Props
@@ -1081,6 +1115,9 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             if rem_device['mac'] in get_settings('killed') * self.remember:
                 self.killer.kill(rem_device)
 
+        # Killer holds ARP for lag/dupe too; Kill button tracks explicit kill / restore only.
+        for mac in self.killer.killed:
+            self.killed_devices[mac] = True
         self._sync_killed_devices()
 
         # clear old database
@@ -1113,6 +1150,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         
         # Killing process
         self.killer.kill(device)
+        self.killed_devices[device['mac']] = True
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
         self.log('Killed ' + device['ip'], 'fuchsia')
@@ -1162,6 +1200,8 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             return
         
         self.killer.kill_all(self.scanner.devices)
+        for mac in self.killer.killed:
+            self.killed_devices[mac] = True
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
         self.log('Killed All devices', 'fuchsia')
@@ -1273,6 +1313,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         k_lag = keyseq_from_setting(s.get('key_lag'), Qt.Key_M)
         k_dupe = keyseq_from_setting(s.get('key_dupe'), Qt.Key_P)
         self._shortcut_kill_l.setKey(k_kill)
+        self._shortcut_kill_l.setAutoRepeat(False)
         nk = k_kill.toString(QKeySequence.NativeText)
         nl = k_lag.toString(QKeySequence.NativeText)
         np = k_dupe.toString(QKeySequence.NativeText)
@@ -1293,6 +1334,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         lag = self.lag_switch_dialog
         if lag:
             lag._shortcut_m.setKey(k_lag)
+            lag._shortcut_m.setAutoRepeat(False)
             lag.btnLagStartStop.setToolTip(
                 'Start or stop intermittent lag for the device selected in the main list. '
                 'Shortcut: %s when this window is active (not in ms fields).' % nl
@@ -1300,6 +1342,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         dupe = self.dupe_switch_dialog
         if dupe:
             dupe._shortcut_p.setKey(k_dupe)
+            dupe._shortcut_p.setAutoRepeat(False)
             dupe.btnDupeRun.setToolTip(
                 'Run a single lag burst for the device selected in the main list, then stop completely. '
                 'Shortcut: %s when this window is active (not in ms fields).' % np
@@ -1313,8 +1356,9 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             return
         if _focus_widget_absorbs_letter_key(self.focusWidget()):
             return
-        if self.btnKill.isEnabled():
-            self.toggleKill()
+        # Same handler as btnKill.clicked — do not gate on btnKill.isEnabled(); toggleKill
+        # enforces connected(), selection, and admin the same for mouse and keyboard.
+        self.toggleKill()
 
     def openLagSwitchDialog(self):
         if not self.connected():
@@ -1561,6 +1605,29 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
 
+    def _ignore_duplicate_toggle_edge(self, kind: str, mac: str | None, edge: str) -> bool:
+        """
+        Ignore a second identical edge (same MAC, same activate/stop/…) within a few
+        ms — filters duplicate key deliveries in one tick. Alternating on/off is not delayed.
+        Held keys: use QShortcut.setAutoRepeat(False).
+        """
+        if not mac:
+            return False
+        now = time.monotonic()
+        mac_attr = f'_{kind}_edge_debounce_mac'
+        edge_attr = f'_{kind}_edge_debounce_edge'
+        until_attr = f'_{kind}_edge_debounce_until'
+        if (
+            mac == getattr(self, mac_attr, None)
+            and edge == getattr(self, edge_attr, None)
+            and now < getattr(self, until_attr, 0.0)
+        ):
+            return True
+        setattr(self, mac_attr, mac)
+        setattr(self, edge_attr, edge)
+        setattr(self, until_attr, now + 0.005)
+        return False
+
     def toggleKill(self):
         if not self.connected():
             return
@@ -1573,7 +1640,10 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             return
 
         mac = device['mac']
-        is_active = self.killed_devices.get(mac, mac in self.killer.killed)
+        is_active = bool(self.killed_devices.get(mac, False))
+        kill_edge = 'deactivate' if is_active else 'activate'
+        if self._ignore_duplicate_toggle_edge('kill', mac, kill_edge):
+            return
 
         if is_active:
             if self.dupe_active and self.dupe_device_mac == mac:
@@ -1605,12 +1675,14 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
         return self.scanner.devices[row]
 
     def _sync_killed_devices(self):
+        """
+        Drop Kill-toggle bookkeeping when a MAC is no longer in killer.killed.
+        Do not set True for every killer victim — lag/dupe also use killer.killed for ARP.
+        """
         active_macs = set(self.killer.killed.keys())
         for mac in list(self.killed_devices.keys()):
             if mac not in active_macs:
                 self.killed_devices[mac] = False
-        for mac in active_macs:
-            self.killed_devices[mac] = True
 
     def _updateKillButtonState(self):
         device = self._get_selected_device()
@@ -1620,7 +1692,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             return
 
         mac = device['mac']
-        is_active = self.killed_devices.get(mac, mac in self.killer.killed)
+        is_active = bool(self.killed_devices.get(mac, False))
         if is_active:
             self.btnKill.setText('■ KILL: ON')
             self.btnKill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)

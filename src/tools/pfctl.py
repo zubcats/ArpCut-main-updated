@@ -338,7 +338,7 @@ def block_ip(iface: str, ip: str, direction: str = 'both') -> bool:
     if not _is_valid_ip(ip):
         _set_err(f'Invalid IP address: {ip}')
         return False
-    
+
     if sys.platform == 'darwin':
         # macOS anchors don't support 'in'/'out' keywords - blocks both directions
         # Block traffic FROM the IP and TO the IP

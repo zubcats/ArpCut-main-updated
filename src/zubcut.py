@@ -36,19 +36,19 @@ if __name__ == "__main__":
                     MsgIcon.CRITICAL, icon, Buttons.OK | Buttons.CANCEL) == Buttons.OK:
             goto(NPCAP_URL)
         exit(1)
-    
+
     # Check if another instance is running
     if duplicate_zubcut():
         msg_box(APP_DISPLAY_NAME, f'{APP_DISPLAY_NAME} is already running!', MsgIcon.WARN, icon)
         exit(1)
-    
+
     # Run the GUI
     migrate_settings_file()
     repair_settings()
     GUI = ElmoCut(window_icon=icon)
     GUI.show()
     GUI.resizeEvent()
-    
+
     # Initialize scanner and ensure interface is valid
     GUI.scanner.init()
     if GUI.scanner.iface.name == 'NULL':
@@ -56,7 +56,7 @@ if __name__ == "__main__":
         from tools.utils import get_default_iface
         GUI.scanner.iface = get_default_iface()
         GUI.scanner.init()
-    
+
     # Ensure "Me" and "Router" are added immediately
     try:
         GUI.scanner.add_me()
@@ -64,7 +64,7 @@ if __name__ == "__main__":
         GUI.showDevices()  # Show at least "Me" and "Router" on startup
     except Exception as e:
         GUI.log(f'Warning: Could not initialize local devices: {e}', 'orange')
-    
+
     GUI.scanner.flush_arp()
 
     # On macOS/Linux when not root, avoid ARP scan (requires /dev/bpf) and use Ping scan

