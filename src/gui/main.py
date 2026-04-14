@@ -1668,12 +1668,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         desired_on = not bool(self.killed_devices.get(mac, False))
         self.killed_devices[mac] = desired_on
 
+        # Avoid stacked state sources: if lag/dupe own this MAC, stop them first.
+        if self.lag_active and self.lag_device_mac == mac:
+            self.stopLagSwitch(refresh_dialog=True)
+        if self.dupe_active and self.dupe_device_mac == mac:
+            self.stopDupe(log=False)
+
         if desired_on:
             self.killer.kill(device)
             self.log('Kill ON for ' + device['ip'], 'fuchsia')
         else:
-            if self.dupe_active and self.dupe_device_mac == mac:
-                self.stopDupe(log=False)
             # Always attempt unkill, even if victim lookup races.
             victim = self._victim_record_for_mac(mac) or device
             self.killer.unkill(victim)
@@ -1684,6 +1688,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         set_settings('killed', list(self.killer.killed) * self.remember)
         self._updateKillButtonState()
         self.showDevices()
+        self._schedule_kill_reconcile(mac)
 
     def _get_selected_device(self):
         if not self.tableScan.selectedItems():
@@ -1737,4 +1742,35 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if fresh:
             victim['ip'] = fresh['ip']
         return victim
+
+    def _schedule_kill_reconcile(self, mac):
+        """Re-apply intended Kill state shortly after toggle to defeat rapid-click races."""
+        if not mac:
+            return
+        QTimer.singleShot(60, lambda m=mac: self._reconcile_kill_state(m))
+
+    def _reconcile_kill_state(self, mac):
+        """
+        Ensure backend (killer.killed) matches explicit UI intent (killed_devices) for Kill toggle.
+        No input delay: this runs after the click returns.
+        """
+        desired_on = bool(self.killed_devices.get(mac, False))
+        actual_on = mac in self.killer.killed
+        if desired_on == actual_on:
+            return
+
+        device = self._get_device_by_mac(mac) or self.killer.killed.get(mac)
+        if desired_on:
+            if device:
+                self.killer.kill(device)
+                self.killed_devices[mac] = True
+                self._sync_killed_devices()
+        else:
+            victim = self._victim_record_for_mac(mac) or device
+            if victim:
+                self.killer.unkill(victim)
+            self.killed_devices[mac] = False
+            self._sync_killed_devices()
+
+        self._updateKillButtonState()
 
