@@ -156,9 +156,22 @@ class Killer:
         seq = self._next_op_seq(victim['mac'])
         if victim['mac'] in self.killed:
             self.killed.pop(victim['mac'])
-        # Apply one immediate restore burst on caller thread so UI OFF matches network quickly.
-        self._restore_arp_now(victim, seq, repeats=1, delay_s=0.0)
+        # Strong immediate restore burst so OFF reflects on network quickly.
+        self._restore_arp_now(victim, seq, repeats=3, delay_s=0.05)
         self._unkill_restore_worker(victim, seq)
+
+    def reinforce_restore(self, victim):
+        """
+        Extra best-effort restore packets for a victim that should already be OFF.
+        Safe no-op when victim is currently killed again.
+        """
+        mac = victim.get('mac') if isinstance(victim, dict) else None
+        if not mac:
+            return
+        if mac in self.killed:
+            return
+        seq = self._op_seq.get(mac, 0)
+        self._restore_arp_now(victim, seq, repeats=2, delay_s=0.05)
 
     def _restore_arp_now(self, victim, seq=0, repeats=1, delay_s=0.1):
         """Best-effort ARP restore; aborts if a newer op supersedes this sequence."""
@@ -191,7 +204,7 @@ class Killer:
     @threaded
     def _unkill_restore_worker(self, victim, seq=0):
         # Follow-up restore bursts to reinforce cache correction.
-        self._restore_arp_now(victim, seq, repeats=2, delay_s=0.1)
+        self._restore_arp_now(victim, seq, repeats=3, delay_s=0.1)
         if self._op_seq.get(victim['mac']) == seq and victim['mac'] not in self.killed:
             self._stop_forwarder(victim['mac'])
             self._remove_pf_block(victim['ip'])

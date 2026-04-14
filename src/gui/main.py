@@ -1747,7 +1747,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Re-apply intended Kill state shortly after toggle to defeat rapid-click races."""
         if not mac:
             return
-        QTimer.singleShot(60, lambda m=mac: self._reconcile_kill_state(m))
+        for delay_ms in (40, 140, 320):
+            QTimer.singleShot(delay_ms, lambda m=mac: self._reconcile_kill_state(m))
 
     def _reconcile_kill_state(self, mac):
         """
@@ -1757,6 +1758,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         desired_on = bool(self.killed_devices.get(mac, False))
         actual_on = mac in self.killer.killed
         if desired_on == actual_on:
+            if not desired_on:
+                # Even when backend state already says OFF, reinforce ARP restore for sticky caches.
+                victim = self._get_device_by_mac(mac)
+                if victim:
+                    self.killer.reinforce_restore(victim)
             return
 
         device = self._get_device_by_mac(mac) or self.killer.killed.get(mac)
@@ -1769,6 +1775,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             victim = self._victim_record_for_mac(mac) or device
             if victim:
                 self.killer.unkill(victim)
+                self.killer.reinforce_restore(victim)
             self.killed_devices[mac] = False
             self._sync_killed_devices()
 
