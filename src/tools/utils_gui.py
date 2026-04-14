@@ -17,14 +17,16 @@ from constants import *
 
 # Solid black behind qdarkstyle so “dead space” is opaque (no desktop bleed-through).
 _MAIN_CHROME_BG = "#000000"
+# Backward compatibility for older packaged constants modules.
+_WINDOW_CORNER_RADIUS = int(globals().get('WINDOW_CORNER_RADIUS_PX', 12))
 TRANSLUCENT_MAIN_CHROME_QSS = f"""
 QMainWindow {{
     background-color: {_MAIN_CHROME_BG};
-    border-radius: {WINDOW_CORNER_RADIUS_PX}px;
+    border-radius: {_WINDOW_CORNER_RADIUS}px;
 }}
 QWidget#centralwidget {{
     background-color: {_MAIN_CHROME_BG};
-    border-radius: {WINDOW_CORNER_RADIUS_PX}px;
+    border-radius: {_WINDOW_CORNER_RADIUS}px;
 }}
 """
 
@@ -43,7 +45,7 @@ def _update_top_level_round_mask(widget):
     w, h = widget.width(), widget.height()
     if w < 2 or h < 2:
         return
-    r = min(float(WINDOW_CORNER_RADIUS_PX), max(2.0, min(float(w), float(h)) / 2.0 - 1.0))
+    r = min(float(_WINDOW_CORNER_RADIUS), max(2.0, min(float(w), float(h)) / 2.0 - 1.0))
     path = QPainterPath()
     path.addRoundedRect(QRectF(0, 0, float(w), float(h)), r, r)
     widget.setMask(QRegion(path.toFillPolygon()))
