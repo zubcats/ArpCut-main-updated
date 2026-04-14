@@ -299,6 +299,8 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
                 running_here = main.lag_active and main.lag_device_mac == dev['mac']
             except Exception:
                 pass
+        if main._ignore_rapid_toggle_flip('lag', deb_mac):
+            return
         lag_edge = 'stop' if running_here else 'start'
         if main._ignore_duplicate_toggle_edge('lag', deb_mac, lag_edge):
             return
@@ -550,6 +552,8 @@ class DupeDialog(FramelessResizableMixin, QDialog):
                 running_here = main.dupe_active and main.dupe_device_mac == dev['mac']
             except Exception:
                 pass
+        if main._ignore_rapid_toggle_flip('dupe', deb_mac):
+            return
         dupe_edge = 'stop' if running_here else 'start'
         if main._ignore_duplicate_toggle_edge('dupe', deb_mac, dupe_edge):
             return
@@ -1666,6 +1670,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         setattr(self, until_attr, now + 0.03)
         return False
 
+    def _ignore_rapid_toggle_flip(self, kind: str, mac: str | None) -> bool:
+        """
+        Block ultra-fast re-toggles (including opposite edge) for the same MAC/control.
+        Prevents double-click and key-repeat from doing ON->OFF (or reverse) in one burst.
+        """
+        if not mac:
+            return False
+        now = time.monotonic()
+        mac_attr = f'_{kind}_flip_debounce_mac'
+        until_attr = f'_{kind}_flip_debounce_until'
+        if mac == getattr(self, mac_attr, None) and now < getattr(self, until_attr, 0.0):
+            return True
+        setattr(self, mac_attr, mac)
+        setattr(self, until_attr, now + 0.09)
+        return False
+
     def toggleKill(self):
         if not self.connected():
             return
@@ -1679,6 +1699,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         mac = device['mac']
         is_active = bool(self.killed_devices.get(mac, False))
+        if self._ignore_rapid_toggle_flip('kill', mac):
+            return
         kill_edge = 'deactivate' if is_active else 'activate'
         if self._ignore_duplicate_toggle_edge('kill', mac, kill_edge):
             return
