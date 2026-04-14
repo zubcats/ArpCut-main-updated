@@ -147,34 +147,39 @@ class CustomTitleBar(QFrame):
             QFrame#zubcutTitleBar QLabel#titleLabel {{
                 color: #e8eaed;
                 font-size: 13px;
+                background: transparent;
+            }}
+            QFrame#zubcutTitleBar QLabel#logoLabel {{
+                border: none;
+                background: transparent;
             }}
             QFrame#zubcutTitleBar QToolButton {{
-                background-color: transparent;
-                border: 1px solid #000000;
+                background: transparent;
+                border: 1px solid transparent;
                 border-radius: 4px;
                 padding: 3px;
-                min-width: 28px;
-                min-height: 24px;
+                min-width: 22px;
+                min-height: 22px;
                 color: #8b909a;
             }}
             QFrame#zubcutTitleBar QToolButton:hover {{
-                background-color: #40454f;
-                border: 1px solid #000000;
+                background-color: #3a3f49;
+                border: 1px solid #3a3f49;
                 color: #aeb4bf;
             }}
             QFrame#zubcutTitleBar QToolButton:pressed {{
                 background-color: #353942;
-                border: 1px solid #000000;
+                border: 1px solid #353942;
                 color: #8b909a;
             }}
             QFrame#zubcutTitleBar QToolButton#closeButton:hover {{
                 background-color: #c0392b;
-                border: 1px solid #000000;
+                border: 1px solid #c0392b;
                 color: #f2f2f2;
             }}
             QFrame#zubcutTitleBar QToolButton#closeButton:pressed {{
                 background-color: #a93226;
-                border: 1px solid #000000;
+                border: 1px solid #a93226;
                 color: #f2f2f2;
             }}
             """
@@ -184,11 +189,19 @@ class CustomTitleBar(QFrame):
         row.setContentsMargins(8, 0, 6, 0)
         row.setSpacing(6)
 
-        _icon_px = 30
+        _icon_px = 32
         self._icon_label = QLabel(self)
+        self._icon_label.setObjectName("logoLabel")
         self._icon_label.setFixedSize(_icon_px, _icon_px)
+        self._icon_label.setAlignment(Qt.AlignCenter)
         if icon is not None and not icon.isNull():
-            self._icon_label.setPixmap(icon.pixmap(_icon_px, _icon_px))
+            pm = icon.pixmap(_icon_px * 2, _icon_px * 2).scaled(
+                _icon_px,
+                _icon_px,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            self._icon_label.setPixmap(pm)
         else:
             self._icon_label.hide()
 

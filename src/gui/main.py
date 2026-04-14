@@ -602,6 +602,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setupUi(self)
         self.setWindowTitle(APP_DISPLAY_NAME)
         self.setStyleSheet(zubcut_dark_stylesheet())
+        # Rebalance top toolbar row so right-side empty space is used more evenly.
+        self.gridLayout.removeWidget(self.btnSettings)
+        self.gridLayout.removeWidget(self.btnAbout)
+        self.gridLayout.addWidget(self.btnSettings, 0, 6, 2, 1)
+        self.gridLayout.addWidget(self.btnAbout, 0, 7, 2, 2)
+        self.gridLayout.setColumnStretch(0, 0)
+        for _col in range(1, 9):
+            self.gridLayout.setColumnStretch(_col, 1)
 
         # Space was bound in the .ui to ARP scan; only fire when the main window is foreground.
         self.btnScanEasy.setShortcut(QKeySequence())
