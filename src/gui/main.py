@@ -1608,7 +1608,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
     def _ignore_duplicate_toggle_edge(self, kind: str, mac: str | None, edge: str) -> bool:
         """
         Ignore a second identical edge (same MAC, same activate/stop/…) within a few
-        ms — filters duplicate key deliveries in one tick. Alternating on/off is not delayed.
+        ms — filters duplicate clicks / key deliveries. Alternating on/off is not delayed.
         Held keys: use QShortcut.setAutoRepeat(False).
         """
         if not mac:
@@ -1625,7 +1625,7 @@ class ElmoCut(QMainWindow, Ui_MainWindow):
             return True
         setattr(self, mac_attr, mac)
         setattr(self, edge_attr, edge)
-        setattr(self, until_attr, now + 0.005)
+        setattr(self, until_attr, now + 0.03)
         return False
 
     def toggleKill(self):
