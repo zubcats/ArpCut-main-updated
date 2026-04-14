@@ -9,23 +9,22 @@ except Exception:
     winreg = None
 
 from qdarkstyle import load_stylesheet
-from PyQt5.QtCore import Qt, QObject, QEvent
+from PyQt5.QtCore import Qt, QObject, QEvent, QRectF
+from PyQt5.QtGui import QPainterPath, QRegion
 
 from tools.utils import terminal
 from constants import *
 
 # Solid black behind qdarkstyle so “dead space” is opaque (no desktop bleed-through).
 _MAIN_CHROME_BG = "#000000"
-# Whole-window outline only (not per-widget). Windows 11 also gets native rounding via DWM below.
-_WINDOW_CORNER_RADIUS_PX = 12
 TRANSLUCENT_MAIN_CHROME_QSS = f"""
 QMainWindow {{
     background-color: {_MAIN_CHROME_BG};
-    border-radius: {_WINDOW_CORNER_RADIUS_PX}px;
+    border-radius: {WINDOW_CORNER_RADIUS_PX}px;
 }}
 QWidget#centralwidget {{
     background-color: {_MAIN_CHROME_BG};
-    border-radius: {_WINDOW_CORNER_RADIUS_PX}px;
+    border-radius: {WINDOW_CORNER_RADIUS_PX}px;
 }}
 """
 
@@ -34,25 +33,43 @@ def zubcut_dark_stylesheet():
     return load_stylesheet() + "\n" + TRANSLUCENT_MAIN_CHROME_QSS
 
 
-class _RoundedCornerShowFilter(QObject):
-    """Apply DWM non-client tweaks once the HWND exists (first Show)."""
+def _update_top_level_round_mask(widget):
+    """Clip the entire top-level window to a rounded rect (fixes square corners / bleed-through)."""
+    if widget is None or not widget.isWindow():
+        return
+    if widget.isMaximized() or widget.isFullScreen():
+        widget.clearMask()
+        return
+    w, h = widget.width(), widget.height()
+    if w < 2 or h < 2:
+        return
+    r = min(float(WINDOW_CORNER_RADIUS_PX), max(2.0, min(float(w), float(h)) / 2.0 - 1.0))
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, float(w), float(h)), r, r)
+    widget.setMask(QRegion(path.toFillPolygon()))
+
+
+class _WindowChromeEventFilter(QObject):
+    """First Show: DWM hints. Show/resize/state: rounded QWidget mask for frameless windows."""
 
     def __init__(self, parent_widget):
         super().__init__(parent_widget)
-        self._applied = False
+        self._dwm_applied = False
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.Show and not self._applied:
-            self._applied = True
+        t = event.type()
+        if t == QEvent.Show and not self._dwm_applied:
+            self._dwm_applied = True
             _apply_win32_dwm_window_chrome(obj)
+        if t in (QEvent.Show, QEvent.Resize, QEvent.WindowStateChange):
+            _update_top_level_round_mask(obj)
         return False
 
 
 def _apply_win32_dwm_window_chrome(widget):
     """
-    Windows10 (1809+) /11: dark native title bar (immersive dark mode).
-    Windows 11: also request rounded window corners.
-    No-op on failure or non-Windows.
+    Same DWM calls on every Windows version we support: immersive dark + optional round-corners hint.
+    Older builds ignore attributes they do not implement. Rounded outline is always from the Qt mask.
     """
     if not sys.platform.startswith('win'):
         return
@@ -62,8 +79,10 @@ def _apply_win32_dwm_window_chrome(widget):
             return
         dwm = ctypes.windll.dwmapi
         hwnd_p = ctypes.c_void_p(hwnd)
+    except Exception:
+        return
 
-        # Dark caption / title bar to match qdarkstyle (not a custom-drawn bar).
+    try:
         DWMWA_USE_IMMERSIVE_DARK_MODE = 20
         dark = ctypes.c_int(1)
         dwm.DwmSetWindowAttribute(
@@ -72,7 +91,10 @@ def _apply_win32_dwm_window_chrome(widget):
             ctypes.byref(dark),
             ctypes.sizeof(dark),
         )
+    except Exception:
+        pass
 
+    try:
         DWMWA_WINDOW_CORNER_PREFERENCE = 33
         DWMWCP_ROUND = 2
         preference = ctypes.c_uint(DWMWCP_ROUND)
@@ -87,14 +109,14 @@ def _apply_win32_dwm_window_chrome(widget):
 
 
 def register_window_surface_effects(window_widget):
-    """Translucent client + DWM rounding/dark (idempotent). Use for any top-level window."""
+    """Translucent client + DWM hints (same path on all Windows); Qt mask provides the real rounded clip."""
     if window_widget is None:
         return
     window_widget.setAttribute(Qt.WA_TranslucentBackground, True)
     if getattr(window_widget, '_zubcut_round_filter_installed', False):
         return
     window_widget._zubcut_round_filter_installed = True
-    window_widget.installEventFilter(_RoundedCornerShowFilter(window_widget))
+    window_widget.installEventFilter(_WindowChromeEventFilter(window_widget))
 
 
 def sync_translucent_chrome(windows):

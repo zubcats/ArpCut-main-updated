@@ -21,6 +21,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from constants import WINDOW_CORNER_RADIUS_PX
+
 # Title-bar control glyphs (styled via QSS color; standard pixmaps cannot be tinted).
 _GLYPH_MIN = "\u2212"  # minus
 _GLYPH_MAX = "\u25A1"  # square (maximize)
@@ -131,17 +133,19 @@ class CustomTitleBar(QFrame):
         self.setFixedHeight(36)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(
-            """
-            QFrame#zubcutTitleBar {
+            f"""
+            QFrame#zubcutTitleBar {{
                 background-color: #2d323c;
                 border: none;
                 border-bottom: 1px solid #3d4a5c;
-            }
-            QFrame#zubcutTitleBar QLabel#titleLabel {
+                border-top-left-radius: {WINDOW_CORNER_RADIUS_PX}px;
+                border-top-right-radius: {WINDOW_CORNER_RADIUS_PX}px;
+            }}
+            QFrame#zubcutTitleBar QLabel#titleLabel {{
                 color: #e8eaed;
                 font-size: 13px;
-            }
-            QFrame#zubcutTitleBar QToolButton {
+            }}
+            QFrame#zubcutTitleBar QToolButton {{
                 background-color: transparent;
                 border: 1px solid #000000;
                 border-radius: 4px;
@@ -149,27 +153,27 @@ class CustomTitleBar(QFrame):
                 min-width: 28px;
                 min-height: 24px;
                 color: #8b909a;
-            }
-            QFrame#zubcutTitleBar QToolButton:hover {
+            }}
+            QFrame#zubcutTitleBar QToolButton:hover {{
                 background-color: #40454f;
                 border: 1px solid #000000;
                 color: #aeb4bf;
-            }
-            QFrame#zubcutTitleBar QToolButton:pressed {
+            }}
+            QFrame#zubcutTitleBar QToolButton:pressed {{
                 background-color: #353942;
                 border: 1px solid #000000;
                 color: #8b909a;
-            }
-            QFrame#zubcutTitleBar QToolButton#closeButton:hover {
+            }}
+            QFrame#zubcutTitleBar QToolButton#closeButton:hover {{
                 background-color: #c0392b;
                 border: 1px solid #000000;
                 color: #f2f2f2;
-            }
-            QFrame#zubcutTitleBar QToolButton#closeButton:pressed {
+            }}
+            QFrame#zubcutTitleBar QToolButton#closeButton:pressed {{
                 background-color: #a93226;
                 border: 1px solid #000000;
                 color: #f2f2f2;
-            }
+            }}
             """
         )
 

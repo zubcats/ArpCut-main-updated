@@ -33,6 +33,9 @@ if sys.platform.startswith('win'):
 
 TABLE_HEADER_LABELS = ['IP Address', 'MAC Address', 'Vendor', 'Type', 'Nickname']
 
+# Frameless / stylesheet corner radius (logical px); mask uses same value to avoid corner bleed.
+WINDOW_CORNER_RADIUS_PX = 12
+
 # Windows-only Npcap details (ignored on macOS/Linux)
 NPCAP_URL = 'https://nmap.org/npcap/dist/npcap-1.50.exe'
 NPCAP_PATH = 'C:\\Windows\\SysWOW64\\Npcap'
