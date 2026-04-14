@@ -248,9 +248,11 @@ class CustomTitleBar(QFrame):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            w = self._window.windowHandle()
-            if w is not None:
-                w.startSystemMove()
+            child = self.childAt(event.pos())
+            if child not in (self._btn_min, self._btn_max, self._btn_close):
+                w = self._window.windowHandle()
+                if w is not None:
+                    w.startSystemMove()
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):

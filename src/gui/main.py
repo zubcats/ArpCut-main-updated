@@ -284,39 +284,45 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         main = self._main
         if not main:
             return
-        deb_mac = None
-        if main.tableScan.selectedItems():
-            try:
-                deb_mac = main.current_index()['mac']
-            except Exception:
-                pass
-        if deb_mac is None:
-            deb_mac = main.lag_device_mac
-        running_here = False
-        if main.tableScan.selectedItems():
-            try:
-                dev = main.current_index()
-                running_here = main.lag_active and main.lag_device_mac == dev['mac']
-            except Exception:
-                pass
-        if main._ignore_rapid_toggle_flip('lag', deb_mac):
+        if getattr(main, '_lag_toggle_inflight', False):
             return
-        lag_edge = 'stop' if running_here else 'start'
-        if main._ignore_duplicate_toggle_edge('lag', deb_mac, lag_edge):
-            return
-        if running_here:
-            main.stopLagSwitch()
-            return
-        if not main.tableScan.selectedItems():
-            main.log('No device selected', 'red')
-            return
-        device = main.current_index()
-        if device['admin']:
-            main.log('Cannot lag admin device', 'orange')
-            return
-        lag_ms, normal_ms, direction = self.values()
-        main.applyLagSwitchSettings(lag_ms, normal_ms, direction)
-        main.startLagSwitch(device)
+        main._lag_toggle_inflight = True
+        try:
+            deb_mac = None
+            if main.tableScan.selectedItems():
+                try:
+                    deb_mac = main.current_index()['mac']
+                except Exception:
+                    pass
+            if deb_mac is None:
+                deb_mac = main.lag_device_mac
+            running_here = False
+            if main.tableScan.selectedItems():
+                try:
+                    dev = main.current_index()
+                    running_here = main.lag_active and main.lag_device_mac == dev['mac']
+                except Exception:
+                    pass
+            if main._ignore_rapid_toggle_flip('lag', deb_mac):
+                return
+            lag_edge = 'stop' if running_here else 'start'
+            if main._ignore_duplicate_toggle_edge('lag', deb_mac, lag_edge):
+                return
+            if running_here:
+                main.stopLagSwitch()
+                return
+            if not main.tableScan.selectedItems():
+                main.log('No device selected', 'red')
+                return
+            device = main.current_index()
+            if device['admin']:
+                main.log('Cannot lag admin device', 'orange')
+                return
+            lag_ms, normal_ms, direction = self.values()
+            main.applyLagSwitchSettings(lag_ms, normal_ms, direction)
+            main.startLagSwitch(device)
+        finally:
+            main._lag_toggle_inflight = False
 
     def _on_both_toggled(self, checked):
         if checked:
@@ -537,47 +543,53 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         main = self._main
         if not main:
             return
-        deb_mac = None
-        if main.tableScan.selectedItems():
-            try:
-                deb_mac = main.current_index()['mac']
-            except Exception:
-                pass
-        if deb_mac is None:
-            deb_mac = main.dupe_device_mac
-        running_here = False
-        if main.tableScan.selectedItems():
-            try:
-                dev = main.current_index()
-                running_here = main.dupe_active and main.dupe_device_mac == dev['mac']
-            except Exception:
-                pass
-        if main._ignore_rapid_toggle_flip('dupe', deb_mac):
+        if getattr(main, '_dupe_toggle_inflight', False):
             return
-        dupe_edge = 'stop' if running_here else 'start'
-        if main._ignore_duplicate_toggle_edge('dupe', deb_mac, dupe_edge):
-            return
-        if running_here:
-            main.stopDupe()
-            return
-        if not main.tableScan.selectedItems():
-            main.log('No device selected', 'red')
-            return
-        device = main.current_index()
-        if device['admin']:
-            main.log('Cannot dupe admin device', 'orange')
-            return
-        ms, direction = self.values()
-        main.dupe_duration_ms = ms
-        main.dupe_direction = direction
-        main.startDupe(device, ms, direction)
+        main._dupe_toggle_inflight = True
+        try:
+            deb_mac = None
+            if main.tableScan.selectedItems():
+                try:
+                    deb_mac = main.current_index()['mac']
+                except Exception:
+                    pass
+            if deb_mac is None:
+                deb_mac = main.dupe_device_mac
+            running_here = False
+            if main.tableScan.selectedItems():
+                try:
+                    dev = main.current_index()
+                    running_here = main.dupe_active and main.dupe_device_mac == dev['mac']
+                except Exception:
+                    pass
+            if main._ignore_rapid_toggle_flip('dupe', deb_mac):
+                return
+            dupe_edge = 'stop' if running_here else 'start'
+            if main._ignore_duplicate_toggle_edge('dupe', deb_mac, dupe_edge):
+                return
+            if running_here:
+                main.stopDupe()
+                return
+            if not main.tableScan.selectedItems():
+                main.log('No device selected', 'red')
+                return
+            device = main.current_index()
+            if device['admin']:
+                main.log('Cannot dupe admin device', 'orange')
+                return
+            ms, direction = self.values()
+            main.dupe_duration_ms = ms
+            main.dupe_direction = direction
+            main.startDupe(device, ms, direction)
+        finally:
+            main._dupe_toggle_inflight = False
 
 
 
 class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def __init__(self, window_icon=None):
         super().__init__()
-        self.version = '1.1.0'
+        self.version = '1.29'
         if window_icon is not None:
             self.icon = window_icon
         else:
@@ -1670,7 +1682,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         setattr(self, until_attr, now + 0.03)
         return False
 
-    def _ignore_rapid_toggle_flip(self, kind: str, mac: str | None) -> bool:
+    def _ignore_rapid_toggle_flip(self, kind: str, mac: str | None, window_s: float = 0.09) -> bool:
         """
         Block ultra-fast re-toggles (including opposite edge) for the same MAC/control.
         Prevents double-click and key-repeat from doing ON->OFF (or reverse) in one burst.
@@ -1683,48 +1695,55 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if mac == getattr(self, mac_attr, None) and now < getattr(self, until_attr, 0.0):
             return True
         setattr(self, mac_attr, mac)
-        setattr(self, until_attr, now + 0.09)
+        setattr(self, until_attr, now + float(window_s))
         return False
 
     def toggleKill(self):
-        if not self.connected():
+        # Guard against re-entrant/double-dispatched clicks/shortcuts while one toggle is running.
+        if getattr(self, '_kill_toggle_inflight', False):
             return
-        device = self._get_selected_device()
-        if not device:
-            self.log('No device selected', 'red')
-            return
-        if device['admin']:
-            self.log('Cannot kill admin device', 'orange')
-            return
-
-        mac = device['mac']
-        is_active = bool(self.killed_devices.get(mac, False))
-        if self._ignore_rapid_toggle_flip('kill', mac):
-            return
-        kill_edge = 'deactivate' if is_active else 'activate'
-        if self._ignore_duplicate_toggle_edge('kill', mac, kill_edge):
-            return
-
-        if is_active:
-            if self.dupe_active and self.dupe_device_mac == mac:
-                self.stopDupe(log=False)
-            victim = self._victim_record_for_mac(mac)
-            if not victim:
-                self._sync_killed_devices()
-                self._updateKillButtonState()
+        self._kill_toggle_inflight = True
+        try:
+            if not self.connected():
                 return
-            self.killer.unkill(victim)
-            self.killed_devices[mac] = False
-            self.log('Kill OFF for ' + victim['ip'], 'lime')
-        else:
-            self.killer.kill(device)
-            self.killed_devices[mac] = True
-            self.log('Kill ON for ' + device['ip'], 'fuchsia')
+            device = self._get_selected_device()
+            if not device:
+                self.log('No device selected', 'red')
+                return
+            if device['admin']:
+                self.log('Cannot kill admin device', 'orange')
+                return
 
-        self._sync_killed_devices()
-        set_settings('killed', list(self.killer.killed) * self.remember)
-        self._updateKillButtonState()
-        self.showDevices()
+            mac = device['mac']
+            is_active = bool(self.killed_devices.get(mac, False))
+            if self._ignore_rapid_toggle_flip('kill', mac, window_s=0.28):
+                return
+            kill_edge = 'deactivate' if is_active else 'activate'
+            if self._ignore_duplicate_toggle_edge('kill', mac, kill_edge):
+                return
+
+            if is_active:
+                if self.dupe_active and self.dupe_device_mac == mac:
+                    self.stopDupe(log=False)
+                victim = self._victim_record_for_mac(mac)
+                if not victim:
+                    self._sync_killed_devices()
+                    self._updateKillButtonState()
+                    return
+                self.killer.unkill(victim)
+                self.killed_devices[mac] = False
+                self.log('Kill OFF for ' + victim['ip'], 'lime')
+            else:
+                self.killer.kill(device)
+                self.killed_devices[mac] = True
+                self.log('Kill ON for ' + device['ip'], 'fuchsia')
+
+            self._sync_killed_devices()
+            set_settings('killed', list(self.killer.killed) * self.remember)
+            self._updateKillButtonState()
+            self.showDevices()
+        finally:
+            self._kill_toggle_inflight = False
 
     def _get_selected_device(self):
         if not self.tableScan.selectedItems():
