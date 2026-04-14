@@ -21,7 +21,10 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from constants import WINDOW_CORNER_RADIUS_PX
+from constants import *
+
+# Backward compatibility for older packaged constants modules.
+WINDOW_CORNER_RADIUS_PX = int(globals().get('WINDOW_CORNER_RADIUS_PX', 12))
 
 # Title-bar control glyphs (styled via QSS color; standard pixmaps cannot be tinted).
 _GLYPH_MIN = "\u2212"  # minus
