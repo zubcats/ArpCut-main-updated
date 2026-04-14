@@ -190,12 +190,13 @@ class CustomTitleBar(QFrame):
         row.setSpacing(6)
 
         _icon_px = 32
+        _icon_box_px = _icon_px + 2
         self._icon_label = QLabel(self)
         self._icon_label.setObjectName("logoLabel")
-        self._icon_label.setFixedSize(_icon_px, _icon_px)
+        self._icon_label.setFixedSize(_icon_box_px, _icon_box_px)
         self._icon_label.setAlignment(Qt.AlignCenter)
         if icon is not None and not icon.isNull():
-            pm = icon.pixmap(_icon_px * 2, _icon_px * 2).scaled(
+            pm = icon.pixmap(_icon_box_px * 2, _icon_box_px * 2).scaled(
                 _icon_px,
                 _icon_px,
                 Qt.KeepAspectRatio,

@@ -280,11 +280,39 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
     def _reject_enable(self):
         self.refresh_toggle_state()
 
+    def _schedule_lag_toggle_flush(self, delay_s: float):
+        main = self._main
+        if not main:
+            return
+        if getattr(main, '_lag_toggle_flush_scheduled', False):
+            return
+        main._lag_toggle_flush_scheduled = True
+        delay_ms = max(1, int(max(0.0, float(delay_s)) * 1000))
+        QTimer.singleShot(delay_ms, self._flush_pending_lag_toggle)
+
+    def _flush_pending_lag_toggle(self):
+        main = self._main
+        if not main:
+            return
+        main._lag_toggle_flush_scheduled = False
+        if not getattr(main, '_lag_toggle_pending', False):
+            return
+        main._lag_toggle_pending = False
+        self._on_lag_start_stop_clicked()
+
     def _on_lag_start_stop_clicked(self):
         main = self._main
         if not main:
             return
+        now = time.monotonic()
+        settle_left = max(0.0, getattr(main, '_lag_toggle_settle_until', 0.0) - now)
+        if settle_left > 0.0:
+            main._lag_toggle_pending = True
+            self._schedule_lag_toggle_flush(settle_left)
+            return
         if getattr(main, '_lag_toggle_inflight', False):
+            main._lag_toggle_pending = True
+            self._schedule_lag_toggle_flush(0.01)
             return
         main._lag_toggle_inflight = True
         try:
@@ -310,6 +338,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
                 return
             if running_here:
                 main.stopLagSwitch()
+                main._lag_toggle_settle_until = time.monotonic() + 0.08
                 return
             if not main.tableScan.selectedItems():
                 main.log('No device selected', 'red')
@@ -321,8 +350,13 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
             lag_ms, normal_ms, direction = self.values()
             main.applyLagSwitchSettings(lag_ms, normal_ms, direction)
             main.startLagSwitch(device)
+            main._lag_toggle_settle_until = time.monotonic() + 0.08
         finally:
             main._lag_toggle_inflight = False
+            if getattr(main, '_lag_toggle_pending', False):
+                self._schedule_lag_toggle_flush(
+                    max(0.0, getattr(main, '_lag_toggle_settle_until', 0.0) - time.monotonic())
+                )
 
     def _on_both_toggled(self, checked):
         if checked:

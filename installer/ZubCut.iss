@@ -2,7 +2,7 @@
 ; Prereq: python build.py → dist\ZubCut.exe
 
 #define MyAppName "ZubCut"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.29"
 #define MyAppPublisher "Local build"
 #define MyAppExeName "ZubCut.exe"
 #define MyAppURL "https://github.com/"

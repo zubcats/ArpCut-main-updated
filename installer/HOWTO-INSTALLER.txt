@@ -26,7 +26,7 @@ Or manually:
      python build.py
      "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\ZubCut.iss
 
-Output:  output\ZubCut-Setup-1.1.0.exe   (version matches installer script)
+Output:  output\ZubCut-Setup-1.29.exe   (version matches installer script)
 
 Run the .exe installer as Administrator when prompted. Npcap must still be installed
 for capture.
