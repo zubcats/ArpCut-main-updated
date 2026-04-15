@@ -604,6 +604,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_timer.timeout.connect(self._lag_phase_tick)
         # False: firewall block is active (victim is in "lag" phase). True: allow window (rules cleared).
         self._lag_in_allow_phase = False
+        # Last started lag target; used on stop if the device row is missing from the scan list.
+        self._lag_device_snapshot = None
 
         self.dupe_active = False
         self.dupe_device_mac = None
@@ -1342,10 +1344,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         nk = k_kill.toString(QKeySequence.NativeText)
         nl = k_lag.toString(QKeySequence.NativeText)
         np = k_dupe.toString(QKeySequence.NativeText)
-        self.btnKill.setToolTip(
+        self._btn_kill_tooltip_static = (
             'Kill toggle — Turn blocking on or off for the selected device. '
             'Shortcut: %s (only while the main ZubCut window is the active window).' % nk
         )
+        self.btnKill.setToolTip(self._btn_kill_tooltip_static)
         self.btnLagSwitch.setToolTip(
             'Lag Switch — Opens a window where you set lag / allow times and toggle intermittent blocking on or off. '
             'Shortcut: %s starts/stops while the Lag Switch window is active (%s is Kill on the main window).'
@@ -1440,6 +1443,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self.lag_active:
             self.stopLagSwitch(refresh_dialog=False)
         self.lag_device_mac = device['mac']
+        self._lag_device_snapshot = dict(device)
         self.lag_active = True
         self._refresh_lag_timing_from_dialog()
         self.btnLagSwitch.setText('■ LAGGING')
@@ -1542,14 +1546,25 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_device_mac = None
         self._lag_in_allow_phase = False
         self.lag_timer.stop()
+        snap = getattr(self, '_lag_device_snapshot', None)
+        self._lag_device_snapshot = None
         device = self._get_device_by_mac(prev_mac)
-        if device:
-            # Remove any pf blocks
-            unblock_ip(device['ip'])
-            # Unkill (stop ARP spoofing)
-            if device['mac'] in self.killer.killed:
-                victim = self._victim_record_for_mac(device['mac']) or device
-                self.killer.unkill(victim)
+        if not device and snap and snap.get('mac') == prev_mac:
+            device = snap
+        if device and device.get('mac') == prev_mac:
+            # During the "normal" phase the victim is already unkill()'d; we still must enforce
+            # teardown here so MITM/ARP cannot stick after the UI shows OFF (same idea as Kill OFF).
+            try:
+                unblock_ip(device['ip'])
+            except Exception:
+                pass
+            victim = self._victim_record_for_mac(prev_mac) or device
+            if victim:
+                try:
+                    self.killer.unkill(victim)
+                    self.killer.reinforce_restore(victim)
+                except Exception:
+                    pass
         self._sync_killed_devices()
         self.btnLagSwitch.setText('Lag Switch')
         self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
@@ -1664,6 +1679,41 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         mac = device['mac']
+        # Lag/Dupe use killer/MITM for this MAC. A Kill press must mean "stop MITM" for that
+        # flow, not flip the Kill toggle ON (avoids desync with double keybind / rapid clicks).
+        if self.lag_active and self.lag_device_mac == mac:
+            self.stopLagSwitch(refresh_dialog=True)
+            desired_map = getattr(self, '_kill_desired_state', None)
+            if desired_map is None:
+                desired_map = {}
+                self._kill_desired_state = desired_map
+            desired_map[mac] = False
+            self.killed_devices[mac] = False
+            snapshot_map = getattr(self, '_kill_device_snapshot', None)
+            if snapshot_map is None:
+                snapshot_map = {}
+                self._kill_device_snapshot = snapshot_map
+            snapshot_map[mac] = dict(device)
+            self._updateKillButtonState()
+            self._schedule_kill_apply()
+            return
+        if self.dupe_active and self.dupe_device_mac == mac:
+            self.stopDupe(refresh_dialog=True, log=False)
+            desired_map = getattr(self, '_kill_desired_state', None)
+            if desired_map is None:
+                desired_map = {}
+                self._kill_desired_state = desired_map
+            desired_map[mac] = False
+            self.killed_devices[mac] = False
+            snapshot_map = getattr(self, '_kill_device_snapshot', None)
+            if snapshot_map is None:
+                snapshot_map = {}
+                self._kill_device_snapshot = snapshot_map
+            snapshot_map[mac] = dict(device)
+            self._updateKillButtonState()
+            self._schedule_kill_apply()
+            return
+
         desired_map = getattr(self, '_kill_desired_state', None)
         if desired_map is None:
             desired_map = {}
@@ -1705,9 +1755,32 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not device:
             self.btnKill.setText('Kill: OFF')
             self.btnKill.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+            if getattr(self, '_btn_kill_tooltip_static', None):
+                self.btnKill.setToolTip(self._btn_kill_tooltip_static)
             return
 
         mac = device['mac']
+        base_tip = getattr(self, '_btn_kill_tooltip_static', None)
+        if self.lag_active and self.lag_device_mac == mac:
+            self.btnKill.setText('■ LAGGING')
+            self.btnKill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
+            if base_tip:
+                self.btnKill.setToolTip(
+                    base_tip
+                    + ' While lag switch is running for this device, this stops lag and restores traffic (it does not turn Kill on).'
+                )
+            return
+        if self.dupe_active and self.dupe_device_mac == mac:
+            self.btnKill.setText('■ DUPE')
+            self.btnKill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
+            if base_tip:
+                self.btnKill.setToolTip(
+                    base_tip
+                    + ' While Dupe is running for this device, this stops the burst (it does not turn Kill on).'
+                )
+            return
+        if base_tip:
+            self.btnKill.setToolTip(base_tip)
         is_active = bool(self.killed_devices.get(mac, False))
         if is_active:
             self.btnKill.setText('■ KILL: ON')
