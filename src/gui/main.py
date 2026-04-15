@@ -1,4 +1,5 @@
 ﻿import time
+from collections import deque
 
 from pyperclip import copy
 
@@ -1458,6 +1459,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_timer.start(max(1, int(self.lag_block_ms)))
         if self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
             self.lag_switch_dialog.refresh_toggle_state()
+        self._updateKillButtonState()
 
     def _refresh_table_row_for_mac(self, mac):
         """Update table row colors for one MAC without rebuilding the whole table."""
@@ -1571,6 +1573,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.log('Lag switch OFF', 'lime')
         if refresh_dialog and self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
             self.lag_switch_dialog.refresh_toggle_state()
+        self._updateLagSwitchButtonState()
+        self._updateKillButtonState()
 
     def startDupe(self, device, duration_ms, direction):
         self.stopLagSwitch(refresh_dialog=True)
@@ -1635,6 +1639,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log(log_message, 'lime')
         if refresh_dialog and getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
             self.dupe_switch_dialog.refresh_toggle_state()
+        self._updateDupeButtonState()
+        self._updateKillButtonState()
 
     def _updateDupeButtonState(self):
         if self.dupe_active and self.dupe_device_mac:
@@ -1683,51 +1689,27 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # flow, not flip the Kill toggle ON (avoids desync with double keybind / rapid clicks).
         if self.lag_active and self.lag_device_mac == mac:
             self.stopLagSwitch(refresh_dialog=True)
-            desired_map = getattr(self, '_kill_desired_state', None)
-            if desired_map is None:
-                desired_map = {}
-                self._kill_desired_state = desired_map
-            desired_map[mac] = False
-            self.killed_devices[mac] = False
-            snapshot_map = getattr(self, '_kill_device_snapshot', None)
-            if snapshot_map is None:
-                snapshot_map = {}
-                self._kill_device_snapshot = snapshot_map
-            snapshot_map[mac] = dict(device)
-            self._updateKillButtonState()
-            self._schedule_kill_apply()
+            self._enqueue_kill_off_only(mac, device)
             return
         if self.dupe_active and self.dupe_device_mac == mac:
             self.stopDupe(refresh_dialog=True, log=False)
-            desired_map = getattr(self, '_kill_desired_state', None)
-            if desired_map is None:
-                desired_map = {}
-                self._kill_desired_state = desired_map
-            desired_map[mac] = False
-            self.killed_devices[mac] = False
-            snapshot_map = getattr(self, '_kill_device_snapshot', None)
-            if snapshot_map is None:
-                snapshot_map = {}
-                self._kill_device_snapshot = snapshot_map
-            snapshot_map[mac] = dict(device)
-            self._updateKillButtonState()
-            self._schedule_kill_apply()
+            self._enqueue_kill_off_only(mac, device)
             return
 
-        desired_map = getattr(self, '_kill_desired_state', None)
-        if desired_map is None:
-            desired_map = {}
-            self._kill_desired_state = desired_map
+        qmap = getattr(self, '_kill_cmd_queue', None)
+        if qmap is None:
+            qmap = {}
+            self._kill_cmd_queue = qmap
+        q = qmap.setdefault(mac, deque())
+        tail = q[-1] if q else (mac in self.killer.killed)
+        next_state = not tail
+        q.append(next_state)
         snapshot_map = getattr(self, '_kill_device_snapshot', None)
         if snapshot_map is None:
             snapshot_map = {}
             self._kill_device_snapshot = snapshot_map
-
-        # Click parity based on latest desired state for this MAC.
-        desired_on = not bool(desired_map.get(mac, self.killed_devices.get(mac, False)))
-        desired_map[mac] = desired_on
         snapshot_map[mac] = dict(device)
-        self.killed_devices[mac] = desired_on
+        self.killed_devices[mac] = next_state
 
         self._updateKillButtonState()
         self._schedule_kill_apply()
@@ -1808,6 +1790,24 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             victim['ip'] = fresh['ip']
         return victim
 
+    def _enqueue_kill_off_only(self, mac, device):
+        """After lag/dupe stop: queue a single OFF so flush matches Kill bookkeeping."""
+        qmap = getattr(self, '_kill_cmd_queue', None)
+        if qmap is None:
+            qmap = {}
+            self._kill_cmd_queue = qmap
+        q = qmap.setdefault(mac, deque())
+        q.clear()
+        q.append(False)
+        snapshot_map = getattr(self, '_kill_device_snapshot', None)
+        if snapshot_map is None:
+            snapshot_map = {}
+            self._kill_device_snapshot = snapshot_map
+        snapshot_map[mac] = dict(device)
+        self.killed_devices[mac] = False
+        self._updateKillButtonState()
+        self._schedule_kill_apply()
+
     def _schedule_kill_apply(self):
         if getattr(self, '_kill_apply_scheduled', False):
             return
@@ -1819,48 +1819,62 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if getattr(self, '_kill_apply_running', False):
             self._schedule_kill_apply()
             return
+        qmap = getattr(self, '_kill_cmd_queue', None) or {}
+        pending = [(m, qmap[m]) for m in list(qmap.keys()) if qmap[m]]
+        if not pending:
+            return
         self._kill_apply_running = True
         try:
-            desired_map = getattr(self, '_kill_desired_state', {})
             snapshot_map = getattr(self, '_kill_device_snapshot', {})
-            if not desired_map:
-                return
+            for mac, dq in pending:
+                applied_seq = []
+                while dq:
+                    desired_on = bool(dq.popleft())
+                    applied_seq.append(desired_on)
+                    device = self._get_device_by_mac(mac) or snapshot_map.get(mac)
+                    actual_on = mac in self.killer.killed
 
-            for mac in list(desired_map.keys()):
-                desired_on = bool(desired_map.get(mac, False))
-                actual_on = mac in self.killer.killed
-                device = self._get_device_by_mac(mac) or snapshot_map.get(mac)
-
-                # Avoid stacked state sources when kill owns this MAC.
-                if desired_on:
-                    if self.lag_active and self.lag_device_mac == mac:
-                        self.stopLagSwitch(refresh_dialog=True)
-                    if self.dupe_active and self.dupe_device_mac == mac:
-                        self.stopDupe(log=False)
-
-                if desired_on != actual_on:
                     if desired_on:
-                        if device:
-                            self.killer.kill(device)
-                            self.log('Kill ON for ' + device['ip'], 'fuchsia')
-                            self.killed_devices[mac] = True
-                    else:
-                        victim = self._victim_record_for_mac(mac) or device
-                        if victim:
-                            self.killer.unkill(victim)
-                            self.killer.reinforce_restore(victim)
-                            self.log('Kill OFF for ' + victim['ip'], 'lime')
-                        self.killed_devices[mac] = False
-                else:
-                    # Even when backend already reports OFF, enforce restore to clear sticky ARP state.
-                    if not desired_on:
-                        victim = self._victim_record_for_mac(mac) or device
-                        if victim:
-                            self.killer.unkill(victim)
-                            self.killer.reinforce_restore(victim)
-                    self.killed_devices[mac] = desired_on
+                        if self.lag_active and self.lag_device_mac == mac:
+                            self.stopLagSwitch(refresh_dialog=True)
+                        if self.dupe_active and self.dupe_device_mac == mac:
+                            self.stopDupe(log=False)
 
-                desired_map.pop(mac, None)
+                    if desired_on != actual_on:
+                        if desired_on:
+                            if device:
+                                self.killer.kill(device)
+                                self.log('Kill ON for ' + device['ip'], 'fuchsia')
+                                self.killed_devices[mac] = True
+                        else:
+                            victim = self._victim_record_for_mac(mac) or device
+                            if victim:
+                                self.killer.unkill(victim)
+                                self.killer.reinforce_restore(victim)
+                                self.log('Kill OFF for ' + victim['ip'], 'lime')
+                            self.killed_devices[mac] = False
+                    else:
+                        if not desired_on:
+                            victim = self._victim_record_for_mac(mac) or device
+                            if victim:
+                                self.killer.unkill(victim)
+                                self.killer.reinforce_restore(victim)
+                        self.killed_devices[mac] = desired_on
+
+                if mac in qmap and not qmap[mac]:
+                    qmap.pop(mac, None)
+
+                if (
+                    len(applied_seq) >= 2
+                    and applied_seq[0]
+                    and not applied_seq[-1]
+                ):
+                    device = self._get_device_by_mac(mac) or snapshot_map.get(mac)
+                    victim = self._victim_record_for_mac(mac) or device
+                    if victim:
+                        self.killer.reinforce_restore(victim)
+
+                self.killed_devices[mac] = mac in self.killer.killed
 
             self._sync_killed_devices()
             set_settings('killed', list(self.killer.killed) * self.remember)
@@ -1868,6 +1882,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.showDevices()
         finally:
             self._kill_apply_running = False
-            if getattr(self, '_kill_desired_state', {}):
+            qmap = getattr(self, '_kill_cmd_queue', None) or {}
+            if any(dq for dq in qmap.values()):
                 self._schedule_kill_apply()
 
