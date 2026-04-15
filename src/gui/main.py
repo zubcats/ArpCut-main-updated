@@ -136,8 +136,8 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         timing_layout.addRow('Lag duration (block time)', self.lagSpin)
 
         self.normalSpin = QSpinBox(self.timing_group)
-        self.normalSpin.setRange(1, 2147483647)
-        self.normalSpin.setSingleStep(100)
+        self.normalSpin.setRange(25, 2147483647)
+        self.normalSpin.setSingleStep(25)
         self.normalSpin.setValue(1500)
         self.normalSpin.setSuffix(' ms')
         timing_layout.addRow('Normal duration (allow time)', self.normalSpin)
@@ -1517,7 +1517,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.stopLagSwitch()
             return
         block_ms = max(1, int(self.lag_block_ms))
-        allow_ms = max(1, int(self.lag_release_ms))
+        allow_ms = max(25, int(self.lag_release_ms))
 
         if not self._lag_in_allow_phase:
             # Block interval (top spin) just finished -> allow traffic for bottom spin duration.
@@ -1701,7 +1701,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             qmap = {}
             self._kill_cmd_queue = qmap
         q = qmap.setdefault(mac, deque())
-        tail = q[-1] if q else (mac in self.killer.killed)
+        # Tail: backend ON wins until unkill runs; else use last queued target (pending intent).
+        physical_on = mac in self.killer.killed
+        if physical_on:
+            tail = True
+        elif q:
+            tail = bool(q[-1])
+        else:
+            tail = False
         next_state = not tail
         q.append(next_state)
         snapshot_map = getattr(self, '_kill_device_snapshot', None)
@@ -1709,10 +1716,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             snapshot_map = {}
             self._kill_device_snapshot = snapshot_map
         snapshot_map[mac] = dict(device)
-        self.killed_devices[mac] = next_state
+        self.killed_devices[mac] = self._kill_ui_shows_on(mac)
 
         self._updateKillButtonState()
         self._schedule_kill_apply()
+
+    def _kill_ui_shows_on(self, mac):
+        """Kill button / bookkeeping: ON if killer has MAC or a pending queue ends in ON."""
+        dq = (getattr(self, '_kill_cmd_queue', None) or {}).get(mac)
+        if dq:
+            return bool(dq[-1])
+        return mac in self.killer.killed
 
     def _get_selected_device(self):
         if not self.tableScan.selectedItems():
@@ -1728,9 +1742,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Do not set True for every killer victim — lag/dupe also use killer.killed for ARP.
         """
         active_macs = set(self.killer.killed.keys())
+        qmap = getattr(self, '_kill_cmd_queue', None) or {}
         for mac in list(self.killed_devices.keys()):
             if mac not in active_macs:
-                self.killed_devices[mac] = False
+                if qmap.get(mac):
+                    self.killed_devices[mac] = self._kill_ui_shows_on(mac)
+                else:
+                    self.killed_devices[mac] = False
 
     def _updateKillButtonState(self):
         device = self._get_selected_device()
@@ -1763,7 +1781,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if base_tip:
             self.btnKill.setToolTip(base_tip)
-        is_active = bool(self.killed_devices.get(mac, False))
+        is_active = self._kill_ui_shows_on(mac)
         if is_active:
             self.btnKill.setText('■ KILL: ON')
             self.btnKill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
@@ -1826,55 +1844,46 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._kill_apply_running = True
         try:
             snapshot_map = getattr(self, '_kill_device_snapshot', {})
+            # Collapse the whole queue to the last intent (net toggle). Two fast clicks
+            # OFF→ON→OFF or ON→OFF→ON match the UI but must not run kill+unkill back-to-back
+            # on the wire (ARP desync). If target already matches killer.killed, skip ops.
             for mac, dq in pending:
-                applied_seq = []
-                while dq:
-                    desired_on = bool(dq.popleft())
-                    applied_seq.append(desired_on)
-                    device = self._get_device_by_mac(mac) or snapshot_map.get(mac)
-                    actual_on = mac in self.killer.killed
-
-                    if desired_on:
-                        if self.lag_active and self.lag_device_mac == mac:
-                            self.stopLagSwitch(refresh_dialog=True)
-                        if self.dupe_active and self.dupe_device_mac == mac:
-                            self.stopDupe(log=False)
-
-                    if desired_on != actual_on:
-                        if desired_on:
-                            if device:
-                                self.killer.kill(device)
-                                self.log('Kill ON for ' + device['ip'], 'fuchsia')
-                                self.killed_devices[mac] = True
-                        else:
-                            victim = self._victim_record_for_mac(mac) or device
-                            if victim:
-                                self.killer.unkill(victim)
-                                self.killer.reinforce_restore(victim)
-                                self.log('Kill OFF for ' + victim['ip'], 'lime')
-                            self.killed_devices[mac] = False
-                    else:
-                        if not desired_on:
-                            victim = self._victim_record_for_mac(mac) or device
-                            if victim:
-                                self.killer.unkill(victim)
-                                self.killer.reinforce_restore(victim)
-                        self.killed_devices[mac] = desired_on
-
+                if not dq:
+                    continue
+                target_on = bool(dq[-1])
+                dq.clear()
                 if mac in qmap and not qmap[mac]:
                     qmap.pop(mac, None)
 
-                if (
-                    len(applied_seq) >= 2
-                    and applied_seq[0]
-                    and not applied_seq[-1]
-                ):
-                    device = self._get_device_by_mac(mac) or snapshot_map.get(mac)
+                device = self._get_device_by_mac(mac) or snapshot_map.get(mac)
+                actual_on = mac in self.killer.killed
+
+                if target_on:
+                    if self.lag_active and self.lag_device_mac == mac:
+                        self.stopLagSwitch(refresh_dialog=True)
+                    if self.dupe_active and self.dupe_device_mac == mac:
+                        self.stopDupe(log=False)
+
+                if target_on == actual_on:
+                    if not target_on and device:
+                        self.killer.reinforce_restore(device)
+                    self.killed_devices[mac] = self._kill_ui_shows_on(mac)
+                    continue
+
+                if target_on:
+                    if device:
+                        self.killer.kill(device)
+                        self.log('Kill ON for ' + device['ip'], 'fuchsia')
+                else:
                     victim = self._victim_record_for_mac(mac) or device
                     if victim:
+                        self.killer.unkill(victim)
                         self.killer.reinforce_restore(victim)
+                        if actual_on:
+                            self.killer.reinforce_restore(victim)
+                        self.log('Kill OFF for ' + victim['ip'], 'lime')
 
-                self.killed_devices[mac] = mac in self.killer.killed
+                self.killed_devices[mac] = self._kill_ui_shows_on(mac)
 
             self._sync_killed_devices()
             set_settings('killed', list(self.killer.killed) * self.remember)
