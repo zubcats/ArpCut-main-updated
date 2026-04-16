@@ -1,4 +1,7 @@
-﻿import time
+﻿import json
+import os
+import sys
+import time
 
 from pyperclip import copy
 
@@ -56,6 +59,17 @@ from bridge import ScanThread  # UpdateThread disabled for fork
 from constants import *
 
 # from qt_material import build_stylesheet
+
+# --- TEMP kill-toggle diagnostics (set False to disable; remove when done investigating) ---
+KILL_TOGGLE_DEBUG = True
+# Writable next to the .exe when frozen; repo root when running from source (so logs stay in the project).
+if getattr(sys, 'frozen', False):
+    _KILL_DEBUG_BASE = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    _KILL_DEBUG_BASE = os.path.normpath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'),
+    )
+_KILL_DEBUG_LOG_PATH = os.path.join(_KILL_DEBUG_BASE, 'kill_toggle_debug.log')
 
 
 def _focus_widget_absorbs_letter_key(widget):
@@ -592,6 +606,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Main Props
         self.scanner = Scanner()
         self.killer = Killer()
+        if KILL_TOGGLE_DEBUG:
+            try:
+                with open(_KILL_DEBUG_LOG_PATH, 'a', encoding='utf-8') as _df:
+                    _df.write(
+                        '\n' + '=' * 72 + '\n'
+                        f'KILL_TOGGLE_DEBUG session v{self.version}\n'
+                        f'log_file={_KILL_DEBUG_LOG_PATH}\n',
+                    )
+            except Exception:
+                pass
         self.killed_devices = {}  # MAC -> bool kill toggle state
         self.lag_active = False
         self.lag_block_ms = 1500
@@ -680,7 +704,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         kill_font.setBold(True)
         self.btnKill.setFont(kill_font)
         # Use pressed instead of clicked so fast double-clicks count as two toggles.
-        self.btnKill.pressed.connect(self.toggleKill)
+        self.btnKill.pressed.connect(lambda: self.toggleKill('mouse_pressed'))
 
         self.btnLagSwitch = QPushButton('Lag Switch', self)
         self.btnLagSwitch.setMinimumHeight(88)
@@ -1387,7 +1411,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         # Same handler as btnKill.clicked — do not gate on btnKill.isEnabled(); toggleKill
         # enforces connected(), selection, and admin the same for mouse and keyboard.
-        self.toggleKill()
+        self.toggleKill('shortcut_key')
 
     def openLagSwitchDialog(self):
         if not self.connected():
@@ -1673,7 +1697,31 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         setattr(self, until_attr, now + 0.03)
         return False
 
-    def toggleKill(self):
+    def _kill_toggle_debug_log(self, tag, **kwargs):
+        """TEMP: JSON lines to temp log + short line in UI console."""
+        if not KILL_TOGGLE_DEBUG:
+            return
+        rec = {
+            '_tag': tag,
+            'wall': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'mono': round(time.monotonic(), 6),
+        }
+        rec.update(kwargs)
+        try:
+            with open(_KILL_DEBUG_LOG_PATH, 'a', encoding='utf-8') as df:
+                df.write(json.dumps(rec, default=str, sort_keys=True) + '\n')
+        except Exception as exc:
+            try:
+                self.log(f'[KILLDBG] log_write_fail {exc!r}', 'red')
+            except Exception:
+                pass
+        try:
+            brief = ' '.join(f'{k}={v!r}' for k, v in sorted(rec.items()) if not k.startswith('_'))
+            self.log(f'[KILLDBG] {tag} {brief}'[:420], 'gray')
+        except Exception:
+            pass
+
+    def toggleKill(self, source='unknown'):
         if not self.connected():
             return
         device = self._get_selected_device()
@@ -1685,13 +1733,27 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         mac = device['mac']
+        self._kill_toggle_debug_log(
+            'toggleKill_enter',
+            source=source,
+            mac=mac,
+            ip=device.get('ip'),
+            killer_has_mac=mac in self.killer.killed,
+            lag_active=bool(self.lag_active),
+            lag_mac=self.lag_device_mac,
+            dupe_active=bool(self.dupe_active),
+            dupe_mac=self.dupe_device_mac,
+            op_seq=getattr(self.killer, '_op_seq', {}).get(mac),
+        )
         # Lag/Dupe use killer/MITM for this MAC. A Kill press must mean "stop MITM" for that
         # flow, not flip the Kill toggle ON (avoids desync with double keybind / rapid clicks).
         if self.lag_active and self.lag_device_mac == mac:
+            self._kill_toggle_debug_log('toggleKill_branch', branch='stop_lag_then_enqueue_off', mac=mac)
             self.stopLagSwitch(refresh_dialog=True)
             self._enqueue_kill_off_only(mac, device)
             return
         if self.dupe_active and self.dupe_device_mac == mac:
+            self._kill_toggle_debug_log('toggleKill_branch', branch='stop_dupe_then_enqueue_off', mac=mac)
             self.stopDupe(refresh_dialog=True, log=False)
             self._enqueue_kill_off_only(mac, device)
             return
@@ -1700,9 +1762,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if desired_map is None:
             desired_map = {}
             self._kill_desired_state = desired_map
+        desired_snapshot_before = {k: bool(v) for k, v in desired_map.items()}
         current_target = bool(desired_map.get(mac, mac in self.killer.killed))
         next_state = not current_target
         desired_map[mac] = next_state
+        self._kill_toggle_debug_log(
+            'toggleKill_desired',
+            source=source,
+            mac=mac,
+            current_target=current_target,
+            next_state=next_state,
+            desired_before=desired_snapshot_before,
+            desired_after={k: bool(v) for k, v in desired_map.items()},
+            killer_has_mac=mac in self.killer.killed,
+            op_seq=getattr(self.killer, '_op_seq', {}).get(mac),
+        )
         snapshot_map = getattr(self, '_kill_device_snapshot', None)
         if snapshot_map is None:
             snapshot_map = {}
@@ -1813,22 +1887,44 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._kill_device_snapshot = snapshot_map
         snapshot_map[mac] = dict(device)
         self.killed_devices[mac] = False
+        self._kill_toggle_debug_log(
+            'enqueue_kill_off_only',
+            mac=mac,
+            ip=device.get('ip'),
+            desired={k: bool(v) for k, v in desired_map.items()},
+        )
         self._updateKillButtonState()
         self._schedule_kill_apply()
 
     def _schedule_kill_apply(self):
         # Always queue a flush. Do not dedupe: a second click while a flush is already
         # scheduled used to be ignored and could skip the OFF apply entirely.
+        self._kill_toggle_debug_log(
+            'schedule_flush',
+            apply_running=bool(getattr(self, '_kill_apply_running', False)),
+            pending_keys=list((getattr(self, '_kill_desired_state', None) or {}).keys()),
+        )
         QTimer.singleShot(0, self._flush_kill_desired_state)
 
     def _flush_kill_desired_state(self):
         if getattr(self, '_kill_apply_running', False):
+            self._kill_toggle_debug_log(
+                'flush_deferred',
+                reason='apply_running',
+            )
             QTimer.singleShot(0, self._flush_kill_desired_state)
             return
         desired_map = getattr(self, '_kill_desired_state', None) or {}
         pending = [(m, bool(desired_map[m])) for m in list(desired_map.keys())]
         if not pending:
+            self._kill_toggle_debug_log('flush_noop', reason='empty_pending')
             return
+        self._kill_toggle_debug_log(
+            'flush_start',
+            pending=pending,
+            desired_full={k: bool(v) for k, v in desired_map.items()},
+            killed_keys=list(self.killer.killed.keys()),
+        )
         self._kill_apply_running = True
         try:
             snapshot_map = getattr(self, '_kill_device_snapshot', {})
@@ -1836,6 +1932,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 desired_map.pop(mac, None)
                 device = self._get_device_by_mac(mac) or snapshot_map.get(mac)
                 actual_on = mac in self.killer.killed
+                op_before = getattr(self.killer, '_op_seq', {}).get(mac)
 
                 if target_on:
                     if self.lag_active and self.lag_device_mac == mac:
@@ -1843,9 +1940,28 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if self.dupe_active and self.dupe_device_mac == mac:
                         self.stopDupe(log=False)
 
+                _dev_ip = device.get('ip') if isinstance(device, dict) else None
+                self._kill_toggle_debug_log(
+                    'flush_mac',
+                    mac=mac,
+                    target_on=target_on,
+                    actual_on_before=actual_on,
+                    op_seq_before=op_before,
+                    device_ip=_dev_ip,
+                    has_device=bool(device),
+                )
+
                 if target_on == actual_on:
                     if not target_on and device:
                         self.killer.reinforce_restore(device)
+                    self._kill_toggle_debug_log(
+                        'flush_action',
+                        mac=mac,
+                        action='noop_or_reinforce',
+                        target_on=target_on,
+                        actual_on_after=mac in self.killer.killed,
+                        op_seq_after=getattr(self.killer, '_op_seq', {}).get(mac),
+                    )
                     self.killed_devices[mac] = self._kill_ui_shows_on(mac)
                     continue
 
@@ -1862,6 +1978,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                             self.killer.reinforce_restore(victim)
                         self.log('Kill OFF for ' + victim['ip'], 'lime')
 
+                self._kill_toggle_debug_log(
+                    'flush_action',
+                    mac=mac,
+                    action='kill' if target_on else 'unkill',
+                    target_on=target_on,
+                    actual_on_after=mac in self.killer.killed,
+                    op_seq_after=getattr(self.killer, '_op_seq', {}).get(mac),
+                )
+
                 self.killed_devices[mac] = self._kill_ui_shows_on(mac)
 
             self._sync_killed_devices()
@@ -1871,6 +1996,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         finally:
             self._kill_apply_running = False
             desired_map = getattr(self, '_kill_desired_state', None) or {}
+            self._kill_toggle_debug_log(
+                'flush_finally',
+                remaining_desired={k: bool(v) for k, v in desired_map.items()},
+                killed_keys=list(self.killer.killed.keys()),
+            )
             if desired_map:
                 self._schedule_kill_apply()
 
