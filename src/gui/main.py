@@ -679,7 +679,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         kill_font.setPointSize(13)
         kill_font.setBold(True)
         self.btnKill.setFont(kill_font)
-        self.btnKill.clicked.connect(self.toggleKill)
+        # Use pressed instead of clicked so fast double-clicks count as two toggles.
+        self.btnKill.pressed.connect(self.toggleKill)
 
         self.btnLagSwitch = QPushButton('Lag Switch', self)
         self.btnLagSwitch.setMinimumHeight(88)
@@ -1702,6 +1703,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         current_target = bool(desired_map.get(mac, mac in self.killer.killed))
         next_state = not current_target
         desired_map[mac] = next_state
+        self.log(
+            f'[DBG kill click] mac={mac} current_target={int(current_target)} '
+            f'next_target={int(next_state)} actual_on={int(mac in self.killer.killed)}',
+            'aqua',
+        )
         snapshot_map = getattr(self, '_kill_device_snapshot', None)
         if snapshot_map is None:
             snapshot_map = {}
@@ -1837,6 +1843,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 desired_map.pop(mac, None)
                 device = self._get_device_by_mac(mac) or snapshot_map.get(mac)
                 actual_on = mac in self.killer.killed
+                self.log(
+                    f'[DBG kill apply] mac={mac} target_on={int(target_on)} '
+                    f'actual_on={int(actual_on)} queued_left={len(desired_map)}',
+                    'aqua',
+                )
 
                 if target_on:
                     if self.lag_active and self.lag_device_mac == mac:
@@ -1847,6 +1858,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 if target_on == actual_on:
                     if not target_on and device:
                         self.killer.reinforce_restore(device)
+                        self.log(
+                            f'[DBG kill action] mac={mac} action=reinforce_restore_only',
+                            'aqua',
+                        )
+                    else:
+                        self.log(
+                            f'[DBG kill action] mac={mac} action=noop_state_already_match',
+                            'aqua',
+                        )
                     self.killed_devices[mac] = self._kill_ui_shows_on(mac)
                     continue
 
@@ -1854,6 +1874,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if device:
                         self.killer.kill(device)
                         self.log('Kill ON for ' + device['ip'], 'fuchsia')
+                        self.log(f'[DBG kill action] mac={mac} action=kill', 'aqua')
                 else:
                     victim = self._victim_record_for_mac(mac) or device
                     if victim:
@@ -1862,6 +1883,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         if actual_on:
                             self.killer.reinforce_restore(victim)
                         self.log('Kill OFF for ' + victim['ip'], 'lime')
+                        self.log(f'[DBG kill action] mac={mac} action=unkill_restore', 'aqua')
 
                 self.killed_devices[mac] = self._kill_ui_shows_on(mac)
 
