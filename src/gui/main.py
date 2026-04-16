@@ -1,7 +1,4 @@
-﻿import json
-import os
-import sys
-import time
+﻿import time
 
 from pyperclip import copy
 
@@ -59,18 +56,6 @@ from bridge import ScanThread  # UpdateThread disabled for fork
 from constants import *
 
 # from qt_material import build_stylesheet
-
-# --- TEMP kill-toggle diagnostics (set False to disable; remove when done investigating) ---
-KILL_TOGGLE_DEBUG = True
-# Writable next to the .exe when frozen; repo root when running from source (so logs stay in the project).
-if getattr(sys, 'frozen', False):
-    _KILL_DEBUG_BASE = os.path.dirname(os.path.abspath(sys.executable))
-else:
-    _KILL_DEBUG_BASE = os.path.normpath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'),
-    )
-_KILL_DEBUG_LOG_PATH = os.path.join(_KILL_DEBUG_BASE, 'kill_toggle_debug.log')
-
 
 def _focus_widget_absorbs_letter_key(widget):
     """Avoid stealing L while typing in numeric/text fields."""
@@ -606,17 +591,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Main Props
         self.scanner = Scanner()
         self.killer = Killer()
-        if KILL_TOGGLE_DEBUG:
-            try:
-                with open(_KILL_DEBUG_LOG_PATH, 'a', encoding='utf-8') as _df:
-                    _df.write(
-                        '\n' + '=' * 72 + '\n'
-                        f'KILL_TOGGLE_DEBUG session v{self.version}\n'
-                        f'log_file={_KILL_DEBUG_LOG_PATH}\n',
-                    )
-            except Exception:
-                pass
         self.killed_devices = {}  # MAC -> bool kill toggle state
+        # Per-MAC intent generation for kill toggle; delayed OFF reinforcement only runs
+        # when generation still matches (prevents stale delayed actions from reapplying).
+        self._kill_intent_seq = {}
         self.lag_active = False
         self.lag_block_ms = 1500
         self.lag_release_ms = 1500
@@ -973,7 +951,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def closeEvent(self, event):
         """
-        Run in background if self.minimize is True else exit
+        Always exit on window close to avoid background instances blocking reinstalls.
+        Use explicit tray Hide to keep app running in background.
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
@@ -981,16 +960,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self.from_tray:
             event.accept()
             return
-        
-        # If event is recieved from close X button
 
-        ## If minimize is true
-        if self.minimize:
-            event.ignore()
-            self.hide_all()
-            return
-
-        ## If not, ukill all and shutdown
+        # Close button path: unkill all and shutdown.
         self.killer.unkill_all()
         self._sync_killed_devices()
         self.settings_window.close()
@@ -998,14 +969,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.hide()
         self.tray_icon.hide()
-
-        QMessageBox.information(
-            self,
-            'Shutdown',
-            f'{APP_DISPLAY_NAME} will exit completely.\n\n'
-            'Enable minimized from settings\n'
-            'to be able to run in background.'
-        )
 
         event.accept()
 
@@ -1697,30 +1660,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         setattr(self, until_attr, now + 0.03)
         return False
 
-    def _kill_toggle_debug_log(self, tag, **kwargs):
-        """TEMP: JSON lines to temp log + short line in UI console."""
-        if not KILL_TOGGLE_DEBUG:
-            return
-        rec = {
-            '_tag': tag,
-            'wall': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'mono': round(time.monotonic(), 6),
-        }
-        rec.update(kwargs)
-        try:
-            with open(_KILL_DEBUG_LOG_PATH, 'a', encoding='utf-8') as df:
-                df.write(json.dumps(rec, default=str, sort_keys=True) + '\n')
-        except Exception as exc:
-            try:
-                self.log(f'[KILLDBG] log_write_fail {exc!r}', 'red')
-            except Exception:
-                pass
-        try:
-            brief = ' '.join(f'{k}={v!r}' for k, v in sorted(rec.items()) if not k.startswith('_'))
-            self.log(f'[KILLDBG] {tag} {brief}'[:420], 'gray')
-        except Exception:
-            pass
-
     def toggleKill(self, source='unknown'):
         if not self.connected():
             return
@@ -1733,66 +1672,80 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         mac = device['mac']
-        self._kill_toggle_debug_log(
-            'toggleKill_enter',
-            source=source,
-            mac=mac,
-            ip=device.get('ip'),
-            killer_has_mac=mac in self.killer.killed,
-            lag_active=bool(self.lag_active),
-            lag_mac=self.lag_device_mac,
-            dupe_active=bool(self.dupe_active),
-            dupe_mac=self.dupe_device_mac,
-            op_seq=getattr(self.killer, '_op_seq', {}).get(mac),
-        )
-        # Lag/Dupe use killer/MITM for this MAC. A Kill press must mean "stop MITM" for that
-        # flow, not flip the Kill toggle ON (avoids desync with double keybind / rapid clicks).
+        # Toggle is visual; each press sends one explicit backend command (kill/unkill).
         if self.lag_active and self.lag_device_mac == mac:
-            self._kill_toggle_debug_log('toggleKill_branch', branch='stop_lag_then_enqueue_off', mac=mac)
             self.stopLagSwitch(refresh_dialog=True)
-            self._enqueue_kill_off_only(mac, device)
+            self._run_kill_command(mac, device, turn_on=False, source=source)
             return
         if self.dupe_active and self.dupe_device_mac == mac:
-            self._kill_toggle_debug_log('toggleKill_branch', branch='stop_dupe_then_enqueue_off', mac=mac)
             self.stopDupe(refresh_dialog=True, log=False)
-            self._enqueue_kill_off_only(mac, device)
+            self._run_kill_command(mac, device, turn_on=False, source=source)
             return
 
-        desired_map = getattr(self, '_kill_desired_state', None)
-        if desired_map is None:
-            desired_map = {}
-            self._kill_desired_state = desired_map
-        desired_snapshot_before = {k: bool(v) for k, v in desired_map.items()}
-        current_target = bool(desired_map.get(mac, mac in self.killer.killed))
-        next_state = not current_target
-        desired_map[mac] = next_state
-        self._kill_toggle_debug_log(
-            'toggleKill_desired',
-            source=source,
-            mac=mac,
-            current_target=current_target,
-            next_state=next_state,
-            desired_before=desired_snapshot_before,
-            desired_after={k: bool(v) for k, v in desired_map.items()},
-            killer_has_mac=mac in self.killer.killed,
-            op_seq=getattr(self.killer, '_op_seq', {}).get(mac),
-        )
+        current_ui_on = bool(self.killed_devices.get(mac, mac in self.killer.killed))
+        next_state = not current_ui_on
+        self.killed_devices[mac] = next_state
+        self._updateKillButtonState()
+        self._run_kill_command(mac, device, turn_on=next_state, source=source)
+
+    def _run_kill_command(self, mac, device, turn_on, source='unknown'):
+        """Immediate explicit command path: one click => one kill/unkill command."""
         snapshot_map = getattr(self, '_kill_device_snapshot', None)
         if snapshot_map is None:
             snapshot_map = {}
             self._kill_device_snapshot = snapshot_map
         snapshot_map[mac] = dict(device)
-        self.killed_devices[mac] = next_state
+        actual_on = mac in self.killer.killed
+        next_seq = int(self._kill_intent_seq.get(mac, 0)) + 1
+        self._kill_intent_seq[mac] = next_seq
+        if turn_on:
+            if self.lag_active and self.lag_device_mac == mac:
+                self.stopLagSwitch(refresh_dialog=True)
+            if self.dupe_active and self.dupe_device_mac == mac:
+                self.stopDupe(log=False)
+            if not actual_on and device:
+                self.killer.kill(device)
+                self.log('Kill ON for ' + device['ip'], 'fuchsia')
+        else:
+            victim = self._victim_record_for_mac(mac) or device
+            if victim:
+                self.killer.unkill(victim)
+                self.killer.reinforce_restore(victim)
+                if actual_on:
+                    self.killer.reinforce_restore(victim)
+                self.log('Kill OFF for ' + victim['ip'], 'lime')
+                # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
+                self._schedule_kill_off_reinforce(mac, next_seq, 60)
+                self._schedule_kill_off_reinforce(mac, next_seq, 180)
 
+        self.killed_devices[mac] = bool(turn_on)
+        self._sync_killed_devices()
+        set_settings('killed', list(self.killer.killed) * self.remember)
         self._updateKillButtonState()
-        self._schedule_kill_apply()
+        self.showDevices()
+
+    def _schedule_kill_off_reinforce(self, mac, intent_seq, delay_ms):
+        """Delayed OFF reinforcement that self-cancels if intent changed."""
+        def _cb():
+            current_seq = int(self._kill_intent_seq.get(mac, 0))
+            ui_on = bool(self.killed_devices.get(mac, False))
+            if current_seq != int(intent_seq) or ui_on:
+                return
+            snapshot = (getattr(self, '_kill_device_snapshot', None) or {}).get(mac)
+            victim = self._victim_record_for_mac(mac) or snapshot
+            if not victim:
+                return
+            try:
+                self.killer.unkill(victim)
+                self.killer.reinforce_restore(victim)
+            except Exception:
+                pass
+
+        QTimer.singleShot(max(0, int(delay_ms)), _cb)
 
     def _kill_ui_shows_on(self, mac):
-        """Kill button / bookkeeping: ON if desired target is ON; else backend state."""
-        desired_map = getattr(self, '_kill_desired_state', None) or {}
-        if mac in desired_map:
-            return bool(desired_map[mac])
-        return mac in self.killer.killed
+        """Kill button / bookkeeping: visual state is authoritative for toggle UX."""
+        return bool(self.killed_devices.get(mac, mac in self.killer.killed))
 
     def _get_selected_device(self):
         if not self.tableScan.selectedItems():
@@ -1808,13 +1761,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Do not set True for every killer victim — lag/dupe also use killer.killed for ARP.
         """
         active_macs = set(self.killer.killed.keys())
-        desired_map = getattr(self, '_kill_desired_state', None) or {}
         for mac in list(self.killed_devices.keys()):
             if mac not in active_macs:
-                if mac in desired_map:
-                    self.killed_devices[mac] = self._kill_ui_shows_on(mac)
-                else:
-                    self.killed_devices[mac] = False
+                self.killed_devices[mac] = False
 
     def _updateKillButtonState(self):
         device = self._get_selected_device()
@@ -1875,132 +1824,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return victim
 
     def _enqueue_kill_off_only(self, mac, device):
-        """After lag/dupe stop: force OFF target so kill apply reconciles backend."""
-        desired_map = getattr(self, '_kill_desired_state', None)
-        if desired_map is None:
-            desired_map = {}
-            self._kill_desired_state = desired_map
-        desired_map[mac] = False
-        snapshot_map = getattr(self, '_kill_device_snapshot', None)
-        if snapshot_map is None:
-            snapshot_map = {}
-            self._kill_device_snapshot = snapshot_map
-        snapshot_map[mac] = dict(device)
+        """After lag/dupe stop: execute an explicit OFF command immediately."""
         self.killed_devices[mac] = False
-        self._kill_toggle_debug_log(
-            'enqueue_kill_off_only',
-            mac=mac,
-            ip=device.get('ip'),
-            desired={k: bool(v) for k, v in desired_map.items()},
-        )
         self._updateKillButtonState()
-        self._schedule_kill_apply()
-
-    def _schedule_kill_apply(self):
-        # Always queue a flush. Do not dedupe: a second click while a flush is already
-        # scheduled used to be ignored and could skip the OFF apply entirely.
-        self._kill_toggle_debug_log(
-            'schedule_flush',
-            apply_running=bool(getattr(self, '_kill_apply_running', False)),
-            pending_keys=list((getattr(self, '_kill_desired_state', None) or {}).keys()),
-        )
-        QTimer.singleShot(0, self._flush_kill_desired_state)
-
-    def _flush_kill_desired_state(self):
-        if getattr(self, '_kill_apply_running', False):
-            self._kill_toggle_debug_log(
-                'flush_deferred',
-                reason='apply_running',
-            )
-            QTimer.singleShot(0, self._flush_kill_desired_state)
-            return
-        desired_map = getattr(self, '_kill_desired_state', None) or {}
-        pending = [(m, bool(desired_map[m])) for m in list(desired_map.keys())]
-        if not pending:
-            self._kill_toggle_debug_log('flush_noop', reason='empty_pending')
-            return
-        self._kill_toggle_debug_log(
-            'flush_start',
-            pending=pending,
-            desired_full={k: bool(v) for k, v in desired_map.items()},
-            killed_keys=list(self.killer.killed.keys()),
-        )
-        self._kill_apply_running = True
-        try:
-            snapshot_map = getattr(self, '_kill_device_snapshot', {})
-            for mac, target_on in pending:
-                desired_map.pop(mac, None)
-                device = self._get_device_by_mac(mac) or snapshot_map.get(mac)
-                actual_on = mac in self.killer.killed
-                op_before = getattr(self.killer, '_op_seq', {}).get(mac)
-
-                if target_on:
-                    if self.lag_active and self.lag_device_mac == mac:
-                        self.stopLagSwitch(refresh_dialog=True)
-                    if self.dupe_active and self.dupe_device_mac == mac:
-                        self.stopDupe(log=False)
-
-                _dev_ip = device.get('ip') if isinstance(device, dict) else None
-                self._kill_toggle_debug_log(
-                    'flush_mac',
-                    mac=mac,
-                    target_on=target_on,
-                    actual_on_before=actual_on,
-                    op_seq_before=op_before,
-                    device_ip=_dev_ip,
-                    has_device=bool(device),
-                )
-
-                if target_on == actual_on:
-                    if not target_on and device:
-                        self.killer.reinforce_restore(device)
-                    self._kill_toggle_debug_log(
-                        'flush_action',
-                        mac=mac,
-                        action='noop_or_reinforce',
-                        target_on=target_on,
-                        actual_on_after=mac in self.killer.killed,
-                        op_seq_after=getattr(self.killer, '_op_seq', {}).get(mac),
-                    )
-                    self.killed_devices[mac] = self._kill_ui_shows_on(mac)
-                    continue
-
-                if target_on:
-                    if device:
-                        self.killer.kill(device)
-                        self.log('Kill ON for ' + device['ip'], 'fuchsia')
-                else:
-                    victim = self._victim_record_for_mac(mac) or device
-                    if victim:
-                        self.killer.unkill(victim)
-                        self.killer.reinforce_restore(victim)
-                        if actual_on:
-                            self.killer.reinforce_restore(victim)
-                        self.log('Kill OFF for ' + victim['ip'], 'lime')
-
-                self._kill_toggle_debug_log(
-                    'flush_action',
-                    mac=mac,
-                    action='kill' if target_on else 'unkill',
-                    target_on=target_on,
-                    actual_on_after=mac in self.killer.killed,
-                    op_seq_after=getattr(self.killer, '_op_seq', {}).get(mac),
-                )
-
-                self.killed_devices[mac] = self._kill_ui_shows_on(mac)
-
-            self._sync_killed_devices()
-            set_settings('killed', list(self.killer.killed) * self.remember)
-            self._updateKillButtonState()
-            self.showDevices()
-        finally:
-            self._kill_apply_running = False
-            desired_map = getattr(self, '_kill_desired_state', None) or {}
-            self._kill_toggle_debug_log(
-                'flush_finally',
-                remaining_desired={k: bool(v) for k, v in desired_map.items()},
-                killed_keys=list(self.killer.killed.keys()),
-            )
-            if desired_map:
-                self._schedule_kill_apply()
+        self._run_kill_command(mac, device, turn_on=False, source='enqueue_off_only')
 

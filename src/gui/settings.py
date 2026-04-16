@@ -2,7 +2,11 @@ from PyQt5.QtWidgets import QMainWindow
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt
 import os
+import subprocess
 import sys
+import tempfile
+import urllib.request
+from urllib.parse import urlparse
 
 from tools.utils_gui import import_settings, export_settings, get_settings, \
                       is_admin, add_to_startup, remove_from_startup, set_settings, \
@@ -41,9 +45,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.spinThreads.valueChanged.connect(self.sliderThreads.setValue)
         self.btnApply.clicked.connect(self.Apply)
         self.btnDefaults.clicked.connect(self.Defaults)
-        # Update button disabled for fork
-        self.btnUpdate.setEnabled(False)
-        self.btnUpdate.setText("Updates Disabled")
+        self.btnUpdate.clicked.connect(self.checkUpdate)
+        channel = str(UPDATE_CHANNEL or 'experimental').strip().lower()
+        if channel not in ('stable', 'experimental'):
+            channel = 'experimental'
+        self._update_channel = channel
+        self.btnUpdate.setText(f'Install Latest Build ({channel.title()})')
+        # Keep background auto-update disabled; manual update button is available.
         self.chkAutoupdate.setEnabled(False)
         self.chkAutoupdate.setChecked(False)
 
@@ -235,12 +243,87 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setStyleSheet(zubcut_dark_stylesheet())
     
     def checkUpdate(self):
-        # Update checking disabled for this fork
-        MsgType.INFO(
+        if self._update_channel == 'stable':
+            url = (UPDATE_DOWNLOAD_URL_STABLE or '').strip()
+        else:
+            url = (UPDATE_DOWNLOAD_URL_EXPERIMENTAL or '').strip()
+        if not url:
+            MsgType.WARN(
+                self,
+                'Update URL Missing',
+                (
+                    'Set channel URL in constants.py:\n'
+                    f'- UPDATE_DOWNLOAD_URL_{self._update_channel.upper()}'
+                ),
+                Buttons.OK,
+            )
+            return
+        if not (url.lower().startswith('http://') or url.lower().startswith('https://')):
+            MsgType.WARN(
+                self,
+                'Invalid Update URL',
+                (
+                    'Update URL must start with http:// or https://\n'
+                    f'Channel: {self._update_channel}'
+                ),
+                Buttons.OK,
+            )
+            return
+
+        confirm = MsgType.WARN(
             self,
-            'Updates Disabled',
-            'Update checking is disabled for this build.'
+            'Install Latest Build',
+            (
+                f'This will install the latest {self._update_channel} build.\n'
+                'The app will download the package, close, and run the installer.\n'
+                'Continue?'
+            ),
+            Buttons.YES | Buttons.NO,
         )
+        if confirm == Buttons.NO:
+            return
+
+        self.btnUpdate.setEnabled(False)
+        self.btnUpdate.setText('Downloading...')
+        QApplication.processEvents()
+        tmp_path = None
+        try:
+            # Pick filename from URL path, fallback to app setup name.
+            url_path = urlparse(url).path or ''
+            fname = os.path.basename(url_path) or f'{APP_BUNDLE_NAME}-Setup-latest.exe'
+            if not fname.lower().endswith('.exe'):
+                fname = f'{APP_BUNDLE_NAME}-Setup-latest.exe'
+            tmp_path = os.path.join(tempfile.gettempdir(), fname)
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+
+            urllib.request.urlretrieve(url, tmp_path)
+            if not os.path.exists(tmp_path):
+                raise RuntimeError('Downloaded file missing.')
+
+            self.btnUpdate.setText('Launching installer...')
+            QApplication.processEvents()
+
+            # Launch installer silently, then exit this app to avoid file lock conflicts.
+            installer_args = [tmp_path, '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART']
+            subprocess.Popen(installer_args, close_fds=True)
+            self.elmocut.quit_all()
+        except Exception as e:
+            MsgType.ERROR(
+                self,
+                'Update Failed',
+                f'Could not download/install update.\n{e}',
+                Buttons.OK,
+            )
+        finally:
+            if self.isVisible():
+                self.btnUpdate.setEnabled(True)
+                self.btnUpdate.setText(
+                    f'Install Latest Build ({self._update_channel.title()})'
+                )
     
     def loadInterfaces(self):
         self.comboInterface.clear()
