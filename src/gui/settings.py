@@ -63,9 +63,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnUpdate.setText(self._update_button_text())
         # Avoid synchronous HEAD in __init__ (runs during main window setup); defer to next event-loop tick.
         QTimer.singleShot(0, self._deferred_initial_update_check)
-        # Silent startup download is opt-in via ZUBCUT_ENABLE_STARTUP_AUTO_UPDATE (see main.UpdateThread_Starter).
-        self.chkAutoupdate.setEnabled(False)
-        self.chkAutoupdate.setChecked(False)
+        self.chkAutoupdate.setEnabled(True)
+        self.chkAutoupdate.setToolTip(
+            f'When enabled, {APP_DISPLAY_NAME} checks on startup for a newer build on your '
+            'update channel and downloads the installer automatically only if the server reports '
+            'a newer version than this install. You can still install from this button anytime.'
+        )
 
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
         register_window_surface_effects(self)

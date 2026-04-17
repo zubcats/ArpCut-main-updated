@@ -1,126 +1,150 @@
 """
 Qt progress UI for downloading the Windows installer before launching Inno Setup.
+
+Uses QNetworkAccessManager so the download runs on Qt's event loop (same thread as the UI).
+Avoids QThread + urllib + nested QEventLoop, which was unstable on Windows.
 """
 
-from PyQt5.QtCore import QEventLoop, Qt, QThread, pyqtSignal
-from PyQt5.QtWidgets import QApplication, QProgressDialog
+import os
 
-from constants import APP_DISPLAY_NAME
-from tools.updater_core import download_installer
+from PyQt5.QtCore import QEventLoop, Qt, QUrl
+from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
+from PyQt5.QtWidgets import QProgressDialog
+
+from constants import APP_BUNDLE_NAME, APP_DISPLAY_NAME
+from tools.updater_core import (
+    _download_request_url,
+    _temp_installer_path,
+    _validate_installer_exe,
+)
 from tools.updater_debug import begin_updater_debug_session, updater_log
-
-
-class _InstallerDownloadThread(QThread):
-    """Runs urllib download off the GUI thread; progress is queued to the main thread."""
-
-    progress = pyqtSignal(object, object)  # received, total (total may be None)
-    succeeded = pyqtSignal(str)
-    failed = pyqtSignal(str)
-    aborted = pyqtSignal()
-
-    def __init__(self, url):
-        super().__init__()
-        self._url = url
-        self._cancel = False
-
-    def request_cancel(self):
-        self._cancel = True
-
-    def run(self):
-        try:
-            updater_log('worker thread: download_installer start url=%s', self._url)
-            path = download_installer(
-                self._url,
-                progress_callback=lambda r, t: self.progress.emit(r, t),
-                should_cancel=lambda: self._cancel,
-            )
-            updater_log('worker thread: download_installer ok path=%s', path)
-            self.succeeded.emit(path)
-        except RuntimeError as e:
-            updater_log('worker thread: RuntimeError %s', e)
-            if 'cancel' in str(e).lower():
-                self.aborted.emit()
-            else:
-                self.failed.emit(str(e))
-        except Exception as e:
-            updater_log('worker thread: Exception %s', e, exc_info=True)
-            self.failed.emit(str(e))
 
 
 def download_update_with_progress_dialog(parent, url):
     """
     Modal progress while downloading. Returns path to temp installer, or None if cancelled.
-    Raises RuntimeError / other exceptions on failure (not cancel).
+    Raises RuntimeError on failure (not cancel).
     """
     begin_updater_debug_session('download_update_with_progress_dialog')
     updater_log(
-        'progress UI: start url=%r parent_type=%s',
+        'progress UI (Qt network): start url=%r parent_type=%s',
         url,
         type(parent).__name__ if parent is not None else None,
     )
-    # No parent + application modal: avoids native crashes with frameless parent windows
-    # on Windows. Download runs in a worker thread so we never nest processEvents() during
-    # urllib I/O (that re-entrancy also crashed after the Yes/No dialog).
+
+    if not url:
+        raise RuntimeError('Update URL is not configured.')
+    if not (url.lower().startswith('http://') or url.lower().startswith('https://')):
+        raise RuntimeError('Update URL must start with http:// or https://')
+
+    tmp_path = _temp_installer_path(url)
+    if os.path.exists(tmp_path):
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+    download_url = _download_request_url(url)
+    updater_log('progress UI: GET %r', download_url)
+
+    qurl = QUrl(download_url)
+    if not qurl.isValid():
+        raise RuntimeError('Invalid download URL.')
+
     dlg = QProgressDialog()
-    dlg.setAttribute(Qt.WA_DeleteOnClose, True)
     dlg.setWindowTitle(APP_DISPLAY_NAME)
-    if parent is not None:
-        icon = parent.windowIcon()
-        if icon is not None and not icon.isNull():
-            dlg.setWindowIcon(icon)
+    dlg.setAttribute(Qt.WA_DeleteOnClose, False)
     dlg.setLabelText('Connecting…')
     dlg.setCancelButtonText('Cancel')
     dlg.setRange(0, 100)
     dlg.setMinimumDuration(0)
     dlg.setWindowModality(Qt.ApplicationModal)
     dlg.setValue(0)
+    if parent is not None:
+        icon = parent.windowIcon()
+        if icon is not None and not icon.isNull():
+            dlg.setWindowIcon(icon)
 
-    thread = _InstallerDownloadThread(url)
+    manager = QNetworkAccessManager()
+    req = QNetworkRequest(qurl)
+    req.setHeader(QNetworkRequest.UserAgentHeader, f'{APP_BUNDLE_NAME}-updater')
+    req.setRawHeader(b'Cache-Control', b'no-cache')
+    req.setRawHeader(b'Pragma', b'no-cache')
+
+    reply = manager.get(req)
+    out = open(tmp_path, 'wb')
+    out_closed = False
+
     loop = QEventLoop()
-    result = {'path': None, 'error': None, 'aborted': False}
+    state = {'cancelled': False, 'http_error': None}
 
-    def on_progress(received, total):
+    def _close_out():
+        nonlocal out_closed
+        if out_closed:
+            return
+        try:
+            out.flush()
+            out.close()
+        except Exception as e:
+            updater_log('_close_out: %s', e, exc_info=True)
+        out_closed = True
+
+    def on_ready_read():
+        try:
+            if reply.error() == QNetworkReply.NoError:
+                chunk = reply.readAll()
+                if chunk:
+                    out.write(bytes(chunk))
+        except Exception as e:
+            updater_log('readyRead: %s', e, exc_info=True)
+
+    def on_progress(rx, total):
         try:
             if dlg.wasCanceled():
+                state['cancelled'] = True
+                reply.abort()
                 return
-        except Exception as e:
-            updater_log('on_progress: wasCanceled failed %s', e, exc_info=True)
+        except Exception:
             return
-        received = int(received)
-        if total is not None:
-            total = int(total)
-        if total and total > 0:
+        rx = int(rx)
+        if total > 0:
             dlg.setRange(0, 100)
-            pct = min(99, int(received * 100 / total))
-            dlg.setValue(pct)
+            dlg.setValue(min(99, int(rx * 100 / total)))
             dlg.setLabelText(
-                f'Downloading update… {received / (1024 * 1024):.1f} / {total / (1024 * 1024):.1f} MB'
+                f'Downloading update… {rx / (1024 * 1024):.1f} / {total / (1024 * 1024):.1f} MB'
             )
         else:
             dlg.setRange(0, 0)
-            dlg.setLabelText(f'Downloading update… {received / (1024 * 1024):.1f} MB')
+            dlg.setLabelText(f'Downloading update… {rx / (1024 * 1024):.1f} MB')
 
-    def on_ok(path):
-        result['path'] = path
+    def on_finished():
+        try:
+            if reply.error() == QNetworkReply.NoError:
+                rest = reply.readAll()
+                if rest:
+                    out.write(bytes(rest))
+        except Exception as e:
+            updater_log('on_finished read: %s', e, exc_info=True)
+        _close_out()
+
+        err = reply.error()
+        if err != QNetworkReply.NoError:
+            if err == QNetworkReply.OperationCanceledError:
+                state['cancelled'] = True
+                state['http_error'] = None
+            else:
+                state['http_error'] = reply.errorString()
+        else:
+            state['http_error'] = None
+
+        reply.deleteLater()
         loop.quit()
 
-    def on_fail(msg):
-        result['error'] = RuntimeError(msg)
-        loop.quit()
+    reply.readyRead.connect(on_ready_read)
+    reply.downloadProgress.connect(on_progress)
+    reply.finished.connect(on_finished)
+    dlg.canceled.connect(reply.abort)
 
-    def on_abort():
-        result['aborted'] = True
-        loop.quit()
-
-    thread.progress.connect(on_progress)
-    thread.succeeded.connect(on_ok)
-    thread.failed.connect(on_fail)
-    thread.aborted.connect(on_abort)
-    dlg.canceled.connect(thread.request_cancel)
-
-    updater_log('progress UI: starting worker thread')
-    thread.start()
-    updater_log('progress UI: showing dialog')
     dlg.show()
     if parent is not None and parent.isVisible():
         try:
@@ -128,52 +152,55 @@ def download_update_with_progress_dialog(parent, url):
             fg.moveCenter(parent.frameGeometry().center())
             dlg.move(fg.topLeft())
         except Exception as e:
-            updater_log('progress UI: center on parent failed %s', e, exc_info=True)
+            updater_log('center dialog: %s', e, exc_info=True)
     dlg.raise_()
     dlg.activateWindow()
 
-    updater_log('progress UI: entering local event loop')
-    loop.exec_()
+    updater_log('progress UI: entering event loop (Qt network)')
+    try:
+        loop.exec_()
+    finally:
+        _close_out()
+
+    try:
+        dlg_was_canceled = dlg.wasCanceled()
+    except Exception:
+        dlg_was_canceled = False
+
     updater_log(
-        'progress UI: loop quit aborted=%s err=%s path_set=%s',
-        result['aborted'],
-        result['error'] is not None,
-        result['path'] is not None,
+        'progress UI: loop done cancelled=%s dlg_cancel=%s err=%r',
+        state['cancelled'],
+        dlg_was_canceled,
+        state['http_error'],
     )
-    thread.wait()
-    updater_log('progress UI: thread.wait done')
 
-    was_canceled = False
     try:
-        was_canceled = dlg.wasCanceled()
+        dlg.reset()
+        dlg.close()
     except Exception as e:
-        updater_log('progress UI: dlg.wasCanceled() failed %s', e, exc_info=True)
+        updater_log('close progress dlg: %s', e, exc_info=True)
 
-    def _close_dlg():
+    if state['cancelled'] or dlg_was_canceled:
         try:
-            dlg.reset()
-            dlg.close()
-            QApplication.processEvents()
-        except Exception as e:
-            updater_log('_close_dlg failed %s', e, exc_info=True)
-
-    if result['aborted'] or was_canceled:
-        updater_log('progress UI: cancel path')
-        _close_dlg()
+            os.remove(tmp_path)
+        except OSError:
+            pass
         return None
-    if result['error'] is not None:
-        updater_log('progress UI: error path %s', result['error'])
-        _close_dlg()
-        raise result['error']
 
-    path = result['path']
-    updater_log('progress UI: success path=%s, closing', path)
+    if state['http_error']:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise RuntimeError(state['http_error'])
+
     try:
-        dlg.setRange(0, 100)
-        dlg.setValue(100)
-        dlg.setLabelText('Download finished. Starting installer…')
-        QApplication.processEvents()
-    except Exception as e:
-        updater_log('progress UI: final label failed %s', e, exc_info=True)
-    _close_dlg()
-    return path
+        _validate_installer_exe(tmp_path)
+    except RuntimeError:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    return tmp_path

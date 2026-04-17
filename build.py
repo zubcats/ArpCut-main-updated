@@ -21,6 +21,7 @@ HIDDEN_IMPORTS = [
     'PyQt5.QtWidgets',
     'PyQt5.QtCore', 
     'PyQt5.QtGui',
+    'PyQt5.QtNetwork',
     'PyQt5.sip',
     'qdarkstyle',
     'scapy',

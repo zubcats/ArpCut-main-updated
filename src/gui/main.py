@@ -667,7 +667,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Settings props
         self.minimize = True
         self.remember = False
-        self.autoupdate = False  # Disabled - this is a fork
+        self.autoupdate = True
 
         self.from_tray = False
 
@@ -1351,21 +1351,31 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     
     def UpdateThread_Starter(self):
         """
-        Periodic HEAD checks refresh the settings update badge (no silent download).
+        HEAD polling refreshes the settings update badge.
 
-        Silent download-on-startup is opt-in: set ZUBCUT_ENABLE_STARTUP_AUTO_UPDATE=1
-        (it can crash on some setups; use Settings → Install Latest Build instead).
+        ~2s after startup, may download + run the installer only if Settings → autoupdate
+        is on (default) and update_is_available() is true. Set ZUBCUT_DISABLE_STARTUP_AUTO_UPDATE=1
+        to force off regardless of settings.
         """
         import os
 
-        if os.environ.get('ZUBCUT_ENABLE_STARTUP_AUTO_UPDATE', '').strip().lower() in (
+        self._start_periodic_update_availability_poll()
+        if os.environ.get('ZUBCUT_DISABLE_STARTUP_AUTO_UPDATE', '').strip().lower() in (
             '1',
             'true',
             'yes',
             'on',
         ):
-            QTimer.singleShot(2000, self._maybe_auto_update_on_startup)
-        self._start_periodic_update_availability_poll()
+            return
+        QTimer.singleShot(2000, self._maybe_auto_update_on_startup_deferred)
+
+    def _maybe_auto_update_on_startup_deferred(self):
+        try:
+            if not import_settings().get('autoupdate', True):
+                return
+        except Exception:
+            return
+        self._maybe_auto_update_on_startup()
 
     def UpdateThread_Reciever(self):
         """
