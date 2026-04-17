@@ -144,14 +144,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ZubCut-Windows-Portable
-          path: dist/ZubCut.exe
+          path: dist/ZubCut
 
       - name: Upload portable EXE (Experimental)
         if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
         uses: actions/upload-artifact@v4
         with:
           name: ZubCut-Windows-Portable-Experimental
-          path: dist/ZubCut.exe
+          path: dist/ZubCut
 
       - name: Upload installer EXE
         if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}

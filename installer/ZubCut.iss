@@ -1,5 +1,5 @@
 ; Inno Setup 6 — ZubCut Windows installer
-; Prereq: python build.py → dist\ZubCut.exe
+; Prereq: python build.py → dist\ZubCut\ (onedir — copy full folder into {app})
 
 #define MyAppName "ZubCut"
 #define MyAppVersion "1.29"
@@ -35,7 +35,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\{#MyAppName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Bundle Npcap installer with setup. Place this file at installer\npcap-1.87.exe before compiling.
 Source: "..\installer\{#NpcapInstallerName}"; DestDir: "{tmp}"; Flags: deleteafterinstall ignoreversion skipifsourcedoesntexist
 

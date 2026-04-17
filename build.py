@@ -46,7 +46,9 @@ def build():
     
     # Platform-specific options
     if system == 'Windows':
-        cmd.extend(['--onefile', '--windowed'])
+        # Onedir avoids one-file temp extraction (_MEI*) which often breaks python311.dll load
+        # (AV, temp cleanup, or missing deps beside the DLL on some systems).
+        cmd.extend(['--onedir', '--windowed'])
         cmd.extend(['--add-data', 'exe/manuf;manuf'])
         cmd.extend(['--add-data', 'exe/zubcut_icon.png;.'])
         cmd.extend(['--icon', 'exe/zubcut_icon.png'])
@@ -82,7 +84,7 @@ def build():
         print()
         print("Build complete!")
         if system == 'Windows':
-            print(f"Output: dist/{APP_BUNDLE_NAME}.exe")
+            print(f"Output: dist/{APP_BUNDLE_NAME}/{APP_BUNDLE_NAME}.exe")
         elif system == 'Darwin':
             print(f"Output: dist/{APP_BUNDLE_NAME}.app")
             print(f"To create zip: cd dist && zip -r {APP_BUNDLE_NAME}-macOS.zip {APP_BUNDLE_NAME}.app")
