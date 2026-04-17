@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QApplication, QMainWindow
 from PyQt5.QtGui import QFont, QKeySequence
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 import os
 import sys
 
@@ -56,6 +56,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._update_published_label = ''
         self._update_available = False
         self.btnUpdate.setText(self._update_button_text())
+        # Defer first HEAD check so it does not run synchronously during main window construction.
+        QTimer.singleShot(0, self._deferred_initial_update_check)
         self.chkAutoupdate.setToolTip(
             'Automatic startup updates are not used. Use Install Latest Build below when you want to update.'
         )
@@ -338,6 +340,14 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _channel_label(self):
         return 'experimental' if self._update_channel == 'experimental' else APP_DISPLAY_NAME
+
+    def _deferred_initial_update_check(self):
+        try:
+            self._refresh_update_availability()
+            self.btnUpdate.setText(self._update_button_text())
+            self._apply_update_button_style()
+        except Exception:
+            pass
 
     def _refresh_update_availability(self):
         """Fetch remote installer time; compare to embedded build time when CI set it."""
