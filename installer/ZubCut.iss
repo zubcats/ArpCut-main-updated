@@ -26,7 +26,8 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64
-CloseApplications=no
+; Allow Restart Manager to close ZubCut so the old one-file EXE is not left in place beside the new onedir layout.
+CloseApplications=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
