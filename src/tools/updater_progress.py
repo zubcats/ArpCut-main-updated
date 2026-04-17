@@ -15,6 +15,7 @@ def download_update_with_progress_dialog(parent, url):
     Raises RuntimeError / other exceptions on failure (not cancel).
     """
     dlg = QProgressDialog(parent)
+    dlg.setAttribute(Qt.WA_DeleteOnClose, True)
     dlg.setWindowTitle(APP_DISPLAY_NAME)
     dlg.setLabelText('Connecting…')
     dlg.setCancelButtonText('Cancel')
@@ -49,15 +50,23 @@ def download_update_with_progress_dialog(parent, url):
     except RuntimeError as e:
         if 'cancel' in str(e).lower():
             dlg.reset()
+            dlg.close()
+            QApplication.processEvents()
             return None
         dlg.reset()
+        dlg.close()
+        QApplication.processEvents()
         raise
     except Exception:
         dlg.reset()
+        dlg.close()
+        QApplication.processEvents()
         raise
 
     if dlg.wasCanceled():
         dlg.reset()
+        dlg.close()
+        QApplication.processEvents()
         return None
 
     dlg.setRange(0, 100)
@@ -65,4 +74,6 @@ def download_update_with_progress_dialog(parent, url):
     dlg.setLabelText('Download finished. Starting installer…')
     QApplication.processEvents()
     dlg.reset()
+    dlg.close()
+    QApplication.processEvents()
     return path

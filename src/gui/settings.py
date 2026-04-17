@@ -292,11 +292,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnUpdate.setEnabled(False)
         self.btnUpdate.setText('Downloading…')
         QApplication.processEvents()
+        quit_for_update = False
         try:
             path = download_update_with_progress_dialog(self, url)
             if path is None:
                 return
             launch_installer(path)
+            quit_for_update = True
             self.elmocut.quit_all()
         except Exception as e:
             MsgType.ERROR(
@@ -306,10 +308,16 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 Buttons.OK,
             )
         finally:
-            if self.isVisible():
-                self.btnUpdate.setEnabled(True)
-                self.btnUpdate.setText(self._update_button_text())
-                self._apply_update_button_style()
+            # quit_all() destroys this window; touching widgets here crashes.
+            if quit_for_update:
+                return
+            try:
+                if self.isVisible():
+                    self.btnUpdate.setEnabled(True)
+                    self.btnUpdate.setText(self._update_button_text())
+                    self._apply_update_button_style()
+            except RuntimeError:
+                pass
 
     def _channel_label(self):
         return 'experimental' if self._update_channel == 'experimental' else APP_DISPLAY_NAME
