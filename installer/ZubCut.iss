@@ -37,7 +37,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; Bundle Npcap installer with setup. Place this file at installer\npcap-1.87.exe before compiling.
-Source: "..\installer\{#NpcapInstallerName}"; DestDir: "{tmp}"; Flags: deleteafterinstall ignoreversion; Check: NpcapInstallerBundled
+Source: "..\installer\{#NpcapInstallerName}"; DestDir: "{tmp}"; Flags: deleteafterinstall ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -46,7 +46,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 ; Install Npcap only when it is missing.
-Filename: "{tmp}\{#NpcapInstallerName}"; Parameters: "/S"; Flags: waituntilterminated; Check: ShouldInstallNpcap
+Filename: "{tmp}\{#NpcapInstallerName}"; Parameters: "/S"; Flags: waituntilterminated skipifdoesntexist; Check: ShouldInstallNpcap
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent shellexec
 
 [Code]
@@ -68,10 +68,10 @@ function NpcapInstallerBundled: Boolean;
 var
   InstallerPath: String;
 begin
-  InstallerPath := ExpandConstant('{src}\..\installer\{#NpcapInstallerName}');
+  InstallerPath := ExpandConstant('{tmp}\{#NpcapInstallerName}');
   Result := FileExists(InstallerPath);
   if not Result then
-    Log('Npcap installer not found at ' + InstallerPath + '. Setup will skip bundled Npcap installation.');
+    Log('Bundled Npcap installer not found at ' + InstallerPath + '. Setup will skip Npcap installation.');
 end;
 
 function ShouldInstallNpcap: Boolean;
