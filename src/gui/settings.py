@@ -16,12 +16,7 @@ from ui.ui_settings import Ui_MainWindow
 from networking.nicknames import Nicknames
 
 from tools.keybinds import keyseq_from_setting
-from tools.updater_core import (
-    get_update_status,
-    launch_installer,
-    selected_update_url,
-    set_auto_update_cooldown,
-)
+from tools.updater_core import get_update_status, launch_installer, selected_update_url
 from tools.updater_progress import download_update_with_progress_dialog
 from tools.updater_debug import (
     begin_updater_debug_session,
@@ -63,11 +58,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnUpdate.setText(self._update_button_text())
         # Avoid synchronous HEAD in __init__ (runs during main window setup); defer to next event-loop tick.
         QTimer.singleShot(0, self._deferred_initial_update_check)
-        self.chkAutoupdate.setEnabled(True)
         self.chkAutoupdate.setToolTip(
-            f'When enabled, {APP_DISPLAY_NAME} checks on startup for a newer build on your '
-            'update channel and downloads the installer automatically only if the server reports '
-            'a newer version than this install. You can still install from this button anytime.'
+            'Automatic startup updates are not used. Use Install Latest Build below when you want to update.'
         )
 
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
@@ -245,7 +237,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.chkAutostart.setChecked(s['autostart'])
         self.chkMinimized.setChecked(s['minimized'])
         self.chkRemember.setChecked(s['remember'])
-        self.chkAutoupdate.setChecked(s['autoupdate'])
+        self.chkAutoupdate.setEnabled(False)
+        self.chkAutoupdate.setChecked(False)
         self.spinCount.setValue(s['count'])
         self.spinThreads.setValue(s['threads'])
         self.sliderCount.setValue(s['count'])
@@ -319,7 +312,6 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if path is None:
                 return
             updater_log('checkUpdate: launch_installer')
-            set_auto_update_cooldown()
             launch_installer(path)
             quit_for_update = True
             updater_log('checkUpdate: quit_all')

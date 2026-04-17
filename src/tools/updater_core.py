@@ -5,7 +5,6 @@ Uses Last-Modified on the channel installer URL vs APP_BUILD_TIME_ISO from CI.
 
 import os
 import subprocess
-import sys
 import tempfile
 import time
 import urllib.request
@@ -25,62 +24,6 @@ from constants import (
 # (CI stamps time before packaging/upload). Require this much skew so we do not
 # treat the same build as an update or loop reinstall at every startup.
 _MIN_REMOTE_AHEAD_OF_BUILD = timedelta(minutes=45)
-
-
-def _auto_update_state_dir():
-    if sys.platform.startswith('win'):
-        base = os.environ.get('LOCALAPPDATA') or tempfile.gettempdir()
-    else:
-        base = tempfile.gettempdir()
-    d = os.path.join(base, APP_BUNDLE_NAME)
-    try:
-        os.makedirs(d, exist_ok=True)
-    except OSError:
-        pass
-    return d
-
-
-def _auto_update_cooldown_path():
-    return os.path.join(_auto_update_state_dir(), 'auto_update_cooldown_until.txt')
-
-
-def _default_auto_update_cooldown_seconds():
-    raw = (os.environ.get('ZUBCUT_AUTO_UPDATE_COOLDOWN_SEC') or '').strip()
-    if raw:
-        try:
-            return max(60, int(raw))
-        except ValueError:
-            pass
-    return 48 * 3600
-
-
-def auto_update_cooldown_active():
-    """
-    True while within the cooldown window after we launched the installer.
-    Prevents startup auto-update from re-running immediately: the new binary's
-    APP_BUILD_TIME_ISO can still be far behind the channel URL Last-Modified,
-    so update_is_available() would stay true and crash in the downloader again.
-    """
-    path = _auto_update_cooldown_path()
-    try:
-        with open(path, 'r', encoding='utf-8') as fp:
-            end = float(fp.read().strip().split()[0])
-        return time.time() < end
-    except Exception:
-        return False
-
-
-def set_auto_update_cooldown(duration_seconds=None):
-    """Call right before launch_installer + app exit (manual or auto update)."""
-    if duration_seconds is None:
-        duration_seconds = _default_auto_update_cooldown_seconds()
-    path = _auto_update_cooldown_path()
-    end = time.time() + float(duration_seconds)
-    try:
-        with open(path, 'w', encoding='utf-8') as fp:
-            fp.write(str(end))
-    except OSError:
-        pass
 
 
 def _parse_build_time_iso(raw):

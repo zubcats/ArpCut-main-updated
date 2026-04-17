@@ -1351,106 +1351,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     
     def UpdateThread_Starter(self):
         """
-        HEAD polling refreshes the settings update badge.
-
-        ~5s after startup, may download + run the installer only if Settings → autoupdate
-        is on (default) and update_is_available() is true. Set ZUBCUT_DISABLE_STARTUP_AUTO_UPDATE=1
-        to force off regardless of settings.
+        Periodic HEAD polling refreshes the settings update badge (gear hint).
+        Installing updates is only from Settings → Install Latest Build.
         """
-        import os
-
         self._start_periodic_update_availability_poll()
-        if os.environ.get('ZUBCUT_DISABLE_STARTUP_AUTO_UPDATE', '').strip().lower() in (
-            '1',
-            'true',
-            'yes',
-            'on',
-        ):
-            return
-        QTimer.singleShot(5000, self._maybe_auto_update_on_startup_deferred)
-
-    def _maybe_auto_update_on_startup_deferred(self):
-        try:
-            if not import_settings().get('autoupdate', True):
-                return
-        except Exception:
-            return
-        self._maybe_auto_update_on_startup()
 
     def UpdateThread_Reciever(self):
         """
         Legacy hook from upstream; unused.
         """
         pass
-
-    def _maybe_auto_update_on_startup(self):
-        import sys
-
-        if not getattr(sys, 'frozen', False):
-            return
-        if not sys.platform.startswith('win'):
-            return
-        try:
-            from tools.updater_core import (
-                auto_update_cooldown_active,
-                launch_installer,
-                selected_update_url,
-                set_auto_update_cooldown,
-                update_is_available,
-            )
-            from tools.updater_progress import download_update_with_progress_dialog
-        except Exception:
-            return
-        if not selected_update_url():
-            return
-        if not update_is_available():
-            return
-        if auto_update_cooldown_active():
-            return
-        try:
-            from tools.updater_debug import (
-                begin_updater_debug_session,
-                updater_log,
-                updater_log_paths_hint,
-            )
-        except Exception:
-            def begin_updater_debug_session(_reason=None):
-                pass
-
-            def updater_log(*_a, **_k):
-                pass
-
-            def updater_log_paths_hint():
-                return ''
-
-        try:
-            begin_updater_debug_session('main.auto_update')
-            updater_log('auto_update: starting download')
-            self.log('A newer build is available. Downloading update…', 'orange')
-            path = download_update_with_progress_dialog(
-                self,
-                selected_update_url(),
-                show_progress=False,
-            )
-            updater_log('auto_update: download returned %r', path)
-            if not path:
-                self.log('Update download cancelled.', 'orange')
-                return
-            set_auto_update_cooldown()
-            launch_installer(path)
-            self.quit_all()
-        except Exception as e:
-            updater_log('auto_update: failed %s', e, exc_info=True)
-            self.log(f'Automatic update failed: {e}', 'red')
-            MsgType.ERROR(
-                None,
-                'Update Failed',
-                (
-                    f'Could not download or start the installer.\n{e}\n\n'
-                    f'Details were appended to:\n{updater_log_paths_hint()}'
-                ),
-                Buttons.OK,
-            )
 
     def _should_poll_update_availability(self):
         import sys
