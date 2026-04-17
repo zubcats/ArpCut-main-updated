@@ -7,6 +7,9 @@ popup is possible there; faulthandler / OS error reporting still applies.
 
 After the dialog, the process exits with code 1. PyQt otherwise tends to keep
 running after excepthook returns for errors raised from Qt slots/timers.
+
+While the crash dialog is open, the nested event loop can still run timers; a
+second uncaught error only triggers an immediate exit (no extra dialogs).
 """
 
 from __future__ import annotations
@@ -26,6 +29,8 @@ _ALPHABET = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ'  # skip I, O
 _prev_sys_excepthook = None
 _prev_threading_excepthook = None
 _installed = False
+# QMessageBox.exec_() runs a nested event loop; timers/slots can re-enter excepthook.
+_handling_main_thread_crash = False
 
 
 def _make_crash_ref() -> str:
@@ -109,6 +114,18 @@ def _show_main_thread_dialog(ref: str, path: str) -> None:
 
 
 def _our_sys_excepthook(exc_type, exc, tb) -> None:
+    global _handling_main_thread_crash
+    if _handling_main_thread_crash:
+        try:
+            sys.stderr.write(
+                f'{APP_BUNDLE_NAME}: another uncaught error while the crash dialog was open; exiting.\n'
+            )
+            sys.stderr.write(''.join(traceback.format_exception(exc_type, exc, tb)))
+        except Exception:
+            pass
+        os._exit(1)
+    _handling_main_thread_crash = True
+
     ref = _make_crash_ref()
     body = ''.join(traceback.format_exception(exc_type, exc, tb))
     try:
