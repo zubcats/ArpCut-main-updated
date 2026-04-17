@@ -4,6 +4,9 @@ and show a simple dialog so users can report the code (and attach the log).
 
 Native hard crashes (access violations, etc.) cannot run Python afterward, so no
 popup is possible there; faulthandler / OS error reporting still applies.
+
+After the dialog, the process exits with code 1. PyQt otherwise tends to keep
+running after excepthook returns for errors raised from Qt slots/timers.
 """
 
 from __future__ import annotations
@@ -87,9 +90,10 @@ def _show_main_thread_dialog(ref: str, path: str) -> None:
         if app is None:
             raise RuntimeError('no QApplication')
         msg = (
-            'The app hit an unexpected error and will close.\n\n'
+            'The app hit an unexpected error.\n\n'
             f'Error code (include this in your report):\n{ref}\n\n'
-            f'Technical details were saved to:\n{path}'
+            f'Technical details were saved to:\n{path}\n\n'
+            'The app will close when you click OK.'
         )
         box = QMessageBox()
         box.setIcon(QMessageBox.Critical)
@@ -116,9 +120,28 @@ def _our_sys_excepthook(exc_type, exc, tb) -> None:
     except Exception:
         pass
     if _prev_sys_excepthook is not None:
-        _prev_sys_excepthook(exc_type, exc, tb)
+        try:
+            _prev_sys_excepthook(exc_type, exc, tb)
+        except Exception:
+            pass
     else:
-        sys.__excepthook__(exc_type, exc, tb)
+        try:
+            sys.__excepthook__(exc_type, exc, tb)
+        except Exception:
+            pass
+
+    # Qt often calls excepthook for errors in slots/timers then returns to the event loop,
+    # so the process would keep running unless we exit explicitly.
+    if not issubclass(exc_type, (SystemExit, KeyboardInterrupt)):
+        try:
+            from PyQt5.QtWidgets import QApplication
+
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+        except Exception:
+            pass
+        os._exit(1)
 
 
 def _our_threading_excepthook(args) -> None:
