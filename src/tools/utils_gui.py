@@ -15,24 +15,114 @@ from PyQt5.QtGui import QPainterPath, QRegion
 from tools.utils import terminal
 from constants import *
 
-# Solid black behind qdarkstyle so “dead space” is opaque (no desktop bleed-through).
-_MAIN_CHROME_BG = "#000000"
 # Backward compatibility for older packaged constants modules.
 _WINDOW_CORNER_RADIUS = int(globals().get('WINDOW_CORNER_RADIUS_PX', 12))
-TRANSLUCENT_MAIN_CHROME_QSS = f"""
+
+
+def _experimental_charcoal_ui() -> bool:
+    """Experimental builds use neutral charcoal accents instead of qdarkstyle blues."""
+    return str(UPDATE_CHANNEL or '').strip().lower() == 'experimental'
+
+
+def _main_window_chrome_bg() -> str:
+    # Solid behind qdarkstyle so “dead space” is opaque (no desktop bleed-through).
+    if _experimental_charcoal_ui():
+        return '#141414'
+    return '#000000'
+
+
+def translucent_main_chrome_qss() -> str:
+    bg = _main_window_chrome_bg()
+    return f"""
 QMainWindow {{
-    background-color: {_MAIN_CHROME_BG};
+    background-color: {bg};
     border-radius: {_WINDOW_CORNER_RADIUS}px;
 }}
 QWidget#centralwidget {{
-    background-color: {_MAIN_CHROME_BG};
+    background-color: {bg};
     border-radius: {_WINDOW_CORNER_RADIUS}px;
 }}
 """
 
 
+_EXPERIMENTAL_CHARCOAL_QSS = """
+/* After qdarkstyle: remove blue chrome — charcoal / neutral greys only (experimental). */
+QWidget {
+    selection-background-color: #4a4f55;
+    selection-color: #f2f2f2;
+}
+QAbstractItemView, QTableView, QTableWidget, QListView, QTreeView {
+    selection-background-color: #4a4f55;
+    selection-color: #f2f2f2;
+    alternate-background-color: #1e2228;
+}
+QAbstractItemView::item:selected, QTableView::item:selected, QTableWidget::item:selected,
+QListView::item:selected, QTreeView::item:selected {
+    background-color: #4a4f55;
+    color: #f2f2f2;
+}
+QHeaderView::section:hover {
+    background-color: #3d4248;
+}
+QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox, QComboBox {
+    selection-background-color: #4a4f55;
+}
+QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QAbstractSpinBox:focus, QComboBox:focus {
+    border: 1px solid #6b727a;
+}
+QProgressBar::chunk {
+    background-color: #5a636e;
+}
+QMenu::item:selected, QMenuBar::item:selected {
+    background-color: #4a4f55;
+}
+QTabBar::tab:selected {
+    background-color: #3d4248;
+    border-color: #555b63;
+}
+QTabBar::tab:!selected:hover {
+    background-color: #353a40;
+}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    background-color: #4a4f55;
+    border: 1px solid #6b727a;
+}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+    background-color: #4a4f55;
+    min-height: 24px;
+    min-width: 24px;
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+    background-color: #5a636e;
+}
+QSlider::groove:horizontal {
+    background-color: #353a40;
+}
+QSlider::handle:horizontal {
+    background-color: #6b727a;
+}
+QSlider::handle:horizontal:hover {
+    background-color: #8a9299;
+}
+QToolButton:hover {
+    background-color: #3d4248;
+}
+QToolButton:pressed {
+    background-color: #353a40;
+}
+QComboBox QAbstractItemView {
+    selection-background-color: #4a4f55;
+    selection-color: #f2f2f2;
+}
+"""
+
+
 def zubcut_dark_stylesheet():
-    return load_stylesheet() + "\n" + TRANSLUCENT_MAIN_CHROME_QSS
+    base = load_stylesheet() + '\n' + translucent_main_chrome_qss()
+    if _experimental_charcoal_ui():
+        base = base + '\n' + _EXPERIMENTAL_CHARCOAL_QSS
+    return base
 
 
 def _update_top_level_round_mask(widget):
