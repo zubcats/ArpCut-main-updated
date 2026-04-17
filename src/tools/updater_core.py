@@ -130,6 +130,14 @@ def download_installer(
     where total is None if Content-Length was not sent. should_cancel() returns True to abort.
     Raises RuntimeError on failure or cancel.
     """
+    try:
+        from tools.updater_debug import begin_updater_debug_session, updater_log
+
+        begin_updater_debug_session('download_installer')
+        updater_log('download_installer: tmp prep url=%r', url)
+    except Exception:
+        pass
+
     if not url:
         raise RuntimeError('Update URL is not configured.')
     if not (url.lower().startswith('http://') or url.lower().startswith('https://')):
@@ -143,6 +151,12 @@ def download_installer(
             pass
 
     download_url = _download_request_url(url)
+    try:
+        from tools.updater_debug import updater_log
+
+        updater_log('download_installer: GET %r', download_url)
+    except Exception:
+        pass
     req = urllib.request.Request(
         download_url,
         headers={
@@ -152,7 +166,19 @@ def download_installer(
         },
     )
     total = None
-    with urllib.request.urlopen(req, timeout=300) as resp:
+    try:
+        from tools.updater_debug import updater_log
+
+        resp_cm = urllib.request.urlopen(req, timeout=300)
+    except Exception:
+        try:
+            from tools.updater_debug import updater_log
+
+            updater_log('download_installer: urlopen failed', exc_info=True)
+        except Exception:
+            pass
+        raise
+    with resp_cm as resp:
         cl = resp.headers.get('Content-Length')
         if cl:
             try:
@@ -190,6 +216,12 @@ def launch_installer(tmp_path, *, no_ui=False):
     Run the downloaded Inno Setup. no_ui=True uses /VERYSILENT (nothing on screen).
     Default uses /SILENT so a small setup progress window is visible after the app exits.
     """
+    try:
+        from tools.updater_debug import updater_log
+
+        updater_log('launch_installer: path=%r no_ui=%s', tmp_path, no_ui)
+    except Exception:
+        pass
     install_log = os.path.join(
         tempfile.gettempdir(), f'{APP_BUNDLE_NAME.lower()}-update-install.log'
     )

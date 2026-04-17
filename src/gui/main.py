@@ -1380,20 +1380,44 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not update_is_available():
             return
         try:
+            from tools.updater_debug import (
+                begin_updater_debug_session,
+                updater_debug_log_path,
+                updater_log,
+            )
+        except Exception:
+            def begin_updater_debug_session(_reason=None):
+                pass
+
+            def updater_log(*_a, **_k):
+                pass
+
+            def updater_debug_log_path():
+                return ''
+
+        try:
+            begin_updater_debug_session('main.auto_update')
+            updater_log('auto_update: starting download')
             self.log('A newer build is available. Downloading update…', 'orange')
             QApplication.processEvents()
             path = download_update_with_progress_dialog(self, selected_update_url())
+            updater_log('auto_update: download returned %r', path)
             if not path:
                 self.log('Update download cancelled.', 'orange')
                 return
             launch_installer(path)
             self.quit_all()
         except Exception as e:
+            updater_log('auto_update: failed %s', e, exc_info=True)
             self.log(f'Automatic update failed: {e}', 'red')
+            _log_p = updater_debug_log_path()
             MsgType.ERROR(
-                self,
+                None,
                 'Update Failed',
-                f'Could not download or start the installer.\n{e}',
+                (
+                    f'Could not download or start the installer.\n{e}\n\n'
+                    f'Details were appended to:\n{_log_p}'
+                ),
                 Buttons.OK,
             )
 

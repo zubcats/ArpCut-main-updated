@@ -18,6 +18,11 @@ from networking.nicknames import Nicknames
 from tools.keybinds import keyseq_from_setting
 from tools.updater_core import get_update_status, launch_installer, selected_update_url
 from tools.updater_progress import download_update_with_progress_dialog
+from tools.updater_debug import (
+    begin_updater_debug_session,
+    updater_debug_log_path,
+    updater_log,
+)
 
 from constants import *
 
@@ -251,6 +256,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setStyleSheet(zubcut_dark_stylesheet())
     
     def checkUpdate(self):
+        begin_updater_debug_session('settings.checkUpdate')
+        updater_log('checkUpdate: entered')
         url = selected_update_url()
         if not url:
             MsgType.WARN(
@@ -288,24 +295,35 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             Buttons.YES | Buttons.NO,
         )
         if confirm == Buttons.NO:
+            updater_log('checkUpdate: user declined')
             return
 
+        updater_log('checkUpdate: user confirmed, disabling button')
         self.btnUpdate.setEnabled(False)
         self.btnUpdate.setText('Downloading…')
         QApplication.processEvents()
         quit_for_update = False
         try:
+            updater_log('checkUpdate: calling download_update_with_progress_dialog')
             path = download_update_with_progress_dialog(self, url)
+            updater_log('checkUpdate: download returned path=%r', path)
             if path is None:
                 return
+            updater_log('checkUpdate: launch_installer')
             launch_installer(path)
             quit_for_update = True
+            updater_log('checkUpdate: quit_all')
             self.elmocut.quit_all()
         except Exception as e:
+            updater_log('checkUpdate: exception %s', e, exc_info=True)
+            _log_hint = updater_debug_log_path()
             MsgType.ERROR(
                 None,
                 'Update Failed',
-                f'Could not download/install update.\n{e}',
+                (
+                    f'Could not download/install update.\n{e}\n\n'
+                    f'Details were appended to:\n{_log_hint}'
+                ),
                 Buttons.OK,
             )
         finally:

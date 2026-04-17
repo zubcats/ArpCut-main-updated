@@ -16,6 +16,7 @@ from src.constants import APP_BUNDLE_NAME
 
 # All the imports PyInstaller is too dumb to find on its own
 HIDDEN_IMPORTS = [
+    'tools.updater_debug',
     'PyQt5',
     'PyQt5.QtWidgets',
     'PyQt5.QtCore', 
