@@ -120,13 +120,14 @@ jobs:
           }
           $latest = Get-ChildItem -Path "output" -Filter "ZubCut-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $latest) { throw "Installer not found in output/" }
-          Copy-Item $latest.FullName "output/ZubCut-Setup-$channel.exe" -Force
+          $aliasName = if ($channel -eq "stable") { "ZubCut-Setup.exe" } else { "ZubCut-Setup-experimental.exe" }
+          Copy-Item $latest.FullName ("output/" + $aliasName) -Force
 
       - name: Upload portable EXE
         if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}
         uses: actions/upload-artifact@v4
         with:
-          name: ZubCut-Windows-Portable-Stable
+          name: ZubCut-Windows-Portable
           path: dist/ZubCut.exe
 
       - name: Upload portable EXE (Experimental)
@@ -140,8 +141,8 @@ jobs:
         if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}
         uses: actions/upload-artifact@v4
         with:
-          name: ZubCut-Windows-Installer-Stable
-          path: output/ZubCut-Setup-stable.exe
+          name: ZubCut-Windows-Installer
+          path: output/ZubCut-Setup.exe
 
       - name: Upload installer EXE (Experimental)
         if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
@@ -321,8 +322,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/ZubCut-Windows-Installer-Stable/ZubCut-Setup-stable.exe
-            artifacts/ZubCut-Windows-Portable-Stable/ZubCut.exe
+            artifacts/ZubCut-Windows-Installer/ZubCut-Setup.exe
+            artifacts/ZubCut-Windows-Portable/ZubCut.exe
             artifacts/ZubCut-macOS/ZubCut-macOS.zip
             artifacts/ZubCut-Linux/ZubCut
           draft: false

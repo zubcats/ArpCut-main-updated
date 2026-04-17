@@ -50,7 +50,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if channel not in ('stable', 'experimental'):
             channel = 'experimental'
         self._update_channel = channel
-        self.btnUpdate.setText(f'Install Latest Build ({channel.title()})')
+        self.btnUpdate.setText(self._update_button_text())
         # Keep background auto-update disabled; manual update button is available.
         self.chkAutoupdate.setEnabled(False)
         self.chkAutoupdate.setChecked(False)
@@ -274,7 +274,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self,
             'Install Latest Build',
             (
-                f'This will install the latest {self._update_channel} build.\n'
+                f'This will install the latest {self._channel_label()} build.\n'
                 'The app will download the package, close, and run the installer.\n'
                 'Continue?'
             ),
@@ -321,9 +321,15 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         finally:
             if self.isVisible():
                 self.btnUpdate.setEnabled(True)
-                self.btnUpdate.setText(
-                    f'Install Latest Build ({self._update_channel.title()})'
-                )
+                self.btnUpdate.setText(self._update_button_text())
+
+    def _channel_label(self):
+        return 'experimental' if self._update_channel == 'experimental' else APP_DISPLAY_NAME
+
+    def _update_button_text(self):
+        if self._update_channel == 'experimental':
+            return 'Install Latest Build (Experimental)'
+        return f'Install Latest Build ({APP_DISPLAY_NAME})'
     
     def loadInterfaces(self):
         self.comboInterface.clear()

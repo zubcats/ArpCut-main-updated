@@ -302,6 +302,8 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         if device['admin']:
             main.log('Cannot lag admin device', 'orange')
             return
+        if main._toggle_start_blocked('lag'):
+            return
         lag_ms, normal_ms, direction = self.values()
         main.applyLagSwitchSettings(lag_ms, normal_ms, direction)
         main.startLagSwitch(device)
@@ -544,6 +546,8 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         if device['admin']:
             main.log('Cannot dupe admin device', 'orange')
             return
+        if main._toggle_start_blocked('dupe'):
+            return
         ms, direction = self.values()
         main.dupe_duration_ms = ms
         main.dupe_direction = direction
@@ -584,9 +588,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         sc_arp_space.activated.connect(self._shortcut_scan_easy)
 
         self._shortcut_kill_l = QShortcut(QKeySequence(Qt.Key_L), self)
-        self._shortcut_kill_l.setContext(Qt.WindowShortcut)
+        self._shortcut_kill_l.setContext(Qt.ApplicationShortcut)
         self._shortcut_kill_l.setAutoRepeat(False)
         self._shortcut_kill_l.activated.connect(self._shortcut_main_l)
+        self._shortcut_lag_global = QShortcut(QKeySequence(Qt.Key_M), self)
+        self._shortcut_lag_global.setContext(Qt.ApplicationShortcut)
+        self._shortcut_lag_global.setAutoRepeat(False)
+        self._shortcut_lag_global.activated.connect(self._shortcut_global_lag)
+        self._shortcut_dupe_global = QShortcut(QKeySequence(Qt.Key_P), self)
+        self._shortcut_dupe_global.setContext(Qt.ApplicationShortcut)
+        self._shortcut_dupe_global.setAutoRepeat(False)
+        self._shortcut_dupe_global.activated.connect(self._shortcut_global_dupe)
 
         # Main Props
         self.scanner = Scanner()
@@ -595,6 +607,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Per-MAC intent generation for kill toggle; delayed OFF reinforcement only runs
         # when generation still matches (prevents stale delayed actions from reapplying).
         self._kill_intent_seq = {}
+        # Per-flow OFF intent generation (lag/dupe/unkill-all).
+        self._flow_off_intent_seq = {}
         self.lag_active = False
         self.lag_block_ms = 1500
         self.lag_release_ms = 1500
@@ -1234,7 +1248,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self.connected():
             return
         
+        victims_before = [dict(v) for v in self.killer.killed.values()]
         self.killer.unkill_all()
+        for victim in victims_before:
+            mac = victim.get('mac')
+            if not mac:
+                continue
+            # OFF-only reinforcement for bulk unkill uses same timings as kill toggle OFF.
+            self.killer.reinforce_restore(victim)
+            off_seq = self._bump_flow_off_intent('all', mac)
+            self._schedule_flow_off_reinforce('all', mac, off_seq, 60, victim)
+            self._schedule_flow_off_reinforce('all', mac, off_seq, 180, victim)
         self.killed_devices.clear()
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
@@ -1315,6 +1339,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         aw = QApplication.activeWindow()
         return aw is not None and aw is self
 
+    def _app_window_is_foreground(self):
+        aw = QApplication.activeWindow()
+        if aw is None:
+            return False
+        app_windows = [
+            self,
+            getattr(self, 'settings_window', None),
+            getattr(self, 'about_window', None),
+            getattr(self, 'device_window', None),
+            getattr(self, 'traffic_window', None),
+            getattr(self, 'lag_switch_dialog', None),
+            getattr(self, 'dupe_switch_dialog', None),
+        ]
+        return any(w is not None and aw is w for w in app_windows)
+
     def _shortcut_scan_easy(self):
         if not self._main_window_is_foreground():
             return
@@ -1329,6 +1368,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         k_dupe = keyseq_from_setting(s.get('key_dupe'), Qt.Key_P)
         self._shortcut_kill_l.setKey(k_kill)
         self._shortcut_kill_l.setAutoRepeat(False)
+        self._shortcut_lag_global.setKey(k_lag)
+        self._shortcut_lag_global.setAutoRepeat(False)
+        self._shortcut_dupe_global.setKey(k_dupe)
+        self._shortcut_dupe_global.setAutoRepeat(False)
         nk = k_kill.toString(QKeySequence.NativeText)
         nl = k_lag.toString(QKeySequence.NativeText)
         np = k_dupe.toString(QKeySequence.NativeText)
@@ -1349,32 +1392,87 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
         lag = self.lag_switch_dialog
         if lag:
-            lag._shortcut_m.setKey(k_lag)
-            lag._shortcut_m.setAutoRepeat(False)
+            lag._shortcut_m.setEnabled(False)
             lag.btnLagStartStop.setToolTip(
                 'Start or stop intermittent lag for the device selected in the main list. '
                 'Shortcut: %s when this window is active (not in ms fields).' % nl
             )
         dupe = self.dupe_switch_dialog
         if dupe:
-            dupe._shortcut_p.setKey(k_dupe)
-            dupe._shortcut_p.setAutoRepeat(False)
+            dupe._shortcut_p.setEnabled(False)
             dupe.btnDupeRun.setToolTip(
                 'Run a single lag burst for the device selected in the main list, then stop completely. '
                 'Shortcut: %s when this window is active (not in ms fields).' % np
             )
 
     def _shortcut_main_l(self):
-        """Kill toggle when the main window is active (focused), using the configured shortcut."""
-        if QApplication.activeWindow() is not self:
+        """Kill toggle when any app window is foreground, using configured shortcut."""
+        if not self._app_window_is_foreground():
             return
-        if not self.isActiveWindow():
-            return
-        if _focus_widget_absorbs_letter_key(self.focusWidget()):
+        if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
             return
         # Same handler as btnKill.clicked — do not gate on btnKill.isEnabled(); toggleKill
         # enforces connected(), selection, and admin the same for mouse and keyboard.
         self.toggleKill('shortcut_key')
+
+    def _shortcut_global_lag(self):
+        """Lag toggle while app is foreground, regardless of active sub-window."""
+        if not self._app_window_is_foreground():
+            return
+        if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
+            return
+        if self.lag_active and self.lag_device_mac:
+            lag_edge = 'stop'
+            if self._ignore_duplicate_toggle_edge('lag', self.lag_device_mac, lag_edge):
+                return
+            self.stopLagSwitch()
+            return
+        if not self.tableScan.selectedItems():
+            self.log('No device selected', 'red')
+            return
+        device = self.current_index()
+        if device['admin']:
+            self.log('Cannot lag admin device', 'orange')
+            return
+        if self._toggle_start_blocked('lag'):
+            return
+        lag_edge = 'start'
+        if self._ignore_duplicate_toggle_edge('lag', device['mac'], lag_edge):
+            return
+        if self.lag_switch_dialog is not None:
+            lag_ms, normal_ms, direction = self.lag_switch_dialog.values()
+            self.applyLagSwitchSettings(lag_ms, normal_ms, direction)
+        self.startLagSwitch(device)
+
+    def _shortcut_global_dupe(self):
+        """Dupe toggle while app is foreground, regardless of active sub-window."""
+        if not self._app_window_is_foreground():
+            return
+        if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
+            return
+        if self.dupe_active and self.dupe_device_mac:
+            dupe_edge = 'stop'
+            if self._ignore_duplicate_toggle_edge('dupe', self.dupe_device_mac, dupe_edge):
+                return
+            self.stopDupe()
+            return
+        if not self.tableScan.selectedItems():
+            self.log('No device selected', 'red')
+            return
+        device = self.current_index()
+        if device['admin']:
+            self.log('Cannot dupe admin device', 'orange')
+            return
+        if self._toggle_start_blocked('dupe'):
+            return
+        dupe_edge = 'start'
+        if self._ignore_duplicate_toggle_edge('dupe', device['mac'], dupe_edge):
+            return
+        if self.dupe_switch_dialog is not None:
+            ms, direction = self.dupe_switch_dialog.values()
+            self.dupe_duration_ms = ms
+            self.dupe_direction = direction
+        self.startDupe(device, self.dupe_duration_ms, self.dupe_direction)
 
     def openLagSwitchDialog(self):
         if not self.connected():
@@ -1427,6 +1525,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             pass
 
     def startLagSwitch(self, device):
+        if self._toggle_start_blocked('lag'):
+            return
         self.stopDupe(refresh_dialog=True, log=False)
         if self.lag_active:
             self.stopLagSwitch(refresh_dialog=False)
@@ -1552,6 +1652,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 try:
                     self.killer.unkill(victim)
                     self.killer.reinforce_restore(victim)
+                    lag_off_seq = self._bump_flow_off_intent('lag', prev_mac)
+                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 60, victim)
+                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 180, victim)
                 except Exception:
                     pass
         self._sync_killed_devices()
@@ -1564,6 +1667,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateKillButtonState()
 
     def startDupe(self, device, duration_ms, direction):
+        if self._toggle_start_blocked('dupe'):
+            return
         self.stopLagSwitch(refresh_dialog=True)
         self.stopDupe(refresh_dialog=False, log=False)
         self.dupe_device_mac = device['mac']
@@ -1618,6 +1723,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if device:
             try:
                 self._clear_victim_block(device)
+                dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
             except Exception:
                 pass
         self.btnDupe.setText('Dupe')
@@ -1660,6 +1768,32 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         setattr(self, until_attr, now + 0.03)
         return False
 
+    def _has_explicit_kill_active(self):
+        return any(bool(v) for v in self.killed_devices.values())
+
+    @staticmethod
+    def _toggle_kind_label(kind):
+        return {'kill': 'Kill', 'lag': 'Lag Switch', 'dupe': 'Dupe'}.get(kind, kind)
+
+    def _active_toggle_kind(self):
+        if self.lag_active and self.lag_device_mac:
+            return 'lag'
+        if self.dupe_active and self.dupe_device_mac:
+            return 'dupe'
+        if self._has_explicit_kill_active():
+            return 'kill'
+        return None
+
+    def _toggle_start_blocked(self, requested_kind):
+        active_kind = self._active_toggle_kind()
+        if active_kind and active_kind != requested_kind:
+            self.log(
+                f'{self._toggle_kind_label(active_kind)} is active. Turn it off first.',
+                'orange',
+            )
+            return True
+        return False
+
     def toggleKill(self, source='unknown'):
         if not self.connected():
             return
@@ -1672,18 +1806,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         mac = device['mac']
-        # Toggle is visual; each press sends one explicit backend command (kill/unkill).
-        if self.lag_active and self.lag_device_mac == mac:
-            self.stopLagSwitch(refresh_dialog=True)
-            self._run_kill_command(mac, device, turn_on=False, source=source)
-            return
-        if self.dupe_active and self.dupe_device_mac == mac:
-            self.stopDupe(refresh_dialog=True, log=False)
-            self._run_kill_command(mac, device, turn_on=False, source=source)
-            return
-
         current_ui_on = bool(self.killed_devices.get(mac, mac in self.killer.killed))
         next_state = not current_ui_on
+        if next_state and self._toggle_start_blocked('kill'):
+            return
         self.killed_devices[mac] = next_state
         self._updateKillButtonState()
         self._run_kill_command(mac, device, turn_on=next_state, source=source)
@@ -1733,6 +1859,34 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             snapshot = (getattr(self, '_kill_device_snapshot', None) or {}).get(mac)
             victim = self._victim_record_for_mac(mac) or snapshot
+            if not victim:
+                return
+            try:
+                self.killer.unkill(victim)
+                self.killer.reinforce_restore(victim)
+            except Exception:
+                pass
+
+        QTimer.singleShot(max(0, int(delay_ms)), _cb)
+
+    def _bump_flow_off_intent(self, kind, mac):
+        key = (kind, mac)
+        next_seq = int(self._flow_off_intent_seq.get(key, 0)) + 1
+        self._flow_off_intent_seq[key] = next_seq
+        return next_seq
+
+    def _schedule_flow_off_reinforce(self, kind, mac, intent_seq, delay_ms, device_snapshot):
+        """Delayed OFF-only reinforcement for lag/dupe/unkill-all."""
+        def _cb():
+            key = (kind, mac)
+            current_seq = int(self._flow_off_intent_seq.get(key, 0))
+            if current_seq != int(intent_seq):
+                return
+            if kind == 'lag' and self.lag_active and self.lag_device_mac == mac:
+                return
+            if kind == 'dupe' and self.dupe_active and self.dupe_device_mac == mac:
+                return
+            victim = self._victim_record_for_mac(mac) or device_snapshot
             if not victim:
                 return
             try:

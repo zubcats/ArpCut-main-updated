@@ -223,9 +223,14 @@ class Killer:
         """
         Safely unkill all devices killed previously
         """
-        for mac in list(self.killed):
-            self._next_op_seq(mac)
-            self.killed.pop(mac)
+        victims = list(self.killed.values())
+        for victim in victims:
+            mac = victim['mac']
+            seq = self._next_op_seq(mac)
+            self.killed.pop(mac, None)
+            # Immediate restore burst for OFF parity with per-device unkill.
+            self._restore_arp_now(victim, seq, repeats=3, delay_s=0.05)
+            self._unkill_restore_worker(victim, seq)
             self._stop_forwarder(mac)
         for ip in list(self.pf_blocks):
             self._remove_pf_block(ip)
