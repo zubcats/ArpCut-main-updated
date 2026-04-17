@@ -13,6 +13,8 @@ UPDATE_CHANNEL = 'experimental'
 # Point these at hosted assets (e.g. release artifacts or CDN links).
 UPDATE_DOWNLOAD_URL_STABLE = 'https://github.com/zubcats/ArpCut-main-updated/releases/latest/download/ZubCut-Setup.exe'
 UPDATE_DOWNLOAD_URL_EXPERIMENTAL = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/experimental-latest/ZubCut-Setup-experimental.exe'
+# UTC ISO timestamp when this binary was built (CI overwrites). Used to detect newer installers online.
+APP_BUILD_TIME_ISO = ''
 
 # Cross-platform settings paths
 if sys.platform.startswith('win'):

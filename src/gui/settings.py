@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QMainWindow
+from PyQt5.QtWidgets import QApplication, QMainWindow
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt
 import os
@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
@@ -55,7 +55,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             channel = 'experimental'
         self._update_channel = channel
         self._update_published_label = ''
-        self._refresh_update_published_label()
+        self._update_available = False
+        self._refresh_update_availability()
         self.btnUpdate.setText(self._update_button_text())
         # Keep background auto-update disabled; manual update button is available.
         self.chkAutoupdate.setEnabled(False)
@@ -63,6 +64,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
         register_window_surface_effects(self)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_update_availability()
+        self.btnUpdate.setText(self._update_button_text())
+        self._apply_update_button_style()
 
     def Apply(self, silent_apply=False):
         nicknames = Nicknames()
@@ -350,6 +357,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if self.isVisible():
                 self.btnUpdate.setEnabled(True)
                 self.btnUpdate.setText(self._update_button_text())
+                self._apply_update_button_style()
 
     def _channel_label(self):
         return 'experimental' if self._update_channel == 'experimental' else APP_DISPLAY_NAME
@@ -359,35 +367,73 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return (UPDATE_DOWNLOAD_URL_STABLE or '').strip()
         return (UPDATE_DOWNLOAD_URL_EXPERIMENTAL or '').strip()
 
-    def _refresh_update_published_label(self):
+    @staticmethod
+    def _parse_build_time_iso(raw):
+        if not raw or not str(raw).strip():
+            return None
+        s = str(raw).strip()
+        if s.endswith('Z'):
+            s = s[:-1] + '+00:00'
+        try:
+            return datetime.fromisoformat(s)
+        except ValueError:
+            return None
+
+    def _refresh_update_availability(self):
+        """Fetch remote installer time; compare to embedded build time when CI set it."""
         url = self._selected_update_url()
+        self._update_published_label = ''
+        self._update_available = False
         if not url:
-            self._update_published_label = ''
             return
         try:
-            req = urllib.request.Request(url, method='HEAD')
+            req = urllib.request.Request(
+                url,
+                method='HEAD',
+                headers={'User-Agent': f'{APP_BUNDLE_NAME}-update-check'},
+            )
             with urllib.request.urlopen(req, timeout=8) as resp:
                 last_modified = resp.headers.get('Last-Modified', '').strip()
             if not last_modified:
-                self._update_published_label = ''
                 return
-            dt = parsedate_to_datetime(last_modified)
-            if dt is None:
-                self._update_published_label = ''
+            remote_dt = parsedate_to_datetime(last_modified)
+            if remote_dt is None:
                 return
-            dt_local = dt.astimezone()
+            if remote_dt.tzinfo is None:
+                remote_dt = remote_dt.replace(tzinfo=timezone.utc)
+            dt_local = remote_dt.astimezone()
             self._update_published_label = dt_local.strftime('%b %d, %Y %I:%M %p')
+            build_raw = APP_BUILD_TIME_ISO
+            local_dt = self._parse_build_time_iso(build_raw)
+            if local_dt is None:
+                return
+            if local_dt.tzinfo is None:
+                local_dt = local_dt.replace(tzinfo=timezone.utc)
+            remote_utc = remote_dt.astimezone(timezone.utc)
+            local_utc = local_dt.astimezone(timezone.utc)
+            self._update_available = remote_utc > local_utc
         except Exception:
             self._update_published_label = ''
+            self._update_available = False
 
     def _update_button_text(self):
         if self._update_channel == 'experimental':
             base = 'Install Latest Build (Experimental)'
         else:
             base = f'Install Latest Build ({APP_DISPLAY_NAME})'
+        if self._update_available:
+            base = f'New version available — {base}'
         if self._update_published_label:
             return f'{base} [{self._update_published_label}]'
         return base
+
+    def _apply_update_button_style(self):
+        if self._update_available:
+            self.btnUpdate.setStyleSheet(
+                'QPushButton { background-color: #1e8449; color: white; font-weight: bold; }'
+            )
+        else:
+            self.btnUpdate.setStyleSheet('')
     
     def loadInterfaces(self):
         self.comboInterface.clear()
