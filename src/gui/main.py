@@ -57,8 +57,10 @@ _SETTINGS_BTN_TIP = 'Settings - Configure scan options and network interface'
 _SETTINGS_BTN_UPDATE_STYLE = (
     'QPushButton { background-color: #1e8449; color: white; font-weight: bold; }'
 )
-# HEAD the channel only while the user is actually in the app; interval when the timer runs.
+# Foreground: HEAD every 15 min only while the app is active (timer paused when not).
 _UPDATE_POLL_INTERVAL_MS = 15 * 60 * 1000
+# Background: still check once per day so tray/minimized sessions learn about new builds.
+_UPDATE_POLL_DAILY_MS = 24 * 60 * 60 * 1000
 
 
 class _UpdateStatusPollThread(QThread):
@@ -1414,12 +1416,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         self._update_poll_timer = QTimer(self)
         self._update_poll_timer.setInterval(_UPDATE_POLL_INTERVAL_MS)
-        self._update_poll_timer.timeout.connect(self._poll_remote_update_status)
+        self._update_poll_timer.timeout.connect(self._poll_remote_update_status_foreground)
         app = QApplication.instance()
         if app is not None:
             app.applicationStateChanged.connect(self._on_app_state_for_update_poll)
         self._sync_update_poll_timer_for_app_state()
         QTimer.singleShot(8000, self._poll_remote_update_status_if_active)
+
+        self._update_daily_poll_timer = QTimer(self)
+        self._update_daily_poll_timer.setInterval(_UPDATE_POLL_DAILY_MS)
+        self._update_daily_poll_timer.timeout.connect(self._poll_remote_update_status_daily)
+        self._update_daily_poll_timer.start()
 
     def _should_run_update_poll_now(self):
         """Only hit the network while ZubCut is the active (foreground) application."""
@@ -1446,12 +1453,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _poll_remote_update_status_if_active(self):
         if not self._should_run_update_poll_now():
             return
-        self._poll_remote_update_status()
+        self._poll_remote_update_status_foreground()
 
-    def _poll_remote_update_status(self):
+    def _poll_remote_update_status_foreground(self):
+        self._poll_remote_update_status(require_foreground=True)
+
+    def _poll_remote_update_status_daily(self):
+        self._poll_remote_update_status(require_foreground=False)
+
+    def _poll_remote_update_status(self, require_foreground=True):
         if not self._should_poll_update_availability():
             return
-        if not self._should_run_update_poll_now():
+        if require_foreground and not self._should_run_update_poll_now():
             return
         if getattr(self, '_update_status_poll_thread', None) and self._update_status_poll_thread.isRunning():
             return
