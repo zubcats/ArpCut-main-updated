@@ -23,7 +23,8 @@ OutputBaseFilename=ZubCut-Setup-{#MyAppVersion}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
-WizardStyle=modern
+; modern + built-in dark style (Inno 6+). Use "modern dynamic" instead to follow Windows light/dark.
+WizardStyle=modern dark
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64
 ; Allow Restart Manager to close ZubCut so the old one-file EXE is not left in place beside the new onedir layout.
