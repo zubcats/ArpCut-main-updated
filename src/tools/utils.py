@@ -8,10 +8,94 @@ import sys
 import webbrowser
 import re
 
+from json import JSONDecodeError, loads
+
 from networking.ifaces import NetFace
 from constants import *
 
 p = manuf.MacParser()
+
+
+def _is_bad_iface_display_name(s: str) -> bool:
+    """True if netsh/ipconfig gave a useless label (e.g. 'Description', state words, generic stubs)."""
+    t = (s or '').strip().lower()
+    if not t:
+        return True
+    if t == 'description':
+        return True
+    if t in ('connected', 'disconnected', 'enabled', 'disabled', 'dedicated'):
+        return True
+    if re.match(r'^interface-\d+$', t):
+        return True
+    return False
+
+
+def _win_ps_net_adapters():
+    """Windows: Get-NetAdapter rows for reliable friendly names (Name + InterfaceDescription + GUID)."""
+    if not sys.platform.startswith('win'):
+        return []
+    try:
+        out = subprocess.run(
+            [
+                'powershell',
+                '-NoProfile',
+                '-NonInteractive',
+                '-Command',
+                'Get-NetAdapter | Select-Object Name,InterfaceDescription,InterfaceGuid,MacAddress '
+                '| ConvertTo-Json -Compress',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
+        if out.returncode != 0 or not (out.stdout or '').strip():
+            return []
+        data = loads(out.stdout.strip())
+        if isinstance(data, dict):
+            return [data]
+        if isinstance(data, list):
+            return data
+    except (OSError, JSONDecodeError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return []
+
+
+def format_iface_settings_label(iface: NetFace) -> str:
+    """
+    One-line label for the Settings network combo (shown to user).
+    Settings JSON still stores iface.name (internal key for get_iface_by_name).
+    """
+    name = (iface.name or '').strip()
+    ip = getattr(iface, 'ip', None) or ''
+    if ip in ('0.0.0.0', '127.0.0.1'):
+        ip = ''
+    mac = getattr(iface, 'mac', None) or ''
+    if mac and mac == GLOBAL_MAC:
+        mac = ''
+    bits = []
+    if name and not _is_bad_iface_display_name(name):
+        bits.append(name)
+    elif name:
+        bits.append(name)
+    if ip:
+        bits.append(ip)
+    if mac and len(bits) < 2:
+        bits.append(mac)
+    if not bits:
+        g = str(getattr(iface, 'guid', '') or '')
+        tail = g.split('NPF_')[-1].strip('{}') if g else ''
+        bits.append(tail[:24] + ('…' if len(tail) > 24 else '') if tail else 'Adapter')
+    return ' · '.join(bits)
+
+
+def _ps_guid_index(rows):
+    m = {}
+    for row in rows:
+        raw = row.get('InterfaceGuid') or row.get('interfaceGuid') or ''
+        g = str(raw).strip('{}').casefold()
+        if g:
+            m[g] = row
+    return m
 
 def terminal(command, shell=True, decode=True):
     """
@@ -259,7 +343,9 @@ def get_ifaces():
         # Step 3: Get Scapy interfaces and match with our map
         from scapy.all import get_if_hwaddr
         scapy_ifaces = get_if_list()
-        
+        ps_rows = _win_ps_net_adapters()
+        guid_ps = _ps_guid_index(ps_rows)
+
         for scapy_name in scapy_ifaces:
             # Extract GUID from Scapy name: \\Device\\NPF_{GUID}
             guid = None
@@ -288,7 +374,21 @@ def get_ifaces():
                     if guid and guid.lower() in key.lower():
                         friendly_name = key
                         break
-            
+
+            # Prefer Get-NetAdapter (reliable) over netsh/ipconfig heuristics.
+            if guid and guid.casefold() in guid_ps:
+                row = guid_ps[guid.casefold()]
+                nm = (row.get('Name') or '').strip()
+                desc = (row.get('InterfaceDescription') or '').strip()
+                if nm and desc and nm.lower() != desc.lower():
+                    friendly_name = f'{nm} — {desc}'
+                elif desc:
+                    friendly_name = desc
+                elif nm:
+                    friendly_name = nm
+            elif friendly_name and _is_bad_iface_display_name(friendly_name):
+                friendly_name = None
+
             # Get IP and MAC
             ip = '0.0.0.0'
             mac = GLOBAL_MAC

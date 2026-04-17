@@ -9,7 +9,14 @@ from tools.utils_gui import import_settings, export_settings, get_settings, \
                       zubcut_dark_stylesheet, sync_translucent_chrome, register_window_surface_effects
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
 from tools.qtools import MsgType, Buttons
-from tools.utils import goto, get_ifaces, get_default_iface, get_iface_by_name, terminal
+from tools.utils import (
+    goto,
+    get_ifaces,
+    get_default_iface,
+    get_iface_by_name,
+    terminal,
+    format_iface_settings_label,
+)
 
 from ui.ui_settings import Ui_MainWindow
 
@@ -90,7 +97,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         is_minimized  =  self.chkMinimized.isChecked()
         is_remember   =  self.chkRemember.isChecked()
         is_autoupdate =  self.chkAutoupdate.isChecked()
-        iface         =  self.comboInterface.currentText()
+        iface = self.comboInterface.currentData()
+        if iface in (None, ''):
+            iface = self.comboInterface.currentText()
 
         def _portable_key(ks_edit):
             qs = ks_edit.keySequence()
@@ -257,8 +266,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             set_settings('iface', get_default_iface().name)
             s = import_settings()
         
-        index = self.comboInterface.findText(s['iface'], Qt.MatchFixedString)
-        self.comboInterface.setCurrentIndex(index * (index >= 0))
+        saved = s.get('iface') or ''
+        idx = self.comboInterface.findData(saved)
+        if idx < 0:
+            idx = self.comboInterface.findText(saved, Qt.MatchFixedString)
+        if idx >= 0:
+            self.comboInterface.setCurrentIndex(idx)
 
         self.keySeqKill.setKeySequence(keyseq_from_setting(s.get('key_kill'), Qt.Key_L))
         self.keySeqLag.setKeySequence(keyseq_from_setting(s.get('key_lag'), Qt.Key_M))
@@ -402,6 +415,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     
     def loadInterfaces(self):
         self.comboInterface.clear()
-        self.comboInterface.addItems(
-            [iface.name for iface in get_ifaces()]
-        )
+        for iface in get_ifaces():
+            self.comboInterface.addItem(
+                format_iface_settings_label(iface),
+                iface.name,
+            )
