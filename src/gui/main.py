@@ -1426,21 +1426,40 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _poll_remote_update_status_daily(self):
         self._poll_remote_update_status(require_foreground=False)
 
+    def _update_status_poll_thread_is_running(self):
+        """True if a poll worker is still alive and running (guards deleted C++ wrapper)."""
+        th = getattr(self, '_update_status_poll_thread', None)
+        if th is None:
+            return False
+        try:
+            return th.isRunning()
+        except RuntimeError:
+            # deleteLater already ran; clear stale Python reference.
+            self._update_status_poll_thread = None
+            return False
+
+    def _on_update_status_poll_thread_finished(self):
+        th = self.sender()
+        if th is getattr(self, '_update_status_poll_thread', None):
+            self._update_status_poll_thread = None
+
     def _poll_remote_update_status(self, require_foreground=True):
         if not self._should_poll_update_availability():
             return
         if require_foreground and not self._should_run_update_poll_now():
             return
-        if getattr(self, '_update_status_poll_thread', None) and self._update_status_poll_thread.isRunning():
+        if self._update_status_poll_thread_is_running():
             return
         # No parent: parenting QThread to the main window has caused lifetime/native issues on Windows.
-        self._update_status_poll_thread = _UpdateStatusPollThread()
-        self._update_status_poll_thread.done.connect(
+        poll = _UpdateStatusPollThread()
+        self._update_status_poll_thread = poll
+        poll.done.connect(
             self._on_update_status_polled,
             type=Qt.QueuedConnection,
         )
-        self._update_status_poll_thread.finished.connect(self._update_status_poll_thread.deleteLater)
-        self._update_status_poll_thread.start()
+        poll.finished.connect(self._on_update_status_poll_thread_finished)
+        poll.finished.connect(poll.deleteLater)
+        poll.start()
 
     def _on_update_status_polled(self, available, published_label):
         try:
