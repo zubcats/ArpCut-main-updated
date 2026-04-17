@@ -61,9 +61,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._refresh_update_availability()
-        self.btnUpdate.setText(self._update_button_text())
-        self._apply_update_button_style()
+        self.refresh_update_banner()
+        el = getattr(self, 'elmocut', None)
+        if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
+            el._sync_settings_gear_update_hint()
 
     def Apply(self, silent_apply=False):
         nicknames = Nicknames()
@@ -316,6 +317,19 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _refresh_update_availability(self):
         """Fetch remote installer time; compare to embedded build time when CI set it."""
         self._update_available, self._update_published_label = get_update_status()
+
+    def refresh_update_banner(self):
+        """Re-fetch server state and refresh the update button (call after open or on a timer)."""
+        self._refresh_update_availability()
+        self.btnUpdate.setText(self._update_button_text())
+        self._apply_update_button_style()
+
+    def apply_update_banner_state(self, available, published_label):
+        """Apply a fetch done elsewhere (e.g. background thread) without another HEAD request."""
+        self._update_available = bool(available)
+        self._update_published_label = (published_label or '').strip()
+        self.btnUpdate.setText(self._update_button_text())
+        self._apply_update_button_style()
 
     def _update_button_text(self):
         if self._update_channel == 'experimental':

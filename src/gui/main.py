@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QSizePolicy, QShortcut, QAbstractSpinBox, QLineEdit, \
                             QTextEdit, QPlainTextEdit, QWidget
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence
-from PyQt5.QtCore import Qt, QTimer, QSize, QElapsedTimer
+from PyQt5.QtCore import Qt, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal
 try:
     from PyQt5.QtWinExtras import QWinTaskbarButton
 except Exception:
@@ -52,6 +52,26 @@ from tools.pfctl import block_ip, unblock_ip
 from assets import *
 
 from bridge import ScanThread  # UpdateThread disabled for fork
+
+_SETTINGS_BTN_TIP = 'Settings - Configure scan options and network interface'
+_SETTINGS_BTN_UPDATE_STYLE = (
+    'QPushButton { background-color: #1e8449; color: white; font-weight: bold; }'
+)
+
+
+class _UpdateStatusPollThread(QThread):
+    """HEAD the update URL off the UI thread (avoids hangs on slow networks)."""
+
+    done = pyqtSignal(bool, str)
+
+    def run(self):
+        from tools.updater_core import get_update_status
+
+        try:
+            avail, label = get_update_status()
+        except Exception:
+            avail, label = False, ''
+        self.done.emit(avail, label)
 
 from constants import *
 
@@ -1331,6 +1351,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Only for frozen Windows builds with APP_BUILD_TIME_ISO set (CI); same criteria as Settings update badge.
         """
         QTimer.singleShot(2000, self._maybe_auto_update_on_startup)
+        self._start_periodic_update_availability_poll()
 
     def UpdateThread_Reciever(self):
         """
@@ -1371,6 +1392,53 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 f'Could not download or start the installer.\n{e}',
                 Buttons.OK,
             )
+
+    def _should_poll_update_availability(self):
+        import sys
+
+        if not getattr(sys, 'frozen', False) or not sys.platform.startswith('win'):
+            return False
+        if not (APP_BUILD_TIME_ISO or '').strip():
+            return False
+        try:
+            from tools.updater_core import selected_update_url
+
+            return bool(selected_update_url())
+        except Exception:
+            return False
+
+    def _start_periodic_update_availability_poll(self):
+        if not self._should_poll_update_availability():
+            return
+        self._update_poll_timer = QTimer(self)
+        self._update_poll_timer.setInterval(120000)
+        self._update_poll_timer.timeout.connect(self._poll_remote_update_status)
+        self._update_poll_timer.start()
+        QTimer.singleShot(8000, self._poll_remote_update_status)
+
+    def _poll_remote_update_status(self):
+        if not self._should_poll_update_availability():
+            return
+        if getattr(self, '_update_status_poll_thread', None) and self._update_status_poll_thread.isRunning():
+            return
+        self._update_status_poll_thread = _UpdateStatusPollThread(self)
+        self._update_status_poll_thread.done.connect(self._on_update_status_polled)
+        self._update_status_poll_thread.finished.connect(self._update_status_poll_thread.deleteLater)
+        self._update_status_poll_thread.start()
+
+    def _on_update_status_polled(self, available, published_label):
+        self.settings_window.apply_update_banner_state(available, published_label)
+        self._sync_settings_gear_update_hint()
+
+    def _sync_settings_gear_update_hint(self):
+        if getattr(self.settings_window, '_update_available', False):
+            self.btnSettings.setStyleSheet(_SETTINGS_BTN_UPDATE_STYLE)
+            self.btnSettings.setToolTip(
+                _SETTINGS_BTN_TIP + ' — New build available on your update channel; open here to install.'
+            )
+        else:
+            self.btnSettings.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+            self.btnSettings.setToolTip(_SETTINGS_BTN_TIP)
     
     def _main_window_is_foreground(self):
         aw = QApplication.activeWindow()
