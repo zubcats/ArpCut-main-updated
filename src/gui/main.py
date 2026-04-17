@@ -1327,15 +1327,39 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     
     def UpdateThread_Starter(self):
         """
-        Update Thread starter - Disabled for fork
+        After the UI is up, optionally download the channel installer and exit so setup can upgrade + relaunch.
+        Only for frozen Windows builds with APP_BUILD_TIME_ISO set (CI); same criteria as Settings update badge.
         """
-        pass  # Update checking disabled for this fork
+        QTimer.singleShot(2000, self._maybe_auto_update_on_startup)
 
     def UpdateThread_Reciever(self):
         """
-        Update Thread reciever - Disabled for fork
+        Legacy hook from upstream; unused.
         """
-        pass  # Update checking disabled for this fork
+        pass
+
+    def _maybe_auto_update_on_startup(self):
+        import sys
+
+        if not getattr(sys, 'frozen', False):
+            return
+        if not sys.platform.startswith('win'):
+            return
+        try:
+            from tools.updater_core import selected_update_url, spawn_installer_update, update_is_available
+        except Exception:
+            return
+        if not selected_update_url():
+            return
+        if not update_is_available():
+            return
+        try:
+            self.log('A newer build is available. Downloading and installing update...', 'orange')
+            QApplication.processEvents()
+            spawn_installer_update(selected_update_url())
+            self.quit_all()
+        except Exception as e:
+            self.log(f'Automatic update failed: {e}', 'red')
     
     def _main_window_is_foreground(self):
         aw = QApplication.activeWindow()

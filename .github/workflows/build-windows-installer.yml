@@ -87,6 +87,26 @@ jobs:
       - name: Verify build script syntax
         run: python -m py_compile build.py
 
+      - name: Refresh APP_BUILD_TIME_ISO before PyInstaller
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from datetime import datetime, timezone
+          import re
+          p = Path("src/constants.py")
+          text = p.read_text(encoding="utf-8")
+          build_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          text = re.sub(
+              r"^APP_BUILD_TIME_ISO\s*=.*$",
+              f"APP_BUILD_TIME_ISO = {build_iso!r}",
+              text,
+              flags=re.M,
+          )
+          p.write_text(text, encoding="utf-8")
+          print("Refreshed APP_BUILD_TIME_ISO to", build_iso)
+          PY
+
       - name: Build Windows EXE (PyInstaller via build.py)
         run: python build.py
 
