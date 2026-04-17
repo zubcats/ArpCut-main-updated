@@ -23,6 +23,7 @@ import traceback
 from datetime import datetime, timezone
 
 from constants import APP_BUNDLE_NAME
+from tools.tray_cleanup import hide_all_system_tray_icons
 
 _ALPHABET = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ'  # skip I, O
 
@@ -123,6 +124,7 @@ def _our_sys_excepthook(exc_type, exc, tb) -> None:
             sys.stderr.write(''.join(traceback.format_exception(exc_type, exc, tb)))
         except Exception:
             pass
+        hide_all_system_tray_icons()
         os._exit(1)
     _handling_main_thread_crash = True
 
@@ -158,6 +160,7 @@ def _our_sys_excepthook(exc_type, exc, tb) -> None:
                 app.quit()
         except Exception:
             pass
+        hide_all_system_tray_icons()
         os._exit(1)
 
 

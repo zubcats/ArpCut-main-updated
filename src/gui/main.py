@@ -47,6 +47,7 @@ from tools.branding import (
     LOGO_UI_CONTENT_FRACTION,
 )
 from tools.utils import goto, is_connected, get_default_iface
+from tools.tray_cleanup import hide_all_system_tray_icons
 from tools.pfctl import block_ip, unblock_ip
 
 from assets import *
@@ -800,12 +801,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         tray_menu.addAction(self.traffic_option)
         tray_menu.addAction(quit_option)
         
-        self.tray_icon = QSystemTrayIcon(self)
+        # Parent the tray to the QApplication, not the main window, so teardown order
+        # does not drop the icon before hide() runs (reduces ghost icons on Windows).
+        self.tray_icon = QSystemTrayIcon(QApplication.instance())
         self.tray_icon.setIcon(self.icon)
         self.tray_icon.setToolTip(APP_DISPLAY_NAME)
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.show()
         self.tray_icon.activated.connect(self.tray_clicked)
+        QApplication.instance().aboutToQuit.connect(hide_all_system_tray_icons)
 
         # Taskbar button (Windows only)
         self.taskbar_button = None
@@ -964,7 +968,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.stopDupe(log=False)
         self.settings_window.close()
         self.about_window.close()
-        self.tray_icon.hide()
+        hide_all_system_tray_icons()
         self.from_tray = True
         self.close()
 
@@ -997,6 +1001,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.stopDupe(log=False)
         # If event recieved from tray icon
         if self.from_tray:
+            hide_all_system_tray_icons()
             event.accept()
             return
 
@@ -1007,7 +1012,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.about_window.close()
 
         self.hide()
-        self.tray_icon.hide()
+        hide_all_system_tray_icons()
 
         event.accept()
 
