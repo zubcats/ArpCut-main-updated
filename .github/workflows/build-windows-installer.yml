@@ -1,11 +1,16 @@
 # Windows installer only — does not run macOS/Linux (faster, fewer failure points).
-# Use this if you only need the Windows setup .exe.
 #
-# After a successful run: Artifacts → ZubCut-Windows-Installer (zip).
+# Push to `experimental` → builds and updates the rolling GitHub release
+# `experimental-latest` (ZubCut-Setup-experimental.exe). The in-app updater uses
+# that URL, so you do not need to click "Run workflow" for every change.
+# Manual `workflow_dispatch` is still available when you want a build without a push.
 
 name: Build Windows installer only
 
 on:
+  push:
+    branches:
+      - experimental
   workflow_dispatch:
     inputs:
       release_channel:
@@ -20,6 +25,12 @@ on:
 
 permissions:
   contents: write
+
+# One run per branch; a new push cancels an in-progress build so experimental-latest
+# always reflects the latest commit (saves minutes on rapid pushes).
+concurrency:
+  group: windows-installer-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-windows:
