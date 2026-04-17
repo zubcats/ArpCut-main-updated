@@ -16,6 +16,11 @@ One-time setup
 2. Inno Setup 6 (free):
      https://jrsoftware.org/isdl.php
 
+3. Optional but recommended for first-time installs:
+     Place Npcap installer at:
+       installer\npcap-1.87.exe
+     The setup will run it silently only when Npcap is missing.
+
 Build the installer
 -------------------
 From the project root, double-click:
@@ -28,5 +33,4 @@ Or manually:
 
 Output:  output\ZubCut-Setup-1.29.exe   (version matches installer script)
 
-Run the .exe installer as Administrator when prompted. Npcap must still be installed
-for capture.
+Run the .exe installer as Administrator when prompted.

@@ -156,9 +156,9 @@ PRN
 .DS_Store
 
 # Build outputs (don't commit binaries - use GitHub Releases)
-ArpCut-macOS.zip
-ArpCut.exe
-ArpCut.dmg
+ZubCut-macOS.zip
+ZubCut.exe
+ZubCut.dmg
 *.zip
 *.dmg
 *.app

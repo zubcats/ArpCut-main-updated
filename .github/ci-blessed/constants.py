@@ -36,14 +36,14 @@ LEGACY_SETTINGS_CANDIDATES = []
 if sys.platform.startswith('win'):
     _ad = environ.get('APPDATA', '')
     LEGACY_SETTINGS_CANDIDATES = [
-        path.join(_ad, 'ArpCutUpdated', 'arpcut.json'),
-        path.join(_ad, 'ZubCut', 'arpcut.json'),
+        path.join(_ad, 'ZubCut', 'zubcut.json'),
+        path.join(_ad, 'ZubCut', 'zubcut.json'),
     ]
 
 TABLE_HEADER_LABELS = ['IP Address', 'MAC Address', 'Vendor', 'Type', 'Nickname']
 
 # Windows-only Npcap details (ignored on macOS/Linux)
-NPCAP_URL = 'https://nmap.org/npcap/dist/npcap-1.50.exe'
+NPCAP_URL = 'https://npcap.com/dist/npcap-1.87.exe'
 NPCAP_PATH = 'C:\\Windows\\SysWOW64\\Npcap'
 
 GLOBAL_MAC = 'FF:FF:FF:FF:FF:FF'

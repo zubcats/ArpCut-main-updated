@@ -6,7 +6,7 @@ int main()
     // Hide Console Window
     ShowWindow(GetConsoleWindow(), SW_HIDE);
     
-    // Start ArpCut.exe in a detached process
-    system("start \"\" ArpCut");
+    // Start ZubCut.exe in a detached process
+    system("start \"\" ZubCut");
     return 0;
 }

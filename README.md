@@ -13,11 +13,20 @@ Cross-platform network control tool for ARP spoofing. Works on Windows and macOS
 
 Pre-built binaries are available from the **Releases** tab on this repository.
 
-**CI builds:** Push the repo to GitHub, open the **Actions** tab, run workflow **Build Release** (or **Build Windows installer only**), then download artifact **ZubCut-Windows-Installer** from the completed run. Step-by-step: **`HOW-TO-DOWNLOAD-INSTALLER.txt`** in the repo root.
+**CI builds:** Push the repo to GitHub, open the **Actions** tab, run workflow **Build Release** (or **Build Windows installer only**), then choose a channel in `release_channel`:
+- `stable` = regular build
+- `experimental` = tester build
+- `auto` = inferred from branch/tag rules
+
+From artifacts:
+- Regular installer: `ZubCut-Windows-Installer`
+- Experimental installer: `ZubCut-Windows-Installer-Experimental`
+
+Step-by-step: **`HOW-TO-DOWNLOAD-INSTALLER.txt`** in the repo root.
 
 | Platform | File | Notes |
 |----------|------|-------|
-| Windows | `ZubCut.exe` | Requires [Npcap](https://npcap.com/) |
+| Windows | `ZubCut.exe` | Requires [Npcap](https://npcap.com/) (installer can bundle `npcap-1.87.exe`) |
 | macOS | `ZubCut-macOS.zip` | Unzip and run |
 | Linux | `ZubCut` | Experimental |
 
@@ -47,6 +56,7 @@ If the pre-built binaries don't work on your machine, build from source (see bel
 - System tray
 - Device nicknames
 - Remember killed devices
+- In-app manual updater with channel-aware installs (regular vs experimental)
 
 ---
 
@@ -55,7 +65,7 @@ If the pre-built binaries don't work on your machine, build from source (see bel
 ### Windows
 
 1. Install Python 3.8+ from [python.org](https://python.org/downloads) - check "Add to PATH"
-2. Install [Npcap](https://npcap.com/) - check "WinPcap API-compatible Mode"
+2. Install [Npcap 1.87](https://npcap.com/dist/npcap-1.87.exe) - check "WinPcap API-compatible Mode"
 3. Clone and run:
 
 ```cmd
@@ -105,6 +115,16 @@ Output:
 - Linux: `dist/ZubCut`
 
 **Windows installer (optional):** Install [Inno Setup 6](https://jrsoftware.org/isdl.php), then run `installer\Build-Installer.bat`. The setup wizard installs under `Program Files\ZubCut` and stores settings under `%APPDATA%\ZubCut`. See `installer/HOWTO-INSTALLER.txt`.
+
+If `installer\npcap-1.87.exe` is present while building setup, the installer will run Npcap silently only when Npcap is missing on the target machine.
+
+---
+
+## Updates
+
+- The Settings button **Install Latest Build (...)** is a manual updater.
+- Regular installs pull regular builds; experimental installs pull experimental builds.
+- There is no background auto-update check; updates run only when you trigger them.
 
 ---
 
