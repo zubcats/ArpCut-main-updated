@@ -10,6 +10,8 @@ can open the file after a crash. Override with env ZUBCUT_CRASHLOG_DIR (absolute
 folder path).
 
 Set ZUBCUT_UPDATER_DEBUG=1 to also mirror lines to stderr.
+Set ZUBCUT_UPDATER_QT_MSG_HANDLER=1 to install Qt's global qInstallMessageHandler (off by default;
+it can destabilize some Windows/Qt builds when combined with logging).
 """
 
 from __future__ import annotations
@@ -236,14 +238,23 @@ def begin_updater_debug_session(reason: str) -> None:
                 fp0.write(f'threading.excepthook install failed: {e}\n')
                 fp0.flush()
 
-        try:
-            from PyQt5.QtCore import qInstallMessageHandler
+        if os.environ.get('ZUBCUT_UPDATER_QT_MSG_HANDLER', '').strip().lower() in (
+            '1',
+            'true',
+            'yes',
+            'on',
+        ):
+            try:
+                from PyQt5.QtCore import qInstallMessageHandler
 
-            qInstallMessageHandler(_qt_message_handler)
-            fp0.write('Qt qInstallMessageHandler installed\n')
-            fp0.flush()
-        except Exception as e:
-            fp0.write(f'Qt message handler install failed: {e}\n')
+                qInstallMessageHandler(_qt_message_handler)
+                fp0.write('Qt qInstallMessageHandler installed\n')
+                fp0.flush()
+            except Exception as e:
+                fp0.write(f'Qt message handler install failed: {e}\n')
+                fp0.flush()
+        else:
+            fp0.write('Qt qInstallMessageHandler skipped (set ZUBCUT_UPDATER_QT_MSG_HANDLER=1 to enable)\n')
             fp0.flush()
 
 

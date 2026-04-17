@@ -369,7 +369,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._update_published_label = (published_label or '').strip()
             self.btnUpdate.setText(self._update_button_text())
             self._apply_update_button_style()
-        except RuntimeError:
+        except Exception:
             pass
 
     def _update_button_text(self):

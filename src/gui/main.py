@@ -1433,7 +1433,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if getattr(self, '_update_status_poll_thread', None) and self._update_status_poll_thread.isRunning():
             return
-        self._update_status_poll_thread = _UpdateStatusPollThread(self)
+        # No parent: parenting QThread to the main window has caused lifetime/native issues on Windows.
+        self._update_status_poll_thread = _UpdateStatusPollThread()
         self._update_status_poll_thread.done.connect(
             self._on_update_status_polled,
             type=Qt.QueuedConnection,
