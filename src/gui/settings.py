@@ -303,7 +303,6 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         updater_log('checkUpdate: user confirmed, disabling button')
         self.btnUpdate.setEnabled(False)
         self.btnUpdate.setText('Downloading…')
-        QApplication.processEvents()
         quit_for_update = False
         try:
             updater_log('checkUpdate: calling download_update_with_progress_dialog')
