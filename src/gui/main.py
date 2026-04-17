@@ -1351,8 +1351,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     
     def UpdateThread_Starter(self):
         """
-        Periodic HEAD polling refreshes the settings update badge (gear hint).
-        Installing updates is only from Settings → Install Latest Build.
+        Optional periodic HEAD polling for the settings-gear hint (off by default).
+        Set ZUBCUT_ENABLE_UPDATE_POLL=1 to enable. Otherwise the hint updates when
+        you open Settings. Installing builds is only from Settings → Install Latest Build.
         """
         self._start_periodic_update_availability_poll()
 
@@ -1363,8 +1364,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         pass
 
     def _should_poll_update_availability(self):
+        import os
         import sys
 
+        # Background HEAD + UI refresh caused busy-cursor / native crashes on some Windows
+        # setups. Off unless explicitly enabled for debugging.
+        if os.environ.get('ZUBCUT_ENABLE_UPDATE_POLL', '').strip().lower() not in (
+            '1',
+            'true',
+            'yes',
+            'on',
+        ):
+            return False
         if not getattr(sys, 'frozen', False) or not sys.platform.startswith('win'):
             return False
         if not (APP_BUILD_TIME_ISO or '').strip():
@@ -1444,18 +1455,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if sw is not None:
                 sw.apply_update_banner_state(available, published_label)
             self._sync_settings_gear_update_hint()
-        except RuntimeError:
+        except Exception:
             pass
 
     def _sync_settings_gear_update_hint(self):
-        if getattr(self.settings_window, '_update_available', False):
-            self.btnSettings.setStyleSheet(_SETTINGS_BTN_UPDATE_STYLE)
-            self.btnSettings.setToolTip(
-                _SETTINGS_BTN_TIP + ' — New build available on your update channel; open here to install.'
-            )
-        else:
-            self.btnSettings.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-            self.btnSettings.setToolTip(_SETTINGS_BTN_TIP)
+        try:
+            if getattr(self.settings_window, '_update_available', False):
+                self.btnSettings.setStyleSheet(_SETTINGS_BTN_UPDATE_STYLE)
+                self.btnSettings.setToolTip(
+                    _SETTINGS_BTN_TIP
+                    + ' — New build available on your update channel; open here to install.'
+                )
+            else:
+                self.btnSettings.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+                self.btnSettings.setToolTip(_SETTINGS_BTN_TIP)
+        except Exception:
+            pass
     
     def _main_window_is_foreground(self):
         aw = QApplication.activeWindow()
