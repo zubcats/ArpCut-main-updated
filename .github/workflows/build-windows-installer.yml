@@ -1,7 +1,7 @@
 # Windows installer only — does not run macOS/Linux (faster, fewer failure points).
 #
-# Push to `main` → stable channel: rolling release `stable-latest` (ZubCut-Setup.exe).
-# Push to `experimental` → rolling release `experimental-latest` (ZubCut-Setup-experimental.exe).
+# Push to `main` → regular ZubCut build: rolling tag `stable-latest`, artifact ZubCut-Setup.exe (GitHub release title: ZubCut).
+# Push to `experimental` → tester build: tag `experimental-latest`, ZubCut-Setup-experimental.exe (release title: ZubCut (experimental)).
 # Manual `workflow_dispatch` is still available when you want a build without a push.
 
 name: Build Windows installer only
@@ -182,7 +182,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: stable-latest
-          name: stable-latest
+          name: ZubCut
           prerelease: false
           make_latest: false
           files: output/ZubCut-Setup.exe
@@ -194,7 +194,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: experimental-latest
-          name: experimental-latest
+          name: ZubCut (experimental)
           prerelease: true
           make_latest: false
           files: output/ZubCut-Setup-experimental.exe

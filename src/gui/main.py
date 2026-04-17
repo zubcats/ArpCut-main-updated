@@ -1482,7 +1482,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.btnSettings.setStyleSheet(_SETTINGS_BTN_UPDATE_STYLE)
                 self.btnSettings.setToolTip(
                     _SETTINGS_BTN_TIP
-                    + ' — New build available on your update channel; open here to install.'
+                    + ' — New build available; open Settings to download and install.'
                 )
             else:
                 self.btnSettings.setStyleSheet(self.BUTTON_NORMAL_STYLE)

@@ -3,10 +3,13 @@ ZubCut — Windows installer
 
 Release channels (GitHub)
 -------------------------
-  - Branch `main`: stable builds. CI publishes the rolling tag `stable-latest`
-    (installer: ZubCut-Setup.exe). In-app UPDATE_CHANNEL is stable.
-  - Branch `experimental`: prerelease builds. CI publishes `experimental-latest`
-    (ZubCut-Setup-experimental.exe). In-app UPDATE_CHANNEL is experimental.
+  - Branch `experimental`: all new work lands here first. CI publishes the rolling
+    tag `experimental-latest` (installer: ZubCut-Setup-experimental.exe). The app
+    checks that URL for updates on experimental builds only.
+  - Branch `main`: public / regular ZubCut releases. When testing is done, merge
+    `experimental` into `main` and push. CI publishes tag `stable-latest`
+    (installer: ZubCut-Setup.exe). The regular app checks that URL for updates only
+    (separate from experimental). End users never see the word "stable" in the UI.
 
 This installer build:
   - Installs to:  Program Files\ZubCut

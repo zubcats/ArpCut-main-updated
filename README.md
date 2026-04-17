@@ -13,13 +13,10 @@ Cross-platform network control tool for ARP spoofing. Works on Windows and macOS
 
 Pre-built binaries are available from the **Releases** tab on this repository.
 
-**CI builds:** Push the repo to GitHub, open the **Actions** tab, run workflow **Build Release** (or **Build Windows installer only**), then choose a channel in `release_channel`:
-- `stable` = regular build
-- `experimental` = tester build
-- `auto` = inferred from branch/tag rules
+**CI builds:** Push the repo to GitHub, open the **Actions** tab, run workflow **Build Release** (or **Build Windows installer only**). Pushes to **`main`** build the regular ZubCut installer; pushes to **`experimental`** build the tester installer. Manual runs can set `release_channel` (`stable` / `experimental` / `auto` — `auto` follows branch rules).
 
 From artifacts:
-- Regular installer: `ZubCut-Windows-Installer`
+- Regular (main) installer: `ZubCut-Windows-Installer`
 - Experimental installer: `ZubCut-Windows-Installer-Experimental`
 
 Step-by-step: **`HOW-TO-DOWNLOAD-INSTALLER.txt`** in the repo root.

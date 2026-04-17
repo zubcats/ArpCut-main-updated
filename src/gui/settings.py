@@ -26,6 +26,15 @@ from tools.updater_debug import (
 
 from constants import *
 
+
+def _channel_kind_label(channel: str) -> str:
+    """User-facing build line (avoid internal names like 'stable' in dialogs)."""
+    c = str(channel or '').strip().lower()
+    if c == 'experimental':
+        return 'Experimental / testing build'
+    return 'Regular ZubCut release'
+
+
 class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def __init__(self, elmocut, icon):
         super().__init__()
@@ -266,8 +275,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self,
                 'Update URL Missing',
                 (
-                    'Set channel URL in constants.py:\n'
-                    f'- UPDATE_DOWNLOAD_URL_{self._update_channel.upper()}'
+                    'This build is not configured with a download link for updates.\n'
+                    '(Developers: set the matching UPDATE_DOWNLOAD_URL_* entry in src/constants.py.)'
                 ),
                 Buttons.OK,
             )
@@ -278,7 +287,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 'Invalid Update URL',
                 (
                     'Update URL must start with http:// or https://\n'
-                    f'Channel: {self._update_channel}'
+                    f'Build: {_channel_kind_label(self._update_channel)}'
                 ),
                 Buttons.OK,
             )
@@ -376,7 +385,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self._update_channel == 'experimental':
             base = 'Install Latest Build (Experimental)'
         else:
-            base = f'Install Latest Build ({APP_DISPLAY_NAME})'
+            base = 'Install Latest Build'
         if self._update_available:
             base = f'New version available — {base}'
         if self._update_published_label:

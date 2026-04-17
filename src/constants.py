@@ -7,8 +7,8 @@ APP_DISPLAY_NAME = 'ZubCut'
 AUTOSTART_REG_VALUE = 'ZubCut'
 APP_USER_DATA_DIR = 'ZubCut'
 # Update channel / feed settings (in-app updater + Settings button labels).
-# Branch convention:  main  -> stable builds (UPDATE_CHANNEL stable)
-#                     experimental -> experimental builds
+# Branch convention:  main  -> regular releases (UPDATE_CHANNEL 'stable' in code = production URL)
+#                     experimental -> tester builds (UPDATE_CHANNEL 'experimental')
 # CI overwrites UPDATE_CHANNEL and APP_BUILD_TIME_ISO per branch; match your branch when developing.
 UPDATE_CHANNEL = 'experimental'
 # Direct download URL for the latest installer package per channel (.exe).
