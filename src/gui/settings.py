@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QApplication, QMainWindow
 from PyQt5.QtGui import QFont, QKeySequence
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 import os
 import sys
 
@@ -60,9 +60,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._update_channel = channel
         self._update_published_label = ''
         self._update_available = False
-        self._refresh_update_availability()
         self.btnUpdate.setText(self._update_button_text())
-        # Frozen Windows builds may auto-install on startup (see main._maybe_auto_update_on_startup).
+        # Avoid synchronous HEAD in __init__ (runs during main window setup); defer to next event-loop tick.
+        QTimer.singleShot(0, self._deferred_initial_update_check)
+        # Silent startup download is opt-in via ZUBCUT_ENABLE_STARTUP_AUTO_UPDATE (see main.UpdateThread_Starter).
         self.chkAutoupdate.setEnabled(False)
         self.chkAutoupdate.setChecked(False)
 
@@ -346,6 +347,14 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _channel_label(self):
         return 'experimental' if self._update_channel == 'experimental' else APP_DISPLAY_NAME
 
+    def _deferred_initial_update_check(self):
+        try:
+            self._refresh_update_availability()
+            self.btnUpdate.setText(self._update_button_text())
+            self._apply_update_button_style()
+        except RuntimeError:
+            pass
+
     def _refresh_update_availability(self):
         """Fetch remote installer time; compare to embedded build time when CI set it."""
         self._update_available, self._update_published_label = get_update_status()
@@ -358,10 +367,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def apply_update_banner_state(self, available, published_label):
         """Apply a fetch done elsewhere (e.g. background thread) without another HEAD request."""
-        self._update_available = bool(available)
-        self._update_published_label = (published_label or '').strip()
-        self.btnUpdate.setText(self._update_button_text())
-        self._apply_update_button_style()
+        try:
+            self._update_available = bool(available)
+            self._update_published_label = (published_label or '').strip()
+            self.btnUpdate.setText(self._update_button_text())
+            self._apply_update_button_style()
+        except RuntimeError:
+            pass
 
     def _update_button_text(self):
         if self._update_channel == 'experimental':

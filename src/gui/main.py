@@ -1351,10 +1351,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     
     def UpdateThread_Starter(self):
         """
-        After the UI is up, optionally download the channel installer and exit so setup can upgrade + relaunch.
-        Only for frozen Windows builds with APP_BUILD_TIME_ISO set (CI); same criteria as Settings update badge.
+        Periodic HEAD checks refresh the settings update badge (no silent download).
+
+        Silent download-on-startup is opt-in: set ZUBCUT_ENABLE_STARTUP_AUTO_UPDATE=1
+        (it can crash on some setups; use Settings → Install Latest Build instead).
         """
-        QTimer.singleShot(2000, self._maybe_auto_update_on_startup)
+        import os
+
+        if os.environ.get('ZUBCUT_ENABLE_STARTUP_AUTO_UPDATE', '').strip().lower() in (
+            '1',
+            'true',
+            'yes',
+            'on',
+        ):
+            QTimer.singleShot(2000, self._maybe_auto_update_on_startup)
         self._start_periodic_update_availability_poll()
 
     def UpdateThread_Reciever(self):
@@ -1506,8 +1516,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._update_status_poll_thread.start()
 
     def _on_update_status_polled(self, available, published_label):
-        self.settings_window.apply_update_banner_state(available, published_label)
-        self._sync_settings_gear_update_hint()
+        try:
+            sw = getattr(self, 'settings_window', None)
+            if sw is not None:
+                sw.apply_update_banner_state(available, published_label)
+            self._sync_settings_gear_update_hint()
+        except RuntimeError:
+            pass
 
     def _sync_settings_gear_update_hint(self):
         if getattr(self.settings_window, '_update_available', False):
