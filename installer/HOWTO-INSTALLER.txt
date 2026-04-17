@@ -11,6 +11,10 @@ Release channels (GitHub)
     (installer: ZubCut-Setup.exe). The regular app checks that URL for updates only
     (separate from experimental). End users never see the word "stable" in the UI.
 
+  After merging into `main`, if Git leaves `UPDATE_CHANNEL = 'experimental'` in
+  `src/constants.py` / `.github/ci-blessed/constants.py`, set it back to `'stable'`
+  on `main` so the published app offers regular updates, not the experimental feed.
+
 This installer build:
   - Installs to:  Program Files\ZubCut
   - Settings in:  %APPDATA%\ZubCut\
