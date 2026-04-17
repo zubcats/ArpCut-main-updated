@@ -12,6 +12,7 @@ class MsgType:
     INFO     = QMsg.information
     WARN     = QMsg.warning
     CRITICAL = QMsg.critical
+    ERROR    = QMsg.critical
 
 class MsgIcon:
     INFO     = QMsg.Information

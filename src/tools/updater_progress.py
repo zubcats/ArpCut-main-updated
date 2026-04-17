@@ -2,11 +2,44 @@
 Qt progress UI for downloading the Windows installer before launching Inno Setup.
 """
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEventLoop, Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import QApplication, QProgressDialog
 
 from constants import APP_DISPLAY_NAME
 from tools.updater_core import download_installer
+
+
+class _InstallerDownloadThread(QThread):
+    """Runs urllib download off the GUI thread; progress is queued to the main thread."""
+
+    progress = pyqtSignal(object, object)  # received, total (total may be None)
+    succeeded = pyqtSignal(str)
+    failed = pyqtSignal(str)
+    aborted = pyqtSignal()
+
+    def __init__(self, url):
+        super().__init__()
+        self._url = url
+        self._cancel = False
+
+    def request_cancel(self):
+        self._cancel = True
+
+    def run(self):
+        try:
+            path = download_installer(
+                self._url,
+                progress_callback=lambda r, t: self.progress.emit(r, t),
+                should_cancel=lambda: self._cancel,
+            )
+            self.succeeded.emit(path)
+        except RuntimeError as e:
+            if 'cancel' in str(e).lower():
+                self.aborted.emit()
+            else:
+                self.failed.emit(str(e))
+        except Exception as e:
+            self.failed.emit(str(e))
 
 
 def download_update_with_progress_dialog(parent, url):
@@ -14,21 +47,33 @@ def download_update_with_progress_dialog(parent, url):
     Modal progress while downloading. Returns path to temp installer, or None if cancelled.
     Raises RuntimeError / other exceptions on failure (not cancel).
     """
-    dlg = QProgressDialog(parent)
+    # No parent + application modal: avoids native crashes with frameless parent windows
+    # on Windows. Download runs in a worker thread so we never nest processEvents() during
+    # urllib I/O (that re-entrancy also crashed after the Yes/No dialog).
+    dlg = QProgressDialog()
     dlg.setAttribute(Qt.WA_DeleteOnClose, True)
     dlg.setWindowTitle(APP_DISPLAY_NAME)
+    if parent is not None:
+        icon = parent.windowIcon()
+        if icon is not None and not icon.isNull():
+            dlg.setWindowIcon(icon)
     dlg.setLabelText('Connecting…')
     dlg.setCancelButtonText('Cancel')
     dlg.setRange(0, 100)
     dlg.setMinimumDuration(0)
-    dlg.setWindowModality(Qt.WindowModal)
+    dlg.setWindowModality(Qt.ApplicationModal)
     dlg.setValue(0)
-    dlg.show()
-    QApplication.processEvents()
+
+    thread = _InstallerDownloadThread(url)
+    loop = QEventLoop()
+    result = {'path': None, 'error': None, 'aborted': False}
 
     def on_progress(received, total):
         if dlg.wasCanceled():
             return
+        received = int(received)
+        if total is not None:
+            total = int(total)
         if total and total > 0:
             dlg.setRange(0, 100)
             pct = min(99, int(received * 100 / total))
@@ -39,41 +84,55 @@ def download_update_with_progress_dialog(parent, url):
         else:
             dlg.setRange(0, 0)
             dlg.setLabelText(f'Downloading update… {received / (1024 * 1024):.1f} MB')
+
+    def on_ok(path):
+        result['path'] = path
+        loop.quit()
+
+    def on_fail(msg):
+        result['error'] = RuntimeError(msg)
+        loop.quit()
+
+    def on_abort():
+        result['aborted'] = True
+        loop.quit()
+
+    thread.progress.connect(on_progress)
+    thread.succeeded.connect(on_ok)
+    thread.failed.connect(on_fail)
+    thread.aborted.connect(on_abort)
+    dlg.canceled.connect(thread.request_cancel)
+
+    thread.start()
+    dlg.show()
+    if parent is not None and parent.isVisible():
+        fg = dlg.frameGeometry()
+        fg.moveCenter(parent.frameGeometry().center())
+        dlg.move(fg.topLeft())
+    dlg.raise_()
+    dlg.activateWindow()
+
+    loop.exec_()
+    thread.wait()
+
+    was_canceled = dlg.wasCanceled()
+
+    def _close_dlg():
+        dlg.reset()
+        dlg.close()
         QApplication.processEvents()
 
-    try:
-        path = download_installer(
-            url,
-            progress_callback=on_progress,
-            should_cancel=dlg.wasCanceled,
-        )
-    except RuntimeError as e:
-        if 'cancel' in str(e).lower():
-            dlg.reset()
-            dlg.close()
-            QApplication.processEvents()
-            return None
-        dlg.reset()
-        dlg.close()
-        QApplication.processEvents()
-        raise
-    except Exception:
-        dlg.reset()
-        dlg.close()
-        QApplication.processEvents()
-        raise
-
-    if dlg.wasCanceled():
-        dlg.reset()
-        dlg.close()
-        QApplication.processEvents()
+    if result['aborted'] or was_canceled:
+        _close_dlg()
         return None
+    if result['error'] is not None:
+        _close_dlg()
+        raise result['error']
 
+    path = result['path']
     dlg.setRange(0, 100)
     dlg.setValue(100)
     dlg.setLabelText('Download finished. Starting installer…')
     QApplication.processEvents()
-    dlg.reset()
-    dlg.close()
-    QApplication.processEvents()
+    _close_dlg()
     return path

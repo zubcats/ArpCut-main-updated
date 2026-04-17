@@ -275,8 +275,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             )
             return
 
+        # Parent=None: same frameless-window + modal child crash class as QProgressDialog on Windows.
         confirm = MsgType.WARN(
-            self,
+            None,
             'Install Latest Build',
             (
                 f'This will install the latest {self._channel_label()} build.\n'
@@ -302,7 +303,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.elmocut.quit_all()
         except Exception as e:
             MsgType.ERROR(
-                self,
+                None,
                 'Update Failed',
                 f'Could not download/install update.\n{e}',
                 Buttons.OK,
