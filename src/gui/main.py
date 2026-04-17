@@ -1371,13 +1371,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not sys.platform.startswith('win'):
             return
         try:
-            from tools.updater_core import launch_installer, selected_update_url, update_is_available
+            from tools.updater_core import (
+                auto_update_cooldown_active,
+                launch_installer,
+                selected_update_url,
+                set_auto_update_cooldown,
+                update_is_available,
+            )
             from tools.updater_progress import download_update_with_progress_dialog
         except Exception:
             return
         if not selected_update_url():
             return
         if not update_is_available():
+            return
+        if auto_update_cooldown_active():
             return
         try:
             from tools.updater_debug import (
@@ -1405,6 +1413,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if not path:
                 self.log('Update download cancelled.', 'orange')
                 return
+            set_auto_update_cooldown()
             launch_installer(path)
             self.quit_all()
         except Exception as e:

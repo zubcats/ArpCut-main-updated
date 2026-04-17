@@ -16,7 +16,12 @@ from ui.ui_settings import Ui_MainWindow
 from networking.nicknames import Nicknames
 
 from tools.keybinds import keyseq_from_setting
-from tools.updater_core import get_update_status, launch_installer, selected_update_url
+from tools.updater_core import (
+    get_update_status,
+    launch_installer,
+    selected_update_url,
+    set_auto_update_cooldown,
+)
 from tools.updater_progress import download_update_with_progress_dialog
 from tools.updater_debug import (
     begin_updater_debug_session,
@@ -310,6 +315,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if path is None:
                 return
             updater_log('checkUpdate: launch_installer')
+            set_auto_update_cooldown()
             launch_installer(path)
             quit_for_update = True
             updater_log('checkUpdate: quit_all')
