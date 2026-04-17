@@ -17,6 +17,7 @@ from tools.updater_core import (
     _download_request_url,
     _temp_installer_path,
     _validate_installer_exe,
+    download_installer,
 )
 from tools.updater_debug import begin_updater_debug_session, updater_log
 
@@ -75,6 +76,10 @@ def download_update_with_progress_dialog(parent, url, *, show_progress=True):
                 dlg.setWindowIcon(icon)
 
     manager = QNetworkAccessManager()
+    try:
+        manager.setRedirectPolicy(QNetworkAccessManager.NoLessSafeRedirectPolicy)
+    except Exception:
+        pass
     req = QNetworkRequest(qurl)
     req.setHeader(QNetworkRequest.UserAgentHeader, f'{APP_BUNDLE_NAME}-updater')
     req.setRawHeader(b'Cache-Control', b'no-cache')
@@ -105,8 +110,10 @@ def download_update_with_progress_dialog(parent, url, *, show_progress=True):
 
     def on_ready_read():
         try:
-            if reply.error() == QNetworkReply.NoError:
-                chunk = reply.readAll()
+            if reply.error() != QNetworkReply.NoError:
+                return
+            while reply.bytesAvailable():
+                chunk = reply.read(reply.bytesAvailable())
                 if chunk:
                     out.write(bytes(chunk))
         except Exception as e:
@@ -156,6 +163,17 @@ def download_update_with_progress_dialog(parent, url, *, show_progress=True):
                 state['http_error'] = reply.errorString()
         else:
             state['http_error'] = None
+            code = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
+            if code is not None:
+                try:
+                    ci = int(code)
+                    if ci < 200 or ci >= 300:
+                        reason = reply.attribute(QNetworkRequest.HttpReasonPhraseAttribute)
+                        if isinstance(reason, (bytes, bytearray, memoryview)):
+                            reason = bytes(reason).decode('latin-1', 'replace')
+                        state['http_error'] = f'HTTP {ci} {reason or ""}'.strip()
+                except (TypeError, ValueError):
+                    pass
 
         reply.deleteLater()
         loop.quit()
@@ -219,11 +237,17 @@ def download_update_with_progress_dialog(parent, url, *, show_progress=True):
 
     try:
         _validate_installer_exe(tmp_path)
-    except RuntimeError:
+    except RuntimeError as exc:
+        updater_log('Qt download failed validation: %s', exc)
         try:
             os.remove(tmp_path)
         except OSError:
             pass
-        raise
+        # Qt stack sometimes saves an empty/HTML stub on Windows (SSL/redirect quirks).
+        # urllib matches HEAD checks elsewhere and follows redirects reliably.
+        updater_log('Falling back to urllib download_installer')
+        alt_path = download_installer(url, progress_callback=None, should_cancel=None)
+        _validate_installer_exe(alt_path)
+        return alt_path
 
     return tmp_path

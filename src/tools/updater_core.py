@@ -153,11 +153,27 @@ _READ_CHUNK = 256 * 1024
 def _validate_installer_exe(tmp_path):
     if not os.path.exists(tmp_path):
         raise RuntimeError('Downloaded file missing.')
-    if os.path.getsize(tmp_path) < 1024:
-        raise RuntimeError('Downloaded file is too small to be a valid installer.')
+    sz = os.path.getsize(tmp_path)
+    if sz < 1024:
+        hint = ''
+        try:
+            with open(tmp_path, 'rb') as fp:
+                head = fp.read(256)
+            if head.lstrip().startswith(b'<'):
+                hint = (
+                    ' The response looks like HTML (wrong URL, private repo, or login page) '
+                    'instead of the .exe file.'
+                )
+        except OSError:
+            pass
+        raise RuntimeError(
+            f'Downloaded file is too small ({sz} bytes) to be a valid installer.{hint}'
+        )
     with open(tmp_path, 'rb') as fp:
         if fp.read(2) != b'MZ':
-            raise RuntimeError('Downloaded file is not a Windows installer executable.')
+            raise RuntimeError(
+                f'Downloaded file is not a Windows installer executable ({sz} bytes).'
+            )
 
 
 def _temp_installer_path(url):
