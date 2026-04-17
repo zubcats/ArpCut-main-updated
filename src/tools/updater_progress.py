@@ -1,8 +1,9 @@
 """
-Qt progress UI for downloading the Windows installer before launching Inno Setup.
+Qt-based download of the Windows installer before launching Inno Setup.
 
-Uses QNetworkAccessManager so the download runs on Qt's event loop (same thread as the UI).
-Avoids QThread + urllib + nested QEventLoop, which was unstable on Windows.
+Uses QNetworkAccessManager on the GUI thread. Startup auto-update uses **no**
+progress dialog (no QProgressDialog / modality) to avoid Windows/Qt crashes;
+Settings → Install Latest Build still shows a progress bar.
 """
 
 import os
@@ -20,14 +21,20 @@ from tools.updater_core import (
 from tools.updater_debug import begin_updater_debug_session, updater_log
 
 
-def download_update_with_progress_dialog(parent, url):
+def download_update_with_progress_dialog(parent, url, *, show_progress=True):
     """
-    Modal progress while downloading. Returns path to temp installer, or None if cancelled.
-    Raises RuntimeError on failure (not cancel).
+    Download the channel installer to a temp path.
+
+    show_progress=False: no dialog (for startup auto-update — safest on Windows).
+    show_progress=True: modal QProgressDialog (Settings → update).
+
+    Returns path, or None if cancelled (only when show_progress).
+    Raises RuntimeError on failure.
     """
     begin_updater_debug_session('download_update_with_progress_dialog')
     updater_log(
-        'progress UI (Qt network): start url=%r parent_type=%s',
+        'progress UI (Qt network): start show_progress=%s url=%r parent=%s',
+        show_progress,
         url,
         type(parent).__name__ if parent is not None else None,
     )
@@ -51,25 +58,31 @@ def download_update_with_progress_dialog(parent, url):
     if not qurl.isValid():
         raise RuntimeError('Invalid download URL.')
 
-    dlg = QProgressDialog()
-    dlg.setWindowTitle(APP_DISPLAY_NAME)
-    dlg.setAttribute(Qt.WA_DeleteOnClose, False)
-    dlg.setLabelText('Connecting…')
-    dlg.setCancelButtonText('Cancel')
-    dlg.setRange(0, 100)
-    dlg.setMinimumDuration(0)
-    dlg.setWindowModality(Qt.ApplicationModal)
-    dlg.setValue(0)
-    if parent is not None:
-        icon = parent.windowIcon()
-        if icon is not None and not icon.isNull():
-            dlg.setWindowIcon(icon)
+    dlg = None
+    if show_progress:
+        dlg = QProgressDialog()
+        dlg.setWindowTitle(APP_DISPLAY_NAME)
+        dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+        dlg.setLabelText('Connecting…')
+        dlg.setCancelButtonText('Cancel')
+        dlg.setRange(0, 100)
+        dlg.setMinimumDuration(0)
+        dlg.setWindowModality(Qt.ApplicationModal)
+        dlg.setValue(0)
+        if parent is not None:
+            icon = parent.windowIcon()
+            if icon is not None and not icon.isNull():
+                dlg.setWindowIcon(icon)
 
     manager = QNetworkAccessManager()
     req = QNetworkRequest(qurl)
     req.setHeader(QNetworkRequest.UserAgentHeader, f'{APP_BUNDLE_NAME}-updater')
     req.setRawHeader(b'Cache-Control', b'no-cache')
     req.setRawHeader(b'Pragma', b'no-cache')
+    try:
+        req.setAttribute(QNetworkRequest.FollowRedirectsAttribute, True)
+    except Exception:
+        pass
 
     reply = manager.get(req)
     out = open(tmp_path, 'wb')
@@ -77,6 +90,7 @@ def download_update_with_progress_dialog(parent, url):
 
     loop = QEventLoop()
     state = {'cancelled': False, 'http_error': None}
+    silent_last_pct = [-1]
 
     def _close_out():
         nonlocal out_closed
@@ -99,23 +113,29 @@ def download_update_with_progress_dialog(parent, url):
             updater_log('readyRead: %s', e, exc_info=True)
 
     def on_progress(rx, total):
-        try:
-            if dlg.wasCanceled():
-                state['cancelled'] = True
-                reply.abort()
-                return
-        except Exception:
-            return
         rx = int(rx)
-        if total > 0:
-            dlg.setRange(0, 100)
-            dlg.setValue(min(99, int(rx * 100 / total)))
-            dlg.setLabelText(
-                f'Downloading update… {rx / (1024 * 1024):.1f} / {total / (1024 * 1024):.1f} MB'
-            )
-        else:
-            dlg.setRange(0, 0)
-            dlg.setLabelText(f'Downloading update… {rx / (1024 * 1024):.1f} MB')
+        if dlg is not None:
+            try:
+                if dlg.wasCanceled():
+                    state['cancelled'] = True
+                    reply.abort()
+                    return
+            except Exception:
+                return
+            if total > 0:
+                dlg.setRange(0, 100)
+                dlg.setValue(min(99, int(rx * 100 / total)))
+                dlg.setLabelText(
+                    f'Downloading update… {rx / (1024 * 1024):.1f} / {total / (1024 * 1024):.1f} MB'
+                )
+            else:
+                dlg.setRange(0, 0)
+                dlg.setLabelText(f'Downloading update… {rx / (1024 * 1024):.1f} MB')
+        elif total > 0:
+            pct = min(99, int(rx * 100 / total))
+            if pct >= silent_last_pct[0] + 10:
+                silent_last_pct[0] = pct
+                updater_log('silent download ~%s%%', pct)
 
     def on_finished():
         try:
@@ -143,18 +163,20 @@ def download_update_with_progress_dialog(parent, url):
     reply.readyRead.connect(on_ready_read)
     reply.downloadProgress.connect(on_progress)
     reply.finished.connect(on_finished)
-    dlg.canceled.connect(reply.abort)
+    if dlg is not None:
+        dlg.canceled.connect(reply.abort)
 
-    dlg.show()
-    if parent is not None and parent.isVisible():
-        try:
-            fg = dlg.frameGeometry()
-            fg.moveCenter(parent.frameGeometry().center())
-            dlg.move(fg.topLeft())
-        except Exception as e:
-            updater_log('center dialog: %s', e, exc_info=True)
-    dlg.raise_()
-    dlg.activateWindow()
+    if dlg is not None:
+        dlg.show()
+        if parent is not None and parent.isVisible():
+            try:
+                fg = dlg.frameGeometry()
+                fg.moveCenter(parent.frameGeometry().center())
+                dlg.move(fg.topLeft())
+            except Exception as e:
+                updater_log('center dialog: %s', e, exc_info=True)
+        dlg.raise_()
+        dlg.activateWindow()
 
     updater_log('progress UI: entering event loop (Qt network)')
     try:
@@ -162,10 +184,17 @@ def download_update_with_progress_dialog(parent, url):
     finally:
         _close_out()
 
-    try:
-        dlg_was_canceled = dlg.wasCanceled()
-    except Exception:
-        dlg_was_canceled = False
+    dlg_was_canceled = False
+    if dlg is not None:
+        try:
+            dlg_was_canceled = dlg.wasCanceled()
+        except Exception:
+            dlg_was_canceled = False
+        try:
+            dlg.reset()
+            dlg.close()
+        except Exception as e:
+            updater_log('close progress dlg: %s', e, exc_info=True)
 
     updater_log(
         'progress UI: loop done cancelled=%s dlg_cancel=%s err=%r',
@@ -173,12 +202,6 @@ def download_update_with_progress_dialog(parent, url):
         dlg_was_canceled,
         state['http_error'],
     )
-
-    try:
-        dlg.reset()
-        dlg.close()
-    except Exception as e:
-        updater_log('close progress dlg: %s', e, exc_info=True)
 
     if state['cancelled'] or dlg_was_canceled:
         try:

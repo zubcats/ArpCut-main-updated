@@ -1427,8 +1427,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             begin_updater_debug_session('main.auto_update')
             updater_log('auto_update: starting download')
             self.log('A newer build is available. Downloading update…', 'orange')
-            QApplication.processEvents()
-            path = download_update_with_progress_dialog(self, selected_update_url())
+            path = download_update_with_progress_dialog(
+                self,
+                selected_update_url(),
+                show_progress=False,
+            )
             updater_log('auto_update: download returned %r', path)
             if not path:
                 self.log('Update download cancelled.', 'orange')
