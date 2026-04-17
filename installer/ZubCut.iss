@@ -1,5 +1,10 @@
 ; Inno Setup 6 — ZubCut Windows installer
 ; Prereq: python build.py → dist\ZubCut\ (onedir — copy full folder into {app})
+;
+; The same compiled setup .exe is used for:
+;   - First install (GitHub / manual download), and
+;   - In-app updates (downloaded installer).
+; WizardStyle and images below apply to both.
 
 #define MyAppName "ZubCut"
 #define MyAppVersion "1.29"
@@ -25,6 +30,10 @@ Compression=lzma2
 SolidCompression=yes
 ; modern + built-in dark style (Inno 6+). Use "modern dynamic" instead to follow Windows light/dark.
 WizardStyle=modern dark
+; Top-right logo (modern wizard ~120×120; Inno scales PNG). For a custom left panel use WizardImageFile (~164×314).
+WizardSmallImageFile=..\exe\zubcut_icon.png
+; Setup/uninstall file icon (.ico only). Uncomment after adding installer\branding\setup.ico (e.g. convert from zubcut_icon.png).
+;SetupIconFile=branding\setup.ico
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64
 ; Allow Restart Manager to close ZubCut so the old one-file EXE is not left in place beside the new onedir layout.

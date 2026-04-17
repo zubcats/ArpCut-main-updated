@@ -34,3 +34,12 @@ Or manually:
 Output:  output\ZubCut-Setup-1.29.exe   (version matches installer script)
 
 Run the .exe installer as Administrator when prompted.
+
+Branding (optional)
+-------------------
+The same script builds the installer whether users download it from GitHub or the app runs an update.
+
+  - Already set: dark wizard (WizardStyle=modern dark) and small logo (exe\zubcut_icon.png).
+  - Light: add installer\branding\setup.ico and set SetupIconFile in ZubCut.iss (file icon in Explorer / taskbar while setup runs).
+  - Medium: add WizardImageFile = left strip ~164×314 PNG for the welcome/finished pages (match dark theme).
+  - Heavier: LicenseFile / InfoBeforeFile text, custom WizardStyleFile (VCL styles), or per-page Pascal UI — more time, rarely needed.
