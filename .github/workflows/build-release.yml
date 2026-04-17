@@ -16,6 +16,16 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      release_channel:
+        description: 'Build channel for artifacts/updater constants'
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - stable
+          - experimental
 
 jobs:
   build-windows:
@@ -34,6 +44,7 @@ jobs:
         env:
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
+          REQUESTED_CHANNEL: ${{ github.event.inputs.release_channel || '' }}
           UPDATE_URL_STABLE: ${{ vars.UPDATE_DOWNLOAD_URL_STABLE }}
           UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
         run: |
@@ -47,7 +58,11 @@ jobs:
 
           ref_name = os.getenv("REF_NAME", "").lower()
           ref_type = os.getenv("REF_TYPE", "").lower()
-          channel = "stable" if (ref_name == "main" or ref_type == "tag") else "experimental"
+          requested = os.getenv("REQUESTED_CHANNEL", "").strip().lower()
+          if requested in ("stable", "experimental"):
+              channel = requested
+          else:
+              channel = "stable" if (ref_name == "main" or ref_type == "tag") else "experimental"
           stable_url = os.getenv("UPDATE_URL_STABLE", "")
           experimental_url = os.getenv("UPDATE_URL_EXPERIMENTAL", "")
 
@@ -92,23 +107,48 @@ jobs:
 
       - name: Create channel installer alias
         shell: pwsh
+        env:
+          REQUESTED_CHANNEL: ${{ github.event.inputs.release_channel || '' }}
         run: |
-          $channel = if ("${{ github.ref_name }}" -eq "main" -or "${{ github.ref_type }}" -eq "tag") { "stable" } else { "experimental" }
+          $requested = "$env:REQUESTED_CHANNEL".ToLower().Trim()
+          if ($requested -eq "stable" -or $requested -eq "experimental") {
+            $channel = $requested
+          } elseif ("${{ github.ref_name }}" -eq "main" -or "${{ github.ref_type }}" -eq "tag") {
+            $channel = "stable"
+          } else {
+            $channel = "experimental"
+          }
           $latest = Get-ChildItem -Path "output" -Filter "ZubCut-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $latest) { throw "Installer not found in output/" }
           Copy-Item $latest.FullName "output/ZubCut-Setup-$channel.exe" -Force
 
       - name: Upload portable EXE
+        if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}
         uses: actions/upload-artifact@v4
         with:
-          name: ZubCut-Windows-Portable-${{ (github.ref_name == 'main' || github.ref_type == 'tag') && 'Stable' || 'Experimental' }}
+          name: ZubCut-Windows-Portable-Stable
+          path: dist/ZubCut.exe
+
+      - name: Upload portable EXE (Experimental)
+        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZubCut-Windows-Portable-Experimental
           path: dist/ZubCut.exe
 
       - name: Upload installer EXE
+        if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}
         uses: actions/upload-artifact@v4
         with:
-          name: ZubCut-Windows-Installer-${{ (github.ref_name == 'main' || github.ref_type == 'tag') && 'Stable' || 'Experimental' }}
-          path: output/ZubCut-Setup-${{ (github.ref_name == 'main' || github.ref_type == 'tag') && 'stable' || 'experimental' }}.exe
+          name: ZubCut-Windows-Installer-Stable
+          path: output/ZubCut-Setup-stable.exe
+
+      - name: Upload installer EXE (Experimental)
+        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZubCut-Windows-Installer-Experimental
+          path: output/ZubCut-Setup-experimental.exe
 
   build-macos:
     runs-on: macos-latest
@@ -126,6 +166,7 @@ jobs:
         env:
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
+          REQUESTED_CHANNEL: ${{ github.event.inputs.release_channel || '' }}
           UPDATE_URL_STABLE: ${{ vars.UPDATE_DOWNLOAD_URL_STABLE }}
           UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
         run: |
@@ -139,7 +180,11 @@ jobs:
 
           ref_name = os.getenv("REF_NAME", "").lower()
           ref_type = os.getenv("REF_TYPE", "").lower()
-          channel = "stable" if (ref_name == "main" or ref_type == "tag") else "experimental"
+          requested = os.getenv("REQUESTED_CHANNEL", "").strip().lower()
+          if requested in ("stable", "experimental"):
+              channel = requested
+          else:
+              channel = "stable" if (ref_name == "main" or ref_type == "tag") else "experimental"
           stable_url = os.getenv("UPDATE_URL_STABLE", "")
           experimental_url = os.getenv("UPDATE_URL_EXPERIMENTAL", "")
 
@@ -196,6 +241,7 @@ jobs:
         env:
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
+          REQUESTED_CHANNEL: ${{ github.event.inputs.release_channel || '' }}
           UPDATE_URL_STABLE: ${{ vars.UPDATE_DOWNLOAD_URL_STABLE }}
           UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
         run: |
@@ -209,7 +255,11 @@ jobs:
 
           ref_name = os.getenv("REF_NAME", "").lower()
           ref_type = os.getenv("REF_TYPE", "").lower()
-          channel = "stable" if (ref_name == "main" or ref_type == "tag") else "experimental"
+          requested = os.getenv("REQUESTED_CHANNEL", "").strip().lower()
+          if requested in ("stable", "experimental"):
+              channel = requested
+          else:
+              channel = "stable" if (ref_name == "main" or ref_type == "tag") else "experimental"
           stable_url = os.getenv("UPDATE_URL_STABLE", "")
           experimental_url = os.getenv("UPDATE_URL_EXPERIMENTAL", "")
 
