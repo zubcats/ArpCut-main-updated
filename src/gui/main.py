@@ -688,7 +688,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'Kill toggle — Turn blocking on or off for the selected device. '
             'Shortcut: L (only while the main ZubCut window is the active window).'
         )
-        self.btnKill.setIcon(self.processIcon(kill_icon))
+        self._btn_kill_icon = self.processIcon(kill_icon)
+        self.btnKill.setIcon(self._btn_kill_icon)
         self.btnKill.setMinimumWidth(130)
         self.btnKill.setIconSize(QSize(56, 56))
         kill_font = QFont(self.btnKill.font())
@@ -1927,9 +1928,24 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if mac not in active_macs:
                 self.killed_devices[mac] = False
 
+    def _set_kill_button_idle_look(self):
+        """Icon + compact width for Kill: OFF (matches Lag/Dupe footprint)."""
+        self.btnKill.setIcon(self._btn_kill_icon)
+        self.btnKill.setIconSize(QSize(56, 56))
+        self.btnKill.setMinimumWidth(130)
+
+    def _set_kill_button_active_look(self):
+        """
+        Long status text needs the full cell width; the skull icon squeezes the label
+        sideways when lag/dupe/kill-on strings are shown.
+        """
+        self.btnKill.setIcon(QIcon())
+        self.btnKill.setMinimumWidth(1)
+
     def _updateKillButtonState(self):
         device = self._get_selected_device()
         if not device:
+            self._set_kill_button_idle_look()
             self.btnKill.setText('Kill: OFF')
             self.btnKill.setStyleSheet(self.BUTTON_NORMAL_STYLE)
             if getattr(self, '_btn_kill_tooltip_static', None):
@@ -1940,7 +1956,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         base_tip = getattr(self, '_btn_kill_tooltip_static', None)
         if self.lag_active and self.lag_device_mac == mac:
             lag_key = getattr(self, '_shortcut_label_lag', 'M')
-            self.btnKill.setText(f'■ LAGGING (Press {lag_key} to turn off)')
+            self._set_kill_button_active_look()
+            self.btnKill.setText(f'■ LAGGING\n(Press {lag_key} to turn off)')
             self.btnKill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
             if base_tip:
                 self.btnKill.setToolTip(
@@ -1950,7 +1967,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if self.dupe_active and self.dupe_device_mac == mac:
             dupe_key = getattr(self, '_shortcut_label_dupe', 'P')
-            self.btnKill.setText(f'■ DUPE (Press {dupe_key} to turn off)')
+            self._set_kill_button_active_look()
+            self.btnKill.setText(f'■ DUPE\n(Press {dupe_key} to turn off)')
             self.btnKill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
             if base_tip:
                 self.btnKill.setToolTip(
@@ -1963,9 +1981,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         is_active = self._kill_ui_shows_on(mac)
         if is_active:
             kill_key = getattr(self, '_shortcut_label_kill', 'L')
-            self.btnKill.setText(f'■ KILL: ON (Press {kill_key} to turn off)')
+            self._set_kill_button_active_look()
+            self.btnKill.setText(f'■ KILL: ON\n(Press {kill_key} to turn off)')
             self.btnKill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         else:
+            self._set_kill_button_idle_look()
             self.btnKill.setText('Kill: OFF')
             self.btnKill.setStyleSheet(self.BUTTON_NORMAL_STYLE)
 
