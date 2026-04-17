@@ -1,6 +1,13 @@
 ZubCut — Windows installer
 ==========================
 
+Release channels (GitHub)
+-------------------------
+  - Branch `main`: stable builds. CI publishes the rolling tag `stable-latest`
+    (installer: ZubCut-Setup.exe). In-app UPDATE_CHANNEL is stable.
+  - Branch `experimental`: prerelease builds. CI publishes `experimental-latest`
+    (ZubCut-Setup-experimental.exe). In-app UPDATE_CHANNEL is experimental.
+
 This installer build:
   - Installs to:  Program Files\ZubCut
   - Settings in:  %APPDATA%\ZubCut\

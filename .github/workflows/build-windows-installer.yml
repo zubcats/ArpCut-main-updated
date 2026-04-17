@@ -1,8 +1,7 @@
 # Windows installer only — does not run macOS/Linux (faster, fewer failure points).
 #
-# Push to `experimental` → builds and updates the rolling GitHub release
-# `experimental-latest` (ZubCut-Setup-experimental.exe). The in-app updater uses
-# that URL, so you do not need to click "Run workflow" for every change.
+# Push to `main` → stable channel: rolling release `stable-latest` (ZubCut-Setup.exe).
+# Push to `experimental` → rolling release `experimental-latest` (ZubCut-Setup-experimental.exe).
 # Manual `workflow_dispatch` is still available when you want a build without a push.
 
 name: Build Windows installer only
@@ -10,6 +9,7 @@ name: Build Windows installer only
 on:
   push:
     branches:
+      - main
       - experimental
   workflow_dispatch:
     inputs:
@@ -26,8 +26,7 @@ on:
 permissions:
   contents: write
 
-# One run per branch; a new push cancels an in-progress build so experimental-latest
-# always reflects the latest commit (saves minutes on rapid pushes).
+# One run per branch; a new push cancels an in-progress build on that branch only.
 concurrency:
   group: windows-installer-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -177,6 +176,18 @@ jobs:
         with:
           name: ZubCut-Windows-Installer-Experimental
           path: output/ZubCut-Setup-experimental.exe
+
+      - name: Publish rolling stable release
+        if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && github.ref_name == 'main') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: stable-latest
+          name: stable-latest
+          prerelease: false
+          make_latest: false
+          files: output/ZubCut-Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish rolling experimental release
         if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
