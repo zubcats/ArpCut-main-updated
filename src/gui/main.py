@@ -1353,7 +1353,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         HEAD polling refreshes the settings update badge.
 
-        ~2s after startup, may download + run the installer only if Settings → autoupdate
+        ~5s after startup, may download + run the installer only if Settings → autoupdate
         is on (default) and update_is_available() is true. Set ZUBCUT_DISABLE_STARTUP_AUTO_UPDATE=1
         to force off regardless of settings.
         """
@@ -1367,7 +1367,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'on',
         ):
             return
-        QTimer.singleShot(2000, self._maybe_auto_update_on_startup_deferred)
+        QTimer.singleShot(5000, self._maybe_auto_update_on_startup_deferred)
 
     def _maybe_auto_update_on_startup_deferred(self):
         try:

@@ -51,7 +51,7 @@ def _default_auto_update_cooldown_seconds():
             return max(60, int(raw))
         except ValueError:
             pass
-    return 8 * 3600
+    return 48 * 3600
 
 
 def auto_update_cooldown_active():
