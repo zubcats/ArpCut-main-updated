@@ -1,20 +1,17 @@
 # Builds binaries in the cloud — no Python or Inno Setup on your PC.
 #
 # Triggers:
-#   - Push to `main` → full matrix (Windows + macOS + Linux) as Actions artifacts (stable channel).
-#   - Tag `v*` → same builds, plus the final job publishes a GitHub Release with those files.
-#   - `workflow_dispatch` → manual run (pick release_channel if needed).
+#   - Tag `v*` → Windows + macOS + Linux, then publishes a GitHub Release.
+#   - `workflow_dispatch` → manual full matrix (use for macOS/Linux when needed).
 #
-# Rolling Windows installer for stable is also built on every `main` push by
-# "Build Windows installer only" (stable-latest). This workflow adds macOS/Linux
-# and a second Windows artifact set for parity testing.
+# Branch pushes (`main` / `experimental`) only run "Build Windows installer only"
+# (one workflow, cancel-in-progress per branch). That avoids two Windows builds +
+# three parallel jobs on every push, which looked like "3 workflows" in the UI.
 
 name: Build Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
   workflow_dispatch:
