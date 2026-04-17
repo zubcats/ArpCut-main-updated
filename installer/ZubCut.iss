@@ -47,7 +47,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 ; Install Npcap only when it is missing.
 Filename: "{tmp}\{#NpcapInstallerName}"; Parameters: "/S"; Flags: waituntilterminated skipifdoesntexist; Check: ShouldInstallNpcap
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent shellexec
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall shellexec
 
 [Code]
 function NpcapServiceInstalled: Boolean;
