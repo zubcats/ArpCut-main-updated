@@ -664,6 +664,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Button active state styles
         self.BUTTON_ACTIVE_STYLE = "background-color: #c0392b; color: white; font-weight: bold;"
         self.BUTTON_NORMAL_STYLE = ""
+        # Experimental: idle Lag / Dupe match title bar charcoal (see frameless_chrome).
+        self._SECONDARY_ACTION_IDLE_QSS = (
+            'QPushButton { background-color: #2b2b2b; color: #e8eaed; border: 1px solid #3d3d3d; border-radius: 6px; }'
+            if str(UPDATE_CHANNEL or '').strip().lower() == 'experimental'
+            else ''
+        )
 
         # Settings props
         self.minimize = True
@@ -703,7 +709,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if btn_icon is not None:
                 btn.setIcon(self.processIcon(btn_icon))
         self.btnAbout.setIcon(self.icon)
-        self.btnAbout.setIconSize(QSize(48, 48))
+        # Match ui_main (40); larger icons clip in the top grid cell.
+        self.btnAbout.setIconSize(QSize(40, 40))
 
         self.btnKill = QPushButton(self.centralwidget)
         self.btnKill.setObjectName('btnKill')
@@ -826,6 +833,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         sync_translucent_chrome(_chrome_windows)
 
         self.applySettings()
+        self._updateLagSwitchButtonState()
+        self._updateDupeButtonState()
 
     @staticmethod
     def processIcon(icon_data, crop_margins=False):
@@ -1061,7 +1070,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnLagSwitch.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         else:
             self.btnLagSwitch.setText('Lag Switch')
-            self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+            self.btnLagSwitch.setStyleSheet(
+                self._SECONDARY_ACTION_IDLE_QSS or self.BUTTON_NORMAL_STYLE
+            )
     
     def deviceDoubleClicked(self):
         """
@@ -1095,14 +1106,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if type(text) == bool:
                 continue
             
-            # Highlight Admins in green
+            # Highlight Admins (Me / Router): bright green on stable; darker green on experimental.
             if device['admin']:
-                self.fillTableCell(
-                    row,
-                    column,
-                    text,
-                    ['#00ff00', '#000000']
+                admin_colors = (
+                    ['#1a3d28', '#d8f0e4']
+                    if str(UPDATE_CHANNEL or '').strip().lower() == 'experimental'
+                    else ['#00ff00', '#000000']
                 )
+                self.fillTableCell(row, column, text, admin_colors)
             else:
                 self.fillTableCell(
                     row,
@@ -1820,7 +1831,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     pass
         self._sync_killed_devices()
         self.btnLagSwitch.setText('Lag Switch')
-        self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        self.btnLagSwitch.setStyleSheet(
+            self._SECONDARY_ACTION_IDLE_QSS or self.BUTTON_NORMAL_STYLE
+        )
         self.log('Lag switch OFF', 'lime')
         if refresh_dialog and self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
             self.lag_switch_dialog.refresh_toggle_state()
@@ -1890,7 +1903,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
         self.btnDupe.setText('Dupe')
-        self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        self.btnDupe.setStyleSheet(
+            self._SECONDARY_ACTION_IDLE_QSS or self.BUTTON_NORMAL_STYLE
+        )
         if log:
             self.log(log_message, 'lime')
         if refresh_dialog and getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
@@ -1905,7 +1920,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         else:
             self.btnDupe.setText('Dupe')
-            self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+            self.btnDupe.setStyleSheet(
+                self._SECONDARY_ACTION_IDLE_QSS or self.BUTTON_NORMAL_STYLE
+            )
 
     def _ignore_duplicate_toggle_edge(self, kind: str, mac: str | None, edge: str) -> bool:
         """

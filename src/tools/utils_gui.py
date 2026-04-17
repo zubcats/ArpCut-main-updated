@@ -117,6 +117,24 @@ QComboBox QAbstractItemView {
     selection-background-color: #000000;
     selection-color: #f2f2f2;
 }
+/* Main device table: black viewport; row selection matches title bar (#2b2b2b). */
+QTableWidget#tableScan {
+    background-color: #000000;
+    alternate-background-color: #0a0a0a;
+}
+QTableWidget#tableScan::item:selected,
+QTableWidget#tableScan::item:selected:active,
+QTableWidget#tableScan::item:selected:!active {
+    background-color: #2b2b2b;
+    color: #f2f2f2;
+}
+QTableWidget#tableScan::item:focus {
+    background-color: #2b2b2b;
+    color: #f2f2f2;
+}
+QPushButton#btnAbout {
+    padding: 8px;
+}
 """
 
 
