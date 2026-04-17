@@ -1382,8 +1382,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         try:
             from tools.updater_debug import (
                 begin_updater_debug_session,
-                updater_debug_log_path,
                 updater_log,
+                updater_log_paths_hint,
             )
         except Exception:
             def begin_updater_debug_session(_reason=None):
@@ -1392,7 +1392,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             def updater_log(*_a, **_k):
                 pass
 
-            def updater_debug_log_path():
+            def updater_log_paths_hint():
                 return ''
 
         try:
@@ -1410,13 +1410,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception as e:
             updater_log('auto_update: failed %s', e, exc_info=True)
             self.log(f'Automatic update failed: {e}', 'red')
-            _log_p = updater_debug_log_path()
             MsgType.ERROR(
                 None,
                 'Update Failed',
                 (
                     f'Could not download or start the installer.\n{e}\n\n'
-                    f'Details were appended to:\n{_log_p}'
+                    f'Details were appended to:\n{updater_log_paths_hint()}'
                 ),
                 Buttons.OK,
             )

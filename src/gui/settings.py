@@ -20,8 +20,8 @@ from tools.updater_core import get_update_status, launch_installer, selected_upd
 from tools.updater_progress import download_update_with_progress_dialog
 from tools.updater_debug import (
     begin_updater_debug_session,
-    updater_debug_log_path,
     updater_log,
+    updater_log_paths_hint,
 )
 
 from constants import *
@@ -316,13 +316,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.elmocut.quit_all()
         except Exception as e:
             updater_log('checkUpdate: exception %s', e, exc_info=True)
-            _log_hint = updater_debug_log_path()
             MsgType.ERROR(
                 None,
                 'Update Failed',
                 (
                     f'Could not download/install update.\n{e}\n\n'
-                    f'Details were appended to:\n{_log_hint}'
+                    f'Details were appended to:\n{updater_log_paths_hint()}'
                 ),
                 Buttons.OK,
             )
