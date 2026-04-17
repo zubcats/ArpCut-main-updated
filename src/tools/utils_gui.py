@@ -46,73 +46,75 @@ QWidget#centralwidget {{
 
 
 _EXPERIMENTAL_CHARCOAL_QSS = """
-/* After qdarkstyle: remove blue chrome — charcoal / neutral greys only (experimental). */
+/* After qdarkstyle: no blue. Window chrome stays charcoal (#141414 in translucent_main_chrome_qss);
+   selections / list highlights / accents that used grey are pure black. */
 QWidget {
-    selection-background-color: #4a4f55;
+    selection-background-color: #000000;
     selection-color: #f2f2f2;
 }
 QAbstractItemView, QTableView, QTableWidget, QListView, QTreeView {
-    selection-background-color: #4a4f55;
+    selection-background-color: #000000;
     selection-color: #f2f2f2;
     alternate-background-color: #1e2228;
 }
 QAbstractItemView::item:selected, QTableView::item:selected, QTableWidget::item:selected,
 QListView::item:selected, QTreeView::item:selected {
-    background-color: #4a4f55;
+    background-color: #000000;
     color: #f2f2f2;
 }
 QHeaderView::section:hover {
-    background-color: #3d4248;
+    background-color: #000000;
 }
 QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox, QComboBox {
-    selection-background-color: #4a4f55;
+    selection-background-color: #000000;
 }
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QAbstractSpinBox:focus, QComboBox:focus {
-    border: 1px solid #6b727a;
+    border: 1px solid #3a3a3a;
 }
 QProgressBar::chunk {
-    background-color: #5a636e;
+    background-color: #000000;
 }
 QMenu::item:selected, QMenuBar::item:selected {
-    background-color: #4a4f55;
+    background-color: #000000;
 }
 QTabBar::tab:selected {
-    background-color: #3d4248;
-    border-color: #555b63;
+    background-color: #000000;
+    border-color: #2a2a2a;
 }
 QTabBar::tab:!selected:hover {
-    background-color: #353a40;
+    background-color: #0d0d0d;
 }
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {
-    background-color: #4a4f55;
-    border: 1px solid #6b727a;
+    background-color: #000000;
+    border: 1px solid #3a3a3a;
 }
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-    background-color: #4a4f55;
+    background-color: #000000;
     min-height: 24px;
     min-width: 24px;
     border-radius: 4px;
 }
 QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
-    background-color: #5a636e;
+    background-color: #1a1a1a;
 }
 QSlider::groove:horizontal {
-    background-color: #353a40;
+    background-color: #1a1a1a;
 }
 QSlider::handle:horizontal {
-    background-color: #6b727a;
+    background-color: #000000;
+    border: 1px solid #3a3a3a;
 }
 QSlider::handle:horizontal:hover {
-    background-color: #8a9299;
+    background-color: #1a1a1a;
 }
 QToolButton:hover {
-    background-color: #3d4248;
+    background-color: #000000;
 }
 QToolButton:pressed {
-    background-color: #353a40;
+    background-color: #0d0d0d;
 }
 QComboBox QAbstractItemView {
-    selection-background-color: #4a4f55;
+    selection-background-color: #000000;
     selection-color: #f2f2f2;
 }
 """
