@@ -1,18 +1,20 @@
 # Builds binaries in the cloud — no Python or Inno Setup on your PC.
 #
-# Get the Windows INSTALLER:
-#   1. Push this repo to GitHub (create a free account + new repository if needed).
-#   2. Open the repo on GitHub → tab "Actions".
-#   3. Click "Build Release" → "Run workflow" → Run workflow.
-#   4. When it finishes (green), open that run → scroll to "Artifacts" →
-#      download "ZubCut-Windows-Installer" (zip). Unzip once → double-click the .exe setup.
+# Triggers:
+#   - Push to `main` → full matrix (Windows + macOS + Linux) as Actions artifacts (stable channel).
+#   - Tag `v*` → same builds, plus the final job publishes a GitHub Release with those files.
+#   - `workflow_dispatch` → manual run (pick release_channel if needed).
 #
-# Creating a version tag (e.g. v1.1.0) also runs this workflow and attaches files to a GitHub Release.
+# Rolling Windows installer for stable is also built on every `main` push by
+# "Build Windows installer only" (stable-latest). This workflow adds macOS/Linux
+# and a second Windows artifact set for parity testing.
 
 name: Build Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -26,6 +28,10 @@ on:
           - auto
           - stable
           - experimental
+
+concurrency:
+  group: build-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-windows:
