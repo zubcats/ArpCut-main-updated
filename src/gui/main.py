@@ -1026,7 +1026,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _updateLagSwitchButtonState(self):
         """Update lag switch button based on whether it's active for selected device."""
         if self.lag_active and self.lag_device_mac:
-            self.btnLagSwitch.setText('■ LAGGING')
+            key = getattr(self, '_shortcut_label_lag', 'M')
+            self.btnLagSwitch.setText(f'■ LAGGING (Press {key} to turn off)')
             self.btnLagSwitch.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         else:
             self.btnLagSwitch.setText('Lag Switch')
@@ -1375,6 +1376,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         nk = k_kill.toString(QKeySequence.NativeText)
         nl = k_lag.toString(QKeySequence.NativeText)
         np = k_dupe.toString(QKeySequence.NativeText)
+        self._shortcut_label_kill = nk or 'L'
+        self._shortcut_label_lag = nl or 'M'
+        self._shortcut_label_dupe = np or 'P'
         self._btn_kill_tooltip_static = (
             'Kill toggle — Turn blocking on or off for the selected device. '
             'Shortcut: %s (only while the main ZubCut window is the active window).' % nk
@@ -1404,6 +1408,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 'Run a single lag burst for the device selected in the main list, then stop completely. '
                 'Shortcut: %s when this window is active (not in ms fields).' % np
             )
+        self._updateKillButtonState()
+        self._updateLagSwitchButtonState()
+        self._updateDupeButtonState()
 
     def _shortcut_main_l(self):
         """Kill toggle when any app window is foreground, using configured shortcut."""
@@ -1739,7 +1746,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _updateDupeButtonState(self):
         if self.dupe_active and self.dupe_device_mac:
-            self.btnDupe.setText('■ DUPE')
+            key = getattr(self, '_shortcut_label_dupe', 'P')
+            self.btnDupe.setText(f'■ DUPE (Press {key} to turn off)')
             self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         else:
             self.btnDupe.setText('Dupe')
@@ -1931,7 +1939,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         mac = device['mac']
         base_tip = getattr(self, '_btn_kill_tooltip_static', None)
         if self.lag_active and self.lag_device_mac == mac:
-            self.btnKill.setText('■ LAGGING')
+            lag_key = getattr(self, '_shortcut_label_lag', 'M')
+            self.btnKill.setText(f'■ LAGGING (Press {lag_key} to turn off)')
             self.btnKill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
             if base_tip:
                 self.btnKill.setToolTip(
@@ -1940,7 +1949,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 )
             return
         if self.dupe_active and self.dupe_device_mac == mac:
-            self.btnKill.setText('■ DUPE')
+            dupe_key = getattr(self, '_shortcut_label_dupe', 'P')
+            self.btnKill.setText(f'■ DUPE (Press {dupe_key} to turn off)')
             self.btnKill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
             if base_tip:
                 self.btnKill.setToolTip(
@@ -1952,7 +1962,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnKill.setToolTip(base_tip)
         is_active = self._kill_ui_shows_on(mac)
         if is_active:
-            self.btnKill.setText('■ KILL: ON')
+            kill_key = getattr(self, '_shortcut_label_kill', 'L')
+            self.btnKill.setText(f'■ KILL: ON (Press {kill_key} to turn off)')
             self.btnKill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         else:
             self.btnKill.setText('Kill: OFF')
