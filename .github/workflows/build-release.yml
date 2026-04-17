@@ -29,6 +29,37 @@ jobs:
           cp .github/ci-blessed/constants.py src/constants.py
           cp .github/ci-blessed/build.py build.py
 
+      - name: Apply update-channel constants for this branch
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          UPDATE_URL_STABLE: ${{ vars.UPDATE_DOWNLOAD_URL_STABLE }}
+          UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          p = Path("src/constants.py")
+          txt = p.read_text(encoding="utf-8")
+
+          ref_name = os.getenv("REF_NAME", "").lower()
+          ref_type = os.getenv("REF_TYPE", "").lower()
+          channel = "stable" if (ref_name == "main" or ref_type == "tag") else "experimental"
+          stable_url = os.getenv("UPDATE_URL_STABLE", "")
+          experimental_url = os.getenv("UPDATE_URL_EXPERIMENTAL", "")
+
+          txt = re.sub(r"^UPDATE_CHANNEL\s*=.*$", f"UPDATE_CHANNEL = '{channel}'", txt, flags=re.M)
+          if stable_url:
+              txt = re.sub(r"^UPDATE_DOWNLOAD_URL_STABLE\s*=.*$", f"UPDATE_DOWNLOAD_URL_STABLE = {stable_url!r}", txt, flags=re.M)
+          if experimental_url:
+              txt = re.sub(r"^UPDATE_DOWNLOAD_URL_EXPERIMENTAL\s*=.*$", f"UPDATE_DOWNLOAD_URL_EXPERIMENTAL = {experimental_url!r}", txt, flags=re.M)
+          p.write_text(txt, encoding="utf-8")
+          print(f"Applied UPDATE_CHANNEL={channel} for ref={os.getenv('REF_NAME')}")
+          PY
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -59,17 +90,25 @@ jobs:
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after Inno install" }
           & $iscc "installer\ZubCut.iss"
 
+      - name: Create channel installer alias
+        shell: pwsh
+        run: |
+          $channel = if ("${{ github.ref_name }}" -eq "main" -or "${{ github.ref_type }}" -eq "tag") { "stable" } else { "experimental" }
+          $latest = Get-ChildItem -Path "output" -Filter "ZubCut-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $latest) { throw "Installer not found in output/" }
+          Copy-Item $latest.FullName "output/ZubCut-Setup-$channel.exe" -Force
+
       - name: Upload portable EXE
         uses: actions/upload-artifact@v4
         with:
-          name: ZubCut-Windows-Portable
+          name: ZubCut-Windows-Portable-${{ (github.ref_name == 'main' || github.ref_type == 'tag') && 'Stable' || 'Experimental' }}
           path: dist/ZubCut.exe
 
       - name: Upload installer EXE
         uses: actions/upload-artifact@v4
         with:
-          name: ZubCut-Windows-Installer
-          path: output/ZubCut-Setup-*.exe
+          name: ZubCut-Windows-Installer-${{ (github.ref_name == 'main' || github.ref_type == 'tag') && 'Stable' || 'Experimental' }}
+          path: output/ZubCut-Setup-${{ (github.ref_name == 'main' || github.ref_type == 'tag') && 'stable' || 'experimental' }}.exe
 
   build-macos:
     runs-on: macos-latest
@@ -81,6 +120,37 @@ jobs:
         run: |
           cp .github/ci-blessed/constants.py src/constants.py
           cp .github/ci-blessed/build.py build.py
+
+      - name: Apply update-channel constants for this branch
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          UPDATE_URL_STABLE: ${{ vars.UPDATE_DOWNLOAD_URL_STABLE }}
+          UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          p = Path("src/constants.py")
+          txt = p.read_text(encoding="utf-8")
+
+          ref_name = os.getenv("REF_NAME", "").lower()
+          ref_type = os.getenv("REF_TYPE", "").lower()
+          channel = "stable" if (ref_name == "main" or ref_type == "tag") else "experimental"
+          stable_url = os.getenv("UPDATE_URL_STABLE", "")
+          experimental_url = os.getenv("UPDATE_URL_EXPERIMENTAL", "")
+
+          txt = re.sub(r"^UPDATE_CHANNEL\s*=.*$", f"UPDATE_CHANNEL = '{channel}'", txt, flags=re.M)
+          if stable_url:
+              txt = re.sub(r"^UPDATE_DOWNLOAD_URL_STABLE\s*=.*$", f"UPDATE_DOWNLOAD_URL_STABLE = {stable_url!r}", txt, flags=re.M)
+          if experimental_url:
+              txt = re.sub(r"^UPDATE_DOWNLOAD_URL_EXPERIMENTAL\s*=.*$", f"UPDATE_DOWNLOAD_URL_EXPERIMENTAL = {experimental_url!r}", txt, flags=re.M)
+          p.write_text(txt, encoding="utf-8")
+          print(f"Applied UPDATE_CHANNEL={channel} for ref={os.getenv('REF_NAME')}")
+          PY
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -120,6 +190,37 @@ jobs:
         run: |
           cp .github/ci-blessed/constants.py src/constants.py
           cp .github/ci-blessed/build.py build.py
+
+      - name: Apply update-channel constants for this branch
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          UPDATE_URL_STABLE: ${{ vars.UPDATE_DOWNLOAD_URL_STABLE }}
+          UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          p = Path("src/constants.py")
+          txt = p.read_text(encoding="utf-8")
+
+          ref_name = os.getenv("REF_NAME", "").lower()
+          ref_type = os.getenv("REF_TYPE", "").lower()
+          channel = "stable" if (ref_name == "main" or ref_type == "tag") else "experimental"
+          stable_url = os.getenv("UPDATE_URL_STABLE", "")
+          experimental_url = os.getenv("UPDATE_URL_EXPERIMENTAL", "")
+
+          txt = re.sub(r"^UPDATE_CHANNEL\s*=.*$", f"UPDATE_CHANNEL = '{channel}'", txt, flags=re.M)
+          if stable_url:
+              txt = re.sub(r"^UPDATE_DOWNLOAD_URL_STABLE\s*=.*$", f"UPDATE_DOWNLOAD_URL_STABLE = {stable_url!r}", txt, flags=re.M)
+          if experimental_url:
+              txt = re.sub(r"^UPDATE_DOWNLOAD_URL_EXPERIMENTAL\s*=.*$", f"UPDATE_DOWNLOAD_URL_EXPERIMENTAL = {experimental_url!r}", txt, flags=re.M)
+          p.write_text(txt, encoding="utf-8")
+          print(f"Applied UPDATE_CHANNEL={channel} for ref={os.getenv('REF_NAME')}")
+          PY
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -170,8 +271,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/ZubCut-Windows-Installer/ZubCut-Setup-*.exe
-            artifacts/ZubCut-Windows-Portable/ZubCut.exe
+            artifacts/ZubCut-Windows-Installer-Stable/ZubCut-Setup-stable.exe
+            artifacts/ZubCut-Windows-Portable-Stable/ZubCut.exe
             artifacts/ZubCut-macOS/ZubCut-macOS.zip
             artifacts/ZubCut-Linux/ZubCut
           draft: false

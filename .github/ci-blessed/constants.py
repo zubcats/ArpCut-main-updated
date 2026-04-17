@@ -8,6 +8,13 @@ APP_EXE_NAME = 'ZubCut.exe'
 APP_DISPLAY_NAME = 'ZubCut'
 AUTOSTART_REG_VALUE = 'ZubCut'
 APP_USER_DATA_DIR = 'ZubCut'
+# Update channel / feed settings.
+# Set channel to "stable" for normal users, "experimental" for tester builds.
+UPDATE_CHANNEL = 'experimental'
+# Direct download URL for the latest installer package per channel (.exe).
+# Point these at hosted assets (e.g. release artifacts or CDN links).
+UPDATE_DOWNLOAD_URL_STABLE = 'https://github.com/zubcats/ArpCut-main-updated/releases/latest/download/ZubCut-Setup-stable.exe'
+UPDATE_DOWNLOAD_URL_EXPERIMENTAL = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/experimental-latest/ZubCut-Setup-experimental.exe'
 
 # Cross-platform settings paths
 if sys.platform.startswith('win'):
