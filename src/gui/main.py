@@ -57,6 +57,8 @@ _SETTINGS_BTN_TIP = 'Settings - Configure scan options and network interface'
 _SETTINGS_BTN_UPDATE_STYLE = (
     'QPushButton { background-color: #1e8449; color: white; font-weight: bold; }'
 )
+# HEAD the channel only while the user is actually in the app; interval when the timer runs.
+_UPDATE_POLL_INTERVAL_MS = 15 * 60 * 1000
 
 
 class _UpdateStatusPollThread(QThread):
@@ -1411,13 +1413,45 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self._should_poll_update_availability():
             return
         self._update_poll_timer = QTimer(self)
-        self._update_poll_timer.setInterval(120000)
+        self._update_poll_timer.setInterval(_UPDATE_POLL_INTERVAL_MS)
         self._update_poll_timer.timeout.connect(self._poll_remote_update_status)
-        self._update_poll_timer.start()
-        QTimer.singleShot(8000, self._poll_remote_update_status)
+        app = QApplication.instance()
+        if app is not None:
+            app.applicationStateChanged.connect(self._on_app_state_for_update_poll)
+        self._sync_update_poll_timer_for_app_state()
+        QTimer.singleShot(8000, self._poll_remote_update_status_if_active)
+
+    def _should_run_update_poll_now(self):
+        """Only hit the network while ZubCut is the active (foreground) application."""
+        app = QApplication.instance()
+        if app is None:
+            return False
+        return app.applicationState() == Qt.ApplicationActive
+
+    def _sync_update_poll_timer_for_app_state(self):
+        t = getattr(self, '_update_poll_timer', None)
+        if t is None or not self._should_poll_update_availability():
+            return
+        if self._should_run_update_poll_now():
+            if not t.isActive():
+                t.start()
+        else:
+            t.stop()
+
+    def _on_app_state_for_update_poll(self, state):
+        self._sync_update_poll_timer_for_app_state()
+        if state == Qt.ApplicationActive and self._should_poll_update_availability():
+            QTimer.singleShot(400, self._poll_remote_update_status_if_active)
+
+    def _poll_remote_update_status_if_active(self):
+        if not self._should_run_update_poll_now():
+            return
+        self._poll_remote_update_status()
 
     def _poll_remote_update_status(self):
         if not self._should_poll_update_availability():
+            return
+        if not self._should_run_update_poll_now():
             return
         if getattr(self, '_update_status_poll_thread', None) and self._update_status_poll_thread.isRunning():
             return
