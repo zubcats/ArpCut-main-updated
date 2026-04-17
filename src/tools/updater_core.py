@@ -4,7 +4,6 @@ Uses Last-Modified on the channel installer URL vs APP_BUILD_TIME_ISO from CI.
 """
 
 import os
-import shutil
 import subprocess
 import tempfile
 import time
@@ -91,44 +90,10 @@ def update_is_available():
     return available
 
 
-def spawn_installer_update(url):
-    """
-    Download the installer from url, verify it looks like an EXE, spawn Inno silent install.
-    Caller should exit the app immediately after this returns.
-    Raises RuntimeError on failure.
-    """
-    if not url:
-        raise RuntimeError('Update URL is not configured.')
-    if not (url.lower().startswith('http://') or url.lower().startswith('https://')):
-        raise RuntimeError('Update URL must start with http:// or https://')
+_READ_CHUNK = 256 * 1024
 
-    url_path = urlparse(url).path or ''
-    fname = os.path.basename(url_path) or f'{APP_BUNDLE_NAME}-Setup-latest.exe'
-    if not fname.lower().endswith('.exe'):
-        fname = f'{APP_BUNDLE_NAME}-Setup-latest.exe'
-    stem, ext = os.path.splitext(fname)
-    tmp_fname = f'{stem}-{int(time.time())}{ext or ".exe"}'
-    tmp_path = os.path.join(tempfile.gettempdir(), tmp_fname)
-    if os.path.exists(tmp_path):
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
 
-    parsed = urlparse(url)
-    query_items = parse_qsl(parsed.query, keep_blank_values=True)
-    query_items.append(('cb', str(int(time.time()))))
-    download_url = urlunparse(parsed._replace(query=urlencode(query_items)))
-    req = urllib.request.Request(
-        download_url,
-        headers={
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-            'User-Agent': f'{APP_BUNDLE_NAME}-updater',
-        },
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp, open(tmp_path, 'wb') as fp:
-        shutil.copyfileobj(resp, fp)
+def _validate_installer_exe(tmp_path):
     if not os.path.exists(tmp_path):
         raise RuntimeError('Downloaded file missing.')
     if os.path.getsize(tmp_path) < 1024:
@@ -137,14 +102,108 @@ def spawn_installer_update(url):
         if fp.read(2) != b'MZ':
             raise RuntimeError('Downloaded file is not a Windows installer executable.')
 
+
+def _temp_installer_path(url):
+    url_path = urlparse(url).path or ''
+    fname = os.path.basename(url_path) or f'{APP_BUNDLE_NAME}-Setup-latest.exe'
+    if not fname.lower().endswith('.exe'):
+        fname = f'{APP_BUNDLE_NAME}-Setup-latest.exe'
+    stem, ext = os.path.splitext(fname)
+    tmp_fname = f'{stem}-{int(time.time())}{ext or ".exe"}'
+    return os.path.join(tempfile.gettempdir(), tmp_fname)
+
+
+def _download_request_url(url):
+    parsed = urlparse(url)
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    query_items.append(('cb', str(int(time.time()))))
+    return urlunparse(parsed._replace(query=urlencode(query_items)))
+
+
+def download_installer(
+    url,
+    progress_callback=None,
+    should_cancel=None,
+):
+    """
+    Download the installer to a temp path. Optional progress_callback(received, total)
+    where total is None if Content-Length was not sent. should_cancel() returns True to abort.
+    Raises RuntimeError on failure or cancel.
+    """
+    if not url:
+        raise RuntimeError('Update URL is not configured.')
+    if not (url.lower().startswith('http://') or url.lower().startswith('https://')):
+        raise RuntimeError('Update URL must start with http:// or https://')
+
+    tmp_path = _temp_installer_path(url)
+    if os.path.exists(tmp_path):
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+    download_url = _download_request_url(url)
+    req = urllib.request.Request(
+        download_url,
+        headers={
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'User-Agent': f'{APP_BUNDLE_NAME}-updater',
+        },
+    )
+    total = None
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        cl = resp.headers.get('Content-Length')
+        if cl:
+            try:
+                total = int(cl)
+            except ValueError:
+                total = None
+        received = 0
+        cancelled = False
+        with open(tmp_path, 'wb') as fp:
+            while True:
+                if should_cancel and should_cancel():
+                    cancelled = True
+                    break
+                chunk = resp.read(_READ_CHUNK)
+                if not chunk:
+                    break
+                fp.write(chunk)
+                received += len(chunk)
+                if progress_callback:
+                    progress_callback(received, total)
+
+    if cancelled:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise RuntimeError('Download cancelled.')
+
+    _validate_installer_exe(tmp_path)
+    return tmp_path
+
+
+def launch_installer(tmp_path, *, no_ui=False):
+    """
+    Run the downloaded Inno Setup. no_ui=True uses /VERYSILENT (nothing on screen).
+    Default uses /SILENT so a small setup progress window is visible after the app exits.
+    """
     install_log = os.path.join(
         tempfile.gettempdir(), f'{APP_BUNDLE_NAME.lower()}-update-install.log'
     )
-    installer_args = [
-        tmp_path,
-        '/VERYSILENT',
-        '/SUPPRESSMSGBOXES',
-        '/NORESTART',
-        f'/LOG={install_log}',
-    ]
-    subprocess.Popen(installer_args, close_fds=True)
+    if no_ui:
+        flags = ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', f'/LOG={install_log}']
+    else:
+        flags = ['/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', f'/LOG={install_log}']
+    subprocess.Popen([tmp_path] + flags, close_fds=True)
+
+
+def spawn_installer_update(url):
+    """
+    Download without progress UI, then start Inno with a visible setup progress window.
+    Caller should exit the app immediately after this returns.
+    """
+    path = download_installer(url)
+    launch_installer(path, no_ui=False)

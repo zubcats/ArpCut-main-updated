@@ -1346,7 +1346,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not sys.platform.startswith('win'):
             return
         try:
-            from tools.updater_core import selected_update_url, spawn_installer_update, update_is_available
+            from tools.updater_core import launch_installer, selected_update_url, update_is_available
+            from tools.updater_progress import download_update_with_progress_dialog
         except Exception:
             return
         if not selected_update_url():
@@ -1354,12 +1355,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not update_is_available():
             return
         try:
-            self.log('A newer build is available. Downloading and installing update...', 'orange')
+            self.log('A newer build is available. Downloading update…', 'orange')
             QApplication.processEvents()
-            spawn_installer_update(selected_update_url())
+            path = download_update_with_progress_dialog(self, selected_update_url())
+            if not path:
+                self.log('Update download cancelled.', 'orange')
+                return
+            launch_installer(path)
             self.quit_all()
         except Exception as e:
             self.log(f'Automatic update failed: {e}', 'red')
+            MsgType.ERROR(
+                self,
+                'Update Failed',
+                f'Could not download or start the installer.\n{e}',
+                Buttons.OK,
+            )
     
     def _main_window_is_foreground(self):
         aw = QApplication.activeWindow()

@@ -16,7 +16,8 @@ from ui.ui_settings import Ui_MainWindow
 from networking.nicknames import Nicknames
 
 from tools.keybinds import keyseq_from_setting
-from tools.updater_core import get_update_status, selected_update_url, spawn_installer_update
+from tools.updater_core import get_update_status, launch_installer, selected_update_url
+from tools.updater_progress import download_update_with_progress_dialog
 
 from constants import *
 
@@ -278,7 +279,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'Install Latest Build',
             (
                 f'This will install the latest {self._channel_label()} build.\n'
-                'The app will download the package, close, and run the installer.\n'
+                'You will see download progress, then a setup window while it installs, '
+                'and ZubCut will start again when finished.\n'
                 'Continue?'
             ),
             Buttons.YES | Buttons.NO,
@@ -287,12 +289,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         self.btnUpdate.setEnabled(False)
-        self.btnUpdate.setText('Downloading...')
+        self.btnUpdate.setText('Downloading…')
         QApplication.processEvents()
         try:
-            self.btnUpdate.setText('Launching installer...')
-            QApplication.processEvents()
-            spawn_installer_update(url)
+            path = download_update_with_progress_dialog(self, url)
+            if path is None:
+                return
+            launch_installer(path)
             self.elmocut.quit_all()
         except Exception as e:
             MsgType.ERROR(
