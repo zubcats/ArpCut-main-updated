@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
 
 from tools.utils import goto
+from tools.crash_feedback import install_crash_feedback
 from tools.utils_gui import npcap_exists, duplicate_zubcut, repair_settings, migrate_settings_file
 from tools.branding import load_application_qicon, qicon_is_empty
 from tools.qtools import msg_box, Buttons, MsgIcon
@@ -27,6 +28,7 @@ def _load_window_icon():
 if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(argv)
+    install_crash_feedback()
     icon = _load_window_icon()
     app.setWindowIcon(icon)
 
