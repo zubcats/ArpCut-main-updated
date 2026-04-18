@@ -168,6 +168,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         root.addWidget(CustomTitleBar(self, 'Lag Switch', lag_icon, maximizable=False))
 
         body = QWidget(self)
+        body.setObjectName('zubcutDialogBody')
         layout = QVBoxLayout(body)
         layout.setContentsMargins(12, 12, 12, 12)
 
@@ -204,6 +205,8 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         dir_layout.addWidget(self.dirBoth)
         dir_layout.addWidget(self.dirIncoming)
         dir_layout.addWidget(self.dirOutgoing)
+        for _cb in (self.dirBoth, self.dirIncoming, self.dirOutgoing):
+            _cb.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         layout.addWidget(self.dir_group)
 
         # Timing section
@@ -430,6 +433,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         root.addWidget(CustomTitleBar(self, 'Dupe', dupe_icon, maximizable=False))
 
         body = QWidget(self)
+        body.setObjectName('zubcutDialogBody')
         layout = QVBoxLayout(body)
         layout.setContentsMargins(12, 12, 12, 12)
 
@@ -468,6 +472,8 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         dir_layout.addWidget(self.dirBoth)
         dir_layout.addWidget(self.dirIncoming)
         dir_layout.addWidget(self.dirOutgoing)
+        for _cb in (self.dirBoth, self.dirIncoming, self.dirOutgoing):
+            _cb.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         layout.addWidget(self.dir_group)
 
         self.timing_group = QGroupBox('Duration', body)

@@ -100,6 +100,17 @@ QSlider::handle:horizontal {
 QSlider::handle:horizontal:hover {
     background-color: #1a1a1a;
 }
+/* qdark paints the filled groove segment blue; keep it on the same charcoal as the window. */
+QSlider::sub-page:horizontal {
+    background-color: #141414;
+    border-radius: 2px;
+    height: 4px;
+}
+QSlider::add-page:horizontal {
+    background-color: #1a1a1a;
+    border-radius: 2px;
+    height: 4px;
+}
 QToolButton:hover {
     background-color: #000000;
 }
@@ -304,6 +315,14 @@ def _auxiliary_windows_qss() -> str:
         tbl_alt = '#1e2228'
         sel_bg, sel_fg = '#324e7a', '#ffffff'
     return f"""
+QDialog {{
+    background-color: {panel};
+    font-weight: normal;
+}}
+/* Lag/Dupe content shell (must not use QDialog > QWidget — QFrame title bar is a QWidget). */
+QDialog QWidget#zubcutDialogBody {{
+    background-color: transparent;
+}}
 QMainWindow#zubcutAuxiliaryWindow QPushButton,
 QDialog QPushButton {{
     font-weight: normal;
@@ -353,17 +372,55 @@ QDialog QGroupBox::title {{
     left: 8px;
     padding: 0 4px;
 }}
+/* Designer nests layouts in plain QWidget; qdark gives them a blue-grey fill — blend into group. */
+QMainWindow#zubcutAuxiliaryWindow QGroupBox QWidget,
+QDialog QGroupBox QWidget {{
+    background-color: transparent;
+}}
+/* QFormLayout buddy labels + rows: qdark often paints these blue — match group chrome. */
+QDialog QGroupBox QLabel,
+QDialog QGroupBox QCheckBox {{
+    font-weight: normal;
+    color: {tx};
+    background-color: transparent;
+}}
 QMainWindow#zubcutAuxiliaryWindow QLabel,
 QDialog QLabel {{
     color: {tx};
+    background-color: transparent;
 }}
 QMainWindow#zubcutAuxiliaryWindow QCheckBox,
 QDialog QCheckBox {{
     font-weight: normal;
     color: {tx};
+    background-color: transparent;
 }}
-QMainWindow#zubcutAuxiliaryWindow QKeySequenceEdit {{
+QMainWindow#zubcutAuxiliaryWindow QSlider::groove:horizontal,
+QDialog QSlider::groove:horizontal {{
+    background-color: #1a1a1a;
+    height: 4px;
+    border-radius: 2px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QSlider::sub-page:horizontal,
+QDialog QSlider::sub-page:horizontal {{
+    background-color: {panel};
+    border-radius: 2px;
+    height: 4px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QSlider::add-page:horizontal,
+QDialog QSlider::add-page:horizontal {{
+    background-color: #1a1a1a;
+    border-radius: 2px;
+    height: 4px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QKeySequenceEdit,
+QDialog QKeySequenceEdit {{
     font-weight: normal;
+    background-color: {bg};
+    color: {tx};
+    border: 1px solid {bd};
+    border-radius: 3px;
+    padding: 4px 6px;
 }}
 QMainWindow#zubcutAuxiliaryWindow QComboBox,
 QMainWindow#zubcutAuxiliaryWindow QSpinBox,

@@ -6,7 +6,7 @@ import sys
 
 from tools.utils_gui import import_settings, export_settings, get_settings, \
                       is_admin, add_to_startup, remove_from_startup, set_settings, \
-                      zubcut_dark_stylesheet, application_theme_stylesheet, \
+                      zubcut_dark_stylesheet, \
                       sync_translucent_chrome, register_window_surface_effects
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
 from tools.qtools import MsgType, Buttons
@@ -244,13 +244,14 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.elmocut._repolish_chrome_pushbuttons()
         self.elmocut.setStyleSheet('')
         self.elmocut.about_window.setStyleSheet('')
-        _theme = application_theme_stylesheet()
+        # Lag/Dupe must inherit QApplication styles only. A full app sheet copied onto QDialog
+        # breaks QDialog-scoped rules from zubcut_dark_stylesheet() (qdark blue panels return).
         for _dlg in (
             getattr(self.elmocut, 'lag_switch_dialog', None),
             getattr(self.elmocut, 'dupe_switch_dialog', None),
         ):
             if _dlg is not None:
-                _dlg.setStyleSheet(_theme)
+                _dlg.setStyleSheet('')
         _w = [
             self.elmocut,
             self.elmocut.about_window,
