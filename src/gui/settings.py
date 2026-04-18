@@ -33,6 +33,12 @@ from tools.updater_debug import (
 )
 
 from constants import *
+import constants as _zcut_constants
+
+_UPDATE_BTN_QSS_FALLBACK = (
+    'QPushButton { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+    'border: 1px solid #2d5738; border-radius: 4px; }'
+)
 
 
 def _channel_kind_label(channel: str) -> str:
@@ -412,7 +418,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _apply_update_button_style(self):
         if self._update_available:
-            self.btnUpdate.setStyleSheet(UPDATE_AVAILABLE_PUSHBUTTON_QSS)
+            self.btnUpdate.setStyleSheet(
+                getattr(_zcut_constants, 'UPDATE_AVAILABLE_PUSHBUTTON_QSS', _UPDATE_BTN_QSS_FALLBACK)
+            )
         else:
             self.btnUpdate.setStyleSheet('')
     

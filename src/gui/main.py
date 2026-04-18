@@ -78,9 +78,20 @@ class _UpdateStatusPollThread(QThread):
             avail, label = False, ''
         self.done.emit(avail, label)
 
+import constants as _zcut_constants
 from constants import *
 
-_SETTINGS_BTN_UPDATE_STYLE = UPDATE_AVAILABLE_PUSHBUTTON_QSS
+# Frozen/CI builds may ship an older constants module; keep defaults in sync with src/constants.py.
+_SETTINGS_BTN_UPDATE_STYLE = getattr(
+    _zcut_constants,
+    'UPDATE_AVAILABLE_PUSHBUTTON_QSS',
+    (
+        'QPushButton { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+        'border: 1px solid #2d5738; border-radius: 4px; }'
+    ),
+)
+ADMIN_DEVICE_TABLE_ROW_BG = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
+ADMIN_DEVICE_TABLE_ROW_FG = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_FG', '#eef1f0')
 
 # Killed device row: dark red matched to experimental admin row darkness (see ADMIN_DEVICE_TABLE_ROW_*).
 _DEVICE_ROW_KILL_BG = '#3d1a1a'

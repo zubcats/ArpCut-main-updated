@@ -14,6 +14,7 @@ from PyQt5.QtGui import QPainterPath, QRegion
 from PyQt5.QtWidgets import QApplication
 
 from tools.utils import terminal
+import constants as _zcut_constants
 from constants import *
 
 # Backward compatibility for older packaged constants modules.
@@ -255,6 +256,22 @@ QTableWidget#tableScan QHeaderView::section:pressed {
 """
 
 
+def _table_scan_focus_frame_qss() -> str:
+    """Swap qdarkstyle’s blue QAbstractItemView focus border for the admin row grey-green."""
+    if not _experimental_charcoal_ui():
+        return ''
+    edge = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
+    return f"""
+QTableWidget#tableScan {{
+    border: 2px solid #000000;
+}}
+QTableWidget#tableScan:focus {{
+    border: 2px solid {edge};
+    outline: none;
+}}
+"""
+
+
 def zubcut_dark_stylesheet():
     base = load_stylesheet() + '\n' + translucent_main_chrome_qss()
     if _experimental_charcoal_ui():
@@ -262,6 +279,7 @@ def zubcut_dark_stylesheet():
     base = base + '\n' + _main_chrome_action_buttons_qss()
     base = base + '\n' + _chrome_status_strip_and_tabs_qss()
     base = base + '\n' + _table_scan_header_qss()
+    base = base + '\n' + _table_scan_focus_frame_qss()
     return base
 
 
