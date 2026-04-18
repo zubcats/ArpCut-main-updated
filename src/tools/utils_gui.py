@@ -134,15 +134,22 @@ QTableWidget#tableScan::item:focus {
 
 def _main_chrome_action_buttons_qss() -> str:
     """
-    Top toolbar + bottom row push buttons: same fill / border / hover / pressed as the
-    custom title bar (frameless_chrome.CustomTitleBar) for experimental vs stable builds.
+    Top toolbar + bottom row push buttons: same idle / hover / pressed pattern as
+    frameless_chrome.CustomTitleBar QToolButton (transparent rest, subtle fill on hover).
     """
     if _experimental_charcoal_ui():
-        bg, bd, bh, bp = '#2b2b2b', '#3d3d3d', '#383838', '#323232'
-        tx, th, tp = '#e8eaed', '#d0d0d0', '#9a9a9a'
+        # Match CustomTitleBar experimental: transparent + border transparent at rest;
+        # hover _btn_h + border, text _hi; pressed _btn_p + _muted.
+        _btn_h, _btn_p = '#383838', '#323232'
+        _muted, _hi = '#9a9a9a', '#d0d0d0'
+        _fill_idle = '#2b2b2b'
+        _bd_idle = '#3d3d3d'
     else:
-        bg, bd, bh, bp = '#2d323c', '#3d4a5c', '#3a3f49', '#353942'
-        tx, th, tp = '#e8eaed', '#aeb4bf', '#8b909a'
+        _btn_h, _btn_p = '#3a3f49', '#353942'
+        _muted, _hi = '#8b909a', '#aeb4bf'
+        _fill_idle = '#2d323c'
+        _bd_idle = '#3d4a5c'
+    tx = '#e8eaed'
     # Full type + object name beats qdarkstyle’s generic QPushButton rules on Windows.
     _ids = (
         '#btnScanEasy',
@@ -158,25 +165,25 @@ def _main_chrome_action_buttons_qss() -> str:
     sel = ', '.join(f'QPushButton{i}' for i in _ids)
     return f"""
 {sel} {{
-    background-color: {bg};
-    color: {tx};
-    border: 1px solid {bd};
+    background-color: transparent;
+    border: 1px solid transparent;
     border-radius: 4px;
+    color: {tx};
 }}
 {sel}:hover {{
-    background-color: {bh};
-    border: 1px solid {bh};
-    color: {th};
+    background-color: {_btn_h};
+    border: 1px solid {_btn_h};
+    color: {_hi};
 }}
 {sel}:pressed {{
-    background-color: {bp};
-    border: 1px solid {bp};
-    color: {tp};
+    background-color: {_btn_p};
+    border: 1px solid {_btn_p};
+    color: {_muted};
 }}
 {sel}:disabled {{
-    background-color: {bg};
-    border: 1px solid {bd};
-    color: {tp};
+    background-color: {_fill_idle};
+    border: 1px solid {_bd_idle};
+    color: {_muted};
 }}
 QPushButton#btnAbout {{
     padding: 8px;
