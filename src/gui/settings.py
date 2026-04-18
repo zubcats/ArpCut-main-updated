@@ -240,6 +240,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet(self.styleSheet())
+        self.elmocut._repolish_chrome_pushbuttons()
         self.elmocut.setStyleSheet('')
         self.elmocut.about_window.setStyleSheet('')
         _theme = application_theme_stylesheet()

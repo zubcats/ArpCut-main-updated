@@ -727,6 +727,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             btn.clicked.connect(btn_func)
             btn.setAutoDefault(False)
             btn.setDefault(False)
+            btn.setAttribute(Qt.WA_StyledBackground, True)
             if btn_icon is not None:
                 btn.setIcon(self.processIcon(btn_icon))
         self.btnAbout.setIcon(self.icon)
@@ -735,6 +736,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.btnKill = QPushButton(self.centralwidget)
         self.btnKill.setObjectName('btnKill')
+        self.btnKill.setAttribute(Qt.WA_StyledBackground, True)
         self.btnKill.setAutoDefault(False)
         self.btnKill.setDefault(False)
         self.btnKill.setMinimumHeight(88)
@@ -754,8 +756,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Use pressed instead of clicked so fast double-clicks count as two toggles.
         self.btnKill.pressed.connect(lambda: self.toggleKill('mouse_pressed'))
 
-        self.btnLagSwitch = QPushButton('Lag Switch', self)
+        self.btnLagSwitch = QPushButton('Lag Switch', self.centralwidget)
         self.btnLagSwitch.setObjectName('btnLagSwitch')
+        self.btnLagSwitch.setAttribute(Qt.WA_StyledBackground, True)
         self.btnLagSwitch.setAutoDefault(False)
         self.btnLagSwitch.setDefault(False)
         self.btnLagSwitch.setMinimumHeight(88)
@@ -773,8 +776,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.gridLayout.addWidget(self.btnKill, 5, 4, 1, 2)
 
-        self.btnDupe = QPushButton('Dupe', self)
+        self.btnDupe = QPushButton('Dupe', self.centralwidget)
         self.btnDupe.setObjectName('btnDupe')
+        self.btnDupe.setAttribute(Qt.WA_StyledBackground, True)
         self.btnDupe.setAutoDefault(False)
         self.btnDupe.setDefault(False)
         self.btnDupe.setMinimumHeight(88)
@@ -861,6 +865,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Taskbar button (Windows only)
         self.taskbar_button = None
         self.taskbar_progress = None
+
+        # Apply global QSS after every named chrome QPushButton exists (earlier apply skipped
+        # Lag/Kill/Dupe and broke Fusion :hover on icon-only toolbar buttons).
+        apply_app_global_dark_stylesheet()
+        self._repolish_chrome_pushbuttons()
 
         setup_frameless_main_window(self, APP_DISPLAY_NAME, self.icon, maximizable=True)
         _chrome_windows = [
@@ -1084,6 +1093,26 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         label_count = len(TABLE_HEADER_LABELS)
         for i in range(label_count):
             self.tableScan.setColumnWidth(i, self.tableScan.width() // label_count)
+
+    def _repolish_chrome_pushbuttons(self):
+        """Re-resolve app QSS on toolbar + bottom chrome (Fusion hover on icon QPushButtons)."""
+        app = QApplication.instance()
+        if app is None:
+            return
+        st = app.style()
+        for w in (
+            self.btnScanEasy,
+            self.btnScanHard,
+            self.btnKillAll,
+            self.btnUnkillAll,
+            self.btnSettings,
+            self.btnAbout,
+            self.btnKill,
+            self.btnLagSwitch,
+            self.btnDupe,
+        ):
+            st.unpolish(w)
+            st.polish(w)
 
     def closeEvent(self, event):
         """
