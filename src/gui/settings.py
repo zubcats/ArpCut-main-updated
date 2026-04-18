@@ -163,6 +163,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             k_kill,
             k_lag,
             k_dupe,
+            bool(get_settings('show_scan_mac_column')),
+            bool(get_settings('show_scan_vendor_column')),
             ]
         )
 
@@ -260,6 +262,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         ) if d is not None)
         sync_translucent_chrome(_w)
         self.elmocut.refresh_keyboard_shortcuts_from_settings()
+        self.elmocut._sync_scan_table_column_settings()
 
     def currentSettings(self):
         s = import_settings()

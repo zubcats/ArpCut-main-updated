@@ -44,6 +44,8 @@ if sys.platform.startswith('win'):
     ]
 
 TABLE_HEADER_LABELS = ['IP Address', 'MAC Address', 'Vendor', 'Type', 'Nickname']
+SCAN_TABLE_COLUMN_MAC = 1
+SCAN_TABLE_COLUMN_VENDOR = 2
 
 # Experimental scan table: Me / Router rows — muted grey-green / dark sage.
 ADMIN_DEVICE_TABLE_ROW_BG = '#5D706E'
@@ -79,6 +81,7 @@ HKEY_AUTOSTART_PATH = 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run'
 SETTINGS_KEYS = [
     'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'nicknames',
     'key_kill', 'key_lag', 'key_dupe',
+    'show_scan_mac_column', 'show_scan_vendor_column',
 ]
 
-SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P']
+SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', False, False]

@@ -807,6 +807,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.tableScan.setColumnCount(len(TABLE_HEADER_LABELS))
         self.tableScan.verticalHeader().setVisible(False)
         self.tableScan.setHorizontalHeaderLabels(TABLE_HEADER_LABELS)
+        _hh = self.tableScan.horizontalHeader()
+        _hh.setContextMenuPolicy(Qt.CustomContextMenu)
+        _hh.customContextMenuRequested.connect(self._scan_table_header_context_menu)
+        self._sync_scan_table_column_settings()
 
         self._table_hover_row = -1
         _tv = self.tableScan.viewport()
@@ -963,7 +967,50 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         act_probe.triggered.connect(self.probe_ip)
         menu.addAction(act_traffic)
         menu.addAction(act_probe)
+        menu.addSeparator()
+        self._append_scan_column_visibility_actions(menu)
         menu.exec_(self.tableScan.viewport().mapToGlobal(pos))
+
+    def _scan_table_header_context_menu(self, pos):
+        menu = QMenu(self)
+        self._append_scan_column_visibility_actions(menu)
+        menu.exec_(self.tableScan.horizontalHeader().mapToGlobal(pos))
+
+    def _append_scan_column_visibility_actions(self, menu):
+        act_mac = QAction('MAC Address', self)
+        act_mac.setCheckable(True)
+        act_mac.blockSignals(True)
+        act_mac.setChecked(not self.tableScan.isColumnHidden(SCAN_TABLE_COLUMN_MAC))
+        act_mac.blockSignals(False)
+        act_mac.toggled.connect(
+            lambda c, col=SCAN_TABLE_COLUMN_MAC: self._set_scan_table_column_visible(col, c)
+        )
+        menu.addAction(act_mac)
+        act_v = QAction('Vendor', self)
+        act_v.setCheckable(True)
+        act_v.blockSignals(True)
+        act_v.setChecked(not self.tableScan.isColumnHidden(SCAN_TABLE_COLUMN_VENDOR))
+        act_v.blockSignals(False)
+        act_v.toggled.connect(
+            lambda c, col=SCAN_TABLE_COLUMN_VENDOR: self._set_scan_table_column_visible(col, c)
+        )
+        menu.addAction(act_v)
+
+    def _set_scan_table_column_visible(self, col, visible):
+        self.tableScan.setColumnHidden(col, not visible)
+        key = 'show_scan_mac_column' if col == SCAN_TABLE_COLUMN_MAC else 'show_scan_vendor_column'
+        set_settings(key, bool(visible))
+        self.resizeEvent()
+
+    def _sync_scan_table_column_settings(self):
+        try:
+            mac = bool(get_settings('show_scan_mac_column'))
+            ven = bool(get_settings('show_scan_vendor_column'))
+        except Exception:
+            mac, ven = False, False
+        self.tableScan.setColumnHidden(SCAN_TABLE_COLUMN_MAC, not mac)
+        self.tableScan.setColumnHidden(SCAN_TABLE_COLUMN_VENDOR, not ven)
+        self.resizeEvent()
 
     def probe_ip(self):
         from PyQt5.QtWidgets import QInputDialog
