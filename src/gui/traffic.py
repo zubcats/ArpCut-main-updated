@@ -5,7 +5,15 @@ from networking.sniffer import TrafficSniffer
 from networking.forwarder import MitmForwarder
 from tools.pfctl import ensure_pf_enabled, install_anchor, block_dst, unblock_dst, export_rules, import_rules, is_blocked, pf_self_check, list_rules
 from ui.ui_traffic import Ui_Traffic
+import constants as _zcut_constants
 from constants import APP_DISPLAY_NAME
+
+_UI_LOG_VICTIM_BLOCK_FG = getattr(_zcut_constants, 'UI_LOG_VICTIM_BLOCK_FG', '#32716D')
+_UI_LOG_RESTORE_FG = getattr(
+    _zcut_constants,
+    'UI_LOG_RESTORE_FG',
+    getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E'),
+)
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
 from tools.utils_gui import register_window_surface_effects
 
@@ -18,6 +26,7 @@ class Traffic(FramelessResizableMixin, QMainWindow):
         self.setWindowIcon(icon)
         self.ui = Ui_Traffic()
         self.ui.setupUi(self)
+        self.setObjectName('zubcutAuxiliaryWindow')
         self.setWindowTitle(f'{APP_DISPLAY_NAME} — Traffic')
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=True)
         register_window_surface_effects(self)
@@ -43,7 +52,6 @@ class Traffic(FramelessResizableMixin, QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.setStyleSheet(self.parent.styleSheet())
 
     def start(self, victim_ip: str, iface: str):
         self.ui.lblVictim.setText(victim_ip)
@@ -178,7 +186,7 @@ class Traffic(FramelessResizableMixin, QMainWindow):
         if ensure_pf_enabled() and install_anchor():
             use_port = self.ui.chkIncludePort.isChecked()
             ok = block_dst(iface, victim, dst, port=(port if use_port else None), proto=proto)
-            self.parent.log(('Blocked ' if ok else 'Failed blocking ') + dst, 'fuchsia' if ok else 'red')
+            self.parent.log(('Blocked ' if ok else 'Failed blocking ') + dst, _UI_LOG_VICTIM_BLOCK_FG if ok else 'red')
 
     def unblock_selected(self):
         target = self.selected_flow()
@@ -187,7 +195,7 @@ class Traffic(FramelessResizableMixin, QMainWindow):
         dst, port, _ = target
         use_port = self.ui.chkIncludePort.isChecked()
         ok = unblock_dst(dst, port=(port if use_port else None))
-        self.parent.log(('Unblocked ' if ok else 'Failed unblocking ') + dst, 'lime' if ok else 'red')
+        self.parent.log(('Unblocked ' if ok else 'Failed unblocking ') + dst, _UI_LOG_RESTORE_FG if ok else 'red')
 
     def export_rules(self):
         from PyQt5.QtWidgets import QFileDialog
@@ -206,7 +214,7 @@ class Traffic(FramelessResizableMixin, QMainWindow):
         victim = self.ui.lblVictim.text()
         from tools.pfctl import pf_test_roundtrip
         ok = pf_test_roundtrip(iface, victim)
-        self.parent.log('PF Test: ' + ('OK' if ok else 'FAILED'), 'lime' if ok else 'red')
+        self.parent.log('PF Test: ' + ('OK' if ok else 'FAILED'), _UI_LOG_RESTORE_FG if ok else 'red')
 
     def toggle_forward(self, _state):
         if self.ui.chkForward.isChecked():
@@ -214,7 +222,7 @@ class Traffic(FramelessResizableMixin, QMainWindow):
             victim_ip = self.ui.lblVictim.text()
             victim = next((d for d in self.parent.scanner.devices if d.get('ip') == victim_ip), None)
             if victim and victim.get('mac') in self.parent.killer.forwarders:
-                self.parent.log('Forwarder already active via One-Way Kill', 'orange')
+                self.parent.log('Forwarder already active via One-Way Kill', _UI_LOG_VICTIM_BLOCK_FG)
                 return
             # Restart forwarder with current victim (observe-only, no drops)
             iface = self.parent.scanner.iface.guid or self.parent.scanner.iface.name
@@ -222,10 +230,10 @@ class Traffic(FramelessResizableMixin, QMainWindow):
             r = {'ip': self.parent.scanner.router['ip'], 'mac': self.parent.scanner.router['mac']}
             iface_mac = self.parent.scanner.my_mac
             self.forwarder.start(v, r, iface, iface_mac, drop_from_victim=False, drop_to_victim=False)
-            self.parent.log('Forward mode ON (observe only)', 'aqua')
+            self.parent.log('Forward mode ON (observe only)', _UI_LOG_VICTIM_BLOCK_FG)
         else:
             self.forwarder.stop()
-            self.parent.log('Forward mode OFF', 'orange')
+            self.parent.log('Forward mode OFF', _UI_LOG_RESTORE_FG)
 
     def block_pattern(self):
         row = self.ui.patterns.currentRow()
@@ -237,7 +245,10 @@ class Traffic(FramelessResizableMixin, QMainWindow):
         iface = self.parent.scanner.iface.name
         if ensure_pf_enabled() and install_anchor():
             ok = block_dst(iface, victim, 'any', port=port, proto=proto)
-            self.parent.log(('Blocked pattern port ' if ok else 'Failed blocking pattern port ') + str(port), 'fuchsia' if ok else 'red')
+            self.parent.log(
+                ('Blocked pattern port ' if ok else 'Failed blocking pattern port ') + str(port),
+                _UI_LOG_VICTIM_BLOCK_FG if ok else 'red',
+            )
 
     def unblock_pattern(self):
         row = self.ui.patterns.currentRow()
@@ -245,6 +256,9 @@ class Traffic(FramelessResizableMixin, QMainWindow):
             return
         port = int(self.ui.patterns.item(row, 1).text())
         ok = unblock_dst('any', port=port)
-        self.parent.log(('Unblocked pattern port ' if ok else 'Failed unblocking pattern port ') + str(port), 'lime' if ok else 'red')
+        self.parent.log(
+            ('Unblocked pattern port ' if ok else 'Failed unblocking pattern port ') + str(port),
+            _UI_LOG_RESTORE_FG if ok else 'red',
+        )
 
 

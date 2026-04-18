@@ -23,6 +23,7 @@ class About(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.icon = icon
         self.setWindowIcon(icon)
         self.setupUi(self)
+        self.setObjectName('zubcutAuxiliaryWindow')
 
         self.setMinimumSize(420, 620)
         self.setMaximumSize(480, 720)
@@ -37,7 +38,6 @@ class About(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lblAppName.setText(f'{APP_DISPLAY_NAME} v{self.elmocut.version}')
 
         self.lblMyName.setText('ZubOnTop')
-        self.lblMyName.setStyleSheet('font-weight: bold;')
         self.lblMyName.setCursor(Qt.ArrowCursor)
 
         self.lblNickName.hide()
@@ -73,7 +73,6 @@ class About(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.setStyleSheet(self.elmocut.styleSheet())
         self._refresh_about_logo()
         event.accept()
 

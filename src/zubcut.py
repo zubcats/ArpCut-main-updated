@@ -1,7 +1,7 @@
 from sys import argv, exit
 import sys as _sys, os as _os
 _sys.path.append(_os.path.dirname(__file__))
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QStyleFactory
 from PyQt5.QtCore import Qt
 
 from tools.utils import goto
@@ -14,6 +14,14 @@ from gui.main import ElmoCut
 
 from assets import app_icon
 from constants import *
+import constants as _zcut_constants
+
+_UI_LOG_VICTIM_BLOCK_FG = getattr(_zcut_constants, 'UI_LOG_VICTIM_BLOCK_FG', '#32716D')
+_UI_LOG_RESTORE_FG = getattr(
+    _zcut_constants,
+    'UI_LOG_RESTORE_FG',
+    getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E'),
+)
 
 
 def _load_window_icon():
@@ -27,7 +35,12 @@ def _load_window_icon():
 
 if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    QApplication.setAttribute(Qt.AA_UseStyleSheetPropagationInWidgetStyles, True)
     app = QApplication(argv)
+    # Windows native style often ignores or mis-paints QPushButton :hover under global QSS; Fusion is reliable.
+    _fusion = QStyleFactory.create('Fusion')
+    if _fusion is not None:
+        app.setStyle(_fusion)
     install_crash_feedback()
     icon = _load_window_icon()
     app.setWindowIcon(icon)
@@ -65,7 +78,7 @@ if __name__ == "__main__":
         GUI.scanner.add_router()
         GUI.showDevices()  # Show at least "Me" and "Router" on startup
     except Exception as e:
-        GUI.log(f'Warning: Could not initialize local devices: {e}', 'orange')
+        GUI.log(f'Warning: Could not initialize local devices: {e}', _UI_LOG_VICTIM_BLOCK_FG)
 
     GUI.scanner.flush_arp()
 
@@ -78,7 +91,7 @@ if __name__ == "__main__":
         is_posix, is_root = False, True
 
     if is_posix and not is_root:
-        GUI.log('Running without root: using Ping Scan', 'orange')
+        GUI.log('Running without root: using Ping Scan', _UI_LOG_RESTORE_FG)
         GUI.ScanThread_Starter(scan_type=1)
     else:
         # Only check connection if interface is valid

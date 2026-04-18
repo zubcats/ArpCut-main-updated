@@ -26,6 +26,10 @@ from constants import *
 # Backward compatibility for older packaged constants modules.
 WINDOW_CORNER_RADIUS_PX = int(globals().get('WINDOW_CORNER_RADIUS_PX', 12))
 
+
+def _experimental_charcoal_titlebar() -> bool:
+    return str(UPDATE_CHANNEL or '').strip().lower() == 'experimental'
+
 # Title-bar control glyphs (styled via QSS color; standard pixmaps cannot be tinted).
 _GLYPH_MIN = "\u2212"  # minus
 _GLYPH_MAX = "\u25A1"  # square (maximize)
@@ -128,6 +132,7 @@ class CustomTitleBar(QFrame):
         icon: Optional[QIcon],
         *,
         maximizable: bool = True,
+        caption_accent: Optional[str] = None,
     ):
         super().__init__(window)
         self.setObjectName("zubcutTitleBar")
@@ -135,12 +140,27 @@ class CustomTitleBar(QFrame):
         self._maximizable = maximizable
         self.setFixedHeight(36)
         self.setAttribute(Qt.WA_StyledBackground, True)
+        if caption_accent:
+            _bg = '#2b2b2b'
+            _bd = caption_accent
+            _btn_h, _btn_p = '#3d524f', '#354846'
+            _muted, _hi = '#9a9a9a', '#eef1f0'
+        elif _experimental_charcoal_titlebar():
+            _bg, _bd = '#2b2b2b', '#3d3d3d'
+            _btn_h, _btn_p = '#383838', '#323232'
+            _muted, _hi = '#9a9a9a', '#d0d0d0'
+        else:
+            _bg, _bd = '#2d323c', '#3d4a5c'
+            _btn_h, _btn_p = '#3a3f49', '#353942'
+            _muted, _hi = '#8b909a', '#aeb4bf'
+        _tb_hover_border = _bd if caption_accent else _btn_h
+        _tb_press_border = _bd if caption_accent else _btn_p
         self.setStyleSheet(
             f"""
             QFrame#zubcutTitleBar {{
-                background-color: #2d323c;
+                background-color: {_bg};
                 border: none;
-                border-bottom: 1px solid #3d4a5c;
+                border-bottom: 1px solid {_bd};
                 border-top-left-radius: {WINDOW_CORNER_RADIUS_PX}px;
                 border-top-right-radius: {WINDOW_CORNER_RADIUS_PX}px;
             }}
@@ -160,17 +180,17 @@ class CustomTitleBar(QFrame):
                 padding: 3px;
                 min-width: 22px;
                 min-height: 22px;
-                color: #8b909a;
+                color: {_muted};
             }}
             QFrame#zubcutTitleBar QToolButton:hover {{
-                background-color: #3a3f49;
-                border: 1px solid #3a3f49;
-                color: #aeb4bf;
+                background-color: {_btn_h};
+                border: 1px solid {_tb_hover_border};
+                color: {_hi};
             }}
             QFrame#zubcutTitleBar QToolButton:pressed {{
-                background-color: #353942;
-                border: 1px solid #353942;
-                color: #8b909a;
+                background-color: {_btn_p};
+                border: 1px solid {_tb_press_border};
+                color: {_muted};
             }}
             QFrame#zubcutTitleBar QToolButton#closeButton:hover {{
                 background-color: #c0392b;

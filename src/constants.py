@@ -42,6 +42,31 @@ if sys.platform.startswith('win'):
     ]
 
 TABLE_HEADER_LABELS = ['IP Address', 'MAC Address', 'Vendor', 'Type', 'Nickname']
+SCAN_TABLE_COLUMN_MAC = 1
+SCAN_TABLE_COLUMN_VENDOR = 2
+
+# Experimental scan table: Me / Router rows — muted grey-green / dark sage (door trim reference).
+ADMIN_DEVICE_TABLE_ROW_BG = '#5D706E'
+ADMIN_DEVICE_TABLE_ROW_FG = '#eef1f0'
+# Main status strip (lblleft HTML): victim block / kill / lag on / dupe burst — teal-grey swatch.
+UI_LOG_VICTIM_BLOCK_FG = '#32716D'
+# Kill / Lag / Dupe toolbar buttons + Settings / Lag / Dupe field borders & spin combo chrome.
+UI_TOGGLE_BORDER_ACCENT = '#316E69'
+# Scan table: selected data row (item brushes); device-count label — same teal grey-green swatch.
+UI_TABLE_SELECTION_BG = '#316E69'
+UI_TABLE_SELECTION_FG = '#f2f2f2'
+# Unkill, lag off, dupe finished, kill OFF — same sage as Me/Router row background.
+UI_LOG_RESTORE_FG = ADMIN_DEVICE_TABLE_ROW_BG
+# When a newer build is available: reuse the prior Me/Router strip green for Settings / main gear.
+# Use object-name selectors so these beat app-level QPushButton#btnSettings / auxiliary-window rules.
+UPDATE_AVAILABLE_PUSHBUTTON_QSS = (
+    'QPushButton#btnUpdate { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+    'border: 1px solid #2d5738; border-radius: 4px; }'
+)
+UPDATE_AVAILABLE_SETTINGS_GEAR_QSS = (
+    'QPushButton#btnSettings { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+    'border: 1px solid #2d5738; border-radius: 4px; }'
+)
 
 # Frameless / stylesheet corner radius (logical px); mask uses same value to avoid corner bleed.
 WINDOW_CORNER_RADIUS_PX = 12
@@ -68,7 +93,9 @@ HKEY_AUTOSTART_PATH = 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run'
 SETTINGS_KEYS = [
     'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'nicknames',
     'key_kill', 'key_lag', 'key_dupe',
+    'show_scan_mac_column', 'show_scan_vendor_column',
 ]
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
-SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P']
+# show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
+SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', False, False]

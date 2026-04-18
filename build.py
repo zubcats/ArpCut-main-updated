@@ -16,6 +16,8 @@ from src.constants import APP_BUNDLE_NAME
 
 # All the imports PyInstaller is too dumb to find on its own
 HIDDEN_IMPORTS = [
+    'gui.traffic',
+    'ui.ui_traffic',
     'tools.updater_debug',
     'PyQt5',
     'PyQt5.QtWidgets',
@@ -44,7 +46,11 @@ def build():
     # Base command (name must match constants.APP_BUNDLE_NAME for installer / autostart)
     # Use python -m PyInstaller so CI and venvs do not rely on a Scripts\pyinstaller.exe on PATH
     cmd = [sys.executable, '-m', 'PyInstaller', '--name', APP_BUNDLE_NAME]
-    
+    # Explicit src path: frozen builds resolve `gui.*` from here; avoids missed submodules.
+    cmd.extend(['--paths', os.path.join(_ROOT, 'src')])
+    cmd.extend(['--collect-submodules', 'gui'])
+    cmd.extend(['--additional-hooks-dir', os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks')])
+
     # Platform-specific options
     if system == 'Windows':
         # Onedir avoids one-file temp extraction (_MEI*) which often breaks python311.dll load

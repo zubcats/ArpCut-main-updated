@@ -5,6 +5,7 @@ Uses QDialog.exec_() + QueuedConnection signals (standard pattern). Do not hook 
 to cancel the thread on success — that raced with the worker finishing and caused crashes.
 """
 
+import constants as _zcut_constants
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QDialog,
@@ -13,11 +14,82 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from constants import APP_DISPLAY_NAME
+from tools.frameless_chrome import CustomTitleBar, FramelessResizableMixin
 from tools.updater_core import download_installer
 from tools.updater_debug import begin_updater_debug_session, updater_log
+from tools.utils_gui import register_window_surface_effects, zubcut_dark_stylesheet
+
+
+class _InstallerDownloadDialog(FramelessResizableMixin, QDialog):
+    """Dark frameless shell (same title strip as main / Lag) — avoids native white caption on Windows."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName('zubcutInstallerDownloadDialog')
+        self.setWindowFlags(
+            (self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+            | Qt.Dialog
+            | Qt.FramelessWindowHint
+        )
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setWindowTitle(APP_DISPLAY_NAME)
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self.setMinimumWidth(400)
+
+        icon = None
+        if parent is not None:
+            icon = parent.windowIcon()
+            if icon is None or icon.isNull():
+                icon = None
+
+        accent = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#316E69')
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(
+            CustomTitleBar(
+                self,
+                APP_DISPLAY_NAME,
+                icon,
+                maximizable=False,
+                caption_accent=accent,
+            )
+        )
+
+        body = QWidget(self)
+        body.setObjectName('zubcutDialogBody')
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(12)
+
+        self.lbl = QLabel()
+        self.lbl.setWordWrap(True)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 0)
+        self.btn = QPushButton('Cancel')
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(self.btn)
+
+        lay.addWidget(self.lbl)
+        lay.addWidget(self.bar)
+        lay.addLayout(row)
+
+        root.addWidget(body, 1)
+
+        for _pb in self.findChildren(QPushButton):
+            _pb.setAutoDefault(False)
+            _pb.setDefault(False)
+
+        self._zubcut_use_translucent_surface = False
+        register_window_surface_effects(self)
+        self.setStyleSheet(zubcut_dark_stylesheet())
 
 
 class _InstallerDownloadThread(QThread):
@@ -64,34 +136,18 @@ def download_update_with_progress_dialog(parent, url, *, show_progress=True):
     if not (url.lower().startswith('http://') or url.lower().startswith('https://')):
         raise RuntimeError('Update URL must start with http:// or https://')
 
-    dlg = QDialog(None)
-    dlg.setWindowModality(Qt.ApplicationModal)
-    dlg.setWindowTitle(APP_DISPLAY_NAME)
-    dlg.setAttribute(Qt.WA_DeleteOnClose, False)
-    if parent is not None:
-        icon = parent.windowIcon()
-        if icon is not None and not icon.isNull():
-            dlg.setWindowIcon(icon)
+    dlg = _InstallerDownloadDialog(parent)
+    lbl = dlg.lbl
+    bar = dlg.bar
+    btn = dlg.btn
 
-    lbl = QLabel(
+    lbl.setText(
         'Downloading update…'
         if show_progress
         else 'Downloading the installer…'
     )
-    lbl.setWordWrap(True)
-    bar = QProgressBar()
-    bar.setRange(0, 0)
-    btn = QPushButton('Cancel')
-
-    row = QHBoxLayout()
-    row.addStretch(1)
-    row.addWidget(btn)
-
-    lay = QVBoxLayout(dlg)
-    lay.addWidget(lbl)
-    if show_progress:
-        lay.addWidget(bar)
-    lay.addLayout(row)
+    if not show_progress:
+        bar.hide()
 
     thread = _InstallerDownloadThread(url)
     holder = {'path': None, 'err': None}

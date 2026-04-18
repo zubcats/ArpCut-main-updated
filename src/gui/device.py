@@ -18,6 +18,7 @@ class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.icon = icon
         self.setWindowIcon(icon)
         self.setupUi(self)
+        self.setObjectName('zubcutAuxiliaryWindow')
         self.setFixedSize(self.size())
 
         self.setPlaceholderColor()
@@ -65,5 +66,4 @@ class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.close()
 
     def showEvent(self, event):
-        self.setStyleSheet(self.elmocut.styleSheet())
         event.accept()

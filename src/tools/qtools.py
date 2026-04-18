@@ -1,5 +1,5 @@
 from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import QMessageBox as QMsg
+from PyQt5.QtWidgets import QMessageBox as QMsg, QStyledItemDelegate, QStyle
 from PyQt5.QtCore import pyqtSignal, QEvent, QObject
 
 class Buttons:
@@ -25,6 +25,16 @@ def colored_item(elmnt, c1, c2):
     """
     elmnt.setBackground(QColor(c1))
     elmnt.setForeground(QColor(c2))
+
+
+class TableRowNoCellFocusDelegate(QStyledItemDelegate):
+    """Uniform row chrome: no per-cell focus/hover/selection paint — row colours come from item BackgroundRole."""
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        option.state &= ~QStyle.State_HasFocus
+        option.state &= ~QStyle.State_MouseOver
+        option.state &= ~QStyle.State_Selected
 
 def msg_box(title, text, window_icon, icon, buttons=Buttons.OK):
     """

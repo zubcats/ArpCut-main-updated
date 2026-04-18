@@ -17,6 +17,8 @@ from src.constants import APP_BUNDLE_NAME
 
 # All the imports PyInstaller is too dumb to find on its own
 HIDDEN_IMPORTS = [
+    'gui.traffic',
+    'ui.ui_traffic',
     'PyQt5',
     'PyQt5.QtWidgets',
     'PyQt5.QtCore',
@@ -44,6 +46,9 @@ def build():
 
     # Base command (name must match constants.APP_BUNDLE_NAME for installer / autostart)
     cmd = [sys.executable, '-m', 'PyInstaller', '--name', APP_BUNDLE_NAME]
+    cmd.extend(['--paths', os.path.join(_ROOT, 'src')])
+    cmd.extend(['--collect-submodules', 'gui'])
+    cmd.extend(['--additional-hooks-dir', os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks')])
 
     if system == 'Windows':
         cmd.extend(['--onedir', '--windowed'])

@@ -1,6 +1,7 @@
-from scapy.all import conf, get_if_list
-from subprocess import check_output, CalledProcessError
+import os
 import subprocess
+from scapy.all import conf, get_if_list
+from subprocess import STDOUT, check_output, CalledProcessError
 from socket import socket
 from threading import Thread
 from manuf import manuf
@@ -13,12 +14,84 @@ from constants import *
 
 p = manuf.MacParser()
 
+
+def _windows_subprocess_no_window_kwargs():
+    """Hide the transient console when spawning cmd.exe (avoids flash on startup / Settings)."""
+    if not sys.platform.startswith('win'):
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
+    return {'startupinfo': si}
+
+
+def _is_bad_iface_display_name(s: str) -> bool:
+    """True if netsh/ipconfig gave a useless label (e.g. 'Description', state words, generic stubs)."""
+    t = (s or '').strip().lower()
+    if not t:
+        return True
+    if t == 'description':
+        return True
+    if t in ('connected', 'disconnected', 'enabled', 'disabled', 'dedicated'):
+        return True
+    if re.match(r'^interface-\d+$', t):
+        return True
+    return False
+
+
+def format_iface_settings_label(iface: NetFace) -> str:
+    """
+    One-line label for the Settings network combo (shown to user).
+    Settings JSON still stores iface.name (internal key for get_iface_by_name).
+    """
+    name = (iface.name or '').strip()
+    ip = getattr(iface, 'ip', None) or ''
+    if ip in ('0.0.0.0', '127.0.0.1'):
+        ip = ''
+    mac = getattr(iface, 'mac', None) or ''
+    if mac and mac == GLOBAL_MAC:
+        mac = ''
+    bits = []
+    if name and not _is_bad_iface_display_name(name):
+        bits.append(name)
+    elif name:
+        bits.append(name)
+    if ip:
+        bits.append(ip)
+    if mac and len(bits) < 2:
+        bits.append(mac)
+    if not bits:
+        g = str(getattr(iface, 'guid', '') or '')
+        tail = g.split('NPF_')[-1].strip('{}') if g else ''
+        bits.append(tail[:24] + ('…' if len(tail) > 24 else '') if tail else 'Adapter')
+    return ' · '.join(bits)
+
+
 def terminal(command, shell=True, decode=True):
     """
-    Terminal commands via Subprocess (cross-platform)
+    Terminal commands via Subprocess (cross-platform).
+
+    On Windows with shell=True, runs through ``%SystemRoot%\\System32\\cmd.exe /d /c``
+    instead of ``subprocess``'s default shell (``%COMSPEC%``). Some PCs set COMSPEC
+    to PowerShell, which would spawn ``powershell.exe`` for every ``arp``/``ping``/``ipconfig``.
+    Uses ``STARTUPINFO`` + ``SW_HIDE`` so no console window flashes on each call.
     """
     try:
-        cmd = check_output(command, shell=shell, stderr=subprocess.STDOUT)
+        kwargs = {'stderr': STDOUT}
+        if sys.platform.startswith('win') and shell:
+            win_hide = _windows_subprocess_no_window_kwargs()
+            cmd_exe = os.path.join(
+                os.environ.get('SystemRoot', r'C:\Windows'),
+                'System32',
+                'cmd.exe',
+            )
+            if isinstance(command, str) and os.path.isfile(cmd_exe):
+                argv = [cmd_exe, '/d', '/c', command]
+                cmd = check_output(argv, shell=False, stderr=STDOUT, **win_hide)
+            else:
+                cmd = check_output(command, shell=True, stderr=STDOUT, **win_hide)
+        else:
+            cmd = check_output(command, shell=shell, stderr=STDOUT)
         return cmd.decode('utf-8', errors='replace') if decode else None
     except CalledProcessError as e:
         # Return error output if available for debugging
@@ -259,7 +332,7 @@ def get_ifaces():
         # Step 3: Get Scapy interfaces and match with our map
         from scapy.all import get_if_hwaddr
         scapy_ifaces = get_if_list()
-        
+
         for scapy_name in scapy_ifaces:
             # Extract GUID from Scapy name: \\Device\\NPF_{GUID}
             guid = None
@@ -288,7 +361,12 @@ def get_ifaces():
                     if guid and guid.lower() in key.lower():
                         friendly_name = key
                         break
-            
+
+            # Drop useless netsh/ipconfig labels (no PowerShell Get-NetAdapter: avoids spawning
+            # powershell.exe on every refresh; ipconfig + MAC match remains the source of truth).
+            if friendly_name and _is_bad_iface_display_name(friendly_name):
+                friendly_name = None
+
             # Get IP and MAC
             ip = '0.0.0.0'
             mac = GLOBAL_MAC
@@ -435,9 +513,21 @@ def get_iface_by_name(name):
     """
     Return interface given its name
     """
-    for iface in get_ifaces():
+    if not name or str(name).strip() == '' or name == 'NULL':
+        return get_default_iface()
+    name = str(name).strip()
+    ifaces = list(get_ifaces())
+    for iface in ifaces:
         if iface.name == name:
             return iface
+    # Settings may still store a legacy "Short — long description" label from older builds.
+    for sep in ('\u2014', '\u2013'):
+        if sep in name:
+            stem = name.split(sep, 1)[0].strip()
+            if stem and stem != name:
+                for iface in ifaces:
+                    if iface.name == stem:
+                        return iface
     return get_default_iface()
 
 def is_connected(current_iface=None):

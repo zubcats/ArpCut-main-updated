@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QApplication, QMainWindow
+from PyQt5.QtWidgets import QApplication, QMainWindow, QLineEdit
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer
 import os
@@ -6,10 +6,18 @@ import sys
 
 from tools.utils_gui import import_settings, export_settings, get_settings, \
                       is_admin, add_to_startup, remove_from_startup, set_settings, \
-                      zubcut_dark_stylesheet, sync_translucent_chrome, register_window_surface_effects
+                      zubcut_dark_stylesheet, \
+                      sync_translucent_chrome, register_window_surface_effects
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
 from tools.qtools import MsgType, Buttons
-from tools.utils import goto, get_ifaces, get_default_iface, get_iface_by_name, terminal
+from tools.utils import (
+    goto,
+    get_ifaces,
+    get_default_iface,
+    get_iface_by_name,
+    terminal,
+    format_iface_settings_label,
+)
 
 from ui.ui_settings import Ui_MainWindow
 
@@ -25,6 +33,22 @@ from tools.updater_debug import (
 )
 
 from constants import *
+import constants as _zcut_constants
+
+_UPDATE_BTN_QSS_FALLBACK = (
+    'QPushButton#btnUpdate { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+    'border: 1px solid #2d5738; border-radius: 4px; }'
+)
+
+
+def _settings_keybind_mono_font() -> QFont:
+    """Match main #tableScan: readable monospace, normal weight (Fusion/qdark often bolds shortcuts)."""
+    mono = 'Menlo' if sys.platform == 'darwin' else 'Consolas'
+    f = QFont(mono, 11)
+    f.setStyleHint(QFont.Monospace)
+    f.setFixedPitch(True)
+    f.setBold(False)
+    return f
 
 
 def _channel_kind_label(channel: str) -> str:
@@ -44,6 +68,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.icon = icon
         self.setWindowIcon(icon)
         self.setupUi(self)
+        self.setObjectName('zubcutAuxiliaryWindow')
         self.setFixedSize(self.size())
 
         self.loadInterfaces()
@@ -90,7 +115,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         is_minimized  =  self.chkMinimized.isChecked()
         is_remember   =  self.chkRemember.isChecked()
         is_autoupdate =  self.chkAutoupdate.isChecked()
-        iface         =  self.comboInterface.currentText()
+        iface = self.comboInterface.currentData()
+        if iface in (None, ''):
+            iface = self.comboInterface.currentText()
 
         def _portable_key(ks_edit):
             qs = ks_edit.keySequence()
@@ -147,6 +174,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             k_kill,
             k_lag,
             k_dupe,
+            bool(get_settings('show_scan_mac_column')),
+            bool(get_settings('show_scan_vendor_column')),
             ]
         )
 
@@ -219,14 +248,20 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.elmocut.scanner.iface = get_iface_by_name(s['iface'])
         self.elmocut.killer.iface = get_iface_by_name(s['iface'])
         
-        self.elmocut.setStyleSheet(self.styleSheet())
-        self.elmocut.about_window.setStyleSheet(self.styleSheet())
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(self.styleSheet())
+        self.elmocut._repolish_chrome_pushbuttons()
+        self.elmocut.setStyleSheet('')
+        self.elmocut.about_window.setStyleSheet('')
+        # Lag/Dupe must inherit QApplication styles only. A full app sheet copied onto QDialog
+        # breaks QDialog-scoped rules from zubcut_dark_stylesheet() (qdark blue panels return).
         for _dlg in (
             getattr(self.elmocut, 'lag_switch_dialog', None),
             getattr(self.elmocut, 'dupe_switch_dialog', None),
         ):
             if _dlg is not None:
-                _dlg.setStyleSheet(self.elmocut.styleSheet())
+                _dlg.setStyleSheet('')
         _w = [
             self.elmocut,
             self.elmocut.about_window,
@@ -240,6 +275,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         ) if d is not None)
         sync_translucent_chrome(_w)
         self.elmocut.refresh_keyboard_shortcuts_from_settings()
+        self.elmocut._sync_scan_table_column_settings()
 
     def currentSettings(self):
         s = import_settings()
@@ -257,14 +293,35 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             set_settings('iface', get_default_iface().name)
             s = import_settings()
         
-        index = self.comboInterface.findText(s['iface'], Qt.MatchFixedString)
-        self.comboInterface.setCurrentIndex(index * (index >= 0))
+        saved = s.get('iface') or ''
+        idx = self.comboInterface.findData(saved)
+        if idx < 0:
+            idx = self.comboInterface.findText(saved, Qt.MatchFixedString)
+        if idx >= 0:
+            self.comboInterface.setCurrentIndex(idx)
 
         self.keySeqKill.setKeySequence(keyseq_from_setting(s.get('key_kill'), Qt.Key_L))
         self.keySeqLag.setKeySequence(keyseq_from_setting(s.get('key_lag'), Qt.Key_M))
         self.keySeqDupe.setKeySequence(keyseq_from_setting(s.get('key_dupe'), Qt.Key_P))
-        
+
+        self._apply_keybind_section_fonts()
         self.setStyleSheet(zubcut_dark_stylesheet())
+
+    def _apply_keybind_section_fonts(self):
+        f = _settings_keybind_mono_font()
+        for w in (
+            self.groupBox_keys,
+            self.labelKeyKill,
+            self.labelKeyLag,
+            self.labelKeyDupe,
+            self.keySeqKill,
+            self.keySeqLag,
+            self.keySeqDupe,
+        ):
+            w.setFont(f)
+        for ks in (self.keySeqKill, self.keySeqLag, self.keySeqDupe):
+            for le in ks.findChildren(QLineEdit):
+                le.setFont(f)
     
     def checkUpdate(self):
         begin_updater_debug_session('settings.checkUpdate')
@@ -355,6 +412,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._refresh_update_availability()
             self.btnUpdate.setText(self._update_button_text())
             self._apply_update_button_style()
+            el = getattr(self, 'elmocut', None)
+            if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
+                el._sync_settings_gear_update_hint()
         except Exception:
             pass
 
@@ -395,13 +455,15 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _apply_update_button_style(self):
         if self._update_available:
             self.btnUpdate.setStyleSheet(
-                'QPushButton { background-color: #1e8449; color: white; font-weight: bold; }'
+                getattr(_zcut_constants, 'UPDATE_AVAILABLE_PUSHBUTTON_QSS', _UPDATE_BTN_QSS_FALLBACK)
             )
         else:
             self.btnUpdate.setStyleSheet('')
     
     def loadInterfaces(self):
         self.comboInterface.clear()
-        self.comboInterface.addItems(
-            [iface.name for iface in get_ifaces()]
-        )
+        for iface in get_ifaces():
+            self.comboInterface.addItem(
+                format_iface_settings_label(iface),
+                iface.name,
+            )

@@ -44,6 +44,29 @@ if sys.platform.startswith('win'):
     ]
 
 TABLE_HEADER_LABELS = ['IP Address', 'MAC Address', 'Vendor', 'Type', 'Nickname']
+SCAN_TABLE_COLUMN_MAC = 1
+SCAN_TABLE_COLUMN_VENDOR = 2
+
+# Experimental scan table: Me / Router rows — muted grey-green / dark sage.
+ADMIN_DEVICE_TABLE_ROW_BG = '#5D706E'
+ADMIN_DEVICE_TABLE_ROW_FG = '#eef1f0'
+UI_LOG_VICTIM_BLOCK_FG = '#32716D'
+UI_TOGGLE_BORDER_ACCENT = '#316E69'
+UI_TABLE_SELECTION_BG = '#316E69'
+UI_TABLE_SELECTION_FG = '#f2f2f2'
+UI_LOG_RESTORE_FG = ADMIN_DEVICE_TABLE_ROW_BG
+# When a newer build is available: Settings / main gear highlight (ID selectors vs global QSS).
+UPDATE_AVAILABLE_PUSHBUTTON_QSS = (
+    'QPushButton#btnUpdate { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+    'border: 1px solid #2d5738; border-radius: 4px; }'
+)
+UPDATE_AVAILABLE_SETTINGS_GEAR_QSS = (
+    'QPushButton#btnSettings { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+    'border: 1px solid #2d5738; border-radius: 4px; }'
+)
+
+# Frameless / stylesheet corner radius (logical px); mask uses same value to avoid corner bleed.
+WINDOW_CORNER_RADIUS_PX = 12
 
 # Windows-only Npcap details (ignored on macOS/Linux)
 NPCAP_URL = 'https://npcap.com/dist/npcap-1.87.exe'
@@ -67,6 +90,7 @@ HKEY_AUTOSTART_PATH = 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run'
 SETTINGS_KEYS = [
     'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'nicknames',
     'key_kill', 'key_lag', 'key_dupe',
+    'show_scan_mac_column', 'show_scan_vendor_column',
 ]
 
-SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P']
+SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', False, False]

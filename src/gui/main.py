@@ -6,10 +6,10 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QMenu, QSystemTrayIcon, QAction, QPushButton, \
                             QDialog, QFormLayout, QDialogButtonBox, QSpinBox, \
                             QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QGroupBox, \
-                            QSizePolicy, QShortcut, QAbstractSpinBox, QLineEdit, \
+                            QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, \
                             QTextEdit, QPlainTextEdit, QWidget
-from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence
-from PyQt5.QtCore import Qt, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal
+from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush
+from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent
 try:
     from PyQt5.QtWinExtras import QWinTaskbarButton
 except Exception:
@@ -20,19 +20,21 @@ from ui.ui_main import Ui_MainWindow
 from gui.settings import Settings
 from gui.about import About
 from gui.device import Device
-from gui.traffic import Traffic
+from .traffic import Traffic
 
 from networking.scanner import Scanner
 from networking.killer import Killer
 
-from tools.qtools import colored_item, MsgType, Buttons, clickable
+from tools.qtools import colored_item, MsgType, Buttons, clickable, TableRowNoCellFocusDelegate
 from tools.utils_gui import (
     set_settings,
     get_settings,
     import_settings,
-    zubcut_dark_stylesheet,
+    apply_app_global_dark_stylesheet,
     sync_translucent_chrome,
     register_window_surface_effects,
+    table_row_hover_chrome,
+    table_row_selection_chrome,
 )
 from tools.frameless_chrome import (
     FramelessResizableMixin,
@@ -55,9 +57,6 @@ from assets import *
 from bridge import ScanThread  # UpdateThread disabled for fork
 
 _SETTINGS_BTN_TIP = 'Settings - Configure scan options and network interface'
-_SETTINGS_BTN_UPDATE_STYLE = (
-    'QPushButton { background-color: #1e8449; color: white; font-weight: bold; }'
-)
 # Foreground: HEAD every 15 min only while the app is active (timer paused when not).
 _UPDATE_POLL_INTERVAL_MS = 15 * 60 * 1000
 # Background: still check once per day so tray/minimized sessions learn about new builds.
@@ -78,7 +77,34 @@ class _UpdateStatusPollThread(QThread):
             avail, label = False, ''
         self.done.emit(avail, label)
 
+import constants as _zcut_constants
 from constants import *
+
+# Frozen/CI builds may ship an older constants module; keep defaults in sync with src/constants.py.
+# Must use QPushButton#btnSettings so this wins over _main_chrome_action_buttons_qss() on the app sheet.
+_SETTINGS_BTN_UPDATE_STYLE = getattr(
+    _zcut_constants,
+    'UPDATE_AVAILABLE_SETTINGS_GEAR_QSS',
+    (
+        'QPushButton#btnSettings { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+        'border: 1px solid #2d5738; border-radius: 4px; }'
+    ),
+)
+ADMIN_DEVICE_TABLE_ROW_BG = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
+ADMIN_DEVICE_TABLE_ROW_FG = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_FG', '#eef1f0')
+UI_LOG_VICTIM_BLOCK_FG = getattr(_zcut_constants, 'UI_LOG_VICTIM_BLOCK_FG', '#32716D')
+UI_LOG_RESTORE_FG = getattr(_zcut_constants, 'UI_LOG_RESTORE_FG', ADMIN_DEVICE_TABLE_ROW_BG)
+
+# Killed device row: dark red matched to experimental admin row darkness (see ADMIN_DEVICE_TABLE_ROW_*).
+_DEVICE_ROW_KILL_BG = '#3d1a1a'
+_DEVICE_ROW_KILL_FG = '#e8d0d0'
+_DEVICE_ROW_KILL_HOVER_BG = '#502626'
+_DEVICE_ROW_KILL_HOVER_FG = '#f5e6e6'
+# Killed row while also selected (or among several killed): slightly lifted from base kill red.
+_DEVICE_ROW_KILL_SELECTED_BG = '#4a2828'
+_DEVICE_ROW_KILL_SELECTED_FG = '#f5e8e8'
+_DEVICE_ROW_KILL_SEL_HOVER_BG = '#5c3232'
+_DEVICE_ROW_KILL_SEL_HOVER_FG = '#fff8f8'
 
 # from qt_material import build_stylesheet
 
@@ -89,11 +115,51 @@ def _focus_widget_absorbs_letter_key(widget):
     return isinstance(widget, (QAbstractSpinBox, QLineEdit, QTextEdit, QPlainTextEdit))
 
 
+def _chrome_pushbutton_hover_inline_qss(watched_btn=None) -> str:
+    """Programmatic hover for icon chrome (Fusion + qdark); same palette for all toolbar buttons."""
+    if str(UPDATE_CHANNEL or '').strip().lower() == 'experimental':
+        return (
+            'background-color: #383838; color: #d0d0d0; border: 1px solid #383838; border-radius: 4px;'
+        )
+    return (
+        'background-color: #3a3f49; color: #aeb4bf; border: 1px solid #3a3f49; border-radius: 4px;'
+    )
+
+
+class _ChromePushButtonHoverFilter(QObject):
+    """
+    Global QSS :hover is unreliable for icon-only QPushButtons (Fusion + qdarkstyle).
+    Paint hover by setting a widget-level stylesheet on Enter and restoring on Leave.
+    """
+
+    def __init__(self, main_window, watched_buttons):
+        super().__init__(main_window)
+        self._m = main_window
+        self._watched = frozenset(watched_buttons)
+
+    def eventFilter(self, obj, event):
+        if obj not in self._watched:
+            return False
+        t = event.type()
+        if t == QEvent.Enter:
+            if not obj.isEnabled():
+                return False
+            if (obj.styleSheet() or '').strip():
+                return False
+            obj.setStyleSheet(_chrome_pushbutton_hover_inline_qss(obj))
+            return False
+        if t == QEvent.Leave:
+            self._m._restore_chrome_button_surface(obj)
+            return False
+        return False
+
+
 class LagSwitchDialog(FramelessResizableMixin, QDialog):
     """Non-modal panel: edit lag / allow times, then toggle lag switch on or off."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName('zubcutLagDupeDialog')
         self._main = parent
         # Only pull timings from MainWindow when the panel is opened (after hide), not on every showEvent.
         self._reload_timing_on_next_show = True
@@ -106,9 +172,18 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         lag_icon = parent.icon if parent else None
-        root.addWidget(CustomTitleBar(self, 'Lag Switch', lag_icon, maximizable=False))
+        root.addWidget(
+            CustomTitleBar(
+                self,
+                'Lag Switch',
+                lag_icon,
+                maximizable=False,
+                caption_accent=ADMIN_DEVICE_TABLE_ROW_BG,
+            )
+        )
 
         body = QWidget(self)
+        body.setObjectName('zubcutDialogBody')
         layout = QVBoxLayout(body)
         layout.setContentsMargins(12, 12, 12, 12)
 
@@ -145,6 +220,8 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         dir_layout.addWidget(self.dirBoth)
         dir_layout.addWidget(self.dirIncoming)
         dir_layout.addWidget(self.dirOutgoing)
+        for _cb in (self.dirBoth, self.dirIncoming, self.dirOutgoing):
+            _cb.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         layout.addWidget(self.dir_group)
 
         # Timing section
@@ -204,8 +281,10 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         layout.addWidget(buttons)
 
         root.addWidget(body, 1)
-        if parent is not None:
-            self.setStyleSheet(parent.styleSheet())
+        for _pb in self.findChildren(QPushButton):
+            _pb.setAutoDefault(False)
+            _pb.setDefault(False)
+        self._zubcut_use_translucent_surface = False
         register_window_surface_effects(self)
 
     def _on_m_key_pressed(self):
@@ -325,7 +404,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
             return
         device = main.current_index()
         if device['admin']:
-            main.log('Cannot lag admin device', 'orange')
+            main.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
         if main._toggle_start_blocked('lag'):
             return
@@ -359,6 +438,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName('zubcutLagDupeDialog')
         self._main = parent
         self._reload_on_next_show = True
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
@@ -370,9 +450,18 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         dupe_icon = parent.icon if parent else None
-        root.addWidget(CustomTitleBar(self, 'Dupe', dupe_icon, maximizable=False))
+        root.addWidget(
+            CustomTitleBar(
+                self,
+                'Dupe',
+                dupe_icon,
+                maximizable=False,
+                caption_accent=ADMIN_DEVICE_TABLE_ROW_BG,
+            )
+        )
 
         body = QWidget(self)
+        body.setObjectName('zubcutDialogBody')
         layout = QVBoxLayout(body)
         layout.setContentsMargins(12, 12, 12, 12)
 
@@ -411,6 +500,8 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         dir_layout.addWidget(self.dirBoth)
         dir_layout.addWidget(self.dirIncoming)
         dir_layout.addWidget(self.dirOutgoing)
+        for _cb in (self.dirBoth, self.dirIncoming, self.dirOutgoing):
+            _cb.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         layout.addWidget(self.dir_group)
 
         self.timing_group = QGroupBox('Duration', body)
@@ -437,8 +528,10 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         layout.addWidget(buttons)
 
         root.addWidget(body, 1)
-        if parent is not None:
-            self.setStyleSheet(parent.styleSheet())
+        for _pb in self.findChildren(QPushButton):
+            _pb.setAutoDefault(False)
+            _pb.setDefault(False)
+        self._zubcut_use_translucent_surface = False
         register_window_surface_effects(self)
 
     def _on_p_key_pressed(self):
@@ -569,7 +662,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
             return
         device = main.current_index()
         if device['admin']:
-            main.log('Cannot dupe admin device', 'orange')
+            main.log('Cannot dupe admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
         if main._toggle_start_blocked('dupe'):
             return
@@ -595,7 +688,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setWindowIcon(self.icon)
         self.setupUi(self)
         self.setWindowTitle(APP_DISPLAY_NAME)
-        self.setStyleSheet(zubcut_dark_stylesheet())
+        apply_app_global_dark_stylesheet()
+        self.setStyleSheet('')
         # Rebalance top toolbar row so right-side empty space is used more evenly.
         self.gridLayout.removeWidget(self.btnSettings)
         self.gridLayout.removeWidget(self.btnAbout)
@@ -604,6 +698,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.gridLayout.setColumnStretch(0, 0)
         for _col in range(1, 9):
             self.gridLayout.setColumnStretch(_col, 1)
+
+        # Legacy "ZubCut" label read like a clickable tab; remove it and widen the center status strip.
+        self.gridLayout.removeWidget(self.lblDonate)
+        self.lblDonate.hide()
+        self.gridLayout.removeWidget(self.lblcenter)
+        self.gridLayout.addWidget(self.lblcenter, 3, 3, 1, 4)
 
         # Space was bound in the .ui to ARP scan; only fire when the main window is foreground.
         self.btnScanEasy.setShortcut(QKeySequence())
@@ -663,6 +763,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         # Button active state styles
         self.BUTTON_ACTIVE_STYLE = "background-color: #c0392b; color: white; font-weight: bold;"
+        # Idle chrome for Kill / Lag / Dupe comes from utils_gui title-bar-matched QSS (object names).
         self.BUTTON_NORMAL_STYLE = ""
 
         # Settings props
@@ -700,13 +801,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for btn, btn_func, btn_icon, btn_tip in self.buttons:
             btn.setToolTip(btn_tip)
             btn.clicked.connect(btn_func)
+            btn.setAutoDefault(False)
+            btn.setDefault(False)
+            btn.setAttribute(Qt.WA_StyledBackground, True)
             if btn_icon is not None:
                 btn.setIcon(self.processIcon(btn_icon))
         self.btnAbout.setIcon(self.icon)
-        self.btnAbout.setIconSize(QSize(48, 48))
+        # Match ui_main (40); larger icons clip in the top grid cell.
+        self.btnAbout.setIconSize(QSize(40, 40))
 
         self.btnKill = QPushButton(self.centralwidget)
         self.btnKill.setObjectName('btnKill')
+        self.btnKill.setAttribute(Qt.WA_StyledBackground, True)
+        self.btnKill.setAutoDefault(False)
+        self.btnKill.setDefault(False)
         self.btnKill.setMinimumHeight(88)
         self.btnKill.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnKill.setToolTip(
@@ -724,7 +832,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Use pressed instead of clicked so fast double-clicks count as two toggles.
         self.btnKill.pressed.connect(lambda: self.toggleKill('mouse_pressed'))
 
-        self.btnLagSwitch = QPushButton('Lag Switch', self)
+        self.btnLagSwitch = QPushButton('Lag Switch', self.centralwidget)
+        self.btnLagSwitch.setObjectName('btnLagSwitch')
+        self.btnLagSwitch.setAttribute(Qt.WA_StyledBackground, True)
+        self.btnLagSwitch.setAutoDefault(False)
+        self.btnLagSwitch.setDefault(False)
         self.btnLagSwitch.setMinimumHeight(88)
         self.btnLagSwitch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnLagSwitch.setToolTip(
@@ -734,13 +846,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.gridLayout.addWidget(self.btnLagSwitch, 5, 1, 1, 3)
         self.btnLagSwitch.clicked.connect(self.openLagSwitchDialog)
         lag_font = QFont(self.btnLagSwitch.font())
-        lag_font.setPointSize(14)
+        lag_font.setPointSize(13)
         lag_font.setBold(True)
         self.btnLagSwitch.setFont(lag_font)
 
         self.gridLayout.addWidget(self.btnKill, 5, 4, 1, 2)
 
-        self.btnDupe = QPushButton('Dupe', self)
+        self.btnDupe = QPushButton('Dupe', self.centralwidget)
+        self.btnDupe.setObjectName('btnDupe')
+        self.btnDupe.setAttribute(Qt.WA_StyledBackground, True)
+        self.btnDupe.setAutoDefault(False)
+        self.btnDupe.setDefault(False)
         self.btnDupe.setMinimumHeight(88)
         self.btnDupe.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         dupe_font = QFont(self.btnDupe.font())
@@ -760,8 +876,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.refresh_keyboard_shortcuts_from_settings()
 
-        self.lblDonate.setText('ZubCut')
-        
         self.pgbar.setVisible(False)
 
         # Table Widget
@@ -773,6 +887,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.tableScan.setColumnCount(len(TABLE_HEADER_LABELS))
         self.tableScan.verticalHeader().setVisible(False)
         self.tableScan.setHorizontalHeaderLabels(TABLE_HEADER_LABELS)
+        _hh = self.tableScan.horizontalHeader()
+        _hh.setContextMenuPolicy(Qt.CustomContextMenu)
+        _hh.customContextMenuRequested.connect(self._scan_table_header_context_menu)
+        self._sync_scan_table_column_settings()
+
+        self._table_hover_row = -1
+        _tv = self.tableScan.viewport()
+        _tv.setMouseTracking(True)
+        _tv.installEventFilter(self)
+        sm = self.tableScan.selectionModel()
+        sm.selectionChanged.connect(self._on_table_selection_for_row_hover)
+        sm.currentChanged.connect(self._on_table_selection_for_row_hover)
+        self.tableScan.itemSelectionChanged.connect(self._on_table_selection_for_row_hover)
+        self.tableScan.currentCellChanged.connect(self._on_table_selection_for_row_hover)
+        self.tableScan.setItemDelegate(TableRowNoCellFocusDelegate(self.tableScan))
+        self.tableScan.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tableScan.setSelectionMode(QAbstractItemView.SingleSelection)
 
         '''
            System tray icon and it's tray menu
@@ -815,6 +946,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.taskbar_button = None
         self.taskbar_progress = None
 
+        # Apply global QSS after every named chrome QPushButton exists (earlier apply skipped
+        # Lag/Kill/Dupe and broke Fusion :hover on icon-only toolbar buttons).
+        apply_app_global_dark_stylesheet()
+        self._repolish_chrome_pushbuttons()
+
         setup_frameless_main_window(self, APP_DISPLAY_NAME, self.icon, maximizable=True)
         _chrome_windows = [
             self,
@@ -826,6 +962,24 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         sync_translucent_chrome(_chrome_windows)
 
         self.applySettings()
+        self._updateKillButtonState()
+        self._updateLagSwitchButtonState()
+        self._updateDupeButtonState()
+
+        _chrome_btns = (
+            self.btnScanEasy,
+            self.btnScanHard,
+            self.btnKillAll,
+            self.btnUnkillAll,
+            self.btnSettings,
+            self.btnAbout,
+            self.btnKill,
+            self.btnLagSwitch,
+            self.btnDupe,
+        )
+        self._chrome_hover_filter = _ChromePushButtonHoverFilter(self, _chrome_btns)
+        for _b in _chrome_btns:
+            _b.installEventFilter(self._chrome_hover_filter)
 
     @staticmethod
     def processIcon(icon_data, crop_margins=False):
@@ -899,7 +1053,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         device = self.current_index()
         if device['admin']:
-            self.log('Admin device', 'orange')
+            self.log('Admin device', UI_LOG_RESTORE_FG)
             return
         victim_ip = device['ip']
         iface = self.scanner.iface.name
@@ -917,7 +1071,50 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         act_probe.triggered.connect(self.probe_ip)
         menu.addAction(act_traffic)
         menu.addAction(act_probe)
+        menu.addSeparator()
+        self._append_scan_column_visibility_actions(menu)
         menu.exec_(self.tableScan.viewport().mapToGlobal(pos))
+
+    def _scan_table_header_context_menu(self, pos):
+        menu = QMenu(self)
+        self._append_scan_column_visibility_actions(menu)
+        menu.exec_(self.tableScan.horizontalHeader().mapToGlobal(pos))
+
+    def _append_scan_column_visibility_actions(self, menu):
+        act_mac = QAction('MAC Address', self)
+        act_mac.setCheckable(True)
+        act_mac.blockSignals(True)
+        act_mac.setChecked(not self.tableScan.isColumnHidden(SCAN_TABLE_COLUMN_MAC))
+        act_mac.blockSignals(False)
+        act_mac.toggled.connect(
+            lambda c, col=SCAN_TABLE_COLUMN_MAC: self._set_scan_table_column_visible(col, c)
+        )
+        menu.addAction(act_mac)
+        act_v = QAction('Vendor', self)
+        act_v.setCheckable(True)
+        act_v.blockSignals(True)
+        act_v.setChecked(not self.tableScan.isColumnHidden(SCAN_TABLE_COLUMN_VENDOR))
+        act_v.blockSignals(False)
+        act_v.toggled.connect(
+            lambda c, col=SCAN_TABLE_COLUMN_VENDOR: self._set_scan_table_column_visible(col, c)
+        )
+        menu.addAction(act_v)
+
+    def _set_scan_table_column_visible(self, col, visible):
+        self.tableScan.setColumnHidden(col, not visible)
+        key = 'show_scan_mac_column' if col == SCAN_TABLE_COLUMN_MAC else 'show_scan_vendor_column'
+        set_settings(key, bool(visible))
+        self.resizeEvent()
+
+    def _sync_scan_table_column_settings(self):
+        try:
+            mac = bool(get_settings('show_scan_mac_column'))
+            ven = bool(get_settings('show_scan_vendor_column'))
+        except Exception:
+            mac, ven = False, False
+        self.tableScan.setColumnHidden(SCAN_TABLE_COLUMN_MAC, not mac)
+        self.tableScan.setColumnHidden(SCAN_TABLE_COLUMN_VENDOR, not ven)
+        self.resizeEvent()
 
     def probe_ip(self):
         from PyQt5.QtWidgets import QInputDialog
@@ -927,7 +1124,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.log(f'Probing {ip}...', 'aqua')
         hit = self.scanner.probe_ip(ip)
         if hit:
-            self.log(f'Discovered {hit[0]} {hit[1]}', 'lime')
+            self.log(f'Discovered {hit[0]} {hit[1]}', UI_LOG_RESTORE_FG)
             self.showDevices()
         else:
             self.log('No response', 'red')
@@ -992,6 +1189,42 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for i in range(label_count):
             self.tableScan.setColumnWidth(i, self.tableScan.width() // label_count)
 
+    def _repolish_chrome_pushbuttons(self):
+        """Re-resolve app QSS on toolbar + bottom chrome (Fusion hover on icon QPushButtons)."""
+        app = QApplication.instance()
+        if app is None:
+            return
+        st = app.style()
+        for w in (
+            self.btnScanEasy,
+            self.btnScanHard,
+            self.btnKillAll,
+            self.btnUnkillAll,
+            self.btnSettings,
+            self.btnAbout,
+            self.btnKill,
+            self.btnLagSwitch,
+            self.btnDupe,
+        ):
+            st.unpolish(w)
+            st.polish(w)
+
+    def _restore_chrome_button_surface(self, btn):
+        """Clear programmatic hover stylesheet; restore Kill/Lag/Dupe/Settings special chrome."""
+        try:
+            if btn is self.btnSettings:
+                self._sync_settings_gear_update_hint()
+            elif btn is self.btnKill:
+                self._updateKillButtonState()
+            elif btn is self.btnLagSwitch:
+                self._updateLagSwitchButtonState()
+            elif btn is self.btnDupe:
+                self._updateDupeButtonState()
+            else:
+                btn.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        except RuntimeError:
+            pass
+
     def closeEvent(self, event):
         """
         Always exit on window close to avoid background instances blocking reinstalls.
@@ -1052,6 +1285,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.lag_switch_dialog.refresh_toggle_state()
         if getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
             self.dupe_switch_dialog.refresh_toggle_state()
+        self._repaint_all_table_rows_for_hover()
+        self._schedule_table_selection_repaint()
 
     def _updateLagSwitchButtonState(self):
         """Update lag switch button based on whether it's active for selected device."""
@@ -1069,7 +1304,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         device = self.current_index()
         if device['admin']:
-            self.log('Admin device', color='orange')
+            self.log('Admin device', color=UI_LOG_RESTORE_FG)
             return
         
         self.device_window.load(device, self.tableScan.currentRow())
@@ -1077,11 +1312,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.device_window.show()
         self.device_window.setWindowState(Qt.WindowNoState)
     
-    def fillTableCell(self, row, column, text, colors=[]):
+    def fillTableCell(self, row, column, text, colors=None, *, selectable=True):
+        if colors is None:
+            colors = []
         # Center text in table cell
         ql = QTableWidgetItem()
         ql.setText(text)
         ql.setTextAlignment(Qt.AlignCenter)
+        if selectable:
+            ql.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        else:
+            ql.setFlags(Qt.ItemIsEnabled)
 
         if colors:
             colored_item(ql, *colors)
@@ -1089,28 +1330,140 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Add cell to the specific location
         self.tableScan.setItem(row, column, ql)
 
+    def eventFilter(self, obj, event):
+        """Whole-row hover on the device table (viewport coords)."""
+        if obj is self.tableScan.viewport():
+            et = event.type()
+            if et == QEvent.MouseMove:
+                row = self.tableScan.rowAt(event.pos().y())
+                n = self.tableScan.rowCount()
+                if row < 0 or row >= n:
+                    self._update_table_hover_row(-1)
+                else:
+                    self._update_table_hover_row(row)
+            elif et == QEvent.Leave:
+                self._update_table_hover_row(-1)
+        return super().eventFilter(obj, event)
+
+    def _table_row_is_selected(self, row):
+        if row < 0:
+            return False
+        for ix in self.tableScan.selectedIndexes():
+            if ix.isValid() and ix.row() == row:
+                return True
+        cur = self.tableScan.currentIndex()
+        return cur.isValid() and cur.row() == row
+
+    def _schedule_table_selection_repaint(self):
+        """Selection model can commit after our slot; repaint next tick so brushes match."""
+        QTimer.singleShot(0, self._repaint_all_table_rows_for_hover)
+
+    def _device_row_blocked_chrome(self, device):
+        """
+        True when this row should use kill-row styling: explicit kill, or lag/dupe victim
+        (lag allow-phase temporarily removes the MAC from killer.killed — still show red).
+        """
+        if not device or device.get('admin'):
+            return False
+        mac = device['mac']
+        if mac in self.killer.killed:
+            return True
+        if getattr(self, 'lag_active', False) and self.lag_device_mac == mac:
+            return True
+        if getattr(self, 'dupe_active', False) and self.dupe_device_mac == mac:
+            return True
+        return False
+
+    def _table_hover_cell_palette(self, row, device):
+        """
+        Return (bg, fg) for every cell in the row, or None to clear to stylesheet (alternating rows).
+        """
+        exp = str(UPDATE_CHANNEL or '').strip().lower() == 'experimental'
+        admin_colors = (
+            [ADMIN_DEVICE_TABLE_ROW_BG, ADMIN_DEVICE_TABLE_ROW_FG]
+            if exp
+            else ['#00ff00', '#000000']
+        )
+        if device.get('admin'):
+            return tuple(admin_colors)
+        blocked = self._device_row_blocked_chrome(device)
+        selected = self._table_row_is_selected(row)
+        hovered = row == getattr(self, '_table_hover_row', -1)
+        hover_bg, hover_fg = table_row_hover_chrome()
+        sel_bg, sel_fg = table_row_selection_chrome()
+        if blocked:
+            if selected:
+                if hovered:
+                    return _DEVICE_ROW_KILL_SEL_HOVER_BG, _DEVICE_ROW_KILL_SEL_HOVER_FG
+                return _DEVICE_ROW_KILL_SELECTED_BG, _DEVICE_ROW_KILL_SELECTED_FG
+            if hovered:
+                return _DEVICE_ROW_KILL_HOVER_BG, _DEVICE_ROW_KILL_HOVER_FG
+            return _DEVICE_ROW_KILL_BG, _DEVICE_ROW_KILL_FG
+        if selected:
+            return sel_bg, sel_fg
+        if hovered:
+            return hover_bg, hover_fg
+        return None
+
+    def _repaint_table_row_for_hover(self, row):
+        if row < 0 or row >= self.tableScan.rowCount():
+            return
+        if row >= len(self.scanner.devices):
+            return
+        device = self.scanner.devices[row]
+        ncols = self.tableScan.columnCount()
+        pal = self._table_hover_cell_palette(row, device)
+        for c in range(ncols):
+            item = self.tableScan.item(row, c)
+            if item is None:
+                continue
+            if pal is None:
+                item.setBackground(QBrush())
+                item.setForeground(QBrush())
+            else:
+                colored_item(item, pal[0], pal[1])
+
+    def _update_table_hover_row(self, new_row):
+        old = getattr(self, '_table_hover_row', -1)
+        if new_row == old:
+            return
+        self._table_hover_row = new_row
+        if old >= 0:
+            self._repaint_table_row_for_hover(old)
+        if new_row >= 0:
+            self._repaint_table_row_for_hover(new_row)
+
+    def _repaint_all_table_rows_for_hover(self):
+        for r in range(self.tableScan.rowCount()):
+            self._repaint_table_row_for_hover(r)
+
+    def _on_table_selection_for_row_hover(self, *_args):
+        self._repaint_all_table_rows_for_hover()
+
     def fillTableRow(self, row, device):
         for column, text in enumerate(device.values()):
             # Skip 'admin' key
             if type(text) == bool:
                 continue
             
-            # Highlight Admins in green
+            # Highlight Admins (Me / Router): bright green on stable; darker green on experimental.
             if device['admin']:
-                self.fillTableCell(
-                    row,
-                    column,
-                    text,
-                    ['#00ff00', '#000000']
+                admin_colors = (
+                    [ADMIN_DEVICE_TABLE_ROW_BG, ADMIN_DEVICE_TABLE_ROW_FG]
+                    if str(UPDATE_CHANNEL or '').strip().lower() == 'experimental'
+                    else ['#00ff00', '#000000']
                 )
+                self.fillTableCell(row, column, text, admin_colors, selectable=False)
             else:
-                self.fillTableCell(
-                    row,
-                    column,
-                    text,
-                    # Highlight killed devices in red else transparent
-                    ['#ff0000', '#ffffff'] * (device['mac'] in self.killer.killed)
-                )
+                if self._device_row_blocked_chrome(device):
+                    kill_colors = (
+                        [_DEVICE_ROW_KILL_SELECTED_BG, _DEVICE_ROW_KILL_SELECTED_FG]
+                        if self._table_row_is_selected(row)
+                        else [_DEVICE_ROW_KILL_BG, _DEVICE_ROW_KILL_FG]
+                    )
+                else:
+                    kill_colors = []
+                self.fillTableCell(row, column, text, kill_colors)
 
     def showDevices(self):
         """
@@ -1135,6 +1488,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         for row, device in enumerate(self.scanner.devices):
             self.fillTableRow(row, device)
+
+        self._table_hover_row = -1
         
         status = f'{len(self.scanner.devices) - 2} devices' \
                  f' ({len(self.killer.killed)} killed)'
@@ -1146,16 +1501,26 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lblright.setText(status)
         self.tray_icon.setToolTip(status_tray)
 
-        # Restore selection when possible so toggle states stay in sync
-        if 0 <= current_row < len(self.scanner.devices):
-            self.tableScan.selectRow(current_row)
-            self.tableScan.setCurrentCell(current_row, 0)
+        # Restore selection when possible so toggle states stay in sync (skip Me/Router rows).
+        restore_row = current_row
+        if 0 <= restore_row < len(self.scanner.devices) and self.scanner.devices[restore_row].get('admin'):
+            restore_row = -1
+            for i, d in enumerate(self.scanner.devices):
+                if not d.get('admin'):
+                    restore_row = i
+                    break
+        if 0 <= restore_row < len(self.scanner.devices) and not self.scanner.devices[restore_row].get('admin'):
+            self.tableScan.selectRow(restore_row)
+            self.tableScan.setCurrentCell(restore_row, 0)
             self.deviceClicked()
         else:
             self._updateKillButtonState()
             self._updateLagSwitchButtonState()
             self._updateDupeButtonState()
             self.lblcenter.setText('Nothing Selected')
+
+        self._repaint_all_table_rows_for_hover()
+        self._schedule_table_selection_repaint()
     
     def processDevices(self):
         """
@@ -1185,7 +1550,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.log(
             f'Found {len(self.scanner.devices) - 2} devices.',
-            'orange'
+            UI_LOG_RESTORE_FG,
         )
 
         self.showDevices()
@@ -1213,7 +1578,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killed_devices[device['mac']] = True
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
-        self.log('Killed ' + device['ip'], 'fuchsia')
+        self.log('Killed ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
         self._updateKillButtonState()
         
         self.showDevices()
@@ -1244,7 +1609,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killed_devices[device['mac']] = False
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
-        self.log('Unkilled ' + device['ip'], 'lime')
+        self.log('Unkilled ' + device['ip'], UI_LOG_RESTORE_FG)
 
         self._updateKillButtonState()
         self.showDevices()
@@ -1264,7 +1629,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.killed_devices[mac] = True
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
-        self.log('Killed All devices', 'fuchsia')
+        self.log('Killed All devices', UI_LOG_VICTIM_BLOCK_FG)
 
         self.showDevices()
 
@@ -1293,7 +1658,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killed_devices.clear()
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
-        self.log('Unkilled All devices', 'lime')
+        self.log('Unkilled All devices', UI_LOG_RESTORE_FG)
 
         self._updateKillButtonState()
         self.showDevices()
@@ -1329,7 +1694,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         
         self.log(
             ['Arping', 'Pinging'][scan_type] + ' your network...',
-            ['aqua', 'fuchsia'][scan_type]
+            [UI_LOG_RESTORE_FG, UI_LOG_VICTIM_BLOCK_FG][scan_type],
         )
         
         self.pgbar.setVisible(True)
@@ -1593,7 +1958,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         device = self.current_index()
         if device['admin']:
-            self.log('Cannot lag admin device', 'orange')
+            self.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
         if self._toggle_start_blocked('lag'):
             return
@@ -1622,7 +1987,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         device = self.current_index()
         if device['admin']:
-            self.log('Cannot dupe admin device', 'orange')
+            self.log('Cannot dupe admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
         if self._toggle_start_blocked('dupe'):
             return
@@ -1643,7 +2008,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         device = self.current_index()
         if device['admin']:
-            self.log('Cannot lag admin device', 'orange')
+            self.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
         if self.lag_switch_dialog is None:
             self.lag_switch_dialog = LagSwitchDialog(self)
@@ -1660,7 +2025,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         device = self.current_index()
         if device['admin']:
-            self.log('Cannot dupe admin device', 'orange')
+            self.log('Cannot dupe admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
         if self.dupe_switch_dialog is None:
             self.dupe_switch_dialog = DupeDialog(self)
@@ -1700,7 +2065,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         dir_text = {'both': 'all', 'in': 'incoming', 'out': 'outgoing'}[self.lag_direction]
         self.log(
             f'Lag switch ON: {self.lag_block_ms}ms lag ({dir_text}) / {self.lag_release_ms}ms normal',
-            'orange',
+            UI_LOG_VICTIM_BLOCK_FG,
         )
         self._lag_apply_block(device)
         self._lag_in_allow_phase = False
@@ -1708,6 +2073,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
             self.lag_switch_dialog.refresh_toggle_state()
         self._updateKillButtonState()
+        self._repaint_all_table_rows_for_hover()
 
     def _refresh_table_row_for_mac(self, mac):
         """Update table row colors for one MAC without rebuilding the whole table."""
@@ -1716,6 +2082,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for row, d in enumerate(self.scanner.devices):
             if d['mac'] == mac:
                 self.fillTableRow(row, d)
+                self._repaint_table_row_for_hover(row)
                 break
 
     def _apply_victim_block(self, device, direction):
@@ -1821,11 +2188,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._sync_killed_devices()
         self.btnLagSwitch.setText('Lag Switch')
         self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-        self.log('Lag switch OFF', 'lime')
+        self.log('Lag switch OFF', UI_LOG_RESTORE_FG)
         if refresh_dialog and self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
             self.lag_switch_dialog.refresh_toggle_state()
         self._updateLagSwitchButtonState()
         self._updateKillButtonState()
+        self._repaint_all_table_rows_for_hover()
 
     def startDupe(self, device, duration_ms, direction):
         if self._toggle_start_blocked('dupe'):
@@ -1840,13 +2208,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnDupe.setText('■ DUPE')
         self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         dir_text = {'both': 'all', 'in': 'incoming', 'out': 'outgoing'}[direction]
-        self.log(f'Dupe: {duration_ms}ms ({dir_text}), then full stop', 'orange')
+        self.log(f'Dupe: {duration_ms}ms ({dir_text}), then full stop', UI_LOG_VICTIM_BLOCK_FG)
         self._dupe_elapsed.start()
         self.dupe_timer.start(max(1, int(duration_ms)))
         self._dupe_countdown_timer.start()
         self._tick_dupe_countdown()
         if getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
             self.dupe_switch_dialog.refresh_toggle_state()
+        self._repaint_all_table_rows_for_hover()
 
     def dupe_remaining_ms(self):
         if not self.dupe_active:
@@ -1892,11 +2261,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnDupe.setText('Dupe')
         self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         if log:
-            self.log(log_message, 'lime')
+            self.log(log_message, UI_LOG_RESTORE_FG)
         if refresh_dialog and getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
             self.dupe_switch_dialog.refresh_toggle_state()
         self._updateDupeButtonState()
         self._updateKillButtonState()
+        self._repaint_all_table_rows_for_hover()
 
     def _updateDupeButtonState(self):
         if self.dupe_active and self.dupe_device_mac:
@@ -1951,7 +2321,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if active_kind and active_kind != requested_kind:
             self.log(
                 f'{self._toggle_kind_label(active_kind)} is active. Turn it off first.',
-                'orange',
+                UI_LOG_VICTIM_BLOCK_FG,
             )
             return True
         return False
@@ -1964,7 +2334,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log('No device selected', 'red')
             return
         if device['admin']:
-            self.log('Cannot kill admin device', 'orange')
+            self.log('Cannot kill admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
 
         mac = device['mac']
@@ -1993,7 +2363,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.stopDupe(log=False)
             if not actual_on and device:
                 self.killer.kill(device)
-                self.log('Kill ON for ' + device['ip'], 'fuchsia')
+                self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
         else:
             victim = self._victim_record_for_mac(mac) or device
             if victim:
@@ -2001,7 +2371,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.killer.reinforce_restore(victim)
                 if actual_on:
                     self.killer.reinforce_restore(victim)
-                self.log('Kill OFF for ' + victim['ip'], 'lime')
+                self.log('Kill OFF for ' + victim['ip'], UI_LOG_RESTORE_FG)
                 # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
                 self._schedule_kill_off_reinforce(mac, next_seq, 60)
                 self._schedule_kill_off_reinforce(mac, next_seq, 180)
