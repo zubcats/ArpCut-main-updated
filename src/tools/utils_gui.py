@@ -192,34 +192,12 @@ QPushButton#btnAbout {{
     padding: 8px;
 }}
 """
-    if _experimental_charcoal_ui():
-        acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#35726E')
-        ld = 'QPushButton#btnKill, QPushButton#btnLagSwitch, QPushButton#btnDupe'
-        h_fill, p_fill = '#3d524f', '#354846'
-        out += f"""
-{ld} {{
-    border: 1px solid {acc};
-}}
-{ld}:hover {{
-    background-color: {h_fill};
-    border: 1px solid {acc};
-    color: #eef1f0;
-}}
-{ld}:pressed {{
-    background-color: {p_fill};
-    border: 1px solid {acc};
-    color: #e8eaed;
-}}
-{ld}:disabled {{
-    border: 1px solid {acc};
-}}
-"""
     return out
 
 
 def _chrome_status_strip_and_tabs_qss() -> str:
     """Status row under the table + tab bars: no panel tint; blend into window chrome."""
-    dev_count_fg = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
+    dev_count_fg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_BG', '#316E69')
     if _experimental_charcoal_ui():
         mute, hi, hover = '#9a9a9a', '#e8eaed', '#d0d0d0'
     else:
@@ -275,8 +253,9 @@ def table_row_hover_chrome() -> tuple[str, str]:
 def table_row_selection_chrome() -> tuple[str, str]:
     """Background / foreground for selected device row (item brushes; table QSS selection is transparent)."""
     if _experimental_charcoal_ui():
-        # Must read clearly on #000000 / #0a0a0a rows — #2b2b2b was too close to the viewport.
-        return '#3d524f', '#f2f2f2'
+        bg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_BG', '#316E69')
+        fg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_FG', '#f2f2f2')
+        return bg, fg
     return '#324e7a', '#ffffff'
 
 
@@ -329,7 +308,7 @@ def _auxiliary_windows_qss() -> str:
     Settings / About / Device / Traffic (QMainWindow#zubcutAuxiliaryWindow) and modal dialogs
     (Lag Switch, Dupe, message boxes): same charcoal buttons / panels as the main window.
     """
-    toggle_acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#35726E')
+    toggle_acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#316E69')
     if _experimental_charcoal_ui():
         bg, bd, bh, bp = '#2b2b2b', '#3d3d3d', '#383838', '#323232'
         tx, th, tp, mute = '#e8eaed', '#d0d0d0', '#9a9a9a', '#9a9a9a'
@@ -533,7 +512,7 @@ def _lag_dupe_dialog_chrome_qss() -> str:
     Lag Switch / Dupe: solid black client (no translucent bleed), teal grey-green borders
     (UI_TOGGLE_BORDER_ACCENT), stable 1px borders to avoid hover text shift.
     """
-    acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#35726E')
+    acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#316E69')
     fill, h_fill, p_fill = '#1a1a1a', '#3d524f', '#354846'
     panel = '#0d0d0d'
     return f"""

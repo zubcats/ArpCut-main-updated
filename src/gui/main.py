@@ -116,14 +116,7 @@ def _focus_widget_absorbs_letter_key(widget):
 
 
 def _chrome_pushbutton_hover_inline_qss(watched_btn=None) -> str:
-    """Programmatic hover for icon chrome; Kill/Lag/Dupe share toggle border accent (main QSS)."""
-    if watched_btn is not None:
-        _on = watched_btn.objectName()
-        if _on in ('btnKill', 'btnLagSwitch', 'btnDupe'):
-            acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#35726E')
-            return (
-                f'background-color: #3d524f; color: #eef1f0; border: 1px solid {acc}; border-radius: 4px;'
-            )
+    """Programmatic hover for icon chrome (Fusion + qdark); same palette for all toolbar buttons."""
     if str(UPDATE_CHANNEL or '').strip().lower() == 'experimental':
         return (
             'background-color: #383838; color: #d0d0d0; border: 1px solid #383838; border-radius: 4px;'
@@ -906,6 +899,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         sm = self.tableScan.selectionModel()
         sm.selectionChanged.connect(self._on_table_selection_for_row_hover)
         sm.currentChanged.connect(self._on_table_selection_for_row_hover)
+        self.tableScan.itemSelectionChanged.connect(self._on_table_selection_for_row_hover)
+        self.tableScan.currentCellChanged.connect(self._on_table_selection_for_row_hover)
         self.tableScan.setItemDelegate(TableRowNoCellFocusDelegate(self.tableScan))
         self.tableScan.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tableScan.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -1353,7 +1348,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if row < 0:
             return False
         sm = self.tableScan.selectionModel()
-        return sm.hasSelection() and self.tableScan.currentRow() == row
+        if sm is None or not sm.hasSelection():
+            return False
+        for idx in sm.selectedRows():
+            if idx.row() == row:
+                return True
+        return self.tableScan.currentRow() == row
 
     def _device_row_blocked_chrome(self, device):
         """
