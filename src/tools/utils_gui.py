@@ -622,6 +622,45 @@ QDialog#zubcutLagDupeDialog QSlider::handle:horizontal:hover {{
 """
 
 
+def _installer_download_dialog_qss() -> str:
+    """Frameless installer download dialog: dark body + progress chunk (no native white caption)."""
+    acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#316E69')
+    return f"""
+QDialog#zubcutInstallerDownloadDialog {{
+    background-color: #000000;
+}}
+QDialog#zubcutInstallerDownloadDialog QWidget#zubcutDialogBody {{
+    background-color: #141414;
+}}
+QDialog#zubcutInstallerDownloadDialog QWidget#zubcutDialogBody QLabel {{
+    color: #e8eaed;
+}}
+QDialog#zubcutInstallerDownloadDialog QWidget#zubcutDialogBody QProgressBar {{
+    border: 1px solid #3d3d3d;
+    border-radius: 4px;
+    background-color: #2b2b2b;
+    text-align: center;
+    color: #e8eaed;
+    min-height: 18px;
+}}
+QDialog#zubcutInstallerDownloadDialog QWidget#zubcutDialogBody QProgressBar::chunk {{
+    background-color: {acc};
+    border-radius: 3px;
+}}
+QDialog#zubcutInstallerDownloadDialog QWidget#zubcutDialogBody QPushButton {{
+    background-color: #2b2b2b;
+    color: #e8eaed;
+    border: 1px solid #3d3d3d;
+    border-radius: 4px;
+    padding: 6px 14px;
+}}
+QDialog#zubcutInstallerDownloadDialog QWidget#zubcutDialogBody QPushButton:hover {{
+    background-color: #383838;
+    border: 1px solid #383838;
+}}
+"""
+
+
 def zubcut_dark_stylesheet():
     base = load_stylesheet() + '\n' + translucent_main_chrome_qss()
     if _experimental_charcoal_ui():
@@ -632,6 +671,7 @@ def zubcut_dark_stylesheet():
     base = base + '\n' + _table_scan_focus_frame_qss()
     base = base + '\n' + _auxiliary_windows_qss()
     base = base + '\n' + _lag_dupe_dialog_chrome_qss()
+    base = base + '\n' + _installer_download_dialog_qss()
     return base
 
 
