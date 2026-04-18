@@ -13,14 +13,16 @@ class ScanThread(QThread):
         self.scan_type = None
 
     def run(self):
-        # Execute arp or ping scan
-        if self.scan_type:
-            self.hard()
-        else:
-            self.easy()
-
-        # Emit show devices func to the thread finished reciever
-        self.thread_finished.emit(True)
+        # Always finish the thread so the UI re-enables even if arping/ARP parsing raises.
+        try:
+            if self.scan_type:
+                self.hard()
+            else:
+                self.easy()
+        except Exception as e:
+            print('ScanThread error:', e)
+        finally:
+            self.thread_finished.emit(True)
     
     def easy(self):
         # Fake progress cause Scapy can't handle QThread Signals

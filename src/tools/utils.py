@@ -1,14 +1,13 @@
-from scapy.all import conf, get_if_list
-from subprocess import check_output, CalledProcessError
+import os
 import subprocess
+from scapy.all import conf, get_if_list
+from subprocess import STDOUT, check_output, CalledProcessError
 from socket import socket
 from threading import Thread
 from manuf import manuf
 import sys
 import webbrowser
 import re
-
-from json import JSONDecodeError, loads
 
 from networking.ifaces import NetFace
 from constants import *
@@ -28,36 +27,6 @@ def _is_bad_iface_display_name(s: str) -> bool:
     if re.match(r'^interface-\d+$', t):
         return True
     return False
-
-
-def _win_ps_net_adapters():
-    """Windows: Get-NetAdapter rows for reliable friendly names (Name + InterfaceDescription + GUID)."""
-    if not sys.platform.startswith('win'):
-        return []
-    try:
-        out = subprocess.run(
-            [
-                'powershell',
-                '-NoProfile',
-                '-NonInteractive',
-                '-Command',
-                'Get-NetAdapter | Select-Object Name,InterfaceDescription,InterfaceGuid,MacAddress '
-                '| ConvertTo-Json -Compress',
-            ],
-            capture_output=True,
-            text=True,
-            timeout=25,
-        )
-        if out.returncode != 0 or not (out.stdout or '').strip():
-            return []
-        data = loads(out.stdout.strip())
-        if isinstance(data, dict):
-            return [data]
-        if isinstance(data, list):
-            return data
-    except (OSError, JSONDecodeError, ValueError, subprocess.TimeoutExpired):
-        pass
-    return []
 
 
 def format_iface_settings_label(iface: NetFace) -> str:
@@ -88,21 +57,30 @@ def format_iface_settings_label(iface: NetFace) -> str:
     return ' · '.join(bits)
 
 
-def _ps_guid_index(rows):
-    m = {}
-    for row in rows:
-        raw = row.get('InterfaceGuid') or row.get('interfaceGuid') or ''
-        g = str(raw).strip('{}').casefold()
-        if g:
-            m[g] = row
-    return m
-
 def terminal(command, shell=True, decode=True):
     """
-    Terminal commands via Subprocess (cross-platform)
+    Terminal commands via Subprocess (cross-platform).
+
+    On Windows with shell=True, runs through ``%SystemRoot%\\System32\\cmd.exe /d /c``
+    instead of ``subprocess``'s default shell (``%COMSPEC%``). Some PCs set COMSPEC
+    to PowerShell, which would spawn ``powershell.exe`` for every ``arp``/``ping``/``ipconfig``.
     """
     try:
-        cmd = check_output(command, shell=shell, stderr=subprocess.STDOUT)
+        kwargs = {'stderr': STDOUT}
+        if sys.platform.startswith('win') and shell:
+            cmd_exe = os.path.join(
+                os.environ.get('SystemRoot', r'C:\Windows'),
+                'System32',
+                'cmd.exe',
+            )
+            if isinstance(command, str) and os.path.isfile(cmd_exe):
+                kwargs['shell'] = False
+                argv = [cmd_exe, '/d', '/c', command]
+                cmd = check_output(argv, **kwargs)
+            else:
+                cmd = check_output(command, shell=True, stderr=STDOUT)
+        else:
+            cmd = check_output(command, shell=shell, stderr=STDOUT)
         return cmd.decode('utf-8', errors='replace') if decode else None
     except CalledProcessError as e:
         # Return error output if available for debugging
@@ -343,8 +321,6 @@ def get_ifaces():
         # Step 3: Get Scapy interfaces and match with our map
         from scapy.all import get_if_hwaddr
         scapy_ifaces = get_if_list()
-        ps_rows = _win_ps_net_adapters()
-        guid_ps = _ps_guid_index(ps_rows)
 
         for scapy_name in scapy_ifaces:
             # Extract GUID from Scapy name: \\Device\\NPF_{GUID}
@@ -375,18 +351,9 @@ def get_ifaces():
                         friendly_name = key
                         break
 
-            # Prefer Get-NetAdapter (reliable) over netsh/ipconfig heuristics.
-            if guid and guid.casefold() in guid_ps:
-                row = guid_ps[guid.casefold()]
-                nm = (row.get('Name') or '').strip()
-                desc = (row.get('InterfaceDescription') or '').strip()
-                if nm and desc and nm.lower() != desc.lower():
-                    friendly_name = f'{nm} — {desc}'
-                elif desc:
-                    friendly_name = desc
-                elif nm:
-                    friendly_name = nm
-            elif friendly_name and _is_bad_iface_display_name(friendly_name):
+            # Drop useless netsh/ipconfig labels (no PowerShell Get-NetAdapter: avoids spawning
+            # powershell.exe on every refresh; ipconfig + MAC match remains the source of truth).
+            if friendly_name and _is_bad_iface_display_name(friendly_name):
                 friendly_name = None
 
             # Get IP and MAC
@@ -535,9 +502,21 @@ def get_iface_by_name(name):
     """
     Return interface given its name
     """
-    for iface in get_ifaces():
+    if not name or str(name).strip() == '' or name == 'NULL':
+        return get_default_iface()
+    name = str(name).strip()
+    ifaces = list(get_ifaces())
+    for iface in ifaces:
         if iface.name == name:
             return iface
+    # Settings may still store a legacy "Short — long description" label from older builds.
+    for sep in ('\u2014', '\u2013'):
+        if sep in name:
+            stem = name.split(sep, 1)[0].strip()
+            if stem and stem != name:
+                for iface in ifaces:
+                    if iface.name == stem:
+                        return iface
     return get_default_iface()
 
 def is_connected(current_iface=None):

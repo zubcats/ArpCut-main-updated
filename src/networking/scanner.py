@@ -1,11 +1,12 @@
 from concurrent.futures.thread import ThreadPoolExecutor
 from scapy.all import Ether, arping, conf, get_if_addr
 from time import sleep
-from re import findall
+import re
 import sys
 from typing import Optional
 
 from networking.nicknames import Nicknames
+from tools.device_display import infer_network_device_type
 from tools.utils import *
 from constants import *
 
@@ -95,12 +96,15 @@ class Scanner():
         self.devices = []
         unique = []
 
-        # Sort by last part of ip xxx.xxx.x.y
-        scan_result = sorted(
-            scan_result,
-            key=lambda i:int(i[0].split('.')[-1])
-        )
-        
+        # Sort by last IPv4 octet (tolerant of odd rows so we never abort the scan thread).
+        def _ip_sort_key(item):
+            try:
+                return int(str(item[0]).rsplit('.', 1)[-1])
+            except (ValueError, IndexError, TypeError, AttributeError):
+                return 0
+
+        scan_result = sorted(scan_result, key=_ip_sort_key)
+
         for ip, mac in scan_result:
             mac = good_mac(mac)
 
@@ -113,12 +117,17 @@ class Scanner():
                 self.old_ips[mac] = ip
                 unique.append(mac)
 
+            vend = get_vendor(mac)
+            try:
+                dev_type = infer_network_device_type(mac, vend, '')
+            except Exception:
+                dev_type = 'User'
             self.devices.append(
                 {
                     'ip':     ip,
                     'mac':    mac,
-                    'vendor': get_vendor(mac),
-                    'type':   'User',
+                    'vendor': vend,
+                    'type':   dev_type,
                     'name':   nicknames.get_name(mac),
                     'admin':  False
                 }
@@ -139,24 +148,93 @@ class Scanner():
         # Clear arp cache to avoid duplicates next time
         if unique:
             self.flush_arp()
-    
+
+    def _windows_arp_raw_text(self):
+        """Merge interface-scoped and full ARP output (``-N`` often returns nothing on some builds)."""
+        chunks = []
+        my = (getattr(self, 'my_ip', None) or '').strip()
+        if my and my not in ('127.0.0.1', '0.0.0.0'):
+            scoped = terminal(f'arp -a -N {my}')
+            if scoped and scoped.strip():
+                chunks.append(scoped)
+        full = terminal('arp -a')
+        if full and full.strip():
+            chunks.append(full)
+        return '\n'.join(chunks)
+
+    def _windows_parse_arp_table(self, text):
+        """
+        Parse ``arp -a`` output on any locale. Uses regex (not column order) and skips
+        interface header lines (``Interface:`` / ``Schnittstelle:`` / ``--- 0x..`` rows).
+        """
+        if not text or not text.strip():
+            return []
+        pat_ip = re.compile(r'\b((?:\d{1,3}\.){3}\d{1,3})\b')
+        pat_mac = re.compile(r'(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b', re.I)
+        # "Interface: 192.168.1.10 --- 0x3" style (EN + many locales use same layout)
+        hdr = re.compile(
+            r'^.+\s*:\s*\d{1,3}(?:\.\d{1,3}){3}\s+---\s+0x[0-9a-f]+\s*$',
+            re.I,
+        )
+        clean = []
+        seen = set()
+        pf = (getattr(self, 'perfix', None) or '').strip()
+        my = (getattr(self, 'my_ip', None) or '').strip()
+        restrict_subnet = (
+            bool(pf)
+            and not pf.startswith('127.')
+            and my
+            and my not in ('127.0.0.1', '0.0.0.0')
+        )
+        for raw in text.split('\n'):
+            line = (raw or '').strip()
+            if not line:
+                continue
+            low = line.lower()
+            if 'interface:' in low:
+                continue
+            if hdr.match(line):
+                continue
+            # Header row with IP + --- 0x but no hardware MAC on the line
+            if '---' in line and '0x' in low and pat_ip.search(line) and not pat_mac.search(line):
+                continue
+            m_ip = pat_ip.search(line)
+            m_mac = pat_mac.search(line)
+            if not m_ip or not m_mac:
+                continue
+            ip = m_ip.group(1)
+            try:
+                nums = ip.split('.')
+                if len(nums) != 4 or not all(0 <= int(x) <= 255 for x in nums):
+                    continue
+            except (ValueError, TypeError):
+                continue
+            mac = good_mac(m_mac.group(0))
+            if not mac or mac == GLOBAL_MAC:
+                continue
+            if restrict_subnet and not ip.startswith(pf + '.'):
+                continue
+            key = (ip, mac)
+            if key in seen:
+                continue
+            seen.add(key)
+            clean.append((ip, mac))
+        return clean
+
     def arping_cache(self):
         """
         Showing system arp cache after pinging
         """
         # Correct scan result when working with specific interface
         if sys.platform.startswith('win'):
-            # Windows: get ARP table for the interface
-            if self.my_ip and self.my_ip != '127.0.0.1':
-                scan_result = terminal(f'arp -a -N {self.my_ip}')
-            else:
-                # Fallback: get all ARP entries
-                scan_result = terminal('arp -a')
-            
+            scan_result = self._windows_arp_raw_text()
             if scan_result:
-                # Filter for dynamic entries
-                lines = [l for l in scan_result.split('\n') if 'dynamic' in l.lower() or 'static' in l.lower()]
-                scan_result = '\n'.join(lines)
+                lines_en = [
+                    l for l in scan_result.split('\n')
+                    if 'dynamic' in l.lower() or 'static' in l.lower()
+                ]
+                if lines_en:
+                    scan_result = '\n'.join(lines_en)
         else:
             scan_result = terminal('arp -an')
         
@@ -166,36 +244,15 @@ class Scanner():
             return
 
         if sys.platform.startswith('win'):
-            # Windows ARP format: "  IP_ADDRESS      MAC_ADDRESS      TYPE"
-            clean_result = []
-            for line in scan_result.split('\n'):
-                line = line.strip()
-                if not line or 'Interface:' in line:
-                    continue
-                parts = line.split()
-                if len(parts) >= 2:
-                    ip = parts[0]
-                    # MAC might be in format 00-11-22 or 00:11:22
-                    mac_candidate = parts[1].replace('-', ':')
-                    # Validate IP format
-                    if '.' in ip and ip.count('.') == 3:
-                        try:
-                            # Quick IP validation
-                            nums = ip.split('.')
-                            if all(0 <= int(n) <= 255 for n in nums):
-                                mac = good_mac(mac_candidate)
-                                if mac and mac != GLOBAL_MAC:
-                                    clean_result.append((ip, mac))
-                        except (ValueError, IndexError):
-                            continue
+            clean_result = self._windows_parse_arp_table(scan_result)
         else:
             # macOS/Linux: parse lines like "? (192.168.1.1) at aa:bb:cc:dd:ee:ff on en0 ..."
             lines = [l for l in scan_result.split('\n') if l.strip()]
             clean_result = []
             for line in lines:
                 try:
-                    ip = findall(r'\(([^)]+)\)', line)[0]
-                    macs = findall(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', line)
+                    ip = re.findall(r'\(([^)]+)\)', line)[0]
+                    macs = re.findall(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', line)
                     if macs:
                         clean_result.append((ip, macs[0]))
                 except Exception:
@@ -209,13 +266,30 @@ class Scanner():
         self.init()
 
         self.generate_ips()
-        scan_result = arping(
-            f"{self.router_ip}/24",
-            iface=self.iface.guid,  # Use guid (Scapy/pcap name), not name
-            verbose=0,
-            timeout=1
-        )
-        clean_result = [(i[1].psrc, i[1].src) for i in scan_result[0]]
+        # "0.0.0.0/24" breaks discovery; fall back to the host subnet from our own IP.
+        target = f"{self.router_ip}/24"
+        if not self.router_ip or self.router_ip in ('0.0.0.0', '127.0.0.1'):
+            target = f"{self.perfix}.0/24"
+        try:
+            scan_result = arping(
+                target,
+                iface=self.iface.guid,  # Use guid (Scapy/pcap name), not name
+                verbose=0,
+                timeout=1
+            )
+            clean_result = [(i[1].psrc, i[1].src) for i in scan_result[0]]
+        except Exception as e:
+            print('arp_scan: arping failed:', e)
+            clean_result = []
+
+        # If Scapy found nothing (Npcap permissions, wrong iface, etc.), fall back to OS ARP table.
+        if not clean_result and sys.platform.startswith('win'):
+            try:
+                self.arping_cache()
+            except Exception as e:
+                print('arp_scan: ARP table fallback failed:', e)
+                self.devices_appender([])
+            return
 
         self.devices_appender(clean_result)
 
@@ -350,7 +424,7 @@ class Scanner():
                         # Also check if IP appears anywhere in the line
                         elif ip in line:
                             # Extract MAC using regex
-                            macs = findall(r'([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})', line)
+                            macs = re.findall(r'([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})', line)
                             if macs:
                                 mac = good_mac(macs[0])
                                 if mac and mac != GLOBAL_MAC:
@@ -360,7 +434,7 @@ class Scanner():
             cache = terminal('arp -an') or ''
             for line in cache.split('\n'):
                 if ip in line:
-                    macs = findall(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', line)
+                    macs = re.findall(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', line)
                     if macs:
                         mac = good_mac(macs[0])
                         self.devices_appender([(ip, mac)])
