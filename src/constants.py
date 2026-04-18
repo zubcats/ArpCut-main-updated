@@ -50,6 +50,8 @@ ADMIN_DEVICE_TABLE_ROW_BG = '#5D706E'
 ADMIN_DEVICE_TABLE_ROW_FG = '#eef1f0'
 # Main status strip (lblleft HTML): victim block / kill / lag on / dupe burst — teal-grey swatch.
 UI_LOG_VICTIM_BLOCK_FG = '#32716D'
+# Kill / Lag / Dupe toolbar buttons + Settings / Lag / Dupe field borders & spin combo chrome (teal grey-green).
+UI_TOGGLE_BORDER_ACCENT = '#35726E'
 # Unkill, lag off, dupe finished, kill OFF — same sage as Me/Router row background.
 UI_LOG_RESTORE_FG = ADMIN_DEVICE_TABLE_ROW_BG
 # When a newer build is available: reuse the prior Me/Router strip green for Settings / main gear.

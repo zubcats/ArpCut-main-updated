@@ -193,8 +193,8 @@ QPushButton#btnAbout {{
 }}
 """
     if _experimental_charcoal_ui():
-        acc = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
-        ld = 'QPushButton#btnLagSwitch, QPushButton#btnDupe'
+        acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#35726E')
+        ld = 'QPushButton#btnKill, QPushButton#btnLagSwitch, QPushButton#btnDupe'
         h_fill, p_fill = '#3d524f', '#354846'
         out += f"""
 {ld} {{
@@ -219,6 +219,7 @@ QPushButton#btnAbout {{
 
 def _chrome_status_strip_and_tabs_qss() -> str:
     """Status row under the table + tab bars: no panel tint; blend into window chrome."""
+    dev_count_fg = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
     if _experimental_charcoal_ui():
         mute, hi, hover = '#9a9a9a', '#e8eaed', '#d0d0d0'
     else:
@@ -231,6 +232,9 @@ QLabel#lblleft, QLabel#lblcenter, QLabel#lblright {{
 }}
 QLabel#lblcenter {{
     color: {hi};
+}}
+QLabel#lblright {{
+    color: {dev_count_fg};
 }}
 QTabWidget::pane {{
     border: none;
@@ -269,9 +273,10 @@ def table_row_hover_chrome() -> tuple[str, str]:
 
 
 def table_row_selection_chrome() -> tuple[str, str]:
-    """Background / foreground for selected device row (matches #tableScan QSS)."""
+    """Background / foreground for selected device row (item brushes; table QSS selection is transparent)."""
     if _experimental_charcoal_ui():
-        return '#2b2b2b', '#f2f2f2'
+        # Must read clearly on #000000 / #0a0a0a rows — #2b2b2b was too close to the viewport.
+        return '#3d524f', '#f2f2f2'
     return '#324e7a', '#ffffff'
 
 
@@ -324,18 +329,21 @@ def _auxiliary_windows_qss() -> str:
     Settings / About / Device / Traffic (QMainWindow#zubcutAuxiliaryWindow) and modal dialogs
     (Lag Switch, Dupe, message boxes): same charcoal buttons / panels as the main window.
     """
+    toggle_acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#35726E')
     if _experimental_charcoal_ui():
         bg, bd, bh, bp = '#2b2b2b', '#3d3d3d', '#383838', '#323232'
         tx, th, tp, mute = '#e8eaed', '#d0d0d0', '#9a9a9a', '#9a9a9a'
         panel = '#141414'
         tbl_alt = '#0a0a0a'
         sel_bg, sel_fg = '#2b2b2b', '#f2f2f2'
+        field_bd = toggle_acc
     else:
         bg, bd, bh, bp = '#2d323c', '#3d4a5c', '#3a3f49', '#353942'
         tx, th, tp, mute = '#e8eaed', '#aeb4bf', '#8b909a', '#8b909a'
         panel = '#000000'
         tbl_alt = '#1e2228'
         sel_bg, sel_fg = '#324e7a', '#ffffff'
+        field_bd = bd
     return f"""
 QDialog {{
     background-color: {panel};
@@ -440,7 +448,7 @@ QDialog QKeySequenceEdit {{
     font-weight: normal;
     background-color: {bg};
     color: {tx};
-    border: 1px solid {bd};
+    border: 1px solid {field_bd};
     border-radius: 3px;
     padding: 4px 6px;
 }}
@@ -453,9 +461,46 @@ QDialog QLineEdit {{
     font-weight: normal;
     background-color: {bg};
     color: {tx};
-    border: 1px solid {bd};
+    border: 1px solid {field_bd};
     border-radius: 3px;
     padding: 4px 6px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QComboBox:focus,
+QMainWindow#zubcutAuxiliaryWindow QSpinBox:focus,
+QMainWindow#zubcutAuxiliaryWindow QLineEdit:focus,
+QDialog QComboBox:focus,
+QDialog QSpinBox:focus,
+QDialog QLineEdit:focus {{
+    border: 1px solid {field_bd};
+}}
+QMainWindow#zubcutAuxiliaryWindow QSpinBox::up-button,
+QMainWindow#zubcutAuxiliaryWindow QSpinBox::down-button,
+QDialog QSpinBox::up-button,
+QDialog QSpinBox::down-button {{
+    background-color: {bg};
+    border: 1px solid {field_bd};
+    width: 16px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QSpinBox::up-button:hover,
+QMainWindow#zubcutAuxiliaryWindow QSpinBox::down-button:hover,
+QDialog QSpinBox::up-button:hover,
+QDialog QSpinBox::down-button:hover {{
+    background-color: {bh};
+}}
+QMainWindow#zubcutAuxiliaryWindow QComboBox::drop-down,
+QDialog QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 22px;
+    border: none;
+    border-left: 1px solid {field_bd};
+}}
+QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView,
+QDialog QComboBox QAbstractItemView {{
+    border: 1px solid {field_bd};
+    background-color: #000000;
+    selection-background-color: #000000;
+    selection-color: #f2f2f2;
 }}
 QMainWindow#zubcutAuxiliaryWindow QTableWidget,
 QDialog QTableWidget {{
@@ -485,10 +530,10 @@ QDialog QHeaderView::section {{
 
 def _lag_dupe_dialog_chrome_qss() -> str:
     """
-    Lag Switch / Dupe: solid black client (no translucent bleed), sage borders/hover
-    (ADMIN_DEVICE_TABLE_ROW_BG), stable 1px borders to avoid hover text shift.
+    Lag Switch / Dupe: solid black client (no translucent bleed), teal grey-green borders
+    (UI_TOGGLE_BORDER_ACCENT), stable 1px borders to avoid hover text shift.
     """
-    acc = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
+    acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#35726E')
     fill, h_fill, p_fill = '#1a1a1a', '#3d524f', '#354846'
     panel = '#0d0d0d'
     return f"""
@@ -558,6 +603,16 @@ QDialog#zubcutLagDupeDialog QKeySequenceEdit {{
 QDialog#zubcutLagDupeDialog QSpinBox:focus,
 QDialog#zubcutLagDupeDialog QKeySequenceEdit:focus {{
     border: 1px solid {acc};
+}}
+QDialog#zubcutLagDupeDialog QSpinBox::up-button,
+QDialog#zubcutLagDupeDialog QSpinBox::down-button {{
+    background-color: {fill};
+    border: 1px solid {acc};
+    width: 16px;
+}}
+QDialog#zubcutLagDupeDialog QSpinBox::up-button:hover,
+QDialog#zubcutLagDupeDialog QSpinBox::down-button:hover {{
+    background-color: {h_fill};
 }}
 QDialog#zubcutLagDupeDialog QSlider::groove:horizontal {{
     background-color: #1a1a1a;

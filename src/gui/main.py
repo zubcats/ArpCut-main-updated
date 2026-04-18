@@ -116,11 +116,11 @@ def _focus_widget_absorbs_letter_key(widget):
 
 
 def _chrome_pushbutton_hover_inline_qss(watched_btn=None) -> str:
-    """Programmatic hover for icon chrome; Lag/Dupe use admin sage border like the main QSS."""
+    """Programmatic hover for icon chrome; Kill/Lag/Dupe share toggle border accent (main QSS)."""
     if watched_btn is not None:
         _on = watched_btn.objectName()
-        if _on in ('btnLagSwitch', 'btnDupe'):
-            acc = ADMIN_DEVICE_TABLE_ROW_BG
+        if _on in ('btnKill', 'btnLagSwitch', 'btnDupe'):
+            acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#35726E')
             return (
                 f'background-color: #3d524f; color: #eef1f0; border: 1px solid {acc}; border-radius: 4px;'
             )
@@ -853,7 +853,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.gridLayout.addWidget(self.btnLagSwitch, 5, 1, 1, 3)
         self.btnLagSwitch.clicked.connect(self.openLagSwitchDialog)
         lag_font = QFont(self.btnLagSwitch.font())
-        lag_font.setPointSize(14)
+        lag_font.setPointSize(13)
         lag_font.setBold(True)
         self.btnLagSwitch.setFont(lag_font)
 
@@ -903,7 +903,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         _tv = self.tableScan.viewport()
         _tv.setMouseTracking(True)
         _tv.installEventFilter(self)
-        self.tableScan.selectionModel().selectionChanged.connect(self._on_table_selection_for_row_hover)
+        sm = self.tableScan.selectionModel()
+        sm.selectionChanged.connect(self._on_table_selection_for_row_hover)
+        sm.currentChanged.connect(self._on_table_selection_for_row_hover)
         self.tableScan.setItemDelegate(TableRowNoCellFocusDelegate(self.tableScan))
         self.tableScan.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tableScan.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -1288,6 +1290,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.lag_switch_dialog.refresh_toggle_state()
         if getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
             self.dupe_switch_dialog.refresh_toggle_state()
+        self._repaint_all_table_rows_for_hover()
 
     def _updateLagSwitchButtonState(self):
         """Update lag switch button based on whether it's active for selected device."""
