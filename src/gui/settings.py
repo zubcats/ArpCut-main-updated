@@ -6,7 +6,8 @@ import sys
 
 from tools.utils_gui import import_settings, export_settings, get_settings, \
                       is_admin, add_to_startup, remove_from_startup, set_settings, \
-                      zubcut_dark_stylesheet, sync_translucent_chrome, register_window_surface_effects
+                      zubcut_dark_stylesheet, application_theme_stylesheet, \
+                      sync_translucent_chrome, register_window_surface_effects
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
 from tools.qtools import MsgType, Buttons
 from tools.utils import (
@@ -228,14 +229,18 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.elmocut.scanner.iface = get_iface_by_name(s['iface'])
         self.elmocut.killer.iface = get_iface_by_name(s['iface'])
         
-        self.elmocut.setStyleSheet(self.styleSheet())
-        self.elmocut.about_window.setStyleSheet(self.styleSheet())
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(self.styleSheet())
+        self.elmocut.setStyleSheet('')
+        self.elmocut.about_window.setStyleSheet('')
+        _theme = application_theme_stylesheet()
         for _dlg in (
             getattr(self.elmocut, 'lag_switch_dialog', None),
             getattr(self.elmocut, 'dupe_switch_dialog', None),
         ):
             if _dlg is not None:
-                _dlg.setStyleSheet(self.elmocut.styleSheet())
+                _dlg.setStyleSheet(_theme)
         _w = [
             self.elmocut,
             self.elmocut.about_window,
@@ -407,9 +412,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _apply_update_button_style(self):
         if self._update_available:
-            self.btnUpdate.setStyleSheet(
-                'QPushButton { background-color: #1e8449; color: white; font-weight: bold; }'
-            )
+            self.btnUpdate.setStyleSheet(UPDATE_AVAILABLE_PUSHBUTTON_QSS)
         else:
             self.btnUpdate.setStyleSheet('')
     

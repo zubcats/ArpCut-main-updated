@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QMenu, QSystemTrayIcon, QAction, QPushButton, \
                             QDialog, QFormLayout, QDialogButtonBox, QSpinBox, \
                             QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QGroupBox, \
-                            QSizePolicy, QShortcut, QAbstractSpinBox, QLineEdit, \
+                            QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, \
                             QTextEdit, QPlainTextEdit, QWidget
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush
 from PyQt5.QtCore import Qt, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent
@@ -25,12 +25,13 @@ from gui.traffic import Traffic
 from networking.scanner import Scanner
 from networking.killer import Killer
 
-from tools.qtools import colored_item, MsgType, Buttons, clickable
+from tools.qtools import colored_item, MsgType, Buttons, clickable, TableRowNoCellFocusDelegate
 from tools.utils_gui import (
     set_settings,
     get_settings,
     import_settings,
-    zubcut_dark_stylesheet,
+    apply_app_global_dark_stylesheet,
+    application_theme_stylesheet,
     sync_translucent_chrome,
     register_window_surface_effects,
     table_row_hover_chrome,
@@ -57,9 +58,6 @@ from assets import *
 from bridge import ScanThread  # UpdateThread disabled for fork
 
 _SETTINGS_BTN_TIP = 'Settings - Configure scan options and network interface'
-_SETTINGS_BTN_UPDATE_STYLE = (
-    'QPushButton { background-color: #1e8449; color: white; font-weight: bold; }'
-)
 # Foreground: HEAD every 15 min only while the app is active (timer paused when not).
 _UPDATE_POLL_INTERVAL_MS = 15 * 60 * 1000
 # Background: still check once per day so tray/minimized sessions learn about new builds.
@@ -82,7 +80,9 @@ class _UpdateStatusPollThread(QThread):
 
 from constants import *
 
-# Killed device row: dark red matched to experimental admin strip darkness (#1a3d28 → #3d1a1a).
+_SETTINGS_BTN_UPDATE_STYLE = UPDATE_AVAILABLE_PUSHBUTTON_QSS
+
+# Killed device row: dark red matched to experimental admin row darkness (see ADMIN_DEVICE_TABLE_ROW_*).
 _DEVICE_ROW_KILL_BG = '#3d1a1a'
 _DEVICE_ROW_KILL_FG = '#e8d0d0'
 _DEVICE_ROW_KILL_HOVER_BG = '#502626'
@@ -212,8 +212,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         layout.addWidget(buttons)
 
         root.addWidget(body, 1)
-        if parent is not None:
-            self.setStyleSheet(parent.styleSheet())
+        self.setStyleSheet(application_theme_stylesheet())
         register_window_surface_effects(self)
 
     def _on_m_key_pressed(self):
@@ -445,8 +444,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         layout.addWidget(buttons)
 
         root.addWidget(body, 1)
-        if parent is not None:
-            self.setStyleSheet(parent.styleSheet())
+        self.setStyleSheet(application_theme_stylesheet())
         register_window_surface_effects(self)
 
     def _on_p_key_pressed(self):
@@ -603,7 +601,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setWindowIcon(self.icon)
         self.setupUi(self)
         self.setWindowTitle(APP_DISPLAY_NAME)
-        self.setStyleSheet(zubcut_dark_stylesheet())
+        apply_app_global_dark_stylesheet()
+        self.setStyleSheet('')
         # Rebalance top toolbar row so right-side empty space is used more evenly.
         self.gridLayout.removeWidget(self.btnSettings)
         self.gridLayout.removeWidget(self.btnAbout)
@@ -715,6 +714,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for btn, btn_func, btn_icon, btn_tip in self.buttons:
             btn.setToolTip(btn_tip)
             btn.clicked.connect(btn_func)
+            btn.setAutoDefault(False)
+            btn.setDefault(False)
             if btn_icon is not None:
                 btn.setIcon(self.processIcon(btn_icon))
         self.btnAbout.setIcon(self.icon)
@@ -723,6 +724,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.btnKill = QPushButton(self.centralwidget)
         self.btnKill.setObjectName('btnKill')
+        self.btnKill.setAutoDefault(False)
+        self.btnKill.setDefault(False)
         self.btnKill.setMinimumHeight(88)
         self.btnKill.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnKill.setToolTip(
@@ -741,6 +744,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnKill.pressed.connect(lambda: self.toggleKill('mouse_pressed'))
 
         self.btnLagSwitch = QPushButton('Lag Switch', self)
+        self.btnLagSwitch.setObjectName('btnLagSwitch')
+        self.btnLagSwitch.setAutoDefault(False)
+        self.btnLagSwitch.setDefault(False)
         self.btnLagSwitch.setMinimumHeight(88)
         self.btnLagSwitch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnLagSwitch.setToolTip(
@@ -757,6 +763,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.gridLayout.addWidget(self.btnKill, 5, 4, 1, 2)
 
         self.btnDupe = QPushButton('Dupe', self)
+        self.btnDupe.setObjectName('btnDupe')
+        self.btnDupe.setAutoDefault(False)
+        self.btnDupe.setDefault(False)
         self.btnDupe.setMinimumHeight(88)
         self.btnDupe.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         dupe_font = QFont(self.btnDupe.font())
@@ -793,6 +802,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         _tv.setMouseTracking(True)
         _tv.installEventFilter(self)
         self.tableScan.selectionModel().selectionChanged.connect(self._on_table_selection_for_row_hover)
+        self.tableScan.setItemDelegate(TableRowNoCellFocusDelegate(self.tableScan))
+        self.tableScan.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tableScan.setSelectionMode(QAbstractItemView.SingleSelection)
 
         '''
            System tray icon and it's tray menu
@@ -1144,7 +1156,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Return (bg, fg) for every cell in the row, or None to clear to stylesheet (alternating rows).
         """
         exp = str(UPDATE_CHANNEL or '').strip().lower() == 'experimental'
-        admin_colors = (['#1a3d28', '#d8f0e4'] if exp else ['#00ff00', '#000000'])
+        admin_colors = (
+            [ADMIN_DEVICE_TABLE_ROW_BG, ADMIN_DEVICE_TABLE_ROW_FG]
+            if exp
+            else ['#00ff00', '#000000']
+        )
         if device.get('admin'):
             return tuple(admin_colors)
         killed = device['mac'] in self.killer.killed
@@ -1206,7 +1222,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             # Highlight Admins (Me / Router): bright green on stable; darker green on experimental.
             if device['admin']:
                 admin_colors = (
-                    ['#1a3d28', '#d8f0e4']
+                    [ADMIN_DEVICE_TABLE_ROW_BG, ADMIN_DEVICE_TABLE_ROW_FG]
                     if str(UPDATE_CHANNEL or '').strip().lower() == 'experimental'
                     else ['#00ff00', '#000000']
                 )

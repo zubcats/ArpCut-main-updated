@@ -3,7 +3,7 @@ from PyQt5.QtGui import QPalette, QColor
 from networking.nicknames import Nicknames
 from ui.ui_device import Ui_MainWindow
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
-from tools.utils_gui import register_window_surface_effects
+from tools.utils_gui import register_window_surface_effects, application_theme_stylesheet
 
 
 class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
@@ -65,5 +65,5 @@ class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.close()
 
     def showEvent(self, event):
-        self.setStyleSheet(self.elmocut.styleSheet())
+        self.setStyleSheet(application_theme_stylesheet())
         event.accept()

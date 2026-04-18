@@ -27,6 +27,7 @@ def _load_window_icon():
 
 if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    QApplication.setAttribute(Qt.AA_UseStyleSheetPropagationInWidgetStyles, True)
     app = QApplication(argv)
     install_crash_feedback()
     icon = _load_window_icon()

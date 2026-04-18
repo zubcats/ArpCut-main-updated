@@ -7,7 +7,7 @@ from tools.pfctl import ensure_pf_enabled, install_anchor, block_dst, unblock_ds
 from ui.ui_traffic import Ui_Traffic
 from constants import APP_DISPLAY_NAME
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
-from tools.utils_gui import register_window_surface_effects
+from tools.utils_gui import register_window_surface_effects, application_theme_stylesheet
 
 
 class Traffic(FramelessResizableMixin, QMainWindow):
@@ -43,7 +43,7 @@ class Traffic(FramelessResizableMixin, QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.setStyleSheet(self.parent.styleSheet())
+        self.setStyleSheet(application_theme_stylesheet())
 
     def start(self, victim_ip: str, iface: str):
         self.ui.lblVictim.setText(victim_ip)

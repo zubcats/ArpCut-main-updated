@@ -43,6 +43,15 @@ if sys.platform.startswith('win'):
 
 TABLE_HEADER_LABELS = ['IP Address', 'MAC Address', 'Vendor', 'Type', 'Nickname']
 
+# Experimental scan table: Me / Router rows — muted grey-green / dark sage (door trim reference).
+ADMIN_DEVICE_TABLE_ROW_BG = '#5D706E'
+ADMIN_DEVICE_TABLE_ROW_FG = '#eef1f0'
+# When a newer build is available: reuse the prior Me/Router strip green for Settings / main gear.
+UPDATE_AVAILABLE_PUSHBUTTON_QSS = (
+    'QPushButton { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+    'border: 1px solid #2d5738; border-radius: 4px; }'
+)
+
 # Frameless / stylesheet corner radius (logical px); mask uses same value to avoid corner bleed.
 WINDOW_CORNER_RADIUS_PX = 12
 

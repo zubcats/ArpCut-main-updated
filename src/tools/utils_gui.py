@@ -11,6 +11,7 @@ except Exception:
 from qdarkstyle import load_stylesheet
 from PyQt5.QtCore import Qt, QObject, QEvent, QRectF
 from PyQt5.QtGui import QPainterPath, QRegion
+from PyQt5.QtWidgets import QApplication
 
 from tools.utils import terminal
 from constants import *
@@ -112,6 +113,10 @@ QComboBox QAbstractItemView {
 QTableWidget#tableScan {
     background-color: #000000;
     alternate-background-color: #0a0a0a;
+    outline: none;
+}
+QTableWidget#tableScan::item {
+    outline: none;
 }
 QTableWidget#tableScan::item:selected,
 QTableWidget#tableScan::item:selected:active,
@@ -258,6 +263,23 @@ def zubcut_dark_stylesheet():
     base = base + '\n' + _chrome_status_strip_and_tabs_qss()
     base = base + '\n' + _table_scan_header_qss()
     return base
+
+
+def apply_app_global_dark_stylesheet():
+    """
+    Install the unified theme on QApplication (not only the main window).
+
+    On Windows, a stylesheet set only on QMainWindow often fails to repaint
+    QPushButton :hover for descendants; applying it here fixes toolbar / bottom-row hovers.
+    """
+    app = QApplication.instance()
+    if app is not None:
+        app.setStyleSheet(zubcut_dark_stylesheet())
+
+
+def application_theme_stylesheet():
+    app = QApplication.instance()
+    return app.styleSheet() if app else ''
 
 
 def _update_top_level_round_mask(widget):
