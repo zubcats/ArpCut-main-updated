@@ -20,7 +20,7 @@ from ui.ui_main import Ui_MainWindow
 from gui.settings import Settings
 from gui.about import About
 from gui.device import Device
-from gui.traffic import Traffic
+from .traffic import Traffic
 
 from networking.scanner import Scanner
 from networking.killer import Killer
