@@ -36,7 +36,7 @@ from constants import *
 import constants as _zcut_constants
 
 _UPDATE_BTN_QSS_FALLBACK = (
-    'QPushButton { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+    'QPushButton#btnUpdate { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
     'border: 1px solid #2d5738; border-radius: 4px; }'
 )
 
@@ -384,6 +384,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._refresh_update_availability()
             self.btnUpdate.setText(self._update_button_text())
             self._apply_update_button_style()
+            el = getattr(self, 'elmocut', None)
+            if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
+                el._sync_settings_gear_update_hint()
         except Exception:
             pass
 

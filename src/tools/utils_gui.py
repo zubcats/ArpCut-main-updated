@@ -306,6 +306,7 @@ def _auxiliary_windows_qss() -> str:
     return f"""
 QMainWindow#zubcutAuxiliaryWindow QPushButton,
 QDialog QPushButton {{
+    font-weight: normal;
     background-color: {bg};
     color: {tx};
     border: 1px solid {bd};
@@ -315,24 +316,28 @@ QDialog QPushButton {{
 }}
 QMainWindow#zubcutAuxiliaryWindow QPushButton:hover,
 QDialog QPushButton:hover {{
+    font-weight: normal;
     background-color: {bh};
     border: 1px solid {bh};
     color: {th};
 }}
 QMainWindow#zubcutAuxiliaryWindow QPushButton:pressed,
 QDialog QPushButton:pressed {{
+    font-weight: normal;
     background-color: {bp};
     border: 1px solid {bp};
     color: {tp};
 }}
 QMainWindow#zubcutAuxiliaryWindow QPushButton:disabled,
 QDialog QPushButton:disabled {{
+    font-weight: normal;
     background-color: {bg};
     color: {tp};
     border: 1px solid {bd};
 }}
 QMainWindow#zubcutAuxiliaryWindow QGroupBox,
 QDialog QGroupBox {{
+    font-weight: normal;
     color: {tx};
     border: 1px solid {bd};
     border-radius: 4px;
@@ -342,6 +347,7 @@ QDialog QGroupBox {{
 }}
 QMainWindow#zubcutAuxiliaryWindow QGroupBox::title,
 QDialog QGroupBox::title {{
+    font-weight: normal;
     subcontrol-origin: margin;
     subcontrol-position: top left;
     left: 8px;
@@ -353,7 +359,11 @@ QDialog QLabel {{
 }}
 QMainWindow#zubcutAuxiliaryWindow QCheckBox,
 QDialog QCheckBox {{
+    font-weight: normal;
     color: {tx};
+}}
+QMainWindow#zubcutAuxiliaryWindow QKeySequenceEdit {{
+    font-weight: normal;
 }}
 QMainWindow#zubcutAuxiliaryWindow QComboBox,
 QMainWindow#zubcutAuxiliaryWindow QSpinBox,
@@ -361,6 +371,7 @@ QMainWindow#zubcutAuxiliaryWindow QLineEdit,
 QDialog QComboBox,
 QDialog QSpinBox,
 QDialog QLineEdit {{
+    font-weight: normal;
     background-color: {bg};
     color: {tx};
     border: 1px solid {bd};
@@ -369,6 +380,7 @@ QDialog QLineEdit {{
 }}
 QMainWindow#zubcutAuxiliaryWindow QTableWidget,
 QDialog QTableWidget {{
+    font-weight: normal;
     background-color: #000000;
     alternate-background-color: {tbl_alt};
     color: {tx};
@@ -376,11 +388,13 @@ QDialog QTableWidget {{
 }}
 QMainWindow#zubcutAuxiliaryWindow QTableWidget::item:selected,
 QDialog QTableWidget::item:selected {{
+    font-weight: normal;
     background-color: {sel_bg};
     color: {sel_fg};
 }}
 QMainWindow#zubcutAuxiliaryWindow QHeaderView::section,
 QDialog QHeaderView::section {{
+    font-weight: normal;
     background-color: #000000;
     color: {mute};
     border: none;

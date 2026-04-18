@@ -81,11 +81,12 @@ import constants as _zcut_constants
 from constants import *
 
 # Frozen/CI builds may ship an older constants module; keep defaults in sync with src/constants.py.
+# Must use QPushButton#btnSettings so this wins over _main_chrome_action_buttons_qss() on the app sheet.
 _SETTINGS_BTN_UPDATE_STYLE = getattr(
     _zcut_constants,
-    'UPDATE_AVAILABLE_PUSHBUTTON_QSS',
+    'UPDATE_AVAILABLE_SETTINGS_GEAR_QSS',
     (
-        'QPushButton { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+        'QPushButton#btnSettings { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
         'border: 1px solid #2d5738; border-radius: 4px; }'
     ),
 )

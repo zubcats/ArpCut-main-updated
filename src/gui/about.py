@@ -38,7 +38,6 @@ class About(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lblAppName.setText(f'{APP_DISPLAY_NAME} v{self.elmocut.version}')
 
         self.lblMyName.setText('ZubOnTop')
-        self.lblMyName.setStyleSheet('font-weight: bold;')
         self.lblMyName.setCursor(Qt.ArrowCursor)
 
         self.lblNickName.hide()

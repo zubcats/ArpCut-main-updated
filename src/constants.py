@@ -49,8 +49,13 @@ SCAN_TABLE_COLUMN_VENDOR = 2
 ADMIN_DEVICE_TABLE_ROW_BG = '#5D706E'
 ADMIN_DEVICE_TABLE_ROW_FG = '#eef1f0'
 # When a newer build is available: reuse the prior Me/Router strip green for Settings / main gear.
+# Use object-name selectors so these beat app-level QPushButton#btnSettings / auxiliary-window rules.
 UPDATE_AVAILABLE_PUSHBUTTON_QSS = (
-    'QPushButton { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+    'QPushButton#btnUpdate { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
+    'border: 1px solid #2d5738; border-radius: 4px; }'
+)
+UPDATE_AVAILABLE_SETTINGS_GEAR_QSS = (
+    'QPushButton#btnSettings { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
     'border: 1px solid #2d5738; border-radius: 4px; }'
 )
 
