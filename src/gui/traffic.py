@@ -256,9 +256,9 @@ class Traffic(FramelessResizableMixin, QMainWindow):
             return
         port = int(self.ui.patterns.item(row, 1).text())
         ok = unblock_dst('any', port=port)
-            self.parent.log(
-                ('Unblocked pattern port ' if ok else 'Failed unblocking pattern port ') + str(port),
-                _UI_LOG_RESTORE_FG if ok else 'red',
-            )
+        self.parent.log(
+            ('Unblocked pattern port ' if ok else 'Failed unblocking pattern port ') + str(port),
+            _UI_LOG_RESTORE_FG if ok else 'red',
+        )
 
 
