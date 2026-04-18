@@ -28,11 +28,12 @@ def colored_item(elmnt, c1, c2):
 
 
 class TableRowNoCellFocusDelegate(QStyledItemDelegate):
-    """Drop per-cell focus painting so row selection reads as one block (SelectRows)."""
+    """Uniform row chrome: no per-cell focus ring or stylesheet hover on the cell under the cursor."""
 
     def initStyleOption(self, option, index):
         super().initStyleOption(option, index)
         option.state &= ~QStyle.State_HasFocus
+        option.state &= ~QStyle.State_MouseOver
 
 def msg_box(title, text, window_icon, icon, buttons=Buttons.OK):
     """

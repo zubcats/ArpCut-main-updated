@@ -1,7 +1,7 @@
 from sys import argv, exit
 import sys as _sys, os as _os
 _sys.path.append(_os.path.dirname(__file__))
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QStyleFactory
 from PyQt5.QtCore import Qt
 
 from tools.utils import goto
@@ -29,6 +29,10 @@ if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     QApplication.setAttribute(Qt.AA_UseStyleSheetPropagationInWidgetStyles, True)
     app = QApplication(argv)
+    # Windows native style often ignores or mis-paints QPushButton :hover under global QSS; Fusion is reliable.
+    _fusion = QStyleFactory.create('Fusion')
+    if _fusion is not None:
+        app.setStyle(_fusion)
     install_crash_feedback()
     icon = _load_window_icon()
     app.setWindowIcon(icon)

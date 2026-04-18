@@ -143,10 +143,19 @@ def _main_chrome_action_buttons_qss() -> str:
     else:
         bg, bd, bh, bp = '#2d323c', '#3d4a5c', '#3a3f49', '#353942'
         tx, th, tp = '#e8eaed', '#aeb4bf', '#8b909a'
-    sel = (
-        '#btnScanEasy, #btnScanHard, #btnKillAll, #btnUnkillAll, #btnSettings, #btnAbout, '
-        '#btnKill, #btnLagSwitch, #btnDupe'
+    # Full type + object name beats qdarkstyle’s generic QPushButton rules on Windows.
+    _ids = (
+        '#btnScanEasy',
+        '#btnScanHard',
+        '#btnKillAll',
+        '#btnUnkillAll',
+        '#btnSettings',
+        '#btnAbout',
+        '#btnKill',
+        '#btnLagSwitch',
+        '#btnDupe',
     )
+    sel = ', '.join(f'QPushButton{i}' for i in _ids)
     return f"""
 {sel} {{
     background-color: {bg};
@@ -169,7 +178,7 @@ def _main_chrome_action_buttons_qss() -> str:
     border: 1px solid {bd};
     color: {tp};
 }}
-#btnAbout {{
+QPushButton#btnAbout {{
     padding: 8px;
 }}
 """
@@ -216,11 +225,14 @@ QTabBar::tab:!selected:hover {{
 """
 
 
+# IP/MAC/Vendor… header hover — device rows use the same pair so row hover matches column headers.
+_TABLE_SCAN_HEADER_SECTION_HOVER_BG = '#0a0a0a'
+_TABLE_SCAN_HEADER_SECTION_HOVER_FG = '#e8eaed'
+
+
 def table_row_hover_chrome() -> tuple[str, str]:
-    """Background / foreground for main table row hover (matches toolbar :hover)."""
-    if _experimental_charcoal_ui():
-        return '#383838', '#e8eaed'
-    return '#3a3f49', '#e8eaed'
+    """Background / foreground for main table row hover (same as QHeaderView::section:hover on #tableScan)."""
+    return _TABLE_SCAN_HEADER_SECTION_HOVER_BG, _TABLE_SCAN_HEADER_SECTION_HOVER_FG
 
 
 def table_row_selection_chrome() -> tuple[str, str]:
@@ -232,27 +244,29 @@ def table_row_selection_chrome() -> tuple[str, str]:
 
 def _table_scan_header_qss() -> str:
     """IP/MAC/Vendor… header row: no qdark blue panel; same black chrome as #tableScan viewport."""
-    return """
-QTableWidget#tableScan QHeaderView {
+    hb = _TABLE_SCAN_HEADER_SECTION_HOVER_BG
+    hf = _TABLE_SCAN_HEADER_SECTION_HOVER_FG
+    return f"""
+QTableWidget#tableScan QHeaderView {{
     background-color: #000000;
     border: none;
-}
-QTableWidget#tableScan QHeaderView::section {
+}}
+QTableWidget#tableScan QHeaderView::section {{
     background-color: #000000;
     color: #9a9a9a;
     border: none;
     border-right: 1px solid #141414;
     border-bottom: 1px solid #2a2a2a;
     padding: 6px 4px;
-}
-QTableWidget#tableScan QHeaderView::section:hover {
-    background-color: #0a0a0a;
-    color: #e8eaed;
-}
-QTableWidget#tableScan QHeaderView::section:pressed {
+}}
+QTableWidget#tableScan QHeaderView::section:hover {{
+    background-color: {hb};
+    color: {hf};
+}}
+QTableWidget#tableScan QHeaderView::section:pressed {{
     background-color: #121212;
-    color: #e8eaed;
-}
+    color: {hf};
+}}
 """
 
 
