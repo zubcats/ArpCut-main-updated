@@ -121,24 +121,23 @@ QComboBox QAbstractItemView {
     selection-background-color: #000000;
     selection-color: #f2f2f2;
 }
-/* Main device table: black viewport; row selection matches title bar (#2b2b2b). */
+/* Main device table: black viewport; selection/focus paint comes from item brushes + Python repaint
+   (kill / lag / dupe / admin). Stylesheet :selected here would override killed-row colours. */
 QTableWidget#tableScan {
     background-color: #000000;
     alternate-background-color: #0a0a0a;
     outline: none;
+    selection-background-color: rgba(0, 0, 0, 0);
+    selection-color: #f2f2f2;
 }
 QTableWidget#tableScan::item {
     outline: none;
 }
 QTableWidget#tableScan::item:selected,
 QTableWidget#tableScan::item:selected:active,
-QTableWidget#tableScan::item:selected:!active {
-    background-color: #2b2b2b;
-    color: #f2f2f2;
-}
+QTableWidget#tableScan::item:selected:!active,
 QTableWidget#tableScan::item:focus {
-    background-color: #2b2b2b;
-    color: #f2f2f2;
+    background-color: rgba(0, 0, 0, 0);
 }
 """
 
@@ -167,7 +166,7 @@ def _main_chrome_action_buttons_qss() -> str:
         '#btnDupe',
     )
     sel = ', '.join(f'QPushButton{i}' for i in _ids)
-    return f"""
+    out = f"""
 {sel} {{
     background-color: {bg};
     color: {tx};
@@ -193,6 +192,29 @@ QPushButton#btnAbout {{
     padding: 8px;
 }}
 """
+    if _experimental_charcoal_ui():
+        acc = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
+        ld = 'QPushButton#btnLagSwitch, QPushButton#btnDupe'
+        h_fill, p_fill = '#3d524f', '#354846'
+        out += f"""
+{ld} {{
+    border: 1px solid {acc};
+}}
+{ld}:hover {{
+    background-color: {h_fill};
+    border: 1px solid {acc};
+    color: #eef1f0;
+}}
+{ld}:pressed {{
+    background-color: {p_fill};
+    border: 1px solid {acc};
+    color: #e8eaed;
+}}
+{ld}:disabled {{
+    border: 1px solid {acc};
+}}
+"""
+    return out
 
 
 def _chrome_status_strip_and_tabs_qss() -> str:
@@ -461,6 +483,111 @@ QDialog QHeaderView::section {{
 """
 
 
+def _lag_dupe_dialog_chrome_qss() -> str:
+    """
+    Lag Switch / Dupe: solid black client (no translucent bleed), sage borders/hover
+    (ADMIN_DEVICE_TABLE_ROW_BG), stable 1px borders to avoid hover text shift.
+    """
+    acc = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
+    fill, h_fill, p_fill = '#1a1a1a', '#3d524f', '#354846'
+    panel = '#0d0d0d'
+    return f"""
+QDialog#zubcutLagDupeDialog {{
+    background-color: #000000;
+    font-weight: normal;
+}}
+QDialog#zubcutLagDupeDialog QWidget#zubcutDialogBody {{
+    background-color: #000000;
+}}
+QDialog#zubcutLagDupeDialog QPushButton {{
+    background-color: {fill};
+    color: #e8eaed;
+    border: 1px solid {acc};
+    border-radius: 4px;
+    padding: 6px 10px;
+    outline: none;
+}}
+QDialog#zubcutLagDupeDialog QPushButton:hover {{
+    background-color: {h_fill};
+    border: 1px solid {acc};
+    color: #f2f2f2;
+}}
+QDialog#zubcutLagDupeDialog QPushButton:pressed {{
+    background-color: {p_fill};
+    border: 1px solid {acc};
+    color: #e8eaed;
+}}
+QDialog#zubcutLagDupeDialog QPushButton:disabled {{
+    background-color: {fill};
+    border: 1px solid {acc};
+    color: #9a9a9a;
+}}
+QDialog#zubcutLagDupeDialog QGroupBox {{
+    background-color: {panel};
+    border: 1px solid {acc};
+    border-radius: 4px;
+    margin-top: 12px;
+    padding-top: 8px;
+    color: #e8eaed;
+}}
+QDialog#zubcutLagDupeDialog QGroupBox::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 8px;
+    padding: 0 4px;
+}}
+QDialog#zubcutLagDupeDialog QCheckBox {{
+    spacing: 6px;
+    padding: 2px 0;
+    margin: 0;
+    outline: none;
+}}
+QDialog#zubcutLagDupeDialog QLabel {{
+    padding: 1px 0;
+    margin: 0;
+}}
+QDialog#zubcutLagDupeDialog QSpinBox,
+QDialog#zubcutLagDupeDialog QKeySequenceEdit {{
+    background-color: {fill};
+    color: #e8eaed;
+    border: 1px solid {acc};
+    border-radius: 3px;
+    padding: 4px 6px;
+    outline: none;
+}}
+QDialog#zubcutLagDupeDialog QSpinBox:focus,
+QDialog#zubcutLagDupeDialog QKeySequenceEdit:focus {{
+    border: 1px solid {acc};
+}}
+QDialog#zubcutLagDupeDialog QSlider::groove:horizontal {{
+    background-color: #1a1a1a;
+    height: 4px;
+    border-radius: 2px;
+}}
+QDialog#zubcutLagDupeDialog QSlider::sub-page:horizontal {{
+    background-color: #000000;
+    border-radius: 2px;
+    height: 4px;
+}}
+QDialog#zubcutLagDupeDialog QSlider::add-page:horizontal {{
+    background-color: #1a1a1a;
+    border-radius: 2px;
+    height: 4px;
+}}
+QDialog#zubcutLagDupeDialog QSlider::handle:horizontal {{
+    background-color: #000000;
+    border: 1px solid {acc};
+    width: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+}}
+QDialog#zubcutLagDupeDialog QSlider::handle:horizontal:hover {{
+    background-color: {h_fill};
+    border: 1px solid {acc};
+}}
+"""
+
+
 def zubcut_dark_stylesheet():
     base = load_stylesheet() + '\n' + translucent_main_chrome_qss()
     if _experimental_charcoal_ui():
@@ -470,6 +597,7 @@ def zubcut_dark_stylesheet():
     base = base + '\n' + _table_scan_header_qss()
     base = base + '\n' + _table_scan_focus_frame_qss()
     base = base + '\n' + _auxiliary_windows_qss()
+    base = base + '\n' + _lag_dupe_dialog_chrome_qss()
     return base
 
 
@@ -570,7 +698,8 @@ def register_window_surface_effects(window_widget):
     """Translucent client + DWM hints (same path on all Windows); Qt mask provides the real rounded clip."""
     if window_widget is None:
         return
-    window_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+    use_translucent = getattr(window_widget, '_zubcut_use_translucent_surface', True)
+    window_widget.setAttribute(Qt.WA_TranslucentBackground, bool(use_translucent))
     if getattr(window_widget, '_zubcut_round_filter_installed', False):
         return
     window_widget._zubcut_round_filter_installed = True

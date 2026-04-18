@@ -14,6 +14,14 @@ from gui.main import ElmoCut
 
 from assets import app_icon
 from constants import *
+import constants as _zcut_constants
+
+_UI_LOG_VICTIM_BLOCK_FG = getattr(_zcut_constants, 'UI_LOG_VICTIM_BLOCK_FG', '#32716D')
+_UI_LOG_RESTORE_FG = getattr(
+    _zcut_constants,
+    'UI_LOG_RESTORE_FG',
+    getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E'),
+)
 
 
 def _load_window_icon():
@@ -70,7 +78,7 @@ if __name__ == "__main__":
         GUI.scanner.add_router()
         GUI.showDevices()  # Show at least "Me" and "Router" on startup
     except Exception as e:
-        GUI.log(f'Warning: Could not initialize local devices: {e}', 'orange')
+        GUI.log(f'Warning: Could not initialize local devices: {e}', _UI_LOG_VICTIM_BLOCK_FG)
 
     GUI.scanner.flush_arp()
 
@@ -83,7 +91,7 @@ if __name__ == "__main__":
         is_posix, is_root = False, True
 
     if is_posix and not is_root:
-        GUI.log('Running without root: using Ping Scan', 'orange')
+        GUI.log('Running without root: using Ping Scan', _UI_LOG_RESTORE_FG)
         GUI.ScanThread_Starter(scan_type=1)
     else:
         # Only check connection if interface is valid

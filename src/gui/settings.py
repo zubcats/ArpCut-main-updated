@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QApplication, QMainWindow
+from PyQt5.QtWidgets import QApplication, QMainWindow, QLineEdit
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer
 import os
@@ -39,6 +39,16 @@ _UPDATE_BTN_QSS_FALLBACK = (
     'QPushButton#btnUpdate { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
     'border: 1px solid #2d5738; border-radius: 4px; }'
 )
+
+
+def _settings_keybind_mono_font() -> QFont:
+    """Match main #tableScan: readable monospace, normal weight (Fusion/qdark often bolds shortcuts)."""
+    mono = 'Menlo' if sys.platform == 'darwin' else 'Consolas'
+    f = QFont(mono, 11)
+    f.setStyleHint(QFont.Monospace)
+    f.setFixedPitch(True)
+    f.setBold(False)
+    return f
 
 
 def _channel_kind_label(channel: str) -> str:
@@ -293,8 +303,25 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.keySeqKill.setKeySequence(keyseq_from_setting(s.get('key_kill'), Qt.Key_L))
         self.keySeqLag.setKeySequence(keyseq_from_setting(s.get('key_lag'), Qt.Key_M))
         self.keySeqDupe.setKeySequence(keyseq_from_setting(s.get('key_dupe'), Qt.Key_P))
-        
+
+        self._apply_keybind_section_fonts()
         self.setStyleSheet(zubcut_dark_stylesheet())
+
+    def _apply_keybind_section_fonts(self):
+        f = _settings_keybind_mono_font()
+        for w in (
+            self.groupBox_keys,
+            self.labelKeyKill,
+            self.labelKeyLag,
+            self.labelKeyDupe,
+            self.keySeqKill,
+            self.keySeqLag,
+            self.keySeqDupe,
+        ):
+            w.setFont(f)
+        for ks in (self.keySeqKill, self.keySeqLag, self.keySeqDupe):
+            for le in ks.findChildren(QLineEdit):
+                le.setFont(f)
     
     def checkUpdate(self):
         begin_updater_debug_session('settings.checkUpdate')

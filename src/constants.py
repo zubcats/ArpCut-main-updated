@@ -48,6 +48,10 @@ SCAN_TABLE_COLUMN_VENDOR = 2
 # Experimental scan table: Me / Router rows — muted grey-green / dark sage (door trim reference).
 ADMIN_DEVICE_TABLE_ROW_BG = '#5D706E'
 ADMIN_DEVICE_TABLE_ROW_FG = '#eef1f0'
+# Main status strip (lblleft HTML): victim block / kill / lag on / dupe burst — teal-grey swatch.
+UI_LOG_VICTIM_BLOCK_FG = '#32716D'
+# Unkill, lag off, dupe finished, kill OFF — same sage as Me/Router row background.
+UI_LOG_RESTORE_FG = ADMIN_DEVICE_TABLE_ROW_BG
 # When a newer build is available: reuse the prior Me/Router strip green for Settings / main gear.
 # Use object-name selectors so these beat app-level QPushButton#btnSettings / auxiliary-window rules.
 UPDATE_AVAILABLE_PUSHBUTTON_QSS = (
