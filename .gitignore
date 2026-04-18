@@ -157,6 +157,8 @@ PRN
 
 # Build outputs (don't commit binaries - use GitHub Releases)
 ZubCut-macOS.zip
+ZubCut-macOS-arm64.zip
+ZubCut-macOS-Intel.zip
 ZubCut.exe
 ZubCut.dmg
 *.zip

@@ -94,7 +94,10 @@ def build():
             print(f"Output: dist/{APP_BUNDLE_NAME}/{APP_BUNDLE_NAME}.exe")
         elif system == 'Darwin':
             print(f"Output: dist/{APP_BUNDLE_NAME}.app")
-            print(f"To create zip: cd dist && zip -r {APP_BUNDLE_NAME}-macOS.zip {APP_BUNDLE_NAME}.app")
+            print(
+                f"To create zip (name for CI): cd dist && zip -r {APP_BUNDLE_NAME}-macOS-arm64.zip {APP_BUNDLE_NAME}.app"
+            )
+            print("  (on Intel Mac use e.g. ZubCut-macOS-Intel.zip — see README / Build Release matrix)")
         else:
             print(f"Output: dist/{APP_BUNDLE_NAME}")
     else:

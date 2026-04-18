@@ -24,7 +24,7 @@ Step-by-step: **`HOW-TO-DOWNLOAD-INSTALLER.txt`** in the repo root.
 | Platform | File | Notes |
 |----------|------|-------|
 | Windows | `ZubCut.exe` | Requires [Npcap](https://npcap.com/) (installer can bundle `npcap-1.87.exe`) |
-| macOS | `ZubCut-macOS.zip` | Unzip and run |
+| macOS | **`ZubCut-macOS-arm64.zip`** (Apple Silicon M1/M2/M3…) or **`ZubCut-macOS-Intel.zip`** (Intel Mac) | From **Build Release** artifacts or GitHub Releases. Unzip, open `ZubCut.app`. Pick the zip that matches the Mac’s CPU. |
 | Linux | `ZubCut` | Experimental |
 
 **Requirements:** Administrator/root privileges required.

@@ -177,8 +177,19 @@ jobs:
           name: ZubCut-Windows-Installer-Experimental
           path: output/ZubCut-Setup-experimental.exe
 
+  # Apple Silicon (arm64) + Intel (x86_64) — single zip was arm-only and failed on Intel Macs.
   build-macos:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            artifact_name: ZubCut-macOS-arm64
+            zip_name: ZubCut-macOS-arm64.zip
+          - runner: macos-15-intel
+            artifact_name: ZubCut-macOS-Intel
+            zip_name: ZubCut-macOS-Intel.zip
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -247,13 +258,13 @@ jobs:
         run: python build.py
 
       - name: Create ZIP
-        run: cd dist && zip -r ../ZubCut-macOS.zip ZubCut.app
+        run: cd dist && zip -r ../${{ matrix.zip_name }} ZubCut.app
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ZubCut-macOS
-          path: ZubCut-macOS.zip
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.zip_name }}
 
   build-linux:
     runs-on: ubuntu-latest
@@ -356,7 +367,8 @@ jobs:
           files: |
             artifacts/ZubCut-Windows-Installer/ZubCut-Setup.exe
             artifacts/ZubCut-Windows-Portable/ZubCut.exe
-            artifacts/ZubCut-macOS/ZubCut-macOS.zip
+            artifacts/ZubCut-macOS-arm64/ZubCut-macOS-arm64.zip
+            artifacts/ZubCut-macOS-Intel/ZubCut-macOS-Intel.zip
             artifacts/ZubCut-Linux/ZubCut
           draft: false
           prerelease: false
