@@ -1286,6 +1286,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
             self.dupe_switch_dialog.refresh_toggle_state()
         self._repaint_all_table_rows_for_hover()
+        self._schedule_table_selection_repaint()
 
     def _updateLagSwitchButtonState(self):
         """Update lag switch button based on whether it's active for selected device."""
@@ -1347,13 +1348,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _table_row_is_selected(self, row):
         if row < 0:
             return False
-        sm = self.tableScan.selectionModel()
-        if sm is None or not sm.hasSelection():
-            return False
-        for idx in sm.selectedRows():
-            if idx.row() == row:
+        for ix in self.tableScan.selectedIndexes():
+            if ix.isValid() and ix.row() == row:
                 return True
-        return self.tableScan.currentRow() == row
+        cur = self.tableScan.currentIndex()
+        return cur.isValid() and cur.row() == row
+
+    def _schedule_table_selection_repaint(self):
+        """Selection model can commit after our slot; repaint next tick so brushes match."""
+        QTimer.singleShot(0, self._repaint_all_table_rows_for_hover)
 
     def _device_row_blocked_chrome(self, device):
         """
@@ -1517,6 +1520,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.lblcenter.setText('Nothing Selected')
 
         self._repaint_all_table_rows_for_hover()
+        self._schedule_table_selection_repaint()
     
     def processDevices(self):
         """

@@ -59,8 +59,8 @@ QAbstractItemView, QTableView, QTableWidget, QListView, QTreeView {
     selection-color: #f2f2f2;
     alternate-background-color: #1e2228;
 }
-QAbstractItemView::item:selected, QTableView::item:selected, QTableWidget::item:selected,
-QListView::item:selected, QTreeView::item:selected {
+/* Do not include QTableView/QTableWidget here — it would paint #000000 over #tableScan item brushes. */
+QAbstractItemView::item:selected, QListView::item:selected, QTreeView::item:selected {
     background-color: #000000;
     color: #f2f2f2;
 }
@@ -121,23 +121,16 @@ QComboBox QAbstractItemView {
     selection-background-color: #000000;
     selection-color: #f2f2f2;
 }
-/* Main device table: black viewport; selection/focus paint comes from item brushes + Python repaint
-   (kill / lag / dupe / admin). Stylesheet :selected here would override killed-row colours. */
+/* Main device table: row chrome from item BackgroundRole; reset inherited QAbstractItemView selection tint. */
 QTableWidget#tableScan {
     background-color: #000000;
     alternate-background-color: #0a0a0a;
     outline: none;
-    selection-background-color: rgba(0, 0, 0, 0);
+    selection-background-color: transparent;
     selection-color: #f2f2f2;
 }
 QTableWidget#tableScan::item {
     outline: none;
-}
-QTableWidget#tableScan::item:selected,
-QTableWidget#tableScan::item:selected:active,
-QTableWidget#tableScan::item:selected:!active,
-QTableWidget#tableScan::item:focus {
-    background-color: rgba(0, 0, 0, 0);
 }
 """
 

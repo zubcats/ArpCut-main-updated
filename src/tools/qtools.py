@@ -28,12 +28,13 @@ def colored_item(elmnt, c1, c2):
 
 
 class TableRowNoCellFocusDelegate(QStyledItemDelegate):
-    """Uniform row chrome: no per-cell focus ring or stylesheet hover on the cell under the cursor."""
+    """Uniform row chrome: no per-cell focus/hover/selection paint — row colours come from item BackgroundRole."""
 
     def initStyleOption(self, option, index):
         super().initStyleOption(option, index)
         option.state &= ~QStyle.State_HasFocus
         option.state &= ~QStyle.State_MouseOver
+        option.state &= ~QStyle.State_Selected
 
 def msg_box(title, text, window_icon, icon, buttons=Buttons.OK):
     """
