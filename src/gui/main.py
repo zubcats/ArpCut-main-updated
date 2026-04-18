@@ -31,7 +31,6 @@ from tools.utils_gui import (
     get_settings,
     import_settings,
     apply_app_global_dark_stylesheet,
-    application_theme_stylesheet,
     sync_translucent_chrome,
     register_window_surface_effects,
     table_row_hover_chrome,
@@ -263,7 +262,6 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         layout.addWidget(buttons)
 
         root.addWidget(body, 1)
-        self.setStyleSheet(application_theme_stylesheet())
         register_window_surface_effects(self)
 
     def _on_m_key_pressed(self):
@@ -495,7 +493,6 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         layout.addWidget(buttons)
 
         root.addWidget(body, 1)
-        self.setStyleSheet(application_theme_stylesheet())
         register_window_surface_effects(self)
 
     def _on_p_key_pressed(self):

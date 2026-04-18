@@ -58,6 +58,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.icon = icon
         self.setWindowIcon(icon)
         self.setupUi(self)
+        self.setObjectName('zubcutAuxiliaryWindow')
         self.setFixedSize(self.size())
 
         self.loadInterfaces()

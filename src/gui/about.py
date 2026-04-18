@@ -9,7 +9,7 @@ from tools.branding import resolve_zubcut_png_path
 from assets import app_icon
 from constants import APP_DISPLAY_NAME
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
-from tools.utils_gui import register_window_surface_effects, application_theme_stylesheet
+from tools.utils_gui import register_window_surface_effects
 
 DISCORD_URL = 'https://discord.gg/zub'
 LINKTREE_URL = 'https://linktr.ee/zubcastle'
@@ -23,6 +23,7 @@ class About(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.icon = icon
         self.setWindowIcon(icon)
         self.setupUi(self)
+        self.setObjectName('zubcutAuxiliaryWindow')
 
         self.setMinimumSize(420, 620)
         self.setMaximumSize(480, 720)
@@ -73,7 +74,6 @@ class About(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.setStyleSheet(application_theme_stylesheet())
         self._refresh_about_logo()
         event.accept()
 

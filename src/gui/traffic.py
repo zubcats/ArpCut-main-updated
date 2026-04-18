@@ -7,7 +7,7 @@ from tools.pfctl import ensure_pf_enabled, install_anchor, block_dst, unblock_ds
 from ui.ui_traffic import Ui_Traffic
 from constants import APP_DISPLAY_NAME
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
-from tools.utils_gui import register_window_surface_effects, application_theme_stylesheet
+from tools.utils_gui import register_window_surface_effects
 
 
 class Traffic(FramelessResizableMixin, QMainWindow):
@@ -18,6 +18,7 @@ class Traffic(FramelessResizableMixin, QMainWindow):
         self.setWindowIcon(icon)
         self.ui = Ui_Traffic()
         self.ui.setupUi(self)
+        self.setObjectName('zubcutAuxiliaryWindow')
         self.setWindowTitle(f'{APP_DISPLAY_NAME} — Traffic')
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=True)
         register_window_surface_effects(self)
@@ -43,7 +44,6 @@ class Traffic(FramelessResizableMixin, QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.setStyleSheet(application_theme_stylesheet())
 
     def start(self, victim_ip: str, iface: str):
         self.ui.lblVictim.setText(victim_ip)

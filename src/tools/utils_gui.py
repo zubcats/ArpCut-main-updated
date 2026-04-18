@@ -286,6 +286,110 @@ QTableWidget#tableScan:focus {{
 """
 
 
+def _auxiliary_windows_qss() -> str:
+    """
+    Settings / About / Device / Traffic (QMainWindow#zubcutAuxiliaryWindow) and modal dialogs
+    (Lag Switch, Dupe, message boxes): same charcoal buttons / panels as the main window.
+    """
+    if _experimental_charcoal_ui():
+        bg, bd, bh, bp = '#2b2b2b', '#3d3d3d', '#383838', '#323232'
+        tx, th, tp, mute = '#e8eaed', '#d0d0d0', '#9a9a9a', '#9a9a9a'
+        panel = '#141414'
+        tbl_alt = '#0a0a0a'
+        sel_bg, sel_fg = '#2b2b2b', '#f2f2f2'
+    else:
+        bg, bd, bh, bp = '#2d323c', '#3d4a5c', '#3a3f49', '#353942'
+        tx, th, tp, mute = '#e8eaed', '#aeb4bf', '#8b909a', '#8b909a'
+        panel = '#000000'
+        tbl_alt = '#1e2228'
+        sel_bg, sel_fg = '#324e7a', '#ffffff'
+    return f"""
+QMainWindow#zubcutAuxiliaryWindow QPushButton,
+QDialog QPushButton {{
+    background-color: {bg};
+    color: {tx};
+    border: 1px solid {bd};
+    border-radius: 4px;
+    padding: 6px 10px;
+    min-height: 22px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QPushButton:hover,
+QDialog QPushButton:hover {{
+    background-color: {bh};
+    border: 1px solid {bh};
+    color: {th};
+}}
+QMainWindow#zubcutAuxiliaryWindow QPushButton:pressed,
+QDialog QPushButton:pressed {{
+    background-color: {bp};
+    border: 1px solid {bp};
+    color: {tp};
+}}
+QMainWindow#zubcutAuxiliaryWindow QPushButton:disabled,
+QDialog QPushButton:disabled {{
+    background-color: {bg};
+    color: {tp};
+    border: 1px solid {bd};
+}}
+QMainWindow#zubcutAuxiliaryWindow QGroupBox,
+QDialog QGroupBox {{
+    color: {tx};
+    border: 1px solid {bd};
+    border-radius: 4px;
+    margin-top: 12px;
+    padding-top: 8px;
+    background-color: {panel};
+}}
+QMainWindow#zubcutAuxiliaryWindow QGroupBox::title,
+QDialog QGroupBox::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 8px;
+    padding: 0 4px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QLabel,
+QDialog QLabel {{
+    color: {tx};
+}}
+QMainWindow#zubcutAuxiliaryWindow QCheckBox,
+QDialog QCheckBox {{
+    color: {tx};
+}}
+QMainWindow#zubcutAuxiliaryWindow QComboBox,
+QMainWindow#zubcutAuxiliaryWindow QSpinBox,
+QMainWindow#zubcutAuxiliaryWindow QLineEdit,
+QDialog QComboBox,
+QDialog QSpinBox,
+QDialog QLineEdit {{
+    background-color: {bg};
+    color: {tx};
+    border: 1px solid {bd};
+    border-radius: 3px;
+    padding: 4px 6px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QTableWidget,
+QDialog QTableWidget {{
+    background-color: #000000;
+    alternate-background-color: {tbl_alt};
+    color: {tx};
+    gridline-color: #141414;
+}}
+QMainWindow#zubcutAuxiliaryWindow QTableWidget::item:selected,
+QDialog QTableWidget::item:selected {{
+    background-color: {sel_bg};
+    color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QHeaderView::section,
+QDialog QHeaderView::section {{
+    background-color: #000000;
+    color: {mute};
+    border: none;
+    border-bottom: 1px solid #2a2a2a;
+    padding: 4px;
+}}
+"""
+
+
 def zubcut_dark_stylesheet():
     base = load_stylesheet() + '\n' + translucent_main_chrome_qss()
     if _experimental_charcoal_ui():
@@ -294,6 +398,7 @@ def zubcut_dark_stylesheet():
     base = base + '\n' + _chrome_status_strip_and_tabs_qss()
     base = base + '\n' + _table_scan_header_qss()
     base = base + '\n' + _table_scan_focus_frame_qss()
+    base = base + '\n' + _auxiliary_windows_qss()
     return base
 
 
