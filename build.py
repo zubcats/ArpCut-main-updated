@@ -49,6 +49,7 @@ def build():
     # Explicit src path: frozen builds resolve `gui.*` from here; avoids missed submodules.
     cmd.extend(['--paths', os.path.join(_ROOT, 'src')])
     cmd.extend(['--collect-submodules', 'gui'])
+    cmd.extend(['--additional-hooks-dir', os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks')])
 
     # Platform-specific options
     if system == 'Windows':

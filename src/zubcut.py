@@ -10,9 +10,6 @@ from tools.utils_gui import npcap_exists, duplicate_zubcut, repair_settings, mig
 from tools.branding import load_application_qicon, qicon_is_empty
 from tools.qtools import msg_box, Buttons, MsgIcon
 
-# Import before gui.main so PyInstaller always graphs gui.traffic into the frozen app.
-import gui.traffic  # noqa: F401
-
 from gui.main import ElmoCut
 
 from assets import app_icon

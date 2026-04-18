@@ -48,6 +48,7 @@ def build():
     cmd = [sys.executable, '-m', 'PyInstaller', '--name', APP_BUNDLE_NAME]
     cmd.extend(['--paths', os.path.join(_ROOT, 'src')])
     cmd.extend(['--collect-submodules', 'gui'])
+    cmd.extend(['--additional-hooks-dir', os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks')])
 
     if system == 'Windows':
         cmd.extend(['--onedir', '--windowed'])
