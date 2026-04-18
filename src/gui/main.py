@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, \
                             QTextEdit, QPlainTextEdit, QWidget
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush
-from PyQt5.QtCore import Qt, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent
+from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent
 try:
     from PyQt5.QtWinExtras import QWinTaskbarButton
 except Exception:
@@ -106,6 +106,46 @@ def _focus_widget_absorbs_letter_key(widget):
     if widget is None:
         return False
     return isinstance(widget, (QAbstractSpinBox, QLineEdit, QTextEdit, QPlainTextEdit))
+
+
+def _chrome_pushbutton_hover_inline_qss() -> str:
+    """Same palette as title-bar QToolButton:hover / _main_chrome_action_buttons_qss :hover."""
+    if str(UPDATE_CHANNEL or '').strip().lower() == 'experimental':
+        return (
+            'background-color: #383838; color: #d0d0d0; border: 1px solid #383838; border-radius: 4px;'
+        )
+    return (
+        'background-color: #3a3f49; color: #aeb4bf; border: 1px solid #3a3f49; border-radius: 4px;'
+    )
+
+
+class _ChromePushButtonHoverFilter(QObject):
+    """
+    Global QSS :hover is unreliable for icon-only QPushButtons (Fusion + qdarkstyle).
+    Paint hover by setting a widget-level stylesheet on Enter and restoring on Leave.
+    """
+
+    def __init__(self, main_window, watched_buttons):
+        super().__init__(main_window)
+        self._m = main_window
+        self._watched = frozenset(watched_buttons)
+        self._hover_ss = _chrome_pushbutton_hover_inline_qss()
+
+    def eventFilter(self, obj, event):
+        if obj not in self._watched:
+            return False
+        t = event.type()
+        if t == QEvent.Enter:
+            if not obj.isEnabled():
+                return False
+            if (obj.styleSheet() or '').strip():
+                return False
+            obj.setStyleSheet(self._hover_ss)
+            return False
+        if t == QEvent.Leave:
+            self._m._restore_chrome_button_surface(obj)
+            return False
+        return False
 
 
 class LagSwitchDialog(FramelessResizableMixin, QDialog):
@@ -886,6 +926,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
 
+        _chrome_btns = (
+            self.btnScanEasy,
+            self.btnScanHard,
+            self.btnKillAll,
+            self.btnUnkillAll,
+            self.btnSettings,
+            self.btnAbout,
+            self.btnKill,
+            self.btnLagSwitch,
+            self.btnDupe,
+        )
+        self._chrome_hover_filter = _ChromePushButtonHoverFilter(self, _chrome_btns)
+        for _b in _chrome_btns:
+            _b.installEventFilter(self._chrome_hover_filter)
+
     @staticmethod
     def processIcon(icon_data, crop_margins=False):
         """
@@ -1113,6 +1168,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         ):
             st.unpolish(w)
             st.polish(w)
+
+    def _restore_chrome_button_surface(self, btn):
+        """Clear programmatic hover stylesheet; restore Kill/Lag/Dupe/Settings special chrome."""
+        try:
+            if btn is self.btnSettings:
+                self._sync_settings_gear_update_hint()
+            elif btn is self.btnKill:
+                self._updateKillButtonState()
+            elif btn is self.btnLagSwitch:
+                self._updateLagSwitchButtonState()
+            elif btn is self.btnDupe:
+                self._updateDupeButtonState()
+            else:
+                btn.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        except RuntimeError:
+            pass
 
     def closeEvent(self, event):
         """
