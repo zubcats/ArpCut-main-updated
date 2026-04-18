@@ -284,13 +284,10 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         register_window_surface_effects(self)
 
     def _on_m_key_pressed(self):
-        if QApplication.activeWindow() is not self:
-            return
-        if not self.isActiveWindow():
-            return
+        # WindowShortcut on this dialog only fires when focus is here; avoid activeWindow()
+        # checks — they fail for some frameless / top-level dialog focus paths on Windows.
         if _focus_widget_absorbs_letter_key(self.focusWidget()):
             return
-        # Same path as btnLagStartStop.clicked
         self._on_lag_start_stop_clicked()
 
     def showEvent(self, event):
@@ -531,13 +528,8 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         register_window_surface_effects(self)
 
     def _on_p_key_pressed(self):
-        if QApplication.activeWindow() is not self:
-            return
-        if not self.isActiveWindow():
-            return
         if _focus_widget_absorbs_letter_key(self.focusWidget()):
             return
-        # Same path as btnDupeRun.clicked
         self._on_run_clicked()
 
     def showEvent(self, event):
@@ -608,7 +600,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
 
     def set_dupe_countdown(self, left_ms):
         """Show remaining dupe time; pass None when idle."""
-        if left_ms is None:
+        if left_ms is None or left_ms <= 0:
             self.lblDupeCountdown.setVisible(False)
             self.lblDupeCountdown.setText('')
             return
@@ -1901,14 +1893,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
         lag = self.lag_switch_dialog
         if lag:
-            lag._shortcut_m.setEnabled(False)
+            # Keep dialog WindowShortcut enabled: ApplicationShortcut on main does not fire when
+            # focus is in a separate top-level Lag dialog (widget tree is not under main).
+            lag._shortcut_m.setKey(k_lag)
+            lag._shortcut_m.setAutoRepeat(False)
+            lag._shortcut_m.setEnabled(True)
             lag.btnLagStartStop.setToolTip(
                 'Start or stop intermittent lag for the device selected in the main list. '
                 'Shortcut: %s when this window is active (not in ms fields).' % nl
             )
         dupe = self.dupe_switch_dialog
         if dupe:
-            dupe._shortcut_p.setEnabled(False)
+            dupe._shortcut_p.setKey(k_dupe)
+            dupe._shortcut_p.setAutoRepeat(False)
+            dupe._shortcut_p.setEnabled(True)
             dupe.btnDupeRun.setToolTip(
                 'Run a single lag burst for the device selected in the main list, then stop completely. '
                 'Shortcut: %s when this window is active (not in ms fields).' % np
@@ -2216,6 +2214,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 dlg.set_dupe_countdown(None)
             return
         rem = self.dupe_remaining_ms()
+        # Finish as soon as elapsed time says so; avoids showing "0.0 s" until the
+        # coarse single-shot dupe_timer fires (can lag tens–100+ ms behind).
+        if rem is not None and rem <= 0:
+            self._dupe_countdown_timer.stop()
+            self.stopDupe(log_message='Dupe finished')
+            return
         dlg = getattr(self, 'dupe_switch_dialog', None)
         if dlg and dlg.isVisible():
             dlg.set_dupe_countdown(rem)
