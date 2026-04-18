@@ -28,7 +28,8 @@ WINDOW_CORNER_RADIUS_PX = int(globals().get('WINDOW_CORNER_RADIUS_PX', 12))
 
 
 def _experimental_charcoal_titlebar() -> bool:
-    return str(UPDATE_CHANNEL or '').strip().lower() == 'experimental'
+    """Match utils_gui charcoal chrome; channel does not change title bar palette."""
+    return True
 
 # Title-bar control glyphs (styled via QSS color; standard pixmaps cannot be tinted).
 _GLYPH_MIN = "\u2212"  # minus

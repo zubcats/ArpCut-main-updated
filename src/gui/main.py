@@ -117,12 +117,8 @@ def _focus_widget_absorbs_letter_key(widget):
 
 def _chrome_pushbutton_hover_inline_qss(watched_btn=None) -> str:
     """Programmatic hover for icon chrome (Fusion + qdark); same palette for all toolbar buttons."""
-    if str(UPDATE_CHANNEL or '').strip().lower() == 'experimental':
-        return (
-            'background-color: #383838; color: #d0d0d0; border: 1px solid #383838; border-radius: 4px;'
-        )
     return (
-        'background-color: #3a3f49; color: #aeb4bf; border: 1px solid #3a3f49; border-radius: 4px;'
+        'background-color: #383838; color: #d0d0d0; border: 1px solid #383838; border-radius: 4px;'
     )
 
 
@@ -1378,12 +1374,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Return (bg, fg) for every cell in the row, or None to clear to stylesheet (alternating rows).
         """
-        exp = str(UPDATE_CHANNEL or '').strip().lower() == 'experimental'
-        admin_colors = (
-            [ADMIN_DEVICE_TABLE_ROW_BG, ADMIN_DEVICE_TABLE_ROW_FG]
-            if exp
-            else ['#00ff00', '#000000']
-        )
+        admin_colors = [ADMIN_DEVICE_TABLE_ROW_BG, ADMIN_DEVICE_TABLE_ROW_FG]
         if device.get('admin'):
             return tuple(admin_colors)
         blocked = self._device_row_blocked_chrome(device)
@@ -1446,13 +1437,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if type(text) == bool:
                 continue
             
-            # Highlight Admins (Me / Router): bright green on stable; darker green on experimental.
             if device['admin']:
-                admin_colors = (
-                    [ADMIN_DEVICE_TABLE_ROW_BG, ADMIN_DEVICE_TABLE_ROW_FG]
-                    if str(UPDATE_CHANNEL or '').strip().lower() == 'experimental'
-                    else ['#00ff00', '#000000']
-                )
+                admin_colors = [ADMIN_DEVICE_TABLE_ROW_BG, ADMIN_DEVICE_TABLE_ROW_FG]
                 self.fillTableCell(row, column, text, admin_colors, selectable=False)
             else:
                 if self._device_row_blocked_chrome(device):

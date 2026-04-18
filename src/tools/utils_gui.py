@@ -22,8 +22,8 @@ _WINDOW_CORNER_RADIUS = int(globals().get('WINDOW_CORNER_RADIUS_PX', 12))
 
 
 def _experimental_charcoal_ui() -> bool:
-    """Experimental builds use neutral charcoal accents instead of qdarkstyle blues."""
-    return str(UPDATE_CHANNEL or '').strip().lower() == 'experimental'
+    """Charcoal/teal UI (stable and experimental). UPDATE_CHANNEL only affects updater feed / labels."""
+    return True
 
 
 def _main_window_chrome_bg() -> str:
