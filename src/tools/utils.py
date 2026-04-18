@@ -15,6 +15,16 @@ from constants import *
 p = manuf.MacParser()
 
 
+def _windows_subprocess_no_window_kwargs():
+    """Hide the transient console when spawning cmd.exe (avoids flash on startup / Settings)."""
+    if not sys.platform.startswith('win'):
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
+    return {'startupinfo': si}
+
+
 def _is_bad_iface_display_name(s: str) -> bool:
     """True if netsh/ipconfig gave a useless label (e.g. 'Description', state words, generic stubs)."""
     t = (s or '').strip().lower()
@@ -64,21 +74,22 @@ def terminal(command, shell=True, decode=True):
     On Windows with shell=True, runs through ``%SystemRoot%\\System32\\cmd.exe /d /c``
     instead of ``subprocess``'s default shell (``%COMSPEC%``). Some PCs set COMSPEC
     to PowerShell, which would spawn ``powershell.exe`` for every ``arp``/``ping``/``ipconfig``.
+    Uses ``STARTUPINFO`` + ``SW_HIDE`` so no console window flashes on each call.
     """
     try:
         kwargs = {'stderr': STDOUT}
         if sys.platform.startswith('win') and shell:
+            win_hide = _windows_subprocess_no_window_kwargs()
             cmd_exe = os.path.join(
                 os.environ.get('SystemRoot', r'C:\Windows'),
                 'System32',
                 'cmd.exe',
             )
             if isinstance(command, str) and os.path.isfile(cmd_exe):
-                kwargs['shell'] = False
                 argv = [cmd_exe, '/d', '/c', command]
-                cmd = check_output(argv, **kwargs)
+                cmd = check_output(argv, shell=False, stderr=STDOUT, **win_hide)
             else:
-                cmd = check_output(command, shell=True, stderr=STDOUT)
+                cmd = check_output(command, shell=True, stderr=STDOUT, **win_hide)
         else:
             cmd = check_output(command, shell=shell, stderr=STDOUT)
         return cmd.decode('utf-8', errors='replace') if decode else None

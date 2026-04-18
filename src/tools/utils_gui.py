@@ -62,9 +62,6 @@ QListView::item:selected, QTreeView::item:selected {
     background-color: #000000;
     color: #f2f2f2;
 }
-QHeaderView::section:hover {
-    background-color: #000000;
-}
 QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox, QComboBox {
     selection-background-color: #000000;
 }
@@ -77,13 +74,7 @@ QProgressBar::chunk {
 QMenu::item:selected, QMenuBar::item:selected {
     background-color: #000000;
 }
-QTabBar::tab:selected {
-    background-color: #000000;
-    border-color: #2a2a2a;
-}
-QTabBar::tab:!selected:hover {
-    background-color: #0d0d0d;
-}
+/* QTabBar: see _chrome_status_strip_and_tabs_qss() (transparent, matches window chrome). */
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {
     background-color: #000000;
     border: 1px solid #3a3a3a;
@@ -132,8 +123,129 @@ QTableWidget#tableScan::item:focus {
     background-color: #2b2b2b;
     color: #f2f2f2;
 }
-QPushButton#btnAbout {
+"""
+
+
+def _main_chrome_action_buttons_qss() -> str:
+    """
+    Top toolbar + bottom row push buttons: same fill / border / hover / pressed as the
+    custom title bar (frameless_chrome.CustomTitleBar) for experimental vs stable builds.
+    """
+    if _experimental_charcoal_ui():
+        bg, bd, bh, bp = '#2b2b2b', '#3d3d3d', '#383838', '#323232'
+        tx, th, tp = '#e8eaed', '#d0d0d0', '#9a9a9a'
+    else:
+        bg, bd, bh, bp = '#2d323c', '#3d4a5c', '#3a3f49', '#353942'
+        tx, th, tp = '#e8eaed', '#aeb4bf', '#8b909a'
+    sel = (
+        '#btnScanEasy, #btnScanHard, #btnKillAll, #btnUnkillAll, #btnSettings, #btnAbout, '
+        '#btnKill, #btnLagSwitch, #btnDupe'
+    )
+    return f"""
+{sel} {{
+    background-color: {bg};
+    color: {tx};
+    border: 1px solid {bd};
+    border-radius: 4px;
+}}
+{sel}:hover {{
+    background-color: {bh};
+    border: 1px solid {bh};
+    color: {th};
+}}
+{sel}:pressed {{
+    background-color: {bp};
+    border: 1px solid {bp};
+    color: {tp};
+}}
+{sel}:disabled {{
+    background-color: {bg};
+    border: 1px solid {bd};
+    color: {tp};
+}}
+#btnAbout {{
     padding: 8px;
+}}
+"""
+
+
+def _chrome_status_strip_and_tabs_qss() -> str:
+    """Status row under the table + tab bars: no panel tint; blend into window chrome."""
+    if _experimental_charcoal_ui():
+        mute, hi, hover = '#9a9a9a', '#e8eaed', '#d0d0d0'
+    else:
+        mute, hi, hover = '#8b909a', '#e8eaed', '#aeb4bf'
+    return f"""
+QLabel#lblleft, QLabel#lblcenter, QLabel#lblright {{
+    background: transparent;
+    border: none;
+    color: {mute};
+}}
+QLabel#lblcenter {{
+    color: {hi};
+}}
+QTabWidget::pane {{
+    border: none;
+    background: transparent;
+}}
+QTabBar {{
+    background: transparent;
+}}
+QTabBar::tab {{
+    background: transparent;
+    border: none;
+    padding: 6px 14px;
+    color: {mute};
+}}
+QTabBar::tab:selected {{
+    background: transparent;
+    color: {hi};
+    border-bottom: 2px solid {hi};
+    padding-bottom: 4px;
+}}
+QTabBar::tab:!selected:hover {{
+    background: transparent;
+    color: {hover};
+}}
+"""
+
+
+def table_row_hover_chrome() -> tuple[str, str]:
+    """Background / foreground for main table row hover (matches toolbar :hover)."""
+    if _experimental_charcoal_ui():
+        return '#383838', '#e8eaed'
+    return '#3a3f49', '#e8eaed'
+
+
+def table_row_selection_chrome() -> tuple[str, str]:
+    """Background / foreground for selected device row (matches #tableScan QSS)."""
+    if _experimental_charcoal_ui():
+        return '#2b2b2b', '#f2f2f2'
+    return '#324e7a', '#ffffff'
+
+
+def _table_scan_header_qss() -> str:
+    """IP/MAC/Vendor… header row: no qdark blue panel; same black chrome as #tableScan viewport."""
+    return """
+QTableWidget#tableScan QHeaderView {
+    background-color: #000000;
+    border: none;
+}
+QTableWidget#tableScan QHeaderView::section {
+    background-color: #000000;
+    color: #9a9a9a;
+    border: none;
+    border-right: 1px solid #141414;
+    border-bottom: 1px solid #2a2a2a;
+    padding: 6px 4px;
+}
+QTableWidget#tableScan QHeaderView::section:hover {
+    background-color: #0a0a0a;
+    color: #e8eaed;
+}
+QTableWidget#tableScan QHeaderView::section:pressed {
+    background-color: #121212;
+    color: #e8eaed;
 }
 """
 
@@ -142,6 +254,9 @@ def zubcut_dark_stylesheet():
     base = load_stylesheet() + '\n' + translucent_main_chrome_qss()
     if _experimental_charcoal_ui():
         base = base + '\n' + _EXPERIMENTAL_CHARCOAL_QSS
+    base = base + '\n' + _main_chrome_action_buttons_qss()
+    base = base + '\n' + _chrome_status_strip_and_tabs_qss()
+    base = base + '\n' + _table_scan_header_qss()
     return base
 
 
