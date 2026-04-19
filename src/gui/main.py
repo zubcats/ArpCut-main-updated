@@ -2365,6 +2365,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
                 self._schedule_kill_off_reinforce(mac, next_seq, 60)
                 self._schedule_kill_off_reinforce(mac, next_seq, 180)
+                self._schedule_kill_off_reinforce(mac, next_seq, 650)
+                self._schedule_kill_off_reinforce(mac, next_seq, 1400)
 
         self.killed_devices[mac] = bool(turn_on)
         self._sync_killed_devices()

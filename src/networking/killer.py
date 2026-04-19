@@ -203,8 +203,22 @@ class Killer:
 
     @threaded
     def _unkill_restore_worker(self, victim, seq=0):
-        # Follow-up restore bursts to reinforce cache correction.
-        self._restore_arp_now(victim, seq, repeats=3, delay_s=0.1)
+        # Follow-up restore bursts over ~2s so late poison frames do not re-break connectivity.
+        # (Some routers/clients apply a stray ARP update after immediate OFF restore.)
+        plan = (
+            (0.0, 2),
+            (0.25, 2),
+            (0.75, 2),
+            (1.5, 2),
+        )
+        for wait_s, repeats in plan:
+            if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
+                return
+            if wait_s > 0:
+                sleep(wait_s)
+            if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
+                return
+            self._restore_arp_now(victim, seq, repeats=repeats, delay_s=0.08)
         if self._op_seq.get(victim['mac']) == seq and victim['mac'] not in self.killed:
             self._stop_forwarder(victim['mac'])
             self._remove_pf_block(victim['ip'])
