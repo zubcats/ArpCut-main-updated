@@ -2319,7 +2319,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def toggleKill(self, source='unknown'):
         if not self.connected():
             return
+        active_explicit = [m for m, on in self.killed_devices.items() if bool(on)]
         device = self._get_selected_device()
+        # If one victim is currently Kill-ON and table selection moved, pressing Kill should
+        # still turn that victim OFF instead of accidentally turning ON another device.
+        if device is None and len(active_explicit) == 1:
+            device = self._get_device_by_mac(active_explicit[0]) or self._victim_record_for_mac(active_explicit[0])
         if not device:
             self.log('No device selected', 'red')
             return
@@ -2329,6 +2334,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         mac = device['mac']
         current_ui_on = bool(self.killed_devices.get(mac, mac in self.killer.killed))
+        if not current_ui_on and len(active_explicit) == 1 and active_explicit[0] != mac:
+            # Selection drifted to a different row while one kill victim is active.
+            mac = active_explicit[0]
+            victim = self._get_device_by_mac(mac) or self._victim_record_for_mac(mac)
+            if victim:
+                device = victim
+            current_ui_on = bool(self.killed_devices.get(mac, mac in self.killer.killed))
         next_state = not current_ui_on
         if next_state and self._toggle_start_blocked('kill'):
             return
@@ -2357,6 +2369,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             victim = self._victim_record_for_mac(mac) or device
             if victim:
+                # Also clear any leftover directional firewall block for this IP.
+                # Kill toggle is ARP-only, but stale lag/dupe rules can survive edge cases.
+                try:
+                    unblock_ip(victim['ip'])
+                except Exception:
+                    pass
                 self.killer.unkill(victim)
                 self.killer.reinforce_restore(victim)
                 if actual_on:
