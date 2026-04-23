@@ -508,6 +508,8 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         self._shortcut_p.setContext(Qt.WindowShortcut)
         self._shortcut_p.setAutoRepeat(False)
         self._shortcut_p.activated.connect(self._on_p_key_pressed)
+        self._shortcut_p.activatedAmbiguously.connect(self._on_p_key_pressed)
+        self._p_shortcut_debounce_until = 0.0
 
         self.dir_group = QGroupBox('Traffic Direction to Block', body)
         dir_layout = QVBoxLayout(self.dir_group)
@@ -554,6 +556,11 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         register_window_surface_effects(self)
 
     def _on_p_key_pressed(self):
+        now = time.monotonic()
+        if now < getattr(self, '_p_shortcut_debounce_until', 0.0):
+            return
+        # Mirror Lag dialog handling: keep first edge if Qt emits both shortcut signals.
+        self._p_shortcut_debounce_until = now + 0.05
         if _focus_widget_absorbs_letter_key(self.focusWidget()):
             return
         self._on_run_clicked()
