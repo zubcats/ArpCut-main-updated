@@ -14,6 +14,7 @@ UPDATE_CHANNEL = 'experimental'
 # Direct download URL for the latest installer package per channel (.exe).
 UPDATE_DOWNLOAD_URL_STABLE = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/stable-latest/ZubCut-Setup.exe'
 UPDATE_DOWNLOAD_URL_EXPERIMENTAL = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/experimental-latest/ZubCut-Setup-experimental.exe'
+UPDATE_DOWNLOAD_URL_PAID = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/paid-latest/ZubCut-Setup-paid.exe'
 # UTC ISO timestamp when this binary was built (CI overwrites). Used to detect newer installers online.
 APP_BUILD_TIME_ISO = ''
 

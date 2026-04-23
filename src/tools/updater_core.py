@@ -17,6 +17,7 @@ from constants import (
     APP_BUILD_TIME_ISO,
     UPDATE_CHANNEL,
     UPDATE_DOWNLOAD_URL_EXPERIMENTAL,
+    UPDATE_DOWNLOAD_URL_PAID,
     UPDATE_DOWNLOAD_URL_STABLE,
 )
 
@@ -40,10 +41,12 @@ def _parse_build_time_iso(raw):
 
 def selected_update_url():
     channel = str(UPDATE_CHANNEL or 'experimental').strip().lower()
-    if channel not in ('stable', 'experimental'):
+    if channel not in ('stable', 'experimental', 'paid'):
         channel = 'experimental'
     if channel == 'stable':
         return (UPDATE_DOWNLOAD_URL_STABLE or '').strip()
+    if channel == 'paid':
+        return (UPDATE_DOWNLOAD_URL_PAID or '').strip()
     return (UPDATE_DOWNLOAD_URL_EXPERIMENTAL or '').strip()
 
 

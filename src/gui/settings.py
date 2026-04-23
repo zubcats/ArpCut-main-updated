@@ -56,6 +56,8 @@ def _channel_kind_label(channel: str) -> str:
     c = str(channel or '').strip().lower()
     if c == 'experimental':
         return 'Experimental / testing build'
+    if c == 'paid':
+        return 'Paid build'
     return 'Regular ZubCut release'
 
 
@@ -84,7 +86,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnDefaults.clicked.connect(self.Defaults)
         self.btnUpdate.clicked.connect(self.checkUpdate)
         channel = str(UPDATE_CHANNEL or 'experimental').strip().lower()
-        if channel not in ('stable', 'experimental'):
+        if channel not in ('stable', 'experimental', 'paid'):
             channel = 'experimental'
         self._update_channel = channel
         self._update_published_label = ''
@@ -405,7 +407,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
 
     def _channel_label(self):
-        return 'experimental' if self._update_channel == 'experimental' else APP_DISPLAY_NAME
+        if self._update_channel == 'experimental':
+            return 'experimental'
+        if self._update_channel == 'paid':
+            return 'paid'
+        return APP_DISPLAY_NAME
 
     def _deferred_initial_update_check(self):
         try:
@@ -444,6 +450,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _update_button_text(self):
         if self._update_channel == 'experimental':
             base = 'Install Latest Build (Experimental)'
+        elif self._update_channel == 'paid':
+            base = 'Install Latest Build (Paid)'
         else:
             base = 'Install Latest Build'
         if self._update_available:
