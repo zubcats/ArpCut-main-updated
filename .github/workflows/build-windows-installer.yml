@@ -4,6 +4,7 @@
 # Push to `experimental` → tester build: tag `experimental-latest`, ZubCut-Setup-experimental.exe (release title: ZubCut (experimental)).
 # Push to `paid` → paid-track ZubCut installer artifacts. License Manager builds in a
 #                  separate workflow (`.github/workflows/build-license-manager-windows.yml`) so both can run in parallel.
+#                  On `paid`, pushes that touch only License-Manager-exclusive paths skip this ZubCut job (fast path).
 # Manual `workflow_dispatch` is still available when you want a build without a push.
 
 name: Build Windows installer only
@@ -36,7 +37,56 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  should-build-zubcut-windows:
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.decide.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "proceed=true" >> "${GITHUB_OUTPUT}"
+            echo "workflow_dispatch: always run ZubCut Windows build."
+            exit 0
+          fi
+          if [[ "${REF_NAME}" != "paid" ]]; then
+            echo "proceed=true" >> "${GITHUB_OUTPUT}"
+            echo "Non-paid branch: always run ZubCut Windows build."
+            exit 0
+          fi
+          # paid push: skip when every changed file is License-Manager-only (separate LM workflow covers those).
+          if [[ -z "${BEFORE:-}" || "${BEFORE}" == "0000000000000000000000000000000000000000" ]]; then
+            FILES="$(git show --pretty="" --name-only "${AFTER}" 2>/dev/null || true)"
+          else
+            FILES="$(git diff --name-only "${BEFORE}" "${AFTER}" 2>/dev/null || true)"
+          fi
+          if [[ -z "${FILES//[$'\t\r\n ']/}" ]]; then
+            echo "proceed=true" >> "${GITHUB_OUTPUT}"
+            echo "Empty changed-file list; run ZubCut build to be safe."
+            exit 0
+          fi
+          LM_ONLY_RE='^(build_license_manager\.py|src/zubcut_license_manager\.py|src/gui/license_manager\.py|src/tools/license_admin\.py|src/tools/qt_frozen_bootstrap\.py|installer/ZubCut-License-Manager\.iss|installer/Build-License-Manager-Installer\.bat|packaging/pyinstaller-hooks/rthook_qt_license_manager\.py|\.github/workflows/build-license-manager-windows\.yml)$'
+          if echo "${FILES}" | grep -vE "${LM_ONLY_RE}" | grep -q .; then
+            echo "proceed=true" >> "${GITHUB_OUTPUT}"
+            echo "Changed files include non-LM paths; run ZubCut Windows build."
+          else
+            echo "proceed=false" >> "${GITHUB_OUTPUT}"
+            echo "License-Manager-only paths on paid; skip ZubCut Windows build."
+          fi
+
   build-windows:
+    needs: should-build-zubcut-windows
+    if: needs.should-build-zubcut-windows.outputs.proceed == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

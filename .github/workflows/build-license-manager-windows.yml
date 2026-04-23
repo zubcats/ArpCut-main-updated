@@ -1,5 +1,8 @@
 # ZubCut License Manager only — runs in parallel with "Build Windows installer only" on `paid`.
 # Rolling release tag: paid-license-manager-latest (see PAID_LICENSE_MANAGER_UPDATE_URL in constants).
+#
+# When adding paths here, update LM_ONLY_RE in build-windows-installer.yml (job should-build-zubcut-windows)
+# so paid-only License Manager commits still skip the heavy ZubCut Windows job.
 
 name: Build License Manager (Windows)
 

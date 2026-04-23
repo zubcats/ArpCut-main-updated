@@ -8,6 +8,7 @@ alwaysApply: true
 - Every push to `experimental` must trigger the workflow assigned to `experimental`.
 - Every push to `paid` must trigger the workflow assigned to `paid` (Windows ZubCut installer).
 - Pushes to `paid` that touch License Manager-related paths also trigger **Build License Manager (Windows)**; it is a separate workflow so it runs in parallel and does not lengthen the ZubCut PyInstaller job.
+- On `paid`, if a push changes **only** License-Manager-exclusive files (see `should-build-zubcut-windows` in `build-windows-installer.yml`), **Build Windows installer only** skips the Windows PyInstaller job; use `workflow_dispatch` on that workflow to force a ZubCut build when needed.
 - Use `workflow_dispatch` on either workflow when you need a build without a matching path push.
 - Every push to `main` must trigger the workflow assigned to `main`.
 - Default build target is Windows only for all branches.
