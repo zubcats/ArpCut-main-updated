@@ -267,8 +267,8 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         self._preset_buttons.append(btn_med)
         preset_layout.addWidget(btn_med)
 
-        btn_heavy = QPushButton('Heavy (3000/1000)')
-        btn_heavy.clicked.connect(lambda: self._set_preset(3000, 1000))
+        btn_heavy = QPushButton('Heavy (9000/100)')
+        btn_heavy.clicked.connect(lambda: self._set_preset(9000, 100))
         self._preset_buttons.append(btn_heavy)
         preset_layout.addWidget(btn_heavy)
 
