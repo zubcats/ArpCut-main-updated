@@ -8,7 +8,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from constants import PAID_LICENSE_FILE_PATH, PAID_LICENSE_PUBLIC_KEY_B64
+try:
+    from constants import PAID_LICENSE_FILE_PATH, PAID_LICENSE_PUBLIC_KEY_B64
+except Exception:
+    # Backward compatibility for builds with older constants modules.
+    from constants import DOCUMENTS_PATH
+
+    PAID_LICENSE_FILE_PATH = os.path.join(DOCUMENTS_PATH, 'paid-license.json')
+    PAID_LICENSE_PUBLIC_KEY_B64 = ''
 
 
 def _utc_now() -> datetime:
