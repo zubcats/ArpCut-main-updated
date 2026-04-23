@@ -5,8 +5,9 @@ alwaysApply: true
 
 # Release Workflow
 
-- Maintain two separate update paths: `experimental` (testing) and `main` (stable user path).
-- Assume routine changes should be pushed to `experimental` without requiring per-change confirmation.
+- Maintain separate update paths for `experimental` (testing), `paid` (paid-feature testing), and `main` (stable user path).
+- Track one active working branch at a time, and default all routine commits/pushes to that active branch.
+- Treat `paid` as the active branch until the user explicitly instructs a branch switch.
+- After a user requests a branch switch, assume all future routine commits/pushes go to the newly selected branch until instructed otherwise.
 - Push to `main` only when explicitly instructed.
-- When promoting changes to `main`, ensure all intended `experimental` updates are carried over safely.
-- Preserve the separation so both update paths continue to work independently.
+- When promoting changes between branches, carry over only intended updates and preserve separation between update paths.
