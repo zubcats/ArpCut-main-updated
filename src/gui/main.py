@@ -203,6 +203,9 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         self._shortcut_m.setContext(Qt.WindowShortcut)
         self._shortcut_m.setAutoRepeat(False)
         self._shortcut_m.activated.connect(self._on_m_key_pressed)
+        # Lag uses the global ApplicationShortcut path as the single source of truth.
+        # Keep this object for key updates/tooltips, but disable it to avoid split handling.
+        self._shortcut_m.setEnabled(False)
         layout.addWidget(self.btnLagStartStop)
 
         # Direction selection
@@ -1933,11 +1936,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
         lag = self.lag_switch_dialog
         if lag:
-            # Keep dialog WindowShortcut enabled: ApplicationShortcut on main does not fire when
-            # focus is in a separate top-level Lag dialog (widget tree is not under main).
+            # Keep Lag on one path (global ApplicationShortcut) to avoid dialog-focus routing
+            # inconsistencies in the frameless Lag window.
             lag._shortcut_m.setKey(k_lag)
             lag._shortcut_m.setAutoRepeat(False)
-            lag._shortcut_m.setEnabled(True)
+            lag._shortcut_m.setEnabled(False)
             lag.btnLagStartStop.setToolTip(
                 'Start or stop intermittent lag for the device selected in the main list. '
                 'Shortcut: %s when this window is active (not in ms fields).' % nl
@@ -1969,12 +1972,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Lag toggle while app is foreground, regardless of active sub-window."""
         if not self._app_window_is_foreground():
             return
-        # When Lag dialog is the active window, let its own WindowShortcut handle M to
-        # avoid double-trigger races (global + dialog handlers both firing).
+        if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
+            return
+        # Lag dialog uses this global handler too (single key path across main + lag window).
         lag_dlg = getattr(self, 'lag_switch_dialog', None)
         if lag_dlg is not None and lag_dlg.isVisible() and lag_dlg.isActiveWindow():
-            return
-        if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
+            lag_dlg._on_lag_start_stop_clicked()
             return
         if self.lag_active and self.lag_device_mac:
             lag_edge = 'stop'
