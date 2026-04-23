@@ -1,0 +1,151 @@
+# ZubCut License Manager only — runs in parallel with "Build Windows installer only" on `paid`.
+# Rolling release tag: paid-license-manager-latest (see PAID_LICENSE_MANAGER_UPDATE_URL in constants).
+
+name: Build License Manager (Windows)
+
+on:
+  push:
+    branches:
+      - paid
+    paths:
+      - 'build_license_manager.py'
+      - 'src/zubcut_license_manager.py'
+      - 'src/gui/license_manager.py'
+      - 'src/tools/license_admin.py'
+      - 'src/tools/license_offline.py'
+      - 'src/tools/qt_frozen_bootstrap.py'
+      - 'src/tools/updater_core.py'
+      - 'src/tools/frameless_chrome.py'
+      - 'src/tools/branding.py'
+      - 'src/constants.py'
+      - '.github/ci-blessed/constants.py'
+      - 'packaging/pyinstaller-hooks/**'
+      - 'installer/ZubCut-License-Manager.iss'
+      - '.github/workflows/build-license-manager-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: license-manager-windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-license-manager:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore build.py and src/constants.py for CI
+        shell: bash
+        run: |
+          cp .github/ci-blessed/constants.py src/constants.py
+          cp .github/ci-blessed/build.py build.py
+
+      - name: Apply paid-channel constants
+        shell: bash
+        env:
+          UPDATE_URL_STABLE: ${{ vars.UPDATE_DOWNLOAD_URL_STABLE }}
+          UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          from datetime import datetime, timezone
+
+          p = Path("src/constants.py")
+          txt = p.read_text(encoding="utf-8")
+          channel = "paid"
+          stable_url = os.getenv("UPDATE_URL_STABLE", "")
+          experimental_url = os.getenv("UPDATE_URL_EXPERIMENTAL", "")
+
+          txt = re.sub(r"^UPDATE_CHANNEL\s*=.*$", f"UPDATE_CHANNEL = '{channel}'", txt, flags=re.M)
+          if stable_url:
+              txt = re.sub(r"^UPDATE_DOWNLOAD_URL_STABLE\s*=.*$", f"UPDATE_DOWNLOAD_URL_STABLE = {stable_url!r}", txt, flags=re.M)
+          if experimental_url:
+              txt = re.sub(r"^UPDATE_DOWNLOAD_URL_EXPERIMENTAL\s*=.*$", f"UPDATE_DOWNLOAD_URL_EXPERIMENTAL = {experimental_url!r}", txt, flags=re.M)
+          build_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          txt = re.sub(r"^APP_BUILD_TIME_ISO\s*=.*$", f"APP_BUILD_TIME_ISO = {build_iso!r}", txt, flags=re.M)
+          p.write_text(txt, encoding="utf-8")
+          print(f"Applied UPDATE_CHANNEL={channel} for License Manager CI build")
+          PY
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pillow
+
+      - name: Verify build script syntax
+        run: python -m py_compile build_license_manager.py
+
+      - name: Refresh APP_BUILD_TIME_ISO before PyInstaller
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from datetime import datetime, timezone
+          import re
+          p = Path("src/constants.py")
+          text = p.read_text(encoding="utf-8")
+          build_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          text = re.sub(
+              r"^APP_BUILD_TIME_ISO\s*=.*$",
+              f"APP_BUILD_TIME_ISO = {build_iso!r}",
+              text,
+              flags=re.M,
+          )
+          p.write_text(text, encoding="utf-8")
+          print("Refreshed APP_BUILD_TIME_ISO to", build_iso)
+          PY
+
+      - name: Build License Manager EXE (PyInstaller)
+        run: python build_license_manager.py
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Compile License Manager installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after Inno install" }
+          & $iscc "installer\ZubCut-License-Manager.iss"
+
+      - name: Create License Manager installer alias
+        shell: pwsh
+        run: |
+          $lmLatest = Get-ChildItem -Path "output" -Filter "ZubCut-License-Manager-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $lmLatest) { throw "License Manager installer not found in output/" }
+          Copy-Item $lmLatest.FullName "output/ZubCut-License-Manager-Setup.exe" -Force
+
+      - name: Upload License Manager portable EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZubCut-License-Manager-Windows-Portable
+          path: dist/ZubCutLicenseManager
+
+      - name: Upload License Manager installer EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZubCut-License-Manager-Windows-Installer
+          path: output/ZubCut-License-Manager-Setup.exe
+
+      - name: Publish rolling paid License Manager release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: paid-license-manager-latest
+          name: ZubCut License Manager (paid)
+          prerelease: true
+          make_latest: false
+          files: output/ZubCut-License-Manager-Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -6,7 +6,9 @@ alwaysApply: true
 # CI Workflow Rules
 
 - Every push to `experimental` must trigger the workflow assigned to `experimental`.
-- Every push to `paid` must trigger the workflow assigned to `paid`.
+- Every push to `paid` must trigger the workflow assigned to `paid` (Windows ZubCut installer).
+- Pushes to `paid` that touch License Manager-related paths also trigger **Build License Manager (Windows)**; it is a separate workflow so it runs in parallel and does not lengthen the ZubCut PyInstaller job.
+- Use `workflow_dispatch` on either workflow when you need a build without a matching path push.
 - Every push to `main` must trigger the workflow assigned to `main`.
 - Default build target is Windows only for all branches.
 - Do not run macOS or Linux build workflows unless the requested work explicitly changes macOS or Linux builds.

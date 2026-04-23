@@ -2,8 +2,8 @@
 #
 # Push to `main` → regular ZubCut build: rolling tag `stable-latest`, artifact ZubCut-Setup.exe (GitHub release title: ZubCut).
 # Push to `experimental` → tester build: tag `experimental-latest`, ZubCut-Setup-experimental.exe (release title: ZubCut (experimental)).
-# Push to `paid` → paid-track build with the same ZubCut installer artifacts plus
-#                  dedicated License Manager portable/installer artifacts.
+# Push to `paid` → paid-track ZubCut installer artifacts. License Manager builds in a
+#                  separate workflow (`.github/workflows/build-license-manager-windows.yml`) so both can run in parallel.
 # Manual `workflow_dispatch` is still available when you want a build without a push.
 
 name: Build Windows installer only
@@ -106,7 +106,6 @@ jobs:
       - name: Verify build script syntax
         run: |
           python -m py_compile build.py
-          python -m py_compile build_license_manager.py
 
       - name: Refresh APP_BUILD_TIME_ISO before PyInstaller
         shell: bash
@@ -131,10 +130,6 @@ jobs:
       - name: Build Windows EXE (PyInstaller via build.py)
         run: python build.py
 
-      - name: Build License Manager EXE (PyInstaller)
-        if: ${{ github.ref_name == 'paid' || github.event.inputs.release_channel == 'paid' }}
-        run: python build_license_manager.py
-
       - name: Install Inno Setup
         run: choco install innosetup -y
 
@@ -145,15 +140,6 @@ jobs:
           if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after Inno install" }
           & $iscc "installer\ZubCut.iss"
-
-      - name: Compile License Manager installer
-        if: ${{ github.ref_name == 'paid' || github.event.inputs.release_channel == 'paid' }}
-        shell: pwsh
-        run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
-          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after Inno install" }
-          & $iscc "installer\ZubCut-License-Manager.iss"
 
       - name: Create channel installer alias
         shell: pwsh
@@ -180,14 +166,6 @@ jobs:
             $aliasName = "ZubCut-Setup-experimental.exe"
           }
           Copy-Item $latest.FullName ("output/" + $aliasName) -Force
-
-      - name: Create License Manager paid alias
-        if: ${{ github.event.inputs.release_channel == 'paid' || github.ref_name == 'paid' }}
-        shell: pwsh
-        run: |
-          $lmLatest = Get-ChildItem -Path "output" -Filter "ZubCut-License-Manager-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if (-not $lmLatest) { throw "License Manager installer not found in output/" }
-          Copy-Item $lmLatest.FullName "output/ZubCut-License-Manager-Setup.exe" -Force
 
       - name: Upload portable EXE
         if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}
@@ -224,20 +202,6 @@ jobs:
           name: ZubCut-Windows-Installer-Paid
           path: output/ZubCut-Setup-paid.exe
 
-      - name: Upload License Manager portable EXE (Paid)
-        if: ${{ github.event.inputs.release_channel == 'paid' || github.ref_name == 'paid' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ZubCut-License-Manager-Windows-Portable
-          path: dist/ZubCutLicenseManager
-
-      - name: Upload License Manager installer EXE (Paid)
-        if: ${{ github.event.inputs.release_channel == 'paid' || github.ref_name == 'paid' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ZubCut-License-Manager-Windows-Installer
-          path: output/ZubCut-License-Manager-Setup.exe
-
       - name: Publish rolling stable release
         if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && github.ref_name == 'main') }}
         uses: softprops/action-gh-release@v2
@@ -270,8 +234,6 @@ jobs:
           name: ZubCut (paid)
           prerelease: true
           make_latest: false
-          files: |
-            output/ZubCut-Setup-paid.exe
-            output/ZubCut-License-Manager-Setup.exe
+          files: output/ZubCut-Setup-paid.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
