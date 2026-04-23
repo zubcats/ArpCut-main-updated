@@ -32,12 +32,18 @@ HIDDEN_IMPORTS = [
     'pyperclip',
     'requests',
     'six',
+    'nacl',
+    'nacl.signing',
+    'nacl.bindings',
+    '_cffi_backend',
 ]
 
 COLLECT_ALL = [
     'manuf',
     'scapy',
     'qdarkstyle',
+    'nacl',
+    'cffi',
 ]
 
 def build():

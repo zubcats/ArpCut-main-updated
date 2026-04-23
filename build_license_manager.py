@@ -24,11 +24,14 @@ HIDDEN_IMPORTS = [
     'qdarkstyle',
     'nacl',
     'nacl.signing',
+    'nacl.bindings',
+    '_cffi_backend',
 ]
 
 COLLECT_ALL = [
     'qdarkstyle',
     'nacl',
+    'cffi',
 ]
 
 
