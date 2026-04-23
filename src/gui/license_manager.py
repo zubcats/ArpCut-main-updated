@@ -17,7 +17,11 @@ from PyQt5.QtWidgets import (
 )
 
 from constants import APP_DISPLAY_NAME, PAID_LICENSE_MANAGER_UPDATE_URL
-from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
+from tools.frameless_chrome import (
+    FramelessResizableMixin,
+    register_window_surface_effects,
+    setup_frameless_main_window,
+)
 from tools.license_admin import (
     admin_public_verify_key_b64,
     create_license,
@@ -27,7 +31,6 @@ from tools.license_admin import (
     set_license_status,
 )
 from tools.updater_core import download_installer, launch_installer
-from tools.utils_gui import register_window_surface_effects
 
 
 def _human_remaining(seconds: int) -> str:

@@ -9,10 +9,9 @@ except Exception:
     winreg = None
 
 from qdarkstyle import load_stylesheet
-from PyQt5.QtCore import Qt, QObject, QEvent, QRectF
-from PyQt5.QtGui import QPainterPath, QRegion
 from PyQt5.QtWidgets import QApplication
 
+from tools.frameless_chrome import register_window_surface_effects, sync_translucent_chrome
 from tools.utils import terminal
 import constants as _zcut_constants
 from constants import *
@@ -683,101 +682,6 @@ def apply_app_global_dark_stylesheet():
 def application_theme_stylesheet():
     app = QApplication.instance()
     return app.styleSheet() if app else ''
-
-
-def _update_top_level_round_mask(widget):
-    """Clip the entire top-level window to a rounded rect (fixes square corners / bleed-through)."""
-    if widget is None or not widget.isWindow():
-        return
-    if widget.isMaximized() or widget.isFullScreen():
-        widget.clearMask()
-        return
-    w, h = widget.width(), widget.height()
-    if w < 2 or h < 2:
-        return
-    r = min(float(_WINDOW_CORNER_RADIUS), max(2.0, min(float(w), float(h)) / 2.0 - 1.0))
-    path = QPainterPath()
-    path.addRoundedRect(QRectF(0, 0, float(w), float(h)), r, r)
-    # QRegion expects an integer polygon on PyQt5; PolygonF can raise at runtime.
-    widget.setMask(QRegion(path.toFillPolygon().toPolygon()))
-
-
-class _WindowChromeEventFilter(QObject):
-    """First Show: DWM hints. Show/resize/state: rounded QWidget mask for frameless windows."""
-
-    def __init__(self, parent_widget):
-        super().__init__(parent_widget)
-        self._dwm_applied = False
-
-    def eventFilter(self, obj, event):
-        t = event.type()
-        if t == QEvent.Show and not self._dwm_applied:
-            self._dwm_applied = True
-            _apply_win32_dwm_window_chrome(obj)
-        if t in (QEvent.Show, QEvent.Resize, QEvent.WindowStateChange):
-            _update_top_level_round_mask(obj)
-        return False
-
-
-def _apply_win32_dwm_window_chrome(widget):
-    """
-    Same DWM calls on every Windows version we support: immersive dark + optional round-corners hint.
-    Older builds ignore attributes they do not implement. Rounded outline is always from the Qt mask.
-    """
-    if not sys.platform.startswith('win'):
-        return
-    try:
-        hwnd = int(widget.winId())
-        if not hwnd:
-            return
-        dwm = ctypes.windll.dwmapi
-        hwnd_p = ctypes.c_void_p(hwnd)
-    except Exception:
-        return
-
-    try:
-        DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-        dark = ctypes.c_int(1)
-        dwm.DwmSetWindowAttribute(
-            hwnd_p,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            ctypes.byref(dark),
-            ctypes.sizeof(dark),
-        )
-    except Exception:
-        pass
-
-    try:
-        DWMWA_WINDOW_CORNER_PREFERENCE = 33
-        DWMWCP_ROUND = 2
-        preference = ctypes.c_uint(DWMWCP_ROUND)
-        dwm.DwmSetWindowAttribute(
-            hwnd_p,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            ctypes.byref(preference),
-            ctypes.sizeof(preference),
-        )
-    except Exception:
-        pass
-
-
-def register_window_surface_effects(window_widget):
-    """Translucent client + DWM hints (same path on all Windows); Qt mask provides the real rounded clip."""
-    if window_widget is None:
-        return
-    use_translucent = getattr(window_widget, '_zubcut_use_translucent_surface', True)
-    window_widget.setAttribute(Qt.WA_TranslucentBackground, bool(use_translucent))
-    if getattr(window_widget, '_zubcut_round_filter_installed', False):
-        return
-    window_widget._zubcut_round_filter_installed = True
-    window_widget.installEventFilter(_WindowChromeEventFilter(window_widget))
-
-
-def sync_translucent_chrome(windows):
-    """Per-pixel alpha with the desktop behind the dark theme chrome."""
-    for w in windows:
-        register_window_surface_effects(w)
-
 
 
 def is_admin():
