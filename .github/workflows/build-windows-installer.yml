@@ -2,6 +2,8 @@
 #
 # Push to `main` → regular ZubCut build: rolling tag `stable-latest`, artifact ZubCut-Setup.exe (GitHub release title: ZubCut).
 # Push to `experimental` → tester build: tag `experimental-latest`, ZubCut-Setup-experimental.exe (release title: ZubCut (experimental)).
+# Push to `paid` → paid-track build with the same ZubCut installer artifacts plus
+#                  dedicated License Manager portable/installer artifacts.
 # Manual `workflow_dispatch` is still available when you want a build without a push.
 
 name: Build Windows installer only
@@ -11,6 +13,7 @@ on:
     branches:
       - main
       - experimental
+      - paid
   workflow_dispatch:
     inputs:
       release_channel:
@@ -22,6 +25,7 @@ on:
           - auto
           - stable
           - experimental
+          - paid
 
 permissions:
   contents: write
@@ -65,10 +69,15 @@ jobs:
           ref_name = os.getenv("REF_NAME", "").lower()
           ref_type = os.getenv("REF_TYPE", "").lower()
           requested = os.getenv("REQUESTED_CHANNEL", "").strip().lower()
-          if requested in ("stable", "experimental"):
+          if requested in ("stable", "experimental", "paid"):
               channel = requested
           else:
-              channel = "stable" if (ref_name == "main" or ref_type == "tag") else "experimental"
+              if ref_name == "main" or ref_type == "tag":
+                  channel = "stable"
+              elif ref_name == "paid":
+                  channel = "paid"
+              else:
+                  channel = "experimental"
           stable_url = os.getenv("UPDATE_URL_STABLE", "")
           experimental_url = os.getenv("UPDATE_URL_EXPERIMENTAL", "")
 
@@ -95,7 +104,9 @@ jobs:
           pip install pyinstaller pillow
 
       - name: Verify build script syntax
-        run: python -m py_compile build.py
+        run: |
+          python -m py_compile build.py
+          python -m py_compile build_license_manager.py
 
       - name: Refresh APP_BUILD_TIME_ISO before PyInstaller
         shell: bash
@@ -120,6 +131,10 @@ jobs:
       - name: Build Windows EXE (PyInstaller via build.py)
         run: python build.py
 
+      - name: Build License Manager EXE (PyInstaller)
+        if: ${{ github.ref_name == 'paid' || github.event.inputs.release_channel == 'paid' }}
+        run: python build_license_manager.py
+
       - name: Install Inno Setup
         run: choco install innosetup -y
 
@@ -131,22 +146,39 @@ jobs:
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after Inno install" }
           & $iscc "installer\ZubCut.iss"
 
+      - name: Compile License Manager installer
+        if: ${{ github.ref_name == 'paid' || github.event.inputs.release_channel == 'paid' }}
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after Inno install" }
+          & $iscc "installer\ZubCut-License-Manager.iss"
+
       - name: Create channel installer alias
         shell: pwsh
         env:
           REQUESTED_CHANNEL: ${{ github.event.inputs.release_channel || '' }}
         run: |
           $requested = "$env:REQUESTED_CHANNEL".ToLower().Trim()
-          if ($requested -eq "stable" -or $requested -eq "experimental") {
+          if ($requested -eq "stable" -or $requested -eq "experimental" -or $requested -eq "paid") {
             $channel = $requested
           } elseif ("${{ github.ref_name }}" -eq "main" -or "${{ github.ref_type }}" -eq "tag") {
             $channel = "stable"
+          } elseif ("${{ github.ref_name }}" -eq "paid") {
+            $channel = "paid"
           } else {
             $channel = "experimental"
           }
           $latest = Get-ChildItem -Path "output" -Filter "ZubCut-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $latest) { throw "Installer not found in output/" }
-          $aliasName = if ($channel -eq "stable") { "ZubCut-Setup.exe" } else { "ZubCut-Setup-experimental.exe" }
+          if ($channel -eq "stable") {
+            $aliasName = "ZubCut-Setup.exe"
+          } elseif ($channel -eq "paid") {
+            $aliasName = "ZubCut-Setup-paid.exe"
+          } else {
+            $aliasName = "ZubCut-Setup-experimental.exe"
+          }
           Copy-Item $latest.FullName ("output/" + $aliasName) -Force
 
       - name: Upload portable EXE
@@ -157,7 +189,7 @@ jobs:
           path: dist/ZubCut
 
       - name: Upload portable EXE (Experimental)
-        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
+        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'stable' && github.event.inputs.release_channel != 'paid' && github.ref_name != 'main' && github.ref_name != 'paid' && github.ref_type != 'tag') }}
         uses: actions/upload-artifact@v4
         with:
           name: ZubCut-Windows-Portable-Experimental
@@ -171,11 +203,32 @@ jobs:
           path: output/ZubCut-Setup.exe
 
       - name: Upload installer EXE (Experimental)
-        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
+        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'stable' && github.event.inputs.release_channel != 'paid' && github.ref_name != 'main' && github.ref_name != 'paid' && github.ref_type != 'tag') }}
         uses: actions/upload-artifact@v4
         with:
           name: ZubCut-Windows-Installer-Experimental
           path: output/ZubCut-Setup-experimental.exe
+
+      - name: Upload installer EXE (Paid)
+        if: ${{ github.event.inputs.release_channel == 'paid' || github.ref_name == 'paid' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZubCut-Windows-Installer-Paid
+          path: output/ZubCut-Setup-paid.exe
+
+      - name: Upload License Manager portable EXE (Paid)
+        if: ${{ github.event.inputs.release_channel == 'paid' || github.ref_name == 'paid' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZubCut-License-Manager-Windows-Portable
+          path: dist/ZubCutLicenseManager
+
+      - name: Upload License Manager installer EXE (Paid)
+        if: ${{ github.event.inputs.release_channel == 'paid' || github.ref_name == 'paid' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZubCut-License-Manager-Windows-Installer
+          path: output/ZubCut-License-Manager-Setup-1.0.exe
 
       - name: Publish rolling stable release
         if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && github.ref_name == 'main') }}
@@ -190,7 +243,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish rolling experimental release
-        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
+        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'stable' && github.event.inputs.release_channel != 'paid' && github.ref_name != 'main' && github.ref_name != 'paid' && github.ref_type != 'tag') }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: experimental-latest
@@ -198,5 +251,19 @@ jobs:
           prerelease: true
           make_latest: false
           files: output/ZubCut-Setup-experimental.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish rolling paid release
+        if: ${{ github.event.inputs.release_channel == 'paid' || github.ref_name == 'paid' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: paid-latest
+          name: ZubCut (paid)
+          prerelease: true
+          make_latest: false
+          files: |
+            output/ZubCut-Setup-paid.exe
+            output/ZubCut-License-Manager-Setup-1.0.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
