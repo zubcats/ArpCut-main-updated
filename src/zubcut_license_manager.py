@@ -3,13 +3,15 @@ import sys as _sys, os as _os
 
 _sys.path.append(_os.path.dirname(__file__))
 
+from os import makedirs
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import QApplication, QStyleFactory
+from qdarkstyle import load_stylesheet
 
+from constants import DOCUMENTS_PATH
 from gui.license_manager import LicenseManagerWindow
 from tools.branding import load_application_qicon, qicon_is_empty
-from tools.utils_gui import apply_app_global_dark_stylesheet, check_documents_dir
 from assets import app_icon
 
 
@@ -31,8 +33,8 @@ if __name__ == '__main__':
     _fusion = QStyleFactory.create('Fusion')
     if _fusion is not None:
         app.setStyle(_fusion)
-    apply_app_global_dark_stylesheet()
-    check_documents_dir()
+    app.setStyleSheet(load_stylesheet())
+    makedirs(DOCUMENTS_PATH, exist_ok=True)
     icon = _load_window_icon()
     app.setWindowIcon(icon)
     win = LicenseManagerWindow(icon)
