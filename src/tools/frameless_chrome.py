@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+from ctypes import wintypes
 from typing import Optional, Tuple, Union
 
 from PyQt5.QtCore import QEvent, QObject, QRectF, Qt
@@ -57,7 +58,7 @@ def _is_windows_generic_msg(event_type: object) -> bool:
     return "windows_generic_MSG" in s or "windows_dispatcher" in s
 
 
-def _msg_from_native(message: object) -> Optional[ctypes.wintypes.MSG]:
+def _msg_from_native(message: object) -> Optional[wintypes.MSG]:
     try:
         addr = int(message)  # sip.voidptr / int
     except (TypeError, ValueError):
@@ -65,7 +66,7 @@ def _msg_from_native(message: object) -> Optional[ctypes.wintypes.MSG]:
     if addr == 0:
         return None
     try:
-        return ctypes.wintypes.MSG.from_address(addr)
+        return wintypes.MSG.from_address(addr)
     except (ValueError, ctypes.ArgumentError):
         return None
 
