@@ -112,9 +112,15 @@ def _focus_widget_absorbs_letter_key(widget):
     """Avoid stealing letter shortcuts only while typing in text-entry fields."""
     if widget is None:
         return False
-    # Keep shortcuts active for spin boxes (Lag/Dupe ms, Settings counts/threads): letter
-    # keys are not meaningful there, and blocking them makes L/M/P feel broken in dialogs.
-    return isinstance(widget, (QLineEdit, QTextEdit, QPlainTextEdit))
+    # Spin boxes use an internal QLineEdit editor; do not block global shortcuts there.
+    if isinstance(widget, QLineEdit):
+        try:
+            if isinstance(widget.parent(), QAbstractSpinBox):
+                return False
+        except Exception:
+            pass
+        return True
+    return isinstance(widget, (QTextEdit, QPlainTextEdit))
 
 
 def _chrome_pushbutton_hover_inline_qss(watched_btn=None) -> str:
@@ -397,6 +403,10 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
             row = main.tableScan.currentRow()
             if 0 <= row < len(main.scanner.devices):
                 device = main.scanner.devices[row]
+        if device is None:
+            pinned_mac = getattr(main, '_lag_dialog_target_mac', None)
+            if pinned_mac:
+                device = main._get_device_by_mac(pinned_mac) or main._victim_record_for_mac(pinned_mac)
         deb_mac = device.get('mac') if isinstance(device, dict) else None
         lag_edge = 'start'
         if main._ignore_duplicate_toggle_edge('lag', deb_mac, lag_edge):
@@ -748,6 +758,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_device_mac = None
         self.dupe_direction = 'both'
         self.dupe_duration_ms = 5000
+        self._lag_dialog_target_mac = None
         self.dupe_timer = QTimer(self)
         self.dupe_timer.setSingleShot(True)
         self.dupe_timer.setTimerType(Qt.PreciseTimer)
@@ -2002,6 +2013,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if device['admin']:
             self.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
+        self._lag_dialog_target_mac = device.get('mac')
         if self.lag_switch_dialog is None:
             self.lag_switch_dialog = LagSwitchDialog(self)
             self.refresh_keyboard_shortcuts_from_settings()
