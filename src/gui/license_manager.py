@@ -44,13 +44,71 @@ def _human_remaining(seconds: int) -> str:
     return f'{mins}m'
 
 
+def _license_manager_qss() -> str:
+    accent = '#316E69'
+    panel = '#141414'
+    field = '#2b2b2b'
+    border = '#3d3d3d'
+    hover = '#383838'
+    press = '#323232'
+    text = '#e8eaed'
+    mute = '#9a9a9a'
+    return f"""
+QMainWindow#zubcutLicenseManager {{
+    background-color: {panel};
+}}
+QMainWindow#zubcutLicenseManager QWidget {{
+    color: {text};
+    background-color: transparent;
+}}
+QMainWindow#zubcutLicenseManager QLabel {{
+    color: {text};
+}}
+QMainWindow#zubcutLicenseManager QPushButton {{
+    background-color: {field};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 4px;
+    padding: 4px 10px;
+    min-height: 22px;
+}}
+QMainWindow#zubcutLicenseManager QPushButton:hover {{
+    background-color: {hover};
+    border: 1px solid {hover};
+}}
+QMainWindow#zubcutLicenseManager QPushButton:pressed {{
+    background-color: {press};
+    border: 1px solid {press};
+}}
+QMainWindow#zubcutLicenseManager QTableWidget {{
+    background-color: #000000;
+    alternate-background-color: #0a0a0a;
+    color: {text};
+    gridline-color: #141414;
+    border: 1px solid {border};
+    selection-background-color: {accent};
+    selection-color: #f2f2f2;
+}}
+QMainWindow#zubcutLicenseManager QHeaderView::section {{
+    background-color: #000000;
+    color: {mute};
+    border: none;
+    border-bottom: 1px solid #2a2a2a;
+    border-right: 1px solid #141414;
+    padding: 4px;
+}}
+"""
+
+
 class LicenseManagerWindow(QMainWindow):
     def __init__(self, icon):
         super().__init__()
+        self.setObjectName('zubcutLicenseManager')
         self.setWindowTitle(f'{APP_DISPLAY_NAME} License Manager')
         self.setWindowIcon(icon)
         self.resize(980, 560)
         self._build_ui()
+        self.setStyleSheet(_license_manager_qss())
         self.refresh_rows()
 
     def _build_ui(self):
@@ -96,6 +154,7 @@ class LicenseManagerWindow(QMainWindow):
         self.table.setSelectionBehavior(self.table.SelectRows)
         self.table.setSelectionMode(self.table.SingleSelection)
         self.table.setEditTriggers(self.table.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
         lay.addWidget(self.table)
 
         self.lblSummary = QLabel(self)
