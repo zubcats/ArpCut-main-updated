@@ -109,10 +109,12 @@ _DEVICE_ROW_KILL_SEL_HOVER_FG = '#fff8f8'
 # from qt_material import build_stylesheet
 
 def _focus_widget_absorbs_letter_key(widget):
-    """Avoid stealing L while typing in numeric/text fields."""
+    """Avoid stealing letter shortcuts only while typing in text-entry fields."""
     if widget is None:
         return False
-    return isinstance(widget, (QAbstractSpinBox, QLineEdit, QTextEdit, QPlainTextEdit))
+    # Keep shortcuts active for spin boxes (Lag/Dupe ms, Settings counts/threads): letter
+    # keys are not meaningful there, and blocking them makes L/M/P feel broken in dialogs.
+    return isinstance(widget, (QLineEdit, QTextEdit, QPlainTextEdit))
 
 
 def _chrome_pushbutton_hover_inline_qss(watched_btn=None) -> str:
