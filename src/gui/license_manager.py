@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 )
 
 from constants import APP_DISPLAY_NAME, PAID_LICENSE_MANAGER_UPDATE_URL
+from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
 from tools.license_admin import (
     admin_public_verify_key_b64,
     create_license,
@@ -26,6 +27,7 @@ from tools.license_admin import (
     set_license_status,
 )
 from tools.updater_core import download_installer, launch_installer
+from tools.utils_gui import register_window_surface_effects
 
 
 def _human_remaining(seconds: int) -> str:
@@ -100,7 +102,7 @@ QMainWindow#zubcutLicenseManager QHeaderView::section {{
 """
 
 
-class LicenseManagerWindow(QMainWindow):
+class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
     def __init__(self, icon):
         super().__init__()
         self.setObjectName('zubcutLicenseManager')
@@ -109,6 +111,8 @@ class LicenseManagerWindow(QMainWindow):
         self.resize(980, 560)
         self._build_ui()
         self.setStyleSheet(_license_manager_qss())
+        setup_frameless_main_window(self, self.windowTitle(), icon, maximizable=False)
+        register_window_surface_effects(self)
         self.refresh_rows()
 
     def _build_ui(self):
