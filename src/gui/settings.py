@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLineEdit
+from PyQt5.QtWidgets import QApplication, QDialog, QMainWindow, QLineEdit, QPushButton
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer
 import os
@@ -71,6 +71,17 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setWindowIcon(icon)
         self.setupUi(self)
         self.setObjectName('zubcutAuxiliaryWindow')
+        if str(UPDATE_CHANNEL or '').strip().lower() == 'paid':
+            self.setMaximumSize(
+                self.maximumSize().width(),
+                self.maximumSize().height() + 48,
+            )
+            self.btnPaidSignIn = QPushButton('Paid: Sign in or change license…', self.centralwidget)
+            self.btnPaidSignIn.setObjectName('btnPaidSignIn')
+            self.btnPaidSignIn.setMinimumHeight(34)
+            self.gridLayout.addWidget(self.btnPaidSignIn, 6, 0, 1, 4)
+            self.btnPaidSignIn.clicked.connect(self._on_paid_sign_in)
+        self.adjustSize()
         self.setFixedSize(self.size())
 
         self.loadInterfaces()
@@ -100,6 +111,26 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
         register_window_surface_effects(self)
+
+    def _on_paid_sign_in(self):
+        from gui.paid_license_signin import PaidLicenseSignInDialog
+        from tools.license_offline import load_and_validate_installed_license
+
+        dlg = PaidLicenseSignInDialog(self, self.icon)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        if load_and_validate_installed_license().ok:
+            MsgType.INFO(
+                self,
+                'License',
+                'License saved. Restart ZubCut if the app still shows an old license message.',
+            )
+        else:
+            MsgType.WARN(
+                self,
+                'License',
+                'The file could not be verified. Try again or contact your administrator.',
+            )
 
     def showEvent(self, event):
         super().showEvent(event)

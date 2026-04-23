@@ -45,12 +45,22 @@ def _validate_paid_license_or_exit(icon) -> None:
     if not bool(PAID_LICENSE_ENFORCEMENT):
         print(f'[paid-license] soft mode: {res.reason}')
         return
+    from gui.paid_license_signin import run_paid_license_signin
+
+    if run_paid_license_signin(None, icon):
+        res = load_and_validate_installed_license()
+        if res.ok:
+            return
+        msg_box(
+            APP_DISPLAY_NAME,
+            f'License still not valid after sign-in: {res.reason}',
+            MsgIcon.CRITICAL,
+            icon,
+        )
+        exit(1)
     msg_box(
         APP_DISPLAY_NAME,
-        (
-            f'Paid license check failed: {res.reason}\n\n'
-            'Please import a valid license issued by the ZubCut admin.'
-        ),
+        'This paid build requires a license. Use Sign in when you are ready, or close the app.',
         MsgIcon.CRITICAL,
         icon,
     )

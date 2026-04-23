@@ -75,15 +75,8 @@ def _verify_signature(payload: dict[str, Any], signature_b64: str) -> bool:
         return False
 
 
-def load_and_validate_installed_license(path: str | None = None) -> LicenseValidationResult:
-    lic_path = path or PAID_LICENSE_FILE_PATH
-    if not os.path.exists(lic_path):
-        return LicenseValidationResult(False, 'License file missing')
-    try:
-        data = json.load(open(lic_path, 'r', encoding='utf-8'))
-    except Exception:
-        return LicenseValidationResult(False, 'License file unreadable')
-
+def validate_license_document(data: dict[str, Any]) -> LicenseValidationResult:
+    """Validate a signed license dict (payload + signature) from file or clipboard."""
     if not isinstance(data, dict):
         return LicenseValidationResult(False, 'License format invalid')
     payload = data.get('payload')
@@ -110,3 +103,22 @@ def load_and_validate_installed_license(path: str | None = None) -> LicenseValid
         return LicenseValidationResult(False, 'License device mismatch', payload=payload)
 
     return LicenseValidationResult(True, 'License valid', payload=payload)
+
+
+def install_license_document(data: dict[str, Any]) -> None:
+    """Write validated license JSON to the installed license path."""
+    os.makedirs(os.path.dirname(PAID_LICENSE_FILE_PATH) or '.', exist_ok=True)
+    with open(PAID_LICENSE_FILE_PATH, 'w', encoding='utf-8') as fh:
+        json.dump(data, fh, indent=2)
+
+
+def load_and_validate_installed_license(path: str | None = None) -> LicenseValidationResult:
+    lic_path = path or PAID_LICENSE_FILE_PATH
+    if not os.path.exists(lic_path):
+        return LicenseValidationResult(False, 'License file missing')
+    try:
+        data = json.load(open(lic_path, 'r', encoding='utf-8'))
+    except Exception:
+        return LicenseValidationResult(False, 'License file unreadable')
+
+    return validate_license_document(data)
