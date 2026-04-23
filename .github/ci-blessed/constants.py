@@ -12,7 +12,7 @@ APP_USER_DATA_DIR = 'ZubCut'
 # Branch convention:  main  -> regular releases (UPDATE_CHANNEL 'stable' in code = production URL)
 #                     experimental -> tester builds (UPDATE_CHANNEL 'experimental')
 # CI overwrites UPDATE_CHANNEL and APP_BUILD_TIME_ISO per branch; match your branch when developing.
-UPDATE_CHANNEL = 'stable'
+UPDATE_CHANNEL = 'experimental'
 # Direct download URL for the latest installer package per channel (.exe).
 UPDATE_DOWNLOAD_URL_STABLE = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/stable-latest/ZubCut-Setup.exe'
 UPDATE_DOWNLOAD_URL_EXPERIMENTAL = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/experimental-latest/ZubCut-Setup-experimental.exe'

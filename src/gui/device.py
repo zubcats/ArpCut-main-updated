@@ -19,7 +19,7 @@ class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setWindowIcon(icon)
         self.setupUi(self)
         self.setObjectName('zubcutAuxiliaryWindow')
-        self.setFixedSize(self.size())
+        base_size = self.size()
 
         self.setPlaceholderColor()
         
@@ -29,6 +29,9 @@ class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.txtNickname.returnPressed.connect(self.changeName)
 
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
+        # setup_frameless_main_window inserts a 36px CustomTitleBar above the original
+        # central widget; keep the original usable content height by growing the fixed size.
+        self.setFixedSize(base_size.width(), base_size.height() + 36)
         register_window_surface_effects(self)
 
     def load(self, device, current_row):

@@ -109,10 +109,18 @@ _DEVICE_ROW_KILL_SEL_HOVER_FG = '#fff8f8'
 # from qt_material import build_stylesheet
 
 def _focus_widget_absorbs_letter_key(widget):
-    """Avoid stealing L while typing in numeric/text fields."""
+    """Avoid stealing letter shortcuts only while typing in text-entry fields."""
     if widget is None:
         return False
-    return isinstance(widget, (QAbstractSpinBox, QLineEdit, QTextEdit, QPlainTextEdit))
+    # Spin boxes use an internal QLineEdit editor; do not block global shortcuts there.
+    if isinstance(widget, QLineEdit):
+        try:
+            if isinstance(widget.parent(), QAbstractSpinBox):
+                return False
+        except Exception:
+            pass
+        return True
+    return isinstance(widget, (QTextEdit, QPlainTextEdit))
 
 
 def _chrome_pushbutton_hover_inline_qss(watched_btn=None) -> str:
@@ -195,6 +203,9 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         self._shortcut_m.setContext(Qt.WindowShortcut)
         self._shortcut_m.setAutoRepeat(False)
         self._shortcut_m.activated.connect(self._on_m_key_pressed)
+        # Lag uses the global ApplicationShortcut path as the single source of truth.
+        # Keep this object for key updates/tooltips, but disable it to avoid split handling.
+        self._shortcut_m.setEnabled(False)
         layout.addWidget(self.btnLagStartStop)
 
         # Direction selection
@@ -265,8 +276,8 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         self._preset_buttons.append(btn_med)
         preset_layout.addWidget(btn_med)
 
-        btn_heavy = QPushButton('Heavy (3000/1000)')
-        btn_heavy.clicked.connect(lambda: self._set_preset(3000, 1000))
+        btn_heavy = QPushButton('Heavy (9000/100)')
+        btn_heavy.clicked.connect(lambda: self._set_preset(9000, 100))
         self._preset_buttons.append(btn_heavy)
         preset_layout.addWidget(btn_heavy)
 
@@ -383,19 +394,29 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
             main.stopLagSwitch()
             return
 
-        deb_mac = None
+        device = None
         if main.tableScan.selectedItems():
             try:
-                deb_mac = main.current_index()['mac']
+                device = main.current_index()
             except Exception:
-                pass
+                device = None
+        if device is None:
+            # Focus can move to this dialog and clear selectedItems() while currentRow still points
+            # at the intended victim. Use currentRow as a fallback so the Lag keybind still works.
+            row = main.tableScan.currentRow()
+            if 0 <= row < len(main.scanner.devices):
+                device = main.scanner.devices[row]
+        if device is None:
+            pinned_mac = getattr(main, '_lag_dialog_target_mac', None)
+            if pinned_mac:
+                device = main._get_device_by_mac(pinned_mac) or main._victim_record_for_mac(pinned_mac)
+        deb_mac = device.get('mac') if isinstance(device, dict) else None
         lag_edge = 'start'
         if main._ignore_duplicate_toggle_edge('lag', deb_mac, lag_edge):
             return
-        if not main.tableScan.selectedItems():
+        if not device:
             main.log('No device selected', 'red')
             return
-        device = main.current_index()
         if device['admin']:
             main.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
@@ -482,6 +503,9 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         self._shortcut_p.setContext(Qt.WindowShortcut)
         self._shortcut_p.setAutoRepeat(False)
         self._shortcut_p.activated.connect(self._on_p_key_pressed)
+        # Dupe uses the global ApplicationShortcut path as the single source of truth.
+        # Keep this object for key updates/tooltips, but disable local routing.
+        self._shortcut_p.setEnabled(False)
 
         self.dir_group = QGroupBox('Traffic Direction to Block', body)
         dir_layout = QVBoxLayout(self.dir_group)
@@ -636,19 +660,27 @@ class DupeDialog(FramelessResizableMixin, QDialog):
             main.stopDupe()
             return
 
-        deb_mac = None
+        device = None
         if main.tableScan.selectedItems():
             try:
-                deb_mac = main.current_index()['mac']
+                device = main.current_index()
             except Exception:
-                pass
+                device = None
+        if device is None:
+            row = main.tableScan.currentRow()
+            if 0 <= row < len(main.scanner.devices):
+                device = main.scanner.devices[row]
+        if device is None:
+            pinned_mac = getattr(main, '_dupe_dialog_target_mac', None)
+            if pinned_mac:
+                device = main._get_device_by_mac(pinned_mac) or main._victim_record_for_mac(pinned_mac)
+        deb_mac = device.get('mac') if isinstance(device, dict) else None
         dupe_edge = 'start'
         if main._ignore_duplicate_toggle_edge('dupe', deb_mac, dupe_edge):
             return
-        if not main.tableScan.selectedItems():
+        if not device:
             main.log('No device selected', 'red')
             return
-        device = main.current_index()
         if device['admin']:
             main.log('Cannot dupe admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
@@ -740,6 +772,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_device_mac = None
         self.dupe_direction = 'both'
         self.dupe_duration_ms = 5000
+        self._lag_dialog_target_mac = None
+        self._dupe_dialog_target_mac = None
         self.dupe_timer = QTimer(self)
         self.dupe_timer.setSingleShot(True)
         self.dupe_timer.setTimerType(Qt.PreciseTimer)
@@ -1460,6 +1494,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
         
         current_row = self.tableScan.currentRow()
+        selected_mac = None
+        selected = self._get_selected_device()
+        if selected:
+            selected_mac = selected.get('mac')
+        elif 0 <= current_row < len(self.scanner.devices):
+            # Fallback before table is rebuilt: preserve current row's MAC identity when possible.
+            selected_mac = self.scanner.devices[current_row].get('mac')
         self.tableScan.clearSelection()
         self.tableScan.clearContents()
         self.tableScan.setRowCount(len(self.scanner.devices))
@@ -1479,10 +1520,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lblright.setText(status)
         self.tray_icon.setToolTip(status_tray)
 
-        # Restore selection when possible so toggle states stay in sync (skip Me/Router rows).
-        restore_row = current_row
-        if 0 <= restore_row < len(self.scanner.devices) and self.scanner.devices[restore_row].get('admin'):
-            restore_row = -1
+        # Restore selection by MAC identity first (row index can move after rescans),
+        # then fall back to the first non-admin row.
+        restore_row = -1
+        if selected_mac:
+            for i, d in enumerate(self.scanner.devices):
+                if d.get('mac') == selected_mac and not d.get('admin'):
+                    restore_row = i
+                    break
+        if restore_row < 0:
             for i, d in enumerate(self.scanner.devices):
                 if not d.get('admin'):
                     restore_row = i
@@ -1893,11 +1939,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
         lag = self.lag_switch_dialog
         if lag:
-            # Keep dialog WindowShortcut enabled: ApplicationShortcut on main does not fire when
-            # focus is in a separate top-level Lag dialog (widget tree is not under main).
+            # Keep Lag on one path (global ApplicationShortcut) to avoid dialog-focus routing
+            # inconsistencies in the frameless Lag window.
             lag._shortcut_m.setKey(k_lag)
             lag._shortcut_m.setAutoRepeat(False)
-            lag._shortcut_m.setEnabled(True)
+            lag._shortcut_m.setEnabled(False)
             lag.btnLagStartStop.setToolTip(
                 'Start or stop intermittent lag for the device selected in the main list. '
                 'Shortcut: %s when this window is active (not in ms fields).' % nl
@@ -1906,7 +1952,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if dupe:
             dupe._shortcut_p.setKey(k_dupe)
             dupe._shortcut_p.setAutoRepeat(False)
-            dupe._shortcut_p.setEnabled(True)
+            dupe._shortcut_p.setEnabled(False)
             dupe.btnDupeRun.setToolTip(
                 'Run a single lag burst for the device selected in the main list, then stop completely. '
                 'Shortcut: %s when this window is active (not in ms fields).' % np
@@ -1930,6 +1976,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self._app_window_is_foreground():
             return
         if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
+            return
+        # Lag dialog uses this global handler too (single key path across main + lag window).
+        lag_dlg = getattr(self, 'lag_switch_dialog', None)
+        if lag_dlg is not None and lag_dlg.isVisible() and lag_dlg.isActiveWindow():
+            lag_dlg._on_lag_start_stop_clicked()
             return
         if self.lag_active and self.lag_device_mac:
             lag_edge = 'stop'
@@ -1959,6 +2010,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self._app_window_is_foreground():
             return
         if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
+            return
+        # Dupe dialog uses this global handler too (single key path across main + dupe window).
+        dupe_dlg = getattr(self, 'dupe_switch_dialog', None)
+        if dupe_dlg is not None and dupe_dlg.isVisible() and dupe_dlg.isActiveWindow():
+            dupe_dlg._on_run_clicked()
             return
         if self.dupe_active and self.dupe_device_mac:
             dupe_edge = 'stop'
@@ -1994,6 +2050,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if device['admin']:
             self.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
+        self._lag_dialog_target_mac = device.get('mac')
         if self.lag_switch_dialog is None:
             self.lag_switch_dialog = LagSwitchDialog(self)
             self.refresh_keyboard_shortcuts_from_settings()
@@ -2011,6 +2068,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if device['admin']:
             self.log('Cannot dupe admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
+        self._dupe_dialog_target_mac = device.get('mac')
         if self.dupe_switch_dialog is None:
             self.dupe_switch_dialog = DupeDialog(self)
             self.refresh_keyboard_shortcuts_from_settings()
@@ -2054,9 +2112,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_apply_block(device)
         self._lag_in_allow_phase = False
         self.lag_timer.start(max(1, int(self.lag_block_ms)))
-        if self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
-            self.lag_switch_dialog.refresh_toggle_state()
-        self._updateKillButtonState()
+        self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
 
     def _refresh_table_row_for_mac(self, mac):
@@ -2173,10 +2229,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnLagSwitch.setText('Lag Switch')
         self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         self.log('Lag switch OFF', UI_LOG_RESTORE_FG)
-        if refresh_dialog and self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
-            self.lag_switch_dialog.refresh_toggle_state()
-        self._updateLagSwitchButtonState()
-        self._updateKillButtonState()
+        if refresh_dialog:
+            self._refresh_flow_toggle_ui()
+        else:
+            self._updateLagSwitchButtonState()
+            self._updateKillButtonState()
         self._repaint_all_table_rows_for_hover()
 
     def startDupe(self, device, duration_ms, direction):
@@ -2197,8 +2254,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_timer.start(max(1, int(duration_ms)))
         self._dupe_countdown_timer.start()
         self._tick_dupe_countdown()
-        if getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
-            self.dupe_switch_dialog.refresh_toggle_state()
+        self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
 
     def dupe_remaining_ms(self):
@@ -2252,10 +2308,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         if log:
             self.log(log_message, UI_LOG_RESTORE_FG)
-        if refresh_dialog and getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
-            self.dupe_switch_dialog.refresh_toggle_state()
-        self._updateDupeButtonState()
-        self._updateKillButtonState()
+        if refresh_dialog:
+            self._refresh_flow_toggle_ui()
+        else:
+            self._updateDupeButtonState()
+            self._updateKillButtonState()
         self._repaint_all_table_rows_for_hover()
 
     def _updateDupeButtonState(self):
@@ -2266,6 +2323,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+
+    def _refresh_flow_toggle_ui(self):
+        """Synchronize Lag/Dupe/Kill button text after cross-flow toggles."""
+        self._updateLagSwitchButtonState()
+        self._updateDupeButtonState()
+        self._updateKillButtonState()
+        lag_dlg = getattr(self, 'lag_switch_dialog', None)
+        if lag_dlg and lag_dlg.isVisible():
+            lag_dlg.refresh_toggle_state()
+        dupe_dlg = getattr(self, 'dupe_switch_dialog', None)
+        if dupe_dlg and dupe_dlg.isVisible():
+            dupe_dlg.refresh_toggle_state()
 
     def _ignore_duplicate_toggle_edge(self, kind: str, mac: str | None, edge: str) -> bool:
         """
