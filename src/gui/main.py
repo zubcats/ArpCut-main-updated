@@ -2112,9 +2112,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_apply_block(device)
         self._lag_in_allow_phase = False
         self.lag_timer.start(max(1, int(self.lag_block_ms)))
-        if self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
-            self.lag_switch_dialog.refresh_toggle_state()
-        self._updateKillButtonState()
+        self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
 
     def _refresh_table_row_for_mac(self, mac):
@@ -2231,10 +2229,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnLagSwitch.setText('Lag Switch')
         self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         self.log('Lag switch OFF', UI_LOG_RESTORE_FG)
-        if refresh_dialog and self.lag_switch_dialog and self.lag_switch_dialog.isVisible():
-            self.lag_switch_dialog.refresh_toggle_state()
-        self._updateLagSwitchButtonState()
-        self._updateKillButtonState()
+        if refresh_dialog:
+            self._refresh_flow_toggle_ui()
+        else:
+            self._updateLagSwitchButtonState()
+            self._updateKillButtonState()
         self._repaint_all_table_rows_for_hover()
 
     def startDupe(self, device, duration_ms, direction):
@@ -2255,8 +2254,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_timer.start(max(1, int(duration_ms)))
         self._dupe_countdown_timer.start()
         self._tick_dupe_countdown()
-        if getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
-            self.dupe_switch_dialog.refresh_toggle_state()
+        self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
 
     def dupe_remaining_ms(self):
@@ -2310,10 +2308,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         if log:
             self.log(log_message, UI_LOG_RESTORE_FG)
-        if refresh_dialog and getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
-            self.dupe_switch_dialog.refresh_toggle_state()
-        self._updateDupeButtonState()
-        self._updateKillButtonState()
+        if refresh_dialog:
+            self._refresh_flow_toggle_ui()
+        else:
+            self._updateDupeButtonState()
+            self._updateKillButtonState()
         self._repaint_all_table_rows_for_hover()
 
     def _updateDupeButtonState(self):
@@ -2324,6 +2323,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+
+    def _refresh_flow_toggle_ui(self):
+        """Synchronize Lag/Dupe/Kill button text after cross-flow toggles."""
+        self._updateLagSwitchButtonState()
+        self._updateDupeButtonState()
+        self._updateKillButtonState()
+        lag_dlg = getattr(self, 'lag_switch_dialog', None)
+        if lag_dlg and lag_dlg.isVisible():
+            lag_dlg.refresh_toggle_state()
+        dupe_dlg = getattr(self, 'dupe_switch_dialog', None)
+        if dupe_dlg and dupe_dlg.isVisible():
+            dupe_dlg.refresh_toggle_state()
 
     def _ignore_duplicate_toggle_edge(self, kind: str, mac: str | None, edge: str) -> bool:
         """
