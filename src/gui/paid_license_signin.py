@@ -1,5 +1,5 @@
 """
-Paid build: sign in by account name + license file or pasted JSON (offline signed license).
+Paid build: sign in with account name, password, and sign-in code (offline; no JSON file for users).
 """
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import json
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QApplication,
     QDialog,
-    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
 )
 
 from constants import APP_DISPLAY_NAME
+from tools.license_activation_code import decode_activation_token
 from tools.license_offline import (
     install_license_document,
     load_and_validate_installed_license,
@@ -40,8 +41,7 @@ class PaidLicenseSignInDialog(QDialog):
         self.setWindowTitle(f'{APP_DISPLAY_NAME} — Sign in')
         self.setWindowIcon(window_icon)
         self.setWindowModality(Qt.ApplicationModal)
-        self.resize(500, 420)
-        self._path: str | None = None
+        self.resize(520, 420)
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -49,32 +49,31 @@ class PaidLicenseSignInDialog(QDialog):
         root.setSpacing(10)
         root.addWidget(
             QLabel(
-                'Enter the account name you were given, then attach the license file\n'
-                'your administrator sent you, or paste the full license JSON.',
+                'Enter the account name and password your administrator gave you,\n'
+                'then paste the sign-in code (one line, starts with ZC1).',
                 self,
             )
         )
         root.addWidget(QLabel('Account name', self))
         self.edtAccount = QLineEdit(self)
-        self.edtAccount.setPlaceholderText('Same name as on your license')
+        self.edtAccount.setPlaceholderText('Account name')
         root.addWidget(self.edtAccount)
 
-        row = QHBoxLayout()
-        self.btnBrowse = QPushButton('Choose license file…', self)
-        self.btnBrowse.clicked.connect(self._browse)
-        row.addWidget(self.btnBrowse)
-        row.addStretch()
-        root.addLayout(row)
-        self.lblPath = QLabel('No file selected', self)
-        self.lblPath.setWordWrap(True)
-        self.lblPath.setStyleSheet('color: #888;')
-        root.addWidget(self.lblPath)
+        root.addWidget(QLabel('Password', self))
+        self.edtPassword = QLineEdit(self)
+        self.edtPassword.setEchoMode(QLineEdit.Password)
+        self.edtPassword.setPlaceholderText('Same password they chose for you')
+        root.addWidget(self.edtPassword)
 
-        root.addWidget(QLabel('Or paste license JSON', self))
-        self.txtPaste = QPlainTextEdit(self)
-        self.txtPaste.setPlaceholderText('{ "payload": { ... }, "signature": "..." }')
-        self.txtPaste.setMaximumHeight(130)
-        root.addWidget(self.txtPaste)
+        root.addWidget(QLabel('Sign-in code', self))
+        self.txtCode = QPlainTextEdit(self)
+        self.txtCode.setPlaceholderText('Paste the full line starting with ZC1…')
+        self.txtCode.setMinimumHeight(100)
+        root.addWidget(self.txtCode)
+
+        adv = QLabel('Advanced: you can paste legacy license JSON here instead of a ZC1 code.', self)
+        adv.setStyleSheet('color: #888; font-size: 11px;')
+        root.addWidget(adv)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -87,49 +86,38 @@ class PaidLicenseSignInDialog(QDialog):
         btn_row.addWidget(self.btnSignIn)
         root.addLayout(btn_row)
 
-    def _browse(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            'Select license file',
-            '',
-            'License JSON (*.json);;All files (*.*)',
-        )
-        if path:
-            self._path = path
-            self.lblPath.setText(path)
-            self.txtPaste.clear()
-
-    def _load_document(self) -> dict | None:
-        raw = self.txtPaste.toPlainText().strip()
-        if raw:
-            try:
-                return json.loads(raw)
-            except Exception:
-                QMessageBox.warning(self, 'Invalid JSON', 'Could not parse pasted text as JSON.')
-                return None
-        if self._path:
-            try:
-                with open(self._path, 'r', encoding='utf-8') as fh:
-                    return json.load(fh)
-            except Exception as e:
-                QMessageBox.warning(self, 'License file', f'Could not read file:\n{e}')
-                return None
-        QMessageBox.warning(self, 'Sign in', 'Choose a license file or paste the license JSON.')
-        return None
+    def _parse_license_document(self) -> dict | None:
+        raw = self.txtCode.toPlainText().strip()
+        if not raw:
+            QMessageBox.warning(self, 'Sign in', 'Paste your sign-in code.')
+            return None
+        data = decode_activation_token(raw)
+        if data is not None:
+            return data
+        try:
+            return json.loads(raw)
+        except Exception:
+            QMessageBox.warning(
+                self,
+                'Invalid code',
+                'Could not read that as a sign-in code or JSON.\n'
+                'Use the full line starting with ZC1 from your administrator.',
+            )
+            return None
 
     def _try_sign_in(self) -> None:
-        data = self._load_document()
+        data = self._parse_license_document()
         if not isinstance(data, dict):
             return
         payload = data.get('payload')
         if not isinstance(payload, dict):
-            QMessageBox.warning(self, 'Sign in', 'Invalid license document.')
+            QMessageBox.warning(self, 'Sign in', 'Invalid license data.')
             return
         lic_user = str(payload.get('user_name') or '').strip()
         account = self.edtAccount.text().strip()
         if lic_user:
             if not account:
-                QMessageBox.warning(self, 'Sign in', 'Enter the account name you were given.')
+                QMessageBox.warning(self, 'Sign in', 'Enter your account name.')
                 return
             if account.casefold() != lic_user.casefold():
                 QMessageBox.warning(
@@ -138,7 +126,8 @@ class PaidLicenseSignInDialog(QDialog):
                     f'That name does not match this license (expected: {lic_user!r}).',
                 )
                 return
-        res = validate_license_document(data)
+        password = self.edtPassword.text()
+        res = validate_license_document(data, sign_in_password=password)
         if not res.ok:
             QMessageBox.warning(self, 'Sign in failed', res.reason)
             return

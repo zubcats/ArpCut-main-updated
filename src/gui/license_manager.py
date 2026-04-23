@@ -3,12 +3,15 @@ from datetime import timedelta
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -22,6 +25,7 @@ from tools.frameless_chrome import (
     register_window_surface_effects,
     setup_frameless_main_window,
 )
+from tools.license_activation_code import encode_activation_token
 from tools.license_admin import (
     admin_public_verify_key_b64,
     create_license,
@@ -29,8 +33,90 @@ from tools.license_admin import (
     list_license_rows,
     renew_license,
     set_license_status,
+    signed_document_for_license_id,
 )
 from tools.updater_core import download_installer, launch_installer
+
+
+def _ask_new_sign_in_password(parent: QWidget) -> str | None:
+    dlg = QDialog(parent)
+    dlg.setWindowTitle('Customer sign-in password')
+    dlg.setModal(True)
+    lay = QVBoxLayout(dlg)
+    lay.addWidget(
+        QLabel(
+            'Choose the password this customer will type in ZubCut\n'
+            '(min 8 characters). They will use it with their account name and sign-in code.',
+            dlg,
+        )
+    )
+    ed1 = QLineEdit(dlg)
+    ed1.setEchoMode(QLineEdit.Password)
+    ed2 = QLineEdit(dlg)
+    ed2.setEchoMode(QLineEdit.Password)
+    ed2.setPlaceholderText('Confirm password')
+    lay.addWidget(ed1)
+    lay.addWidget(ed2)
+    row = QHBoxLayout()
+    row.addStretch()
+    cancel = QPushButton('Cancel', dlg)
+    ok = QPushButton('OK', dlg)
+    ok.setDefault(True)
+    row.addWidget(cancel)
+    row.addWidget(ok)
+    lay.addLayout(row)
+    chosen: list[str | None] = [None]
+
+    def on_ok() -> None:
+        a, b = ed1.text().strip(), ed2.text().strip()
+        if len(a) < 8:
+            QMessageBox.warning(dlg, 'Password', 'Use at least 8 characters.')
+            return
+        if a != b:
+            QMessageBox.warning(dlg, 'Password', 'Passwords do not match.')
+            return
+        chosen[0] = a
+        dlg.accept()
+
+    ok.clicked.connect(on_ok)
+    cancel.clicked.connect(dlg.reject)
+    if dlg.exec_() != QDialog.Accepted:
+        return None
+    return chosen[0]
+
+
+def _show_account_credentials(parent: QWidget, user: str, token: str) -> None:
+    dlg = QDialog(parent)
+    dlg.setWindowTitle('Send to customer')
+    dlg.setModal(True)
+    v = QVBoxLayout(dlg)
+    v.addWidget(
+        QLabel(
+            f'Tell them to open ZubCut (paid) and sign in with:\n\n'
+            f'• Account name: {user}\n'
+            f'• Password: (the one you just chose)\n'
+            f'• Sign-in code: the block below (one line, starts with ZC1)',
+            dlg,
+        )
+    )
+    te = QPlainTextEdit(dlg)
+    te.setPlainText(token)
+    te.setReadOnly(True)
+    te.setMinimumHeight(120)
+    v.addWidget(te)
+    copy_btn = QPushButton('Copy sign-in code', dlg)
+
+    def _copy() -> None:
+        QApplication.clipboard().setText(token)
+        QMessageBox.information(dlg, 'Copied', 'Sign-in code copied to the clipboard.')
+
+    copy_btn.clicked.connect(_copy)
+    v.addWidget(copy_btn)
+    close = QPushButton('Close', dlg)
+    close.clicked.connect(dlg.accept)
+    v.addWidget(close)
+    dlg.resize(680, 380)
+    dlg.exec_()
 
 
 def _human_remaining(seconds: int) -> str:
@@ -139,6 +225,7 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         self.btnRevoke = QPushButton('Revoke Selected', self)
         self.btnActivate = QPushButton('Activate Selected', self)
         self.btnExport = QPushButton('Export License File', self)
+        self.btnCopyCode = QPushButton('Copy sign-in code', self)
         self.btnUpdateManager = QPushButton('Install Latest Manager Build', self)
         for b in (
             self.btnRefresh,
@@ -147,6 +234,7 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
             self.btnRevoke,
             self.btnActivate,
             self.btnExport,
+            self.btnCopyCode,
             self.btnUpdateManager,
         ):
             b.setAutoDefault(False)
@@ -175,6 +263,7 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         self.btnRevoke.clicked.connect(lambda: self.set_selected_status('revoked'))
         self.btnActivate.clicked.connect(lambda: self.set_selected_status('active'))
         self.btnExport.clicked.connect(self.export_selected)
+        self.btnCopyCode.clicked.connect(self.copy_sign_in_code_selected)
         self.btnUpdateManager.clicked.connect(self.install_latest_manager_build)
 
     def _selected_license_id(self) -> str | None:
@@ -228,14 +317,14 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         )
         if not ok:
             return
-        rec = create_license(user, days, str(dev_hash or '').strip())
+        pwd = _ask_new_sign_in_password(self)
+        if pwd is None:
+            return
+        rec = create_license(user, days, str(dev_hash or '').strip(), sign_in_password=pwd)
         self.refresh_rows()
-        out = export_license_document(rec['payload']['license_id'])
-        QMessageBox.information(
-            self,
-            'Create Account',
-            f"Created account '{user}'.\nLicense exported to:\n{out}",
-        )
+        doc = {'payload': rec['payload'], 'signature': rec['signature']}
+        token = encode_activation_token(doc)
+        _show_account_credentials(self, user, token)
 
     def renew_selected(self):
         lic_id = self._selected_license_id()
@@ -263,6 +352,23 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
             return
         self.refresh_rows()
         QMessageBox.information(self, 'Update Status', f'Account status set to {status}.')
+
+    def copy_sign_in_code_selected(self):
+        lic_id = self._selected_license_id()
+        if not lic_id:
+            QMessageBox.warning(self, 'Copy sign-in code', 'Select an account first.')
+            return
+        doc = signed_document_for_license_id(lic_id)
+        if not doc:
+            QMessageBox.warning(self, 'Copy sign-in code', 'Could not load that license.')
+            return
+        token = encode_activation_token(doc)
+        QApplication.clipboard().setText(token)
+        QMessageBox.information(
+            self,
+            'Copied',
+            'Sign-in code copied. Send it with their account name and password.',
+        )
 
     def export_selected(self):
         lic_id = self._selected_license_id()

@@ -18,6 +18,7 @@ from src.constants import APP_BUNDLE_NAME
 # All the imports PyInstaller is too dumb to find on its own
 HIDDEN_IMPORTS = [
     'ctypes.wintypes',
+    'tools.license_activation_code',
     'gui.traffic',
     'ui.ui_traffic',
     'PyQt5',

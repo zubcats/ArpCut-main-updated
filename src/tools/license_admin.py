@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import os
 import uuid
@@ -77,6 +78,20 @@ def save_license_db(db: dict[str, Any]) -> None:
         json.dump(db, fh, indent=2)
 
 
+def _sign_in_password_fields(sign_in_password: str) -> dict[str, str]:
+    salt = os.urandom(16)
+    h = hashlib.pbkdf2_hmac(
+        'sha256',
+        str(sign_in_password).encode('utf-8'),
+        salt,
+        210_000,
+    )
+    return {
+        'password_salt': base64.b64encode(salt).decode('ascii'),
+        'password_hash': h.hex(),
+    }
+
+
 def _signed_document(payload: dict[str, Any]) -> dict[str, Any]:
     key = _load_signing_key()
     sig = key.sign(_canonical_payload_bytes(payload)).signature
@@ -86,7 +101,12 @@ def _signed_document(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def create_license(user_name: str, duration_days: int, device_hash: str = '') -> dict[str, Any]:
+def create_license(
+    user_name: str,
+    duration_days: int,
+    device_hash: str = '',
+    sign_in_password: str | None = None,
+) -> dict[str, Any]:
     now = _utc_now()
     payload = {
         'license_id': str(uuid.uuid4()),
@@ -96,6 +116,9 @@ def create_license(user_name: str, duration_days: int, device_hash: str = '') ->
         'device_hash': str(device_hash or '').strip(),
         'status': 'active',
     }
+    pwd = str(sign_in_password or '').strip()
+    if pwd:
+        payload.update(_sign_in_password_fields(pwd))
     doc = _signed_document(payload)
     rec = {
         'payload': payload,
@@ -152,21 +175,29 @@ def set_license_status(license_id: str, status: str) -> dict[str, Any] | None:
     return None
 
 
-def export_license_document(license_id: str, out_path: str | None = None) -> str | None:
+def signed_document_for_license_id(license_id: str) -> dict[str, Any] | None:
+    """Return {\"payload\": ..., \"signature\": ...} for encoding / export."""
     db = load_license_db()
     for rec in db['licenses']:
         p = rec.get('payload') or {}
         if p.get('license_id') != license_id:
             continue
-        doc = {'payload': p, 'signature': rec.get('signature', '')}
-        if out_path is None:
-            os.makedirs(PAID_LICENSE_EXPORT_DIR, exist_ok=True)
-            safe_user = str(p.get('user_name') or 'user').strip().replace(' ', '_')
-            out_path = os.path.join(PAID_LICENSE_EXPORT_DIR, f'{safe_user}-{license_id[:8]}.json')
-        with open(out_path, 'w', encoding='utf-8') as fh:
-            json.dump(doc, fh, indent=2)
-        return out_path
+        return {'payload': p, 'signature': str(rec.get('signature', ''))}
     return None
+
+
+def export_license_document(license_id: str, out_path: str | None = None) -> str | None:
+    doc = signed_document_for_license_id(license_id)
+    if doc is None:
+        return None
+    p = doc['payload']
+    if out_path is None:
+        os.makedirs(PAID_LICENSE_EXPORT_DIR, exist_ok=True)
+        safe_user = str(p.get('user_name') or 'user').strip().replace(' ', '_')
+        out_path = os.path.join(PAID_LICENSE_EXPORT_DIR, f'{safe_user}-{license_id[:8]}.json')
+    with open(out_path, 'w', encoding='utf-8') as fh:
+        json.dump(doc, fh, indent=2)
+    return out_path
 
 
 def list_license_rows() -> list[dict[str, Any]]:

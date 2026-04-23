@@ -75,8 +75,36 @@ def _verify_signature(payload: dict[str, Any], signature_b64: str) -> bool:
         return False
 
 
-def validate_license_document(data: dict[str, Any]) -> LicenseValidationResult:
-    """Validate a signed license dict (payload + signature) from file or clipboard."""
+def _sign_in_password_ok(payload: dict[str, Any], sign_in_password: str | None) -> tuple[bool, str]:
+    ph = str(payload.get('password_hash') or '').strip()
+    if not ph:
+        return True, ''
+    pwd = str(sign_in_password or '').strip()
+    if not pwd:
+        return False, 'Wrong password'
+    salt_b64 = str(payload.get('password_salt') or '').strip()
+    if not salt_b64:
+        return False, 'License is missing password data'
+    try:
+        salt = base64.b64decode(salt_b64)
+    except Exception:
+        return False, 'License is missing password data'
+    calc = hashlib.pbkdf2_hmac('sha256', pwd.encode('utf-8'), salt, 210_000).hex()
+    if calc != ph:
+        return False, 'Wrong password'
+    return True, ''
+
+
+def validate_license_document(
+    data: dict[str, Any],
+    *,
+    sign_in_password: str | None = None,
+) -> LicenseValidationResult:
+    """Validate a signed license dict (payload + signature).
+
+    When ``sign_in_password`` is not None, also checks PBKDF2 password if the payload has ``password_hash``.
+    Startup validation omits this so the saved file keeps working after first sign-in.
+    """
     if not isinstance(data, dict):
         return LicenseValidationResult(False, 'License format invalid')
     payload = data.get('payload')
@@ -101,6 +129,11 @@ def validate_license_document(data: dict[str, Any]) -> LicenseValidationResult:
     bound_device = str(payload.get('device_hash') or '').strip()
     if bound_device and bound_device != current_device_hash():
         return LicenseValidationResult(False, 'License device mismatch', payload=payload)
+
+    if sign_in_password is not None:
+        ok, reason = _sign_in_password_ok(payload, sign_in_password)
+        if not ok:
+            return LicenseValidationResult(False, reason, payload=payload)
 
     return LicenseValidationResult(True, 'License valid', payload=payload)
 
