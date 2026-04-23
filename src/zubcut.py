@@ -7,6 +7,7 @@ from PyQt5.QtCore import Qt
 from tools.utils import goto
 from tools.crash_feedback import install_crash_feedback
 from tools.utils_gui import npcap_exists, duplicate_zubcut, repair_settings, migrate_settings_file
+from tools.license_offline import load_and_validate_installed_license
 from tools.branding import load_application_qicon, qicon_is_empty
 from tools.qtools import msg_box, Buttons, MsgIcon
 
@@ -29,6 +30,31 @@ def _load_window_icon():
     if qicon_is_empty(icon):
         return ElmoCut.processIcon(app_icon, crop_margins=True)
     return icon
+
+
+def _validate_paid_license_or_exit(icon) -> None:
+    """
+    Paid branch can enforce offline signed licenses.
+    Keep soft mode available for development until keys/licenses are configured.
+    """
+    if str(UPDATE_CHANNEL or '').strip().lower() != 'paid':
+        return
+    res = load_and_validate_installed_license()
+    if res.ok:
+        return
+    if not bool(PAID_LICENSE_ENFORCEMENT):
+        print(f'[paid-license] soft mode: {res.reason}')
+        return
+    msg_box(
+        APP_DISPLAY_NAME,
+        (
+            f'Paid license check failed: {res.reason}\n\n'
+            'Please import a valid license issued by the ZubCut admin.'
+        ),
+        MsgIcon.CRITICAL,
+        icon,
+    )
+    exit(1)
 
 
 # import debug.test
@@ -60,6 +86,7 @@ if __name__ == "__main__":
     # Run the GUI
     migrate_settings_file()
     repair_settings()
+    _validate_paid_license_or_exit(icon)
     GUI = ElmoCut(window_icon=icon)
     GUI.show()
     GUI.resizeEvent()

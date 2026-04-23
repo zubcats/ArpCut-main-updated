@@ -99,3 +99,9 @@ SETTINGS_KEYS = [
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
 SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', False, False]
+
+# Paid-channel offline licensing (no backend dependency).
+# Keep enforcement disabled until a public verify key is configured and licenses are issued.
+PAID_LICENSE_ENFORCEMENT = False
+PAID_LICENSE_PUBLIC_KEY_B64 = ''
+PAID_LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'paid-license.json')
