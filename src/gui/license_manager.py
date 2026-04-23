@@ -25,8 +25,7 @@ from tools.license_admin import (
     renew_license,
     set_license_status,
 )
-from tools.updater_core import launch_installer
-from tools.updater_progress import download_update_with_progress_dialog
+from tools.updater_core import download_installer, launch_installer
 
 
 def _human_remaining(seconds: int) -> str:
@@ -234,9 +233,8 @@ class LicenseManagerWindow(QMainWindow):
         if confirm != QMessageBox.Yes:
             return
         try:
-            path = download_update_with_progress_dialog(self, url)
-            if not path:
-                return
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            path = download_installer(url)
             launch_installer(path)
             app = QApplication.instance()
             if app is not None:
@@ -247,4 +245,6 @@ class LicenseManagerWindow(QMainWindow):
                 'Update Failed',
                 f'Could not download/install manager update.\n{e}',
             )
+        finally:
+            QApplication.restoreOverrideCursor()
 
