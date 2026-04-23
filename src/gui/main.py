@@ -203,6 +203,8 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         self._shortcut_m.setContext(Qt.WindowShortcut)
         self._shortcut_m.setAutoRepeat(False)
         self._shortcut_m.activated.connect(self._on_m_key_pressed)
+        self._shortcut_m.activatedAmbiguously.connect(self._on_m_key_pressed)
+        self._m_shortcut_debounce_until = 0.0
         layout.addWidget(self.btnLagStartStop)
 
         # Direction selection
@@ -294,6 +296,12 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
     def _on_m_key_pressed(self):
         # WindowShortcut on this dialog only fires when focus is here; avoid activeWindow()
         # checks — they fail for some frameless / top-level dialog focus paths on Windows.
+        now = time.monotonic()
+        if now < getattr(self, '_m_shortcut_debounce_until', 0.0):
+            return
+        # Some Windows focus/shortcut paths emit both activated and activatedAmbiguously
+        # for one physical press; keep only the first edge.
+        self._m_shortcut_debounce_until = now + 0.05
         if _focus_widget_absorbs_letter_key(self.focusWidget()):
             return
         self._on_lag_start_stop_clicked()
