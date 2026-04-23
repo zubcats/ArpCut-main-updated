@@ -34,6 +34,10 @@ COLLECT_ALL = [
     'cffi',
 ]
 
+# Windows/macOS: bundle full PyQt5 so platform plugins (e.g. qwindows.dll) are always present;
+# without them the windowed exe can exit immediately with no visible UI.
+COLLECT_PYQT5 = ['Windows', 'Darwin']
+
 
 def build():
     system = platform.system()
@@ -41,6 +45,9 @@ def build():
     cmd.extend(['--paths', os.path.join(_ROOT, 'src')])
     cmd.extend(['--collect-submodules', 'gui'])
     cmd.extend(['--additional-hooks-dir', os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks')])
+
+    if system in COLLECT_PYQT5:
+        cmd.extend(['--collect-all', 'PyQt5'])
 
     if system == 'Windows':
         cmd.extend(['--onedir', '--windowed'])
