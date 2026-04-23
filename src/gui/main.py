@@ -203,6 +203,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         self._shortcut_m.setContext(Qt.WindowShortcut)
         self._shortcut_m.setAutoRepeat(False)
         self._shortcut_m.activated.connect(self._on_m_key_pressed)
+        self._shortcut_m.activatedAmbiguously.connect(self._on_m_key_pressed)
         layout.addWidget(self.btnLagStartStop)
 
         # Direction selection
@@ -300,6 +301,12 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if self._main is not None:
+            # Avoid ambiguity with main-window ApplicationShortcut on the same key.
+            try:
+                self._main._shortcut_lag_global.setEnabled(False)
+            except Exception:
+                pass
         if self._reload_timing_on_next_show:
             self._load_timing_from_main()
             self._reload_timing_on_next_show = False
@@ -307,6 +314,11 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
 
     def hideEvent(self, event):
         self._reload_timing_on_next_show = True
+        if self._main is not None:
+            try:
+                self._main._shortcut_lag_global.setEnabled(True)
+            except Exception:
+                pass
         super().hideEvent(event)
 
     def _load_timing_from_main(self):
