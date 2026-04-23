@@ -7,6 +7,10 @@ alwaysApply: true
 
 - Maintain separate update paths for `experimental` (testing), `paid` (paid-feature testing), and `main` (stable user path).
 - Track one active working branch at a time, and default all routine commits/pushes to that active branch.
+- Before each push, resolve the target branch using branch memory:
+  1) If the user explicitly requests a branch switch in this chat, use that branch and set it as active.
+  2) Otherwise, reuse the branch used by the last successful push in this chat session.
+  3) If there is no prior push in this chat session, use the current configured default active branch.
 - Treat `paid` as the active branch until the user explicitly instructs a branch switch.
 - After a user requests a branch switch, assume all future routine commits/pushes go to the newly selected branch until instructed otherwise.
 - Push to `main` only when explicitly instructed.
