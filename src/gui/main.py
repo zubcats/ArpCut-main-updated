@@ -301,12 +301,6 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if self._main is not None:
-            # Avoid ambiguity with main-window ApplicationShortcut on the same key.
-            try:
-                self._main._shortcut_lag_global.setEnabled(False)
-            except Exception:
-                pass
         if self._reload_timing_on_next_show:
             self._load_timing_from_main()
             self._reload_timing_on_next_show = False
@@ -314,11 +308,6 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
 
     def hideEvent(self, event):
         self._reload_timing_on_next_show = True
-        if self._main is not None:
-            try:
-                self._main._shortcut_lag_global.setEnabled(True)
-            except Exception:
-                pass
         super().hideEvent(event)
 
     def _load_timing_from_main(self):
@@ -666,19 +655,27 @@ class DupeDialog(FramelessResizableMixin, QDialog):
             main.stopDupe()
             return
 
-        deb_mac = None
+        device = None
         if main.tableScan.selectedItems():
             try:
-                deb_mac = main.current_index()['mac']
+                device = main.current_index()
             except Exception:
-                pass
+                device = None
+        if device is None:
+            row = main.tableScan.currentRow()
+            if 0 <= row < len(main.scanner.devices):
+                device = main.scanner.devices[row]
+        if device is None:
+            pinned_mac = getattr(main, '_dupe_dialog_target_mac', None)
+            if pinned_mac:
+                device = main._get_device_by_mac(pinned_mac) or main._victim_record_for_mac(pinned_mac)
+        deb_mac = device.get('mac') if isinstance(device, dict) else None
         dupe_edge = 'start'
         if main._ignore_duplicate_toggle_edge('dupe', deb_mac, dupe_edge):
             return
-        if not main.tableScan.selectedItems():
+        if not device:
             main.log('No device selected', 'red')
             return
-        device = main.current_index()
         if device['admin']:
             main.log('Cannot dupe admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
@@ -771,6 +768,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_direction = 'both'
         self.dupe_duration_ms = 5000
         self._lag_dialog_target_mac = None
+        self._dupe_dialog_target_mac = None
         self.dupe_timer = QTimer(self)
         self.dupe_timer.setSingleShot(True)
         self.dupe_timer.setTimerType(Qt.PreciseTimer)
@@ -2043,6 +2041,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if device['admin']:
             self.log('Cannot dupe admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
+        self._dupe_dialog_target_mac = device.get('mac')
         if self.dupe_switch_dialog is None:
             self.dupe_switch_dialog = DupeDialog(self)
             self.refresh_keyboard_shortcuts_from_settings()
