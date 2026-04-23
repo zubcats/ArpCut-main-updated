@@ -203,7 +203,6 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         self._shortcut_m.setContext(Qt.WindowShortcut)
         self._shortcut_m.setAutoRepeat(False)
         self._shortcut_m.activated.connect(self._on_m_key_pressed)
-        self._shortcut_m.activatedAmbiguously.connect(self._on_m_key_pressed)
         layout.addWidget(self.btnLagStartStop)
 
         # Direction selection
