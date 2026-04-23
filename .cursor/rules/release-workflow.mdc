@@ -1,0 +1,12 @@
+---
+description: Branch and update path workflow for releases
+alwaysApply: true
+---
+
+# Release Workflow
+
+- Maintain two separate update paths: `experimental` (testing) and `main` (stable user path).
+- Assume routine changes should be pushed to `experimental` without requiring per-change confirmation.
+- Push to `main` only when explicitly instructed.
+- When promoting changes to `main`, ensure all intended `experimental` updates are carried over safely.
+- Preserve the separation so both update paths continue to work independently.
