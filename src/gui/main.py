@@ -503,6 +503,9 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         self._shortcut_p.setContext(Qt.WindowShortcut)
         self._shortcut_p.setAutoRepeat(False)
         self._shortcut_p.activated.connect(self._on_p_key_pressed)
+        # Dupe uses the global ApplicationShortcut path as the single source of truth.
+        # Keep this object for key updates/tooltips, but disable local routing.
+        self._shortcut_p.setEnabled(False)
 
         self.dir_group = QGroupBox('Traffic Direction to Block', body)
         dir_layout = QVBoxLayout(self.dir_group)
@@ -1949,7 +1952,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if dupe:
             dupe._shortcut_p.setKey(k_dupe)
             dupe._shortcut_p.setAutoRepeat(False)
-            dupe._shortcut_p.setEnabled(True)
+            dupe._shortcut_p.setEnabled(False)
             dupe.btnDupeRun.setToolTip(
                 'Run a single lag burst for the device selected in the main list, then stop completely. '
                 'Shortcut: %s when this window is active (not in ms fields).' % np
@@ -2006,11 +2009,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Dupe toggle while app is foreground, regardless of active sub-window."""
         if not self._app_window_is_foreground():
             return
-        # Same as Lag: if Dupe dialog is active, only its local shortcut should handle P.
+        if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
+            return
+        # Dupe dialog uses this global handler too (single key path across main + dupe window).
         dupe_dlg = getattr(self, 'dupe_switch_dialog', None)
         if dupe_dlg is not None and dupe_dlg.isVisible() and dupe_dlg.isActiveWindow():
-            return
-        if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
+            dupe_dlg._on_run_clicked()
             return
         if self.dupe_active and self.dupe_device_mac:
             dupe_edge = 'stop'
