@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -15,7 +16,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from constants import APP_DISPLAY_NAME
+from constants import APP_DISPLAY_NAME, PAID_LICENSE_MANAGER_UPDATE_URL
 from tools.license_admin import (
     admin_public_verify_key_b64,
     create_license,
@@ -24,6 +25,8 @@ from tools.license_admin import (
     renew_license,
     set_license_status,
 )
+from tools.updater_core import launch_installer
+from tools.updater_progress import download_update_with_progress_dialog
 
 
 def _human_remaining(seconds: int) -> str:
@@ -70,6 +73,7 @@ class LicenseManagerWindow(QMainWindow):
         self.btnRevoke = QPushButton('Revoke Selected', self)
         self.btnActivate = QPushButton('Activate Selected', self)
         self.btnExport = QPushButton('Export License File', self)
+        self.btnUpdateManager = QPushButton('Install Latest Manager Build', self)
         for b in (
             self.btnRefresh,
             self.btnCreate,
@@ -77,6 +81,7 @@ class LicenseManagerWindow(QMainWindow):
             self.btnRevoke,
             self.btnActivate,
             self.btnExport,
+            self.btnUpdateManager,
         ):
             b.setAutoDefault(False)
             b.setDefault(False)
@@ -103,6 +108,7 @@ class LicenseManagerWindow(QMainWindow):
         self.btnRevoke.clicked.connect(lambda: self.set_selected_status('revoked'))
         self.btnActivate.clicked.connect(lambda: self.set_selected_status('active'))
         self.btnExport.clicked.connect(self.export_selected)
+        self.btnUpdateManager.clicked.connect(self.install_latest_manager_build)
 
     def _selected_license_id(self) -> str | None:
         items = self.table.selectedItems()
@@ -209,4 +215,36 @@ class LicenseManagerWindow(QMainWindow):
             QMessageBox.warning(self, 'Export License', 'Could not export selected account.')
             return
         QMessageBox.information(self, 'Export License', f'License exported:\n{wrote}')
+
+    def install_latest_manager_build(self):
+        url = str(PAID_LICENSE_MANAGER_UPDATE_URL or '').strip()
+        if not url:
+            QMessageBox.warning(self, 'Update URL Missing', 'Manager update URL is not configured.')
+            return
+        confirm = QMessageBox.question(
+            self,
+            'Install Latest Manager Build',
+            (
+                'This will download and run the latest ZubCut License Manager installer.\n'
+                'Continue?'
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            path = download_update_with_progress_dialog(self, url)
+            if not path:
+                return
+            launch_installer(path)
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                'Update Failed',
+                f'Could not download/install manager update.\n{e}',
+            )
 

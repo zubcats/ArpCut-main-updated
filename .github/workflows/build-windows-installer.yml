@@ -181,6 +181,14 @@ jobs:
           }
           Copy-Item $latest.FullName ("output/" + $aliasName) -Force
 
+      - name: Create License Manager paid alias
+        if: ${{ github.event.inputs.release_channel == 'paid' || github.ref_name == 'paid' }}
+        shell: pwsh
+        run: |
+          $lmLatest = Get-ChildItem -Path "output" -Filter "ZubCut-License-Manager-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $lmLatest) { throw "License Manager installer not found in output/" }
+          Copy-Item $lmLatest.FullName "output/ZubCut-License-Manager-Setup.exe" -Force
+
       - name: Upload portable EXE
         if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}
         uses: actions/upload-artifact@v4
@@ -228,7 +236,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ZubCut-License-Manager-Windows-Installer
-          path: output/ZubCut-License-Manager-Setup-1.0.exe
+          path: output/ZubCut-License-Manager-Setup.exe
 
       - name: Publish rolling stable release
         if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && github.ref_name == 'main') }}
@@ -264,6 +272,6 @@ jobs:
           make_latest: false
           files: |
             output/ZubCut-Setup-paid.exe
-            output/ZubCut-License-Manager-Setup-1.0.exe
+            output/ZubCut-License-Manager-Setup.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
