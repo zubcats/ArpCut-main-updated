@@ -61,9 +61,9 @@ def build():
         cmd.extend(['--collect-all', 'PyQt5'])
 
     if system == 'Windows':
-        # Console: admin tool — shows Python/Qt errors instead of "nothing happens"
-        # when the GUI fails before a window exists.
-        cmd.extend(['--onedir', '--console'])
+        # Windowed: avoid a second top-level console host beside the GUI. Errors go to
+        # %TEMP% / %APPDATA%\ZubCut\ zubcut_license_manager_*.txt and MessageBox on uncaught exceptions.
+        cmd.extend(['--onedir', '--windowed'])
         cmd.extend(['--add-data', 'exe/zubcut_icon.png;.'])
         cmd.extend(['--icon', 'exe/zubcut_icon.png'])
     elif system == 'Darwin':

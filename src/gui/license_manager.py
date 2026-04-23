@@ -115,6 +115,8 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         self._build_ui()
         self.setStyleSheet(_license_manager_qss())
         setup_frameless_main_window(self, self.windowTitle(), icon, maximizable=False)
+        # Solid client like main ZubCut window — translucent frameless + mask can look like a second window on Windows.
+        self._zubcut_use_translucent_surface = False
         register_window_surface_effects(self)
         self.refresh_rows()
 
