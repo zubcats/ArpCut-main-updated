@@ -1488,6 +1488,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
         
         current_row = self.tableScan.currentRow()
+        selected_mac = None
+        selected = self._get_selected_device()
+        if selected:
+            selected_mac = selected.get('mac')
+        elif 0 <= current_row < len(self.scanner.devices):
+            # Fallback before table is rebuilt: preserve current row's MAC identity when possible.
+            selected_mac = self.scanner.devices[current_row].get('mac')
         self.tableScan.clearSelection()
         self.tableScan.clearContents()
         self.tableScan.setRowCount(len(self.scanner.devices))
@@ -1507,10 +1514,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lblright.setText(status)
         self.tray_icon.setToolTip(status_tray)
 
-        # Restore selection when possible so toggle states stay in sync (skip Me/Router rows).
-        restore_row = current_row
-        if 0 <= restore_row < len(self.scanner.devices) and self.scanner.devices[restore_row].get('admin'):
-            restore_row = -1
+        # Restore selection by MAC identity first (row index can move after rescans),
+        # then fall back to the first non-admin row.
+        restore_row = -1
+        if selected_mac:
+            for i, d in enumerate(self.scanner.devices):
+                if d.get('mac') == selected_mac and not d.get('admin'):
+                    restore_row = i
+                    break
+        if restore_row < 0:
             for i, d in enumerate(self.scanner.devices):
                 if not d.get('admin'):
                     restore_row = i
