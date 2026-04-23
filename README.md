@@ -104,6 +104,13 @@ pip install pyinstaller pillow
 python build.py
 ```
 
+License Manager build:
+
+```bash
+pip install pyinstaller pillow
+python build_license_manager.py
+```
+
 That's it. Works on Windows, macOS, and Linux.
 
 Output:
@@ -112,6 +119,8 @@ Output:
 - Linux: `dist/ZubCut`
 
 **Windows installer (optional):** Install [Inno Setup 6](https://jrsoftware.org/isdl.php), then run `installer\Build-Installer.bat`. The setup wizard installs under `Program Files\ZubCut` and stores settings under `%APPDATA%\ZubCut`. See `installer/HOWTO-INSTALLER.txt`.
+
+**License Manager installer (optional):** Run `installer\Build-License-Manager-Installer.bat` to build a separate installer for `ZubCut License Manager`.
 
 If `installer\npcap-1.87.exe` is present while building setup, the installer will run Npcap silently only when Npcap is missing on the target machine.
 
