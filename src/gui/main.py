@@ -385,19 +385,25 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
             main.stopLagSwitch()
             return
 
-        deb_mac = None
+        device = None
         if main.tableScan.selectedItems():
             try:
-                deb_mac = main.current_index()['mac']
+                device = main.current_index()
             except Exception:
-                pass
+                device = None
+        if device is None:
+            # Focus can move to this dialog and clear selectedItems() while currentRow still points
+            # at the intended victim. Use currentRow as a fallback so the Lag keybind still works.
+            row = main.tableScan.currentRow()
+            if 0 <= row < len(main.scanner.devices):
+                device = main.scanner.devices[row]
+        deb_mac = device.get('mac') if isinstance(device, dict) else None
         lag_edge = 'start'
         if main._ignore_duplicate_toggle_edge('lag', deb_mac, lag_edge):
             return
-        if not main.tableScan.selectedItems():
+        if not device:
             main.log('No device selected', 'red')
             return
-        device = main.current_index()
         if device['admin']:
             main.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
