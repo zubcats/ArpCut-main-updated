@@ -1958,6 +1958,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Lag toggle while app is foreground, regardless of active sub-window."""
         if not self._app_window_is_foreground():
             return
+        # When Lag dialog is the active window, let its own WindowShortcut handle M to
+        # avoid double-trigger races (global + dialog handlers both firing).
+        lag_dlg = getattr(self, 'lag_switch_dialog', None)
+        if lag_dlg is not None and lag_dlg.isVisible() and lag_dlg.isActiveWindow():
+            return
         if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
             return
         if self.lag_active and self.lag_device_mac:
@@ -1986,6 +1991,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _shortcut_global_dupe(self):
         """Dupe toggle while app is foreground, regardless of active sub-window."""
         if not self._app_window_is_foreground():
+            return
+        # Same as Lag: if Dupe dialog is active, only its local shortcut should handle P.
+        dupe_dlg = getattr(self, 'dupe_switch_dialog', None)
+        if dupe_dlg is not None and dupe_dlg.isVisible() and dupe_dlg.isActiveWindow():
             return
         if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
             return
