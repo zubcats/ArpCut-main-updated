@@ -1,0 +1,12 @@
+---
+description: Core coding and collaboration standards
+alwaysApply: true
+---
+
+# General Standards
+
+- Keep changes focused on the user request and avoid unrelated refactors.
+- Prefer clear, readable code over clever shortcuts.
+- Add or update tests when behavior changes.
+- Preserve existing project structure and naming conventions.
+- Call out assumptions and risks when requirements are ambiguous.
