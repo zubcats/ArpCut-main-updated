@@ -85,6 +85,8 @@ def load_and_validate_installed_license(path: str | None = None) -> LicenseValid
         return LicenseValidationResult(False, 'License payload/signature missing')
     if not _verify_signature(payload, signature):
         return LicenseValidationResult(False, 'License signature invalid')
+    if str(payload.get('status', 'active')).strip().lower() != 'active':
+        return LicenseValidationResult(False, 'License not active', payload=payload)
 
     expires_at_raw = payload.get('expires_at')
     if not expires_at_raw:

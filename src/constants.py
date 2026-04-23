@@ -105,3 +105,6 @@ SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', F
 PAID_LICENSE_ENFORCEMENT = False
 PAID_LICENSE_PUBLIC_KEY_B64 = ''
 PAID_LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'paid-license.json')
+PAID_LICENSE_ADMIN_DB_PATH = path.join(DOCUMENTS_PATH, 'paid-license-admin.json')
+PAID_LICENSE_ADMIN_SIGNING_KEY_PATH = path.join(DOCUMENTS_PATH, 'paid-license-signing.key')
+PAID_LICENSE_EXPORT_DIR = path.join(DOCUMENTS_PATH, 'paid-licenses')
