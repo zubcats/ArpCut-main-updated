@@ -6,21 +6,6 @@ import traceback
 _sys.path.append(_os.path.dirname(__file__))
 
 
-def _frozen_qt_plugin_path():
-    """PyInstaller onedir: Qt sometimes fails to find platforms/qwindows.dll → instant exit, no window."""
-    if not getattr(_sys, 'frozen', False):
-        return
-    base = _os.path.dirname(_sys.executable)
-    for rel in (
-        _os.path.join('PyQt5', 'Qt5', 'plugins'),
-        _os.path.join('_internal', 'PyQt5', 'Qt5', 'plugins'),
-    ):
-        p = _os.path.join(base, rel)
-        if _os.path.isdir(p):
-            _os.environ['QT_PLUGIN_PATH'] = p
-            return
-
-
 def _fatal(title: str, msg: str) -> None:
     try:
         log = _os.path.join(_os.environ.get('TEMP', '.'), 'zubcut_license_manager_error.txt')
@@ -33,7 +18,9 @@ def _fatal(title: str, msg: str) -> None:
         try:
             import ctypes
 
-            ctypes.windll.user32.MessageBoxW(0, full, title, 0x10)
+            # MessageBox body length is limited; full traceback stays in the log file.
+            shown = full if len(full) < 900 else (full[:850] + '\n\n…(truncated; see log file)')
+            ctypes.windll.user32.MessageBoxW(0, shown, title, 0x10)
             return
         except Exception:
             pass
@@ -41,7 +28,12 @@ def _fatal(title: str, msg: str) -> None:
 
 
 if __name__ == '__main__':
-    _frozen_qt_plugin_path()
+    try:
+        from tools.qt_frozen_bootstrap import configure_qt_environment
+
+        configure_qt_environment()
+    except Exception:
+        pass
     try:
         from os import makedirs
 

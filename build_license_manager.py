@@ -14,6 +14,7 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 APP_NAME = 'ZubCutLicenseManager'
 
 HIDDEN_IMPORTS = [
+    'tools.qt_frozen_bootstrap',
     'gui.license_manager',
     'tools.license_admin',
     'PyQt5',
@@ -44,13 +45,24 @@ def build():
     cmd = [sys.executable, '-m', 'PyInstaller', '--name', APP_NAME]
     cmd.extend(['--paths', os.path.join(_ROOT, 'src')])
     cmd.extend(['--collect-submodules', 'gui'])
-    cmd.extend(['--additional-hooks-dir', os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks')])
+    _hooks = os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks')
+    cmd.extend(['--additional-hooks-dir', _hooks])
+    cmd.extend(
+        [
+            '--runtime-hook',
+            os.path.join(_hooks, 'rthook_qt_license_manager.py'),
+        ]
+    )
+    # UPX has corrupted qwindows.dll for some Qt + PyInstaller combos.
+    cmd.append('--noupx')
 
     if system in COLLECT_PYQT5:
         cmd.extend(['--collect-all', 'PyQt5'])
 
     if system == 'Windows':
-        cmd.extend(['--onedir', '--windowed'])
+        # Console: admin tool — shows Python/Qt errors instead of "nothing happens"
+        # when the GUI fails before a window exists.
+        cmd.extend(['--onedir', '--console'])
         cmd.extend(['--add-data', 'exe/zubcut_icon.png;.'])
         cmd.extend(['--icon', 'exe/zubcut_icon.png'])
     elif system == 'Darwin':
