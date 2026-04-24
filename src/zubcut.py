@@ -43,26 +43,6 @@ def _validate_paid_license_or_exit(icon) -> None:
     if res.ok:
         return
 
-    key_ok = bool(str(PAID_LICENSE_PUBLIC_KEY_B64 or '').strip())
-    if not key_ok:
-        msg_box(
-            APP_DISPLAY_NAME,
-            'Incorrect sign in.',
-            MsgIcon.CRITICAL,
-            icon,
-        )
-        exit(1)
-    from tools.license_remote_signin import effective_signin_url
-
-    if not effective_signin_url():
-        msg_box(
-            APP_DISPLAY_NAME,
-            'Incorrect sign in.',
-            MsgIcon.CRITICAL,
-            icon,
-        )
-        exit(1)
-
     from gui.paid_license_signin import run_paid_license_signin
 
     if run_paid_license_signin(None, icon):
