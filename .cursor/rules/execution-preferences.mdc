@@ -1,0 +1,13 @@
+---
+description: Prefer agent-run terminal commands over user-run commands
+alwaysApply: true
+---
+
+# Command Execution Preference
+
+- Run terminal commands directly whenever possible instead of asking the user to run them.
+- Ask the user to execute steps only when interaction is required outside agent control, such as:
+  - GUI/app clicks or manual form entry
+  - secret input that should not be shared in chat
+  - external account actions requiring user authentication in browser/UIs
+- When user action is required, provide the shortest possible copy/paste steps.

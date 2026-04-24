@@ -43,22 +43,24 @@ def _validate_paid_license_or_exit(icon) -> None:
     if res.ok:
         return
 
-    from gui.paid_license_signin import run_paid_license_signin
+    from gui.paid_license_signin import get_last_signin_error, run_paid_license_signin
 
     if run_paid_license_signin(None, icon):
         res = load_and_validate_installed_license()
         if res.ok:
             return
+        reason = get_last_signin_error() or res.reason or 'Unknown sign-in failure'
         msg_box(
             APP_DISPLAY_NAME,
-            'Incorrect sign in.',
+            f'Incorrect sign in.\n\nReason: {reason}',
             MsgIcon.CRITICAL,
             icon,
         )
         exit(1)
+    reason = get_last_signin_error() or 'Unknown sign-in failure'
     msg_box(
         APP_DISPLAY_NAME,
-        'Incorrect sign in.',
+        f'Incorrect sign in.\n\nReason: {reason}',
         MsgIcon.CRITICAL,
         icon,
     )

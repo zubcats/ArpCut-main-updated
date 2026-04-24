@@ -20,10 +20,23 @@ from tools.license_offline import (
 )
 from tools.license_remote_signin import effective_signin_url, fetch_license_document_via_signin
 
+_LAST_SIGNIN_ERROR = ''
+
+
+def _set_last_signin_error(reason: str) -> None:
+    global _LAST_SIGNIN_ERROR
+    _LAST_SIGNIN_ERROR = str(reason or '').strip()
+
+
+def get_last_signin_error() -> str:
+    return str(_LAST_SIGNIN_ERROR or '').strip()
+
 
 def run_paid_license_signin(parent, window_icon) -> bool:
     """Show modal sign-in. Returns True if user completed install and license validates on disk."""
+    _set_last_signin_error('')
     if not effective_signin_url():
+        _set_last_signin_error('Missing sign-in server URL')
         QMessageBox.critical(
             parent,
             APP_DISPLAY_NAME,
@@ -34,8 +47,13 @@ def run_paid_license_signin(parent, window_icon) -> bool:
         return False
     dlg = PaidLicenseSignInDialog(parent, window_icon)
     if dlg.exec_() != QDialog.Accepted:
+        if not get_last_signin_error():
+            _set_last_signin_error('Sign-in cancelled')
         return False
-    return load_and_validate_installed_license().ok
+    res = load_and_validate_installed_license()
+    if not res.ok:
+        _set_last_signin_error(res.reason)
+    return res.ok
 
 
 class PaidLicenseSignInDialog(QDialog):
@@ -83,14 +101,17 @@ class PaidLicenseSignInDialog(QDialog):
         password = self.edtPassword.text()
         data, err = fetch_license_document_via_signin(self._signin_url, account, password)
         if data is None:
+            _set_last_signin_error(err)
             QMessageBox.warning(self, 'Sign in failed', err)
             return
         payload = data.get('payload')
         if not isinstance(payload, dict):
+            _set_last_signin_error('Invalid license data from server')
             QMessageBox.warning(self, 'Sign in', 'Invalid license data from server.')
             return
         lic_user = str(payload.get('user_name') or '').strip()
         if lic_user and account.casefold() != lic_user.casefold():
+            _set_last_signin_error('Account mismatch')
             QMessageBox.warning(
                 self,
                 'Account mismatch',
@@ -99,11 +120,14 @@ class PaidLicenseSignInDialog(QDialog):
             return
         res = validate_license_document(data, sign_in_password=password)
         if not res.ok:
+            _set_last_signin_error(res.reason)
             QMessageBox.warning(self, 'Sign in failed', res.reason)
             return
         try:
             install_license_document(data)
         except Exception as e:
+            _set_last_signin_error(f'Could not save license: {e}')
             QMessageBox.critical(self, 'Sign in', f'Could not save license:\n{e}')
             return
+        _set_last_signin_error('')
         self.accept()
