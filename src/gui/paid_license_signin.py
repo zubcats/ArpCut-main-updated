@@ -1,34 +1,37 @@
-"""
-Paid build: sign in with account name, password, and sign-in code (offline; no JSON file for users).
-"""
+"""Paid build: online sign-in with account name and password only (HTTPS license server)."""
 from __future__ import annotations
-
-import json
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
 )
 
 from constants import APP_DISPLAY_NAME
-from tools.license_activation_code import decode_activation_token
 from tools.license_offline import (
     install_license_document,
     load_and_validate_installed_license,
     validate_license_document,
 )
+from tools.license_remote_signin import effective_signin_url, fetch_license_document_via_signin
 
 
 def run_paid_license_signin(parent, window_icon) -> bool:
     """Show modal sign-in. Returns True if user completed install and license validates on disk."""
+    if not effective_signin_url():
+        QMessageBox.critical(
+            parent,
+            APP_DISPLAY_NAME,
+            'This paid build has no online sign-in server configured.\n\n'
+            'Set PAID_LICENSE_SIGNIN_URL in the app build, or the environment variable\n'
+            'ZUBCUT_PAID_SIGNIN_URL, to your license server HTTPS URL.',
+        )
+        return False
     dlg = PaidLicenseSignInDialog(parent, window_icon)
     if dlg.exec_() != QDialog.Accepted:
         return False
@@ -41,7 +44,8 @@ class PaidLicenseSignInDialog(QDialog):
         self.setWindowTitle(f'{APP_DISPLAY_NAME} — Sign in')
         self.setWindowIcon(window_icon)
         self.setWindowModality(Qt.ApplicationModal)
-        self.resize(520, 420)
+        self._signin_url = effective_signin_url()
+        self.resize(440, 220)
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -49,8 +53,7 @@ class PaidLicenseSignInDialog(QDialog):
         root.setSpacing(10)
         root.addWidget(
             QLabel(
-                'Enter the account name and password your administrator gave you,\n'
-                'then paste the sign-in code (one line, starts with ZC1).',
+                'Sign in with the account name and password from your administrator.',
                 self,
             )
         )
@@ -62,18 +65,7 @@ class PaidLicenseSignInDialog(QDialog):
         root.addWidget(QLabel('Password', self))
         self.edtPassword = QLineEdit(self)
         self.edtPassword.setEchoMode(QLineEdit.Password)
-        self.edtPassword.setPlaceholderText('Same password they chose for you')
         root.addWidget(self.edtPassword)
-
-        root.addWidget(QLabel('Sign-in code', self))
-        self.txtCode = QPlainTextEdit(self)
-        self.txtCode.setPlaceholderText('Paste the full line starting with ZC1…')
-        self.txtCode.setMinimumHeight(100)
-        root.addWidget(self.txtCode)
-
-        adv = QLabel('Advanced: you can paste legacy license JSON here instead of a ZC1 code.', self)
-        adv.setStyleSheet('color: #888; font-size: 11px;')
-        root.addWidget(adv)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -86,47 +78,25 @@ class PaidLicenseSignInDialog(QDialog):
         btn_row.addWidget(self.btnSignIn)
         root.addLayout(btn_row)
 
-    def _parse_license_document(self) -> dict | None:
-        raw = self.txtCode.toPlainText().strip()
-        if not raw:
-            QMessageBox.warning(self, 'Sign in', 'Paste your sign-in code.')
-            return None
-        data = decode_activation_token(raw)
-        if data is not None:
-            return data
-        try:
-            return json.loads(raw)
-        except Exception:
-            QMessageBox.warning(
-                self,
-                'Invalid code',
-                'Could not read that as a sign-in code or JSON.\n'
-                'Use the full line starting with ZC1 from your administrator.',
-            )
-            return None
-
     def _try_sign_in(self) -> None:
-        data = self._parse_license_document()
-        if not isinstance(data, dict):
+        account = self.edtAccount.text().strip()
+        password = self.edtPassword.text()
+        data, err = fetch_license_document_via_signin(self._signin_url, account, password)
+        if data is None:
+            QMessageBox.warning(self, 'Sign in failed', err)
             return
         payload = data.get('payload')
         if not isinstance(payload, dict):
-            QMessageBox.warning(self, 'Sign in', 'Invalid license data.')
+            QMessageBox.warning(self, 'Sign in', 'Invalid license data from server.')
             return
         lic_user = str(payload.get('user_name') or '').strip()
-        account = self.edtAccount.text().strip()
-        if lic_user:
-            if not account:
-                QMessageBox.warning(self, 'Sign in', 'Enter your account name.')
-                return
-            if account.casefold() != lic_user.casefold():
-                QMessageBox.warning(
-                    self,
-                    'Account mismatch',
-                    f'That name does not match this license (expected: {lic_user!r}).',
-                )
-                return
-        password = self.edtPassword.text()
+        if lic_user and account.casefold() != lic_user.casefold():
+            QMessageBox.warning(
+                self,
+                'Account mismatch',
+                f'That name does not match this license (expected: {lic_user!r}).',
+            )
+            return
         res = validate_license_document(data, sign_in_password=password)
         if not res.ok:
             QMessageBox.warning(self, 'Sign in failed', res.reason)

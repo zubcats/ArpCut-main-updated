@@ -3,15 +3,16 @@ from datetime import timedelta
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -25,15 +26,24 @@ from tools.frameless_chrome import (
     register_window_surface_effects,
     setup_frameless_main_window,
 )
-from tools.license_activation_code import encode_activation_token
 from tools.license_admin import (
     admin_public_verify_key_b64,
+    cloud_kv_bundle_for_license_id,
+    cloud_kv_key_for_account,
     create_license,
-    export_license_document,
+    delete_license,
+    export_cloud_kv_bundle,
     list_license_rows,
     renew_license,
     set_license_status,
     signed_document_for_license_id,
+)
+from tools.license_cloud_sync import (
+    delete_account_from_worker,
+    load_cloud_sync_settings,
+    push_account_to_worker,
+    save_cloud_sync_settings,
+    test_worker_reachable,
 )
 from tools.updater_core import download_installer, launch_installer
 
@@ -46,7 +56,7 @@ def _ask_new_sign_in_password(parent: QWidget) -> str | None:
     lay.addWidget(
         QLabel(
             'Choose the password this customer will type in ZubCut\n'
-            '(min 8 characters). They will use it with their account name and sign-in code.',
+            '(min 8 characters). They use it with their account name when signing in online.',
             dlg,
         )
     )
@@ -85,37 +95,24 @@ def _ask_new_sign_in_password(parent: QWidget) -> str | None:
     return chosen[0]
 
 
-def _show_account_credentials(parent: QWidget, user: str, token: str) -> None:
+def _show_account_credentials(parent: QWidget, user: str) -> None:
     dlg = QDialog(parent)
     dlg.setWindowTitle('Send to customer')
     dlg.setModal(True)
     v = QVBoxLayout(dlg)
     v.addWidget(
         QLabel(
-            f'Tell them to open ZubCut (paid) and sign in with:\n\n'
+            f'Give your customer:\n\n'
             f'• Account name: {user}\n'
-            f'• Password: (the one you just chose)\n'
-            f'• Sign-in code: the block below (one line, starts with ZC1)',
+            f'• Password: (the one you just chose)\n\n'
+            f'They enter these in ZubCut (paid) sign-in after your build has the sign-in server URL set.',
             dlg,
         )
     )
-    te = QPlainTextEdit(dlg)
-    te.setPlainText(token)
-    te.setReadOnly(True)
-    te.setMinimumHeight(120)
-    v.addWidget(te)
-    copy_btn = QPushButton('Copy sign-in code', dlg)
-
-    def _copy() -> None:
-        QApplication.clipboard().setText(token)
-        QMessageBox.information(dlg, 'Copied', 'Sign-in code copied to the clipboard.')
-
-    copy_btn.clicked.connect(_copy)
-    v.addWidget(copy_btn)
     close = QPushButton('Close', dlg)
     close.clicked.connect(dlg.accept)
     v.addWidget(close)
-    dlg.resize(680, 380)
+    dlg.resize(520, 200)
     dlg.exec_()
 
 
@@ -188,6 +185,18 @@ QMainWindow#zubcutLicenseManager QHeaderView::section {{
     border-right: 1px solid #141414;
     padding: 4px;
 }}
+QMainWindow#zubcutLicenseManager QGroupBox#cloudSyncGroup {{
+    border: 1px solid {border};
+    margin-top: 10px;
+    padding-top: 6px;
+    border-radius: 4px;
+}}
+QMainWindow#zubcutLicenseManager QGroupBox#cloudSyncGroup::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 4px;
+}}
 """
 
 
@@ -197,7 +206,7 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         self.setObjectName('zubcutLicenseManager')
         self.setWindowTitle(f'{APP_DISPLAY_NAME} License Manager')
         self.setWindowIcon(icon)
-        self.resize(980, 560)
+        self.resize(980, 640)
         self._build_ui()
         self.setStyleSheet(_license_manager_qss())
         setup_frameless_main_window(self, self.windowTitle(), icon, maximizable=False)
@@ -218,14 +227,55 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         self.lblKey.setWordWrap(True)
         lay.addWidget(self.lblKey)
 
+        cloud = QGroupBox('Cloud sign-in sync (optional)', self)
+        cloud.setObjectName('cloudSyncGroup')
+        cloud_lay = QVBoxLayout(cloud)
+        cloud_lay.setSpacing(6)
+        cloud_lay.addWidget(
+            QLabel(
+                'Link License Manager to your Cloudflare Worker: new accounts and changes '
+                'can push automatically so customers only need account name + password in ZubCut.',
+                self,
+            )
+        )
+        row_url = QHBoxLayout()
+        row_url.addWidget(QLabel('Worker base URL:', self))
+        self.edtCloudUrl = QLineEdit(self)
+        self.edtCloudUrl.setPlaceholderText('https://your-worker.workers.dev')
+        row_url.addWidget(self.edtCloudUrl, 1)
+        cloud_lay.addLayout(row_url)
+        row_sec = QHBoxLayout()
+        row_sec.addWidget(QLabel('Admin secret:', self))
+        self.edtCloudSecret = QLineEdit(self)
+        self.edtCloudSecret.setEchoMode(QLineEdit.Password)
+        self.edtCloudSecret.setPlaceholderText('Same as wrangler secret ADMIN_SECRET')
+        row_sec.addWidget(self.edtCloudSecret, 1)
+        cloud_lay.addLayout(row_sec)
+        self.chkCloudAuto = QCheckBox(
+            'After I create, renew, or change account status, push to cloud automatically',
+            self,
+        )
+        self.chkCloudAuto.setChecked(True)
+        cloud_lay.addWidget(self.chkCloudAuto)
+        cloud_btns = QHBoxLayout()
+        self.btnCloudSave = QPushButton('Save cloud settings', self)
+        self.btnCloudTest = QPushButton('Test connection', self)
+        self.btnPushCloud = QPushButton('Push selected to cloud', self)
+        cloud_btns.addWidget(self.btnCloudSave)
+        cloud_btns.addWidget(self.btnCloudTest)
+        cloud_btns.addWidget(self.btnPushCloud)
+        cloud_btns.addStretch()
+        cloud_lay.addLayout(cloud_btns)
+        lay.addWidget(cloud)
+
         btn_row = QHBoxLayout()
         self.btnRefresh = QPushButton('Refresh', self)
         self.btnCreate = QPushButton('Create Account', self)
         self.btnRenew = QPushButton('Renew Selected', self)
         self.btnRevoke = QPushButton('Revoke Selected', self)
         self.btnActivate = QPushButton('Activate Selected', self)
-        self.btnExport = QPushButton('Export License File', self)
-        self.btnCopyCode = QPushButton('Copy sign-in code', self)
+        self.btnDelete = QPushButton('Delete account', self)
+        self.btnExportKv = QPushButton('Export KV file (manual)', self)
         self.btnUpdateManager = QPushButton('Install Latest Manager Build', self)
         for b in (
             self.btnRefresh,
@@ -233,8 +283,8 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
             self.btnRenew,
             self.btnRevoke,
             self.btnActivate,
-            self.btnExport,
-            self.btnCopyCode,
+            self.btnDelete,
+            self.btnExportKv,
             self.btnUpdateManager,
         ):
             b.setAutoDefault(False)
@@ -262,9 +312,61 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         self.btnRenew.clicked.connect(self.renew_selected)
         self.btnRevoke.clicked.connect(lambda: self.set_selected_status('revoked'))
         self.btnActivate.clicked.connect(lambda: self.set_selected_status('active'))
-        self.btnExport.clicked.connect(self.export_selected)
-        self.btnCopyCode.clicked.connect(self.copy_sign_in_code_selected)
+        self.btnDelete.clicked.connect(self.delete_selected_account)
+        self.btnExportKv.clicked.connect(self.export_kv_bundle_selected)
         self.btnUpdateManager.clicked.connect(self.install_latest_manager_build)
+
+        self.btnCloudSave.clicked.connect(self._save_cloud_sync_clicked)
+        self.btnCloudTest.clicked.connect(self._test_cloud_sync_clicked)
+        self.btnPushCloud.clicked.connect(self.push_cloud_selected)
+
+        self._load_cloud_sync_fields()
+
+    def _load_cloud_sync_fields(self) -> None:
+        s = load_cloud_sync_settings()
+        self.edtCloudUrl.setText(str(s.get('worker_base_url') or ''))
+        self.edtCloudSecret.setText(str(s.get('admin_secret') or ''))
+        self.chkCloudAuto.setChecked(bool(s.get('auto_sync', True)))
+
+    def _save_cloud_sync_clicked(self) -> None:
+        save_cloud_sync_settings(
+            worker_base_url=self.edtCloudUrl.text(),
+            admin_secret=self.edtCloudSecret.text(),
+            auto_sync=self.chkCloudAuto.isChecked(),
+        )
+        QMessageBox.information(self, 'Saved', 'Cloud sync settings saved.')
+
+    def _test_cloud_sync_clicked(self) -> None:
+        ok, msg = test_worker_reachable(self.edtCloudUrl.text())
+        if ok:
+            QMessageBox.information(self, 'Test', msg)
+        else:
+            QMessageBox.warning(self, 'Test failed', msg)
+
+    def _maybe_auto_push_cloud(self, license_id: str) -> tuple[bool, str]:
+        s = load_cloud_sync_settings()
+        if not s.get('auto_sync'):
+            return True, ''
+        base = str(s.get('worker_base_url') or '').strip()
+        secret = str(s.get('admin_secret') or '')
+        if not base or not secret:
+            return (
+                False,
+                'Cloud auto-sync is on but Worker URL or admin secret is empty. '
+                'Fill them and click Save cloud settings, or turn off auto-sync.',
+            )
+        return push_account_to_worker(license_id)
+
+    def push_cloud_selected(self) -> None:
+        lic_id = self._selected_license_id()
+        if not lic_id:
+            QMessageBox.warning(self, 'Cloud', 'Select an account first.')
+            return
+        ok, msg = push_account_to_worker(lic_id)
+        if ok:
+            QMessageBox.information(self, 'Cloud', msg)
+        else:
+            QMessageBox.warning(self, 'Cloud', msg)
 
     def _selected_license_id(self) -> str | None:
         items = self.table.selectedItems()
@@ -273,6 +375,54 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         row = items[0].row()
         id_item = self.table.item(row, 1)
         return id_item.text().strip() if id_item else None
+
+    def _selected_user_display(self) -> str:
+        items = self.table.selectedItems()
+        if not items:
+            return ''
+        row = items[0].row()
+        u = self.table.item(row, 0)
+        return u.text().strip() if u else ''
+
+    def delete_selected_account(self) -> None:
+        lic_id = self._selected_license_id()
+        if not lic_id:
+            QMessageBox.warning(self, 'Delete account', 'Select an account first.')
+            return
+        user = self._selected_user_display()
+        confirm = QMessageBox.question(
+            self,
+            'Delete account',
+            f'Delete this account permanently from License Manager?\n\n'
+            f'User: {user}\nLicense ID: {lic_id}\n\n'
+            f'This cannot be undone.',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        doc = signed_document_for_license_id(lic_id)
+        p = (doc or {}).get('payload') or {}
+        account_key = cloud_kv_key_for_account(str(p.get('user_name') or ''))
+
+        if not delete_license(lic_id):
+            QMessageBox.warning(self, 'Delete account', 'Could not delete that account.')
+            return
+
+        self.refresh_rows()
+
+        cloud_ok, cloud_msg = delete_account_from_worker(account_key)
+        if not cloud_ok:
+            QMessageBox.warning(
+                self,
+                'Delete account',
+                f'Account removed locally, but cloud removal failed:\n{cloud_msg}',
+            )
+            return
+        msg = 'Account deleted.'
+        if cloud_msg:
+            msg = f'{msg}\n\n{cloud_msg}'
+        QMessageBox.information(self, 'Delete account', msg)
 
     def refresh_rows(self):
         rows = list_license_rows()
@@ -322,9 +472,11 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
             return
         rec = create_license(user, days, str(dev_hash or '').strip(), sign_in_password=pwd)
         self.refresh_rows()
-        doc = {'payload': rec['payload'], 'signature': rec['signature']}
-        token = encode_activation_token(doc)
-        _show_account_credentials(self, user, token)
+        lic_id = str(rec.get('payload', {}).get('license_id') or '')
+        _show_account_credentials(self, user)
+        ok, msg = self._maybe_auto_push_cloud(lic_id)
+        if not ok:
+            QMessageBox.warning(self, 'Cloud sync', msg)
 
     def renew_selected(self):
         lic_id = self._selected_license_id()
@@ -340,6 +492,9 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
             return
         self.refresh_rows()
         QMessageBox.information(self, 'Renew', 'Account renewed.')
+        ok, msg = self._maybe_auto_push_cloud(lic_id)
+        if not ok:
+            QMessageBox.warning(self, 'Cloud sync', msg)
 
     def set_selected_status(self, status: str):
         lic_id = self._selected_license_id()
@@ -352,42 +507,46 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
             return
         self.refresh_rows()
         QMessageBox.information(self, 'Update Status', f'Account status set to {status}.')
+        ok, msg = self._maybe_auto_push_cloud(lic_id)
+        if not ok:
+            QMessageBox.warning(self, 'Cloud sync', msg)
 
-    def copy_sign_in_code_selected(self):
+    def export_kv_bundle_selected(self):
         lic_id = self._selected_license_id()
         if not lic_id:
-            QMessageBox.warning(self, 'Copy sign-in code', 'Select an account first.')
+            QMessageBox.warning(self, 'Export KV bundle', 'Select an account first.')
+            return
+        bundle = cloud_kv_bundle_for_license_id(lic_id)
+        if bundle is None:
+            QMessageBox.warning(
+                self,
+                'Export KV bundle',
+                'Only accounts with a customer sign-in password can export an online bundle.\n'
+                'Create the account with a password, or see backend/cloudflare-license-signin/README.md.',
+            )
             return
         doc = signed_document_for_license_id(lic_id)
-        if not doc:
-            QMessageBox.warning(self, 'Copy sign-in code', 'Could not load that license.')
-            return
-        token = encode_activation_token(doc)
-        QApplication.clipboard().setText(token)
-        QMessageBox.information(
-            self,
-            'Copied',
-            'Sign-in code copied. Send it with their account name and password.',
-        )
-
-    def export_selected(self):
-        lic_id = self._selected_license_id()
-        if not lic_id:
-            QMessageBox.warning(self, 'Export License', 'Select an account first.')
-            return
+        p = (doc or {}).get('payload') or {}
+        user = str(p.get('user_name') or '')
+        kv_key = cloud_kv_key_for_account(user)
         out_path, _ = QFileDialog.getSaveFileName(
             self,
-            'Export License File',
-            f'{lic_id[:8]}.json',
+            'Export Cloudflare KV bundle',
+            f'kv-{kv_key or lic_id[:8]}.json',
             'JSON Files (*.json)',
         )
         if not out_path:
             return
-        wrote = export_license_document(lic_id, out_path)
-        if not wrote:
-            QMessageBox.warning(self, 'Export License', 'Could not export selected account.')
+        if not export_cloud_kv_bundle(lic_id, out_path):
+            QMessageBox.warning(self, 'Export KV bundle', 'Could not write that file.')
             return
-        QMessageBox.information(self, 'Export License', f'License exported:\n{wrote}')
+        QMessageBox.information(
+            self,
+            'KV bundle exported',
+            f'Wrote:\n{out_path}\n\n'
+            f'Workers KV key (case-insensitive account name):\n  {kv_key!r}\n\n'
+            f'Deploy steps: backend/cloudflare-license-signin/README.md',
+        )
 
     def install_latest_manager_build(self):
         url = str(PAID_LICENSE_MANAGER_UPDATE_URL or '').strip()

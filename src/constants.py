@@ -101,12 +101,17 @@ SETTINGS_KEYS = [
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
 SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', False, False]
 
-# Paid-channel offline licensing (no backend dependency).
-# Keep enforcement disabled until a public verify key is configured and licenses are issued.
+# Paid-channel licensing (online account + password only; see PAID_LICENSE_SIGNIN_URL).
+# Put License Manager's "Public Verify Key" in PAID_LICENSE_PUBLIC_KEY_B64 for customer builds:
+# once set, ZubCut (paid) prompts for sign-in at startup if no valid paid-license.json (requires sign-in URL too).
+# PAID_LICENSE_ENFORCEMENT adds the same gate even when the key string is empty (stricter CI/dev only).
 PAID_LICENSE_ENFORCEMENT = False
 PAID_LICENSE_PUBLIC_KEY_B64 = ''
 PAID_LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'paid-license.json')
 PAID_LICENSE_ADMIN_DB_PATH = path.join(DOCUMENTS_PATH, 'paid-license-admin.json')
 PAID_LICENSE_ADMIN_SIGNING_KEY_PATH = path.join(DOCUMENTS_PATH, 'paid-license-signing.key')
-PAID_LICENSE_EXPORT_DIR = path.join(DOCUMENTS_PATH, 'paid-licenses')
 PAID_LICENSE_MANAGER_UPDATE_URL = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/paid-license-manager-latest/ZubCut-License-Manager-Setup.exe'
+# License Manager: optional Worker URL + secret for one-click cloud sync (see tools/license_cloud_sync.py).
+PAID_LICENSE_MANAGER_CLOUD_SYNC_PATH = path.join(DOCUMENTS_PATH, 'license-manager-cloud-sync.json')
+# Required for customer paid sign-in: HTTPS license server (POST account + password). Override with ZUBCUT_PAID_SIGNIN_URL.
+PAID_LICENSE_SIGNIN_URL = ''

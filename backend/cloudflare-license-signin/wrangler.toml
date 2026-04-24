@@ -1,0 +1,12 @@
+# After `wrangler kv namespace create LICENSES`, put the id below, then:
+#   wrangler kv key put --namespace-id=<id> "<account_lowercase>" --path=path/to/kv-bundle.json
+# Deploy:
+#   npx wrangler deploy
+
+name = "zubcut-license-signin"
+main = "worker.mjs"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "LICENSES"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"

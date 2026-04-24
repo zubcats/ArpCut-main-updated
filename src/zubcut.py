@@ -34,17 +34,46 @@ def _load_window_icon():
 
 def _validate_paid_license_or_exit(icon) -> None:
     """
-    Paid branch can enforce offline signed licenses.
-    Keep soft mode available for development until keys/licenses are configured.
+    Paid branch: require sign-in when there is no valid license and a verify key is configured
+    (real customer builds), or when PAID_LICENSE_ENFORCEMENT is True.
+
+    Soft skip only when there is no public key and enforcement is off (local dev without licensing).
     """
     if str(UPDATE_CHANNEL or '').strip().lower() != 'paid':
         return
     res = load_and_validate_installed_license()
     if res.ok:
         return
-    if not bool(PAID_LICENSE_ENFORCEMENT):
-        print(f'[paid-license] soft mode: {res.reason}')
+
+    key_ok = bool(str(PAID_LICENSE_PUBLIC_KEY_B64 or '').strip())
+    enforce = bool(PAID_LICENSE_ENFORCEMENT)
+
+    if not key_ok and not enforce:
+        print(f'[paid-license] soft mode (no verify key): {res.reason}')
         return
+    if enforce and not key_ok:
+        msg_box(
+            APP_DISPLAY_NAME,
+            'This paid build has license enforcement enabled but PAID_LICENSE_PUBLIC_KEY_B64 is empty.\n'
+            'Fix the build configuration.',
+            MsgIcon.CRITICAL,
+            icon,
+        )
+        exit(1)
+
+    if key_ok:
+        from tools.license_remote_signin import effective_signin_url
+
+        if not effective_signin_url():
+            msg_box(
+                APP_DISPLAY_NAME,
+                'This paid build is missing the online sign-in server URL.\n\n'
+                'Set PAID_LICENSE_SIGNIN_URL or environment variable ZUBCUT_PAID_SIGNIN_URL.',
+                MsgIcon.CRITICAL,
+                icon,
+            )
+            exit(1)
+
     from gui.paid_license_signin import run_paid_license_signin
 
     if run_paid_license_signin(None, icon):
@@ -60,7 +89,8 @@ def _validate_paid_license_or_exit(icon) -> None:
         exit(1)
     msg_box(
         APP_DISPLAY_NAME,
-        'This paid build requires a license. Use Sign in when you are ready, or close the app.',
+        'This paid build needs a valid license. Sign in with the account details from your administrator, '
+        'or close the app.',
         MsgIcon.CRITICAL,
         icon,
     )

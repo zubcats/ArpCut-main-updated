@@ -75,7 +75,7 @@ jobs:
             echo "Empty changed-file list; run ZubCut build to be safe."
             exit 0
           fi
-          LM_ONLY_RE='^(build_license_manager\.py|src/zubcut_license_manager\.py|src/gui/license_manager\.py|src/tools/license_admin\.py|src/tools/qt_frozen_bootstrap\.py|installer/ZubCut-License-Manager\.iss|installer/Build-License-Manager-Installer\.bat|packaging/pyinstaller-hooks/rthook_qt_license_manager\.py|\.github/workflows/build-license-manager-windows\.yml)$'
+          LM_ONLY_RE='^(build_license_manager\.py|src/zubcut_license_manager\.py|src/gui/license_manager\.py|src/tools/license_admin\.py|src/tools/license_cloud_sync\.py|src/tools/qt_frozen_bootstrap\.py|installer/ZubCut-License-Manager\.iss|installer/Build-License-Manager-Installer\.bat|packaging/pyinstaller-hooks/rthook_qt_license_manager\.py|\.github/workflows/build-license-manager-windows\.yml)$'
           if echo "${FILES}" | grep -vE "${LM_ONLY_RE}" | grep -q .; then
             echo "proceed=true" >> "${GITHUB_OUTPUT}"
             echo "Changed files include non-LM paths; run ZubCut Windows build."

@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QApplication, QDialog, QMainWindow, QLineEdit, QPushButton
+from PyQt5.QtWidgets import QApplication, QMainWindow, QLineEdit, QPushButton
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer
 import os
@@ -113,11 +113,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         register_window_surface_effects(self)
 
     def _on_paid_sign_in(self):
-        from gui.paid_license_signin import PaidLicenseSignInDialog
+        from gui.paid_license_signin import run_paid_license_signin
         from tools.license_offline import load_and_validate_installed_license
 
-        dlg = PaidLicenseSignInDialog(self, self.icon)
-        if dlg.exec_() != QDialog.Accepted:
+        if not run_paid_license_signin(self, self.icon):
             return
         if load_and_validate_installed_license().ok:
             MsgType.INFO(

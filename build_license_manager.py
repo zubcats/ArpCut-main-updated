@@ -15,10 +15,10 @@ APP_NAME = 'ZubCutLicenseManager'
 
 HIDDEN_IMPORTS = [
     'ctypes.wintypes',
-    'tools.license_activation_code',
     'tools.qt_frozen_bootstrap',
     'gui.license_manager',
     'tools.license_admin',
+    'tools.license_cloud_sync',
     'PyQt5',
     'PyQt5.QtWidgets',
     'PyQt5.QtCore',

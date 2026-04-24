@@ -11,7 +11,6 @@ from nacl.signing import SigningKey
 from constants import (
     PAID_LICENSE_ADMIN_DB_PATH,
     PAID_LICENSE_ADMIN_SIGNING_KEY_PATH,
-    PAID_LICENSE_EXPORT_DIR,
 )
 
 
@@ -175,6 +174,21 @@ def set_license_status(license_id: str, status: str) -> dict[str, Any] | None:
     return None
 
 
+def delete_license(license_id: str) -> bool:
+    """Remove one license from the admin database. Returns False if id not found."""
+    db = load_license_db()
+    licenses = db.get('licenses')
+    if not isinstance(licenses, list):
+        return False
+    nid = str(license_id or '').strip()
+    new_list = [rec for rec in licenses if str((rec.get('payload') or {}).get('license_id') or '') != nid]
+    if len(new_list) == len(licenses):
+        return False
+    db['licenses'] = new_list
+    save_license_db(db)
+    return True
+
+
 def signed_document_for_license_id(license_id: str) -> dict[str, Any] | None:
     """Return {\"payload\": ..., \"signature\": ...} for encoding / export."""
     db = load_license_db()
@@ -186,18 +200,45 @@ def signed_document_for_license_id(license_id: str) -> dict[str, Any] | None:
     return None
 
 
-def export_license_document(license_id: str, out_path: str | None = None) -> str | None:
+def cloud_kv_bundle_for_license_id(license_id: str) -> dict[str, Any] | None:
+    """
+    JSON object to store as the Worker KV *value* for free-tier online sign-in.
+
+    KV *key* should be the account name in lowercase (see ``cloud_kv_key_for_account``).
+    Requires a sign-in password on the license (PBKDF2 fields in payload).
+    """
     doc = signed_document_for_license_id(license_id)
     if doc is None:
         return None
-    p = doc['payload']
-    if out_path is None:
-        os.makedirs(PAID_LICENSE_EXPORT_DIR, exist_ok=True)
-        safe_user = str(p.get('user_name') or 'user').strip().replace(' ', '_')
-        out_path = os.path.join(PAID_LICENSE_EXPORT_DIR, f'{safe_user}-{license_id[:8]}.json')
+    p = doc.get('payload') or {}
+    ph = str(p.get('password_hash') or '').strip()
+    salt = str(p.get('password_salt') or '').strip()
+    if not ph or not salt:
+        return None
+    return {
+        'version': 1,
+        'password_salt': salt,
+        'password_hash_hex': ph,
+        'license': doc,
+    }
+
+
+def cloud_kv_key_for_account(user_name: str) -> str:
+    """KV lookup key: lowercase trimmed account name (must match ZubCut sign-in)."""
+    return str(user_name or '').strip().casefold()
+
+
+def export_cloud_kv_bundle(license_id: str, out_path: str) -> bool:
+    """Write KV bundle JSON for Wrangler / dashboard upload."""
+    bundle = cloud_kv_bundle_for_license_id(license_id)
+    if bundle is None:
+        return False
+    parent = os.path.dirname(out_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(out_path, 'w', encoding='utf-8') as fh:
-        json.dump(doc, fh, indent=2)
-    return out_path
+        json.dump(bundle, fh, indent=2)
+    return True
 
 
 def list_license_rows() -> list[dict[str, Any]]:
