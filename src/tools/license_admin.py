@@ -13,6 +13,8 @@ from constants import (
     PAID_LICENSE_ADMIN_SIGNING_KEY_PATH,
 )
 
+SIGNIN_PBKDF2_ITERS = 100_000
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -83,11 +85,12 @@ def _sign_in_password_fields(sign_in_password: str) -> dict[str, str]:
         'sha256',
         str(sign_in_password).encode('utf-8'),
         salt,
-        210_000,
+        SIGNIN_PBKDF2_ITERS,
     )
     return {
         'password_salt': base64.b64encode(salt).decode('ascii'),
         'password_hash': h.hex(),
+        'password_iters': SIGNIN_PBKDF2_ITERS,
     }
 
 
@@ -219,6 +222,7 @@ def cloud_kv_bundle_for_license_id(license_id: str) -> dict[str, Any] | None:
         'version': 1,
         'password_salt': salt,
         'password_hash_hex': ph,
+        'password_iters': int(p.get('password_iters') or SIGNIN_PBKDF2_ITERS),
         'license': doc,
     }
 

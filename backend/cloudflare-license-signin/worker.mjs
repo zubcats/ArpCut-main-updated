@@ -5,6 +5,9 @@
  * Server rejects expired or non-active licenses before returning the signed document.
  */
 
+const SIGNIN_PBKDF2_ITERS_DEFAULT = 100000;
+const SIGNIN_PBKDF2_ITERS_MAX = 100000;
+
 function jsonResponse(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
     status,
@@ -27,7 +30,8 @@ function b64ToArrayBuffer(s) {
   return out.buffer;
 }
 
-async function pbkdf2Sha256Hex(password, saltB64) {
+async function pbkdf2Sha256Hex(password, saltB64, iterations) {
+  const iters = Math.max(1, Math.min(Number(iterations || SIGNIN_PBKDF2_ITERS_DEFAULT), SIGNIN_PBKDF2_ITERS_MAX));
   const salt = b64ToArrayBuffer(saltB64);
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, [
@@ -38,7 +42,7 @@ async function pbkdf2Sha256Hex(password, saltB64) {
       name: 'PBKDF2',
       hash: 'SHA-256',
       salt: new Uint8Array(salt),
-      iterations: 210000,
+      iterations: iters,
     },
     keyMaterial,
     256,
@@ -209,6 +213,7 @@ export default {
 
     const salt = record?.password_salt;
     const expectedHex = record?.password_hash_hex;
+    const iter = Number(record?.password_iters || record?.license?.payload?.password_iters || SIGNIN_PBKDF2_ITERS_DEFAULT);
     const license = record?.license;
 
     if (!salt || !expectedHex || !license || typeof license !== 'object') {
@@ -217,7 +222,7 @@ export default {
 
     let derived;
     try {
-      derived = await pbkdf2Sha256Hex(password, salt);
+      derived = await pbkdf2Sha256Hex(password, salt, iter);
     } catch {
       return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
     }

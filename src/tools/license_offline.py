@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+SIGNIN_PBKDF2_ITERS_DEFAULT = 100_000
+
 try:
     from constants import PAID_LICENSE_FILE_PATH, PAID_LICENSE_PUBLIC_KEY_B64
 except Exception:
@@ -89,7 +91,13 @@ def _sign_in_password_ok(payload: dict[str, Any], sign_in_password: str | None) 
         salt = base64.b64decode(salt_b64)
     except Exception:
         return False, 'License is missing password data'
-    calc = hashlib.pbkdf2_hmac('sha256', pwd.encode('utf-8'), salt, 210_000).hex()
+    try:
+        iters = int(payload.get('password_iters') or SIGNIN_PBKDF2_ITERS_DEFAULT)
+    except Exception:
+        iters = SIGNIN_PBKDF2_ITERS_DEFAULT
+    if iters < 1:
+        iters = SIGNIN_PBKDF2_ITERS_DEFAULT
+    calc = hashlib.pbkdf2_hmac('sha256', pwd.encode('utf-8'), salt, iters).hex()
     if calc != ph:
         return False, 'Wrong password'
     return True, ''
