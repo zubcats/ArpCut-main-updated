@@ -103,3 +103,5 @@ PAID_LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'paid-license.json')
 PAID_LICENSE_ADMIN_DB_PATH = path.join(DOCUMENTS_PATH, 'paid-license-admin.json')
 PAID_LICENSE_ADMIN_SIGNING_KEY_PATH = path.join(DOCUMENTS_PATH, 'paid-license-signing.key')
 PAID_LICENSE_MANAGER_UPDATE_URL = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/paid-license-manager-latest/ZubCut-License-Manager-Setup.exe'
+PAID_LICENSE_MANAGER_CLOUD_SYNC_PATH = path.join(DOCUMENTS_PATH, 'license-manager-cloud-sync.json')
+PAID_LICENSE_SIGNIN_URL = 'https://zubcut-license-signin.zubcats.workers.dev'

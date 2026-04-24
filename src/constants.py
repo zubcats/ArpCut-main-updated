@@ -114,4 +114,4 @@ PAID_LICENSE_MANAGER_UPDATE_URL = 'https://github.com/zubcats/ArpCut-main-update
 # License Manager: optional Worker URL + secret for one-click cloud sync (see tools/license_cloud_sync.py).
 PAID_LICENSE_MANAGER_CLOUD_SYNC_PATH = path.join(DOCUMENTS_PATH, 'license-manager-cloud-sync.json')
 # Required for customer paid sign-in: HTTPS license server (POST account + password). Override with ZUBCUT_PAID_SIGNIN_URL.
-PAID_LICENSE_SIGNIN_URL = ''
+PAID_LICENSE_SIGNIN_URL = 'https://zubcut-license-signin.zubcats.workers.dev'

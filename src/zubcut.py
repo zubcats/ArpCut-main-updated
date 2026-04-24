@@ -34,10 +34,8 @@ def _load_window_icon():
 
 def _validate_paid_license_or_exit(icon) -> None:
     """
-    Paid branch: require sign-in when there is no valid license and a verify key is configured
-    (real customer builds), or when PAID_LICENSE_ENFORCEMENT is True.
-
-    Soft skip only when there is no public key and enforcement is off (local dev without licensing).
+    Paid branch is always gated: no app access without a valid paid license.
+    If missing/invalid, user must sign in successfully before main UI launches.
     """
     if str(UPDATE_CHANNEL or '').strip().lower() != 'paid':
         return
@@ -46,33 +44,24 @@ def _validate_paid_license_or_exit(icon) -> None:
         return
 
     key_ok = bool(str(PAID_LICENSE_PUBLIC_KEY_B64 or '').strip())
-    enforce = bool(PAID_LICENSE_ENFORCEMENT)
-
-    if not key_ok and not enforce:
-        print(f'[paid-license] soft mode (no verify key): {res.reason}')
-        return
-    if enforce and not key_ok:
+    if not key_ok:
         msg_box(
             APP_DISPLAY_NAME,
-            'This paid build has license enforcement enabled but PAID_LICENSE_PUBLIC_KEY_B64 is empty.\n'
-            'Fix the build configuration.',
+            'Incorrect sign in.',
             MsgIcon.CRITICAL,
             icon,
         )
         exit(1)
+    from tools.license_remote_signin import effective_signin_url
 
-    if key_ok:
-        from tools.license_remote_signin import effective_signin_url
-
-        if not effective_signin_url():
-            msg_box(
-                APP_DISPLAY_NAME,
-                'This paid build is missing the online sign-in server URL.\n\n'
-                'Set PAID_LICENSE_SIGNIN_URL or environment variable ZUBCUT_PAID_SIGNIN_URL.',
-                MsgIcon.CRITICAL,
-                icon,
-            )
-            exit(1)
+    if not effective_signin_url():
+        msg_box(
+            APP_DISPLAY_NAME,
+            'Incorrect sign in.',
+            MsgIcon.CRITICAL,
+            icon,
+        )
+        exit(1)
 
     from gui.paid_license_signin import run_paid_license_signin
 
@@ -82,15 +71,14 @@ def _validate_paid_license_or_exit(icon) -> None:
             return
         msg_box(
             APP_DISPLAY_NAME,
-            f'License still not valid after sign-in: {res.reason}',
+            'Incorrect sign in.',
             MsgIcon.CRITICAL,
             icon,
         )
         exit(1)
     msg_box(
         APP_DISPLAY_NAME,
-        'This paid build needs a valid license. Sign in with the account details from your administrator, '
-        'or close the app.',
+        'Incorrect sign in.',
         MsgIcon.CRITICAL,
         icon,
     )
