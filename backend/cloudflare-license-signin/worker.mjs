@@ -181,6 +181,59 @@ export default {
       return jsonResponse({ ok: true });
     }
 
+    if (path === '/validate') {
+      const account = String(body?.account || '').trim().toLowerCase();
+      const expectedLicenseId = String(body?.license_id || '').trim();
+      if (!account) {
+        return jsonResponse({ ok: false, error: 'Invalid account.' }, 400);
+      }
+      if (!kv) {
+        return jsonResponse({ ok: false, error: 'Server misconfigured (no KV).' }, 500);
+      }
+      let raw;
+      try {
+        raw = await kv.get(account, { type: 'text' });
+      } catch {
+        return jsonResponse({ ok: false, error: 'Lookup failed.' }, 500);
+      }
+      if (!raw) {
+        return jsonResponse({ ok: false, error: 'Account not found.' }, 404);
+      }
+      let record;
+      try {
+        record = JSON.parse(raw);
+      } catch {
+        return jsonResponse({ ok: false, error: 'Invalid account record.' }, 500);
+      }
+      const license = record?.license;
+      if (!license || typeof license !== 'object') {
+        return jsonResponse({ ok: false, error: 'Invalid account record.' }, 500);
+      }
+      const payload = license?.payload;
+      const licenseId = String(payload?.license_id || '').trim();
+      if (!payload || typeof payload !== 'object' || !licenseId) {
+        return jsonResponse({ ok: false, error: 'Invalid account record.' }, 500);
+      }
+      if (expectedLicenseId && expectedLicenseId !== licenseId) {
+        return jsonResponse({ ok: false, error: 'Session no longer valid.' }, 403);
+      }
+      const elig = licenseEligibleForLogin(license);
+      if (!elig.ok) {
+        const msg =
+          elig.code === 'expired'
+            ? 'This subscription has expired.'
+            : 'This account is no longer active.';
+        return jsonResponse({ ok: false, error: msg }, 403);
+      }
+      return jsonResponse({
+        ok: true,
+        account,
+        license_id: licenseId,
+        status: String(payload?.status || 'active'),
+        expires_at: String(payload?.expires_at || ''),
+      });
+    }
+
     // --- User sign-in (default POST) ---
     const account = String(body?.account || '').trim().toLowerCase();
     const password = String(body?.password ?? '');

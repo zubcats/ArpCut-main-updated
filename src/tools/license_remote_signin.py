@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -69,3 +70,68 @@ def fetch_license_document_via_signin(
         return None, 'Sign-in server did not return a license.'
 
     return lic, ''
+
+
+def _signin_validate_url(base_url: str) -> str:
+    base = str(base_url or '').strip()
+    if not base:
+        return ''
+    try:
+        parts = urlsplit(base)
+        p = (parts.path or '/').rstrip('/')
+        if not p:
+            p = '/'
+        if p == '/validate':
+            vp = p
+        else:
+            vp = f'{p}/validate' if p != '/' else '/validate'
+        return urlunsplit((parts.scheme, parts.netloc, vp, '', ''))
+    except Exception:
+        return f'{base.rstrip("/")}/validate'
+
+
+def validate_active_license_session(
+    url: str,
+    account: str,
+    license_id: str,
+    *,
+    timeout_sec: float = 15.0,
+) -> tuple[bool | None, str]:
+    """
+    Check whether the current signed-in account/license is still valid.
+
+    Returns:
+      - (True, '')           => server confirms active/valid
+      - (False, '<reason>')  => server explicitly invalidated access (expired/revoked/etc.)
+      - (None, '<reason>')   => transient/transport issue; caller may retry later
+    """
+    vurl = _signin_validate_url(url)
+    if not vurl:
+        return None, 'Sign-in URL is not configured.'
+    acct = str(account or '').strip()
+    lid = str(license_id or '').strip()
+    if not acct or not lid:
+        return False, 'Saved license is missing account identity.'
+    try:
+        r = requests.post(
+            vurl,
+            json={'account': acct, 'license_id': lid},
+            headers={'Accept': 'application/json', 'Content-Type': 'application/json'},
+            timeout=timeout_sec,
+        )
+    except requests.RequestException as e:
+        return None, f'Could not reach license server ({e}).'
+
+    try:
+        body = r.json()
+    except Exception:
+        return None, f'License server returned unexpected response (HTTP {r.status_code}).'
+
+    if not isinstance(body, dict):
+        return None, 'License server returned an unexpected response.'
+    if body.get('ok'):
+        return True, ''
+    err = str(body.get('error') or body.get('message') or '').strip() or 'License check failed.'
+    if r.status_code in (400, 401, 403, 404):
+        return False, err
+    return None, err
