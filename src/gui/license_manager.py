@@ -27,7 +27,6 @@ from tools.frameless_chrome import (
     setup_frameless_main_window,
 )
 from tools.license_admin import (
-    admin_public_verify_key_b64,
     cloud_kv_bundle_for_license_id,
     cloud_kv_key_for_account,
     create_license,
@@ -222,11 +221,6 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(10)
 
-        self.lblKey = QLabel(self)
-        self.lblKey.setText(f'Public Verify Key (put this in ZubCut paid constants): {admin_public_verify_key_b64()}')
-        self.lblKey.setWordWrap(True)
-        lay.addWidget(self.lblKey)
-
         cloud = QGroupBox('Cloud sign-in sync (optional)', self)
         cloud.setObjectName('cloudSyncGroup')
         cloud_lay = QVBoxLayout(cloud)
@@ -293,9 +287,9 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         lay.addLayout(btn_row)
 
         self.table = QTableWidget(self)
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(
-            ['User', 'License ID', 'Status', 'Expires (UTC)', 'Time Left', 'Device Bound']
+            ['User', 'License ID', 'Status', 'Expires (UTC)', 'Time Left']
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(self.table.SelectRows)
@@ -438,7 +432,6 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
                 status,
                 row['expires_at'],
                 _human_remaining(int(row['remaining_sec'])),
-                'Yes' if row['device_hash'] else 'No',
             ]
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(str(v))
@@ -460,17 +453,10 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         days, ok = QInputDialog.getInt(self, 'Create Account', 'Duration in days:', 30, 1, 36500, 1)
         if not ok:
             return
-        dev_hash, ok = QInputDialog.getText(
-            self,
-            'Create Account',
-            'Optional device hash (leave blank for non-bound license):',
-        )
-        if not ok:
-            return
         pwd = _ask_new_sign_in_password(self)
         if pwd is None:
             return
-        rec = create_license(user, days, str(dev_hash or '').strip(), sign_in_password=pwd)
+        rec = create_license(user, days, sign_in_password=pwd)
         self.refresh_rows()
         lic_id = str(rec.get('payload', {}).get('license_id') or '')
         _show_account_credentials(self, user)
