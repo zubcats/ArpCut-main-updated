@@ -115,6 +115,29 @@ def _show_account_credentials(parent: QWidget, user: str) -> None:
     dlg.exec_()
 
 
+def _ask_duration_minutes(
+    parent: QWidget,
+    *,
+    title: str,
+    qty_label: str,
+    qty_default: int,
+) -> int | None:
+    qty, ok = QInputDialog.getInt(parent, title, qty_label, qty_default, 1, 10_000_000, 1)
+    if not ok:
+        return None
+    unit, ok = QInputDialog.getItem(parent, title, 'Duration unit:', ['Minutes', 'Hours', 'Days'], 2, False)
+    if not ok:
+        return None
+    u = str(unit or '').strip().lower()
+    if u.startswith('minute'):
+        mult = 1
+    elif u.startswith('hour'):
+        mult = 60
+    else:
+        mult = 24 * 60
+    return int(qty) * mult
+
+
 def _human_remaining(seconds: int) -> str:
     if seconds < 0:
         return 'Expired'
@@ -450,13 +473,18 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         if not user:
             QMessageBox.warning(self, 'Create Account', 'User name is required.')
             return
-        days, ok = QInputDialog.getInt(self, 'Create Account', 'Duration in days:', 30, 1, 36500, 1)
-        if not ok:
+        dur_minutes = _ask_duration_minutes(
+            self,
+            title='Create Account',
+            qty_label='Duration quantity:',
+            qty_default=30,
+        )
+        if dur_minutes is None:
             return
         pwd = _ask_new_sign_in_password(self)
         if pwd is None:
             return
-        rec = create_license(user, days, sign_in_password=pwd)
+        rec = create_license(user, 1, sign_in_password=pwd, duration_minutes=dur_minutes)
         self.refresh_rows()
         lic_id = str(rec.get('payload', {}).get('license_id') or '')
         _show_account_credentials(self, user)
@@ -469,10 +497,15 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         if not lic_id:
             QMessageBox.warning(self, 'Renew', 'Select an account first.')
             return
-        days, ok = QInputDialog.getInt(self, 'Renew Account', 'Extend by days:', 30, 1, 36500, 1)
-        if not ok:
+        ext_minutes = _ask_duration_minutes(
+            self,
+            title='Renew Account',
+            qty_label='Extend by quantity:',
+            qty_default=30,
+        )
+        if ext_minutes is None:
             return
-        rec = renew_license(lic_id, days)
+        rec = renew_license(lic_id, 1, extend_minutes=ext_minutes)
         if not rec:
             QMessageBox.warning(self, 'Renew', 'Could not renew selected account.')
             return

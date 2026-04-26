@@ -103,18 +103,27 @@ def _signed_document(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _duration_minutes(duration_days: int | None = None, duration_minutes: int | None = None) -> int:
+    if duration_minutes is not None:
+        return max(1, int(duration_minutes))
+    return max(1, int(duration_days or 1)) * 24 * 60
+
+
 def create_license(
     user_name: str,
     duration_days: int,
     device_hash: str = '',
     sign_in_password: str | None = None,
+    *,
+    duration_minutes: int | None = None,
 ) -> dict[str, Any]:
     now = _utc_now()
+    dur_min = _duration_minutes(duration_days, duration_minutes)
     payload = {
         'license_id': str(uuid.uuid4()),
         'user_name': str(user_name or '').strip(),
         'issued_at': _iso(now),
-        'expires_at': _iso(now + timedelta(days=max(1, int(duration_days)))),
+        'expires_at': _iso(now + timedelta(minutes=dur_min)),
         'device_hash': str(device_hash or '').strip(),
         'status': 'active',
     }
@@ -134,7 +143,12 @@ def create_license(
     return rec
 
 
-def renew_license(license_id: str, extend_days: int) -> dict[str, Any] | None:
+def renew_license(
+    license_id: str,
+    extend_days: int,
+    *,
+    extend_minutes: int | None = None,
+) -> dict[str, Any] | None:
     db = load_license_db()
     now = _utc_now()
     for rec in db['licenses']:
@@ -146,7 +160,8 @@ def renew_license(license_id: str, extend_days: int) -> dict[str, Any] | None:
         except Exception:
             old_exp = now
         base = old_exp if old_exp > now else now
-        p['expires_at'] = _iso(base + timedelta(days=max(1, int(extend_days))))
+        ext_min = _duration_minutes(extend_days, extend_minutes)
+        p['expires_at'] = _iso(base + timedelta(minutes=ext_min))
         p['status'] = 'active'
         signed = _signed_document(p)
         rec['payload'] = p
