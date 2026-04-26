@@ -73,16 +73,53 @@ def _start_paid_runtime_validation(gui, icon) -> None:
     if str(UPDATE_CHANNEL or '').strip().lower() != 'paid':
         return
 
+    def _force_lockout_and_exit(reason: str) -> None:
+        if bool(getattr(gui, '_paid_lockout_in_progress', False)):
+            return
+        gui._paid_lockout_in_progress = True
+        try:
+            gui.log('License expired or invalid. Stopping protection and closing app.', 'red')
+        except Exception:
+            pass
+
+        # Stop active attack loops first, then aggressively send unkill a few times.
+        try:
+            gui.stopLagSwitch()
+        except Exception:
+            pass
+        try:
+            gui.stopDupe(log=False)
+        except Exception:
+            pass
+
+        def _unkill_pass() -> None:
+            try:
+                gui.killer.unkill_all()
+            except Exception:
+                pass
+            try:
+                gui._sync_killed_devices()
+            except Exception:
+                pass
+
+        _unkill_pass()
+        QTimer.singleShot(250, _unkill_pass)
+        QTimer.singleShot(800, _unkill_pass)
+        QTimer.singleShot(1800, _unkill_pass)
+        QTimer.singleShot(2200, gui.quit_all)
+
+        # Keep visible reason for operator while shutdown proceeds.
+        msg_box(
+            APP_DISPLAY_NAME,
+            f'License expired.\n\nReason: {reason}',
+            MsgIcon.CRITICAL,
+            icon,
+        )
+
     def _enforce_runtime_license() -> None:
         res = load_and_validate_installed_license()
         if not res.ok:
-            msg_box(
-                APP_DISPLAY_NAME,
-                f'License no longer valid.\n\nReason: {res.reason}',
-                MsgIcon.CRITICAL,
-                icon,
-            )
-            gui.quit_all()
+            _force_lockout_and_exit(res.reason)
             return
         payload = res.payload or {}
         account = str(payload.get('user_name') or '').strip()
@@ -95,13 +132,7 @@ def _start_paid_runtime_validation(gui, icon) -> None:
             # Transient outage/network failure; retry on next interval.
             gui.log(f'License check deferred: {reason}', UI_LOG_RESTORE_FG)
             return
-        msg_box(
-            APP_DISPLAY_NAME,
-            f'License check failed.\n\nReason: {reason}',
-            MsgIcon.CRITICAL,
-            icon,
-        )
-        gui.quit_all()
+        _force_lockout_and_exit(reason)
 
     gui._paid_runtime_validation_timer = QTimer(gui)
     gui._paid_runtime_validation_timer.setInterval(10 * 60 * 1000)
