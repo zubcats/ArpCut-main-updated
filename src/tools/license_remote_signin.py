@@ -132,6 +132,12 @@ def validate_active_license_session(
     if body.get('ok'):
         return True, ''
     err = str(body.get('error') or body.get('message') or '').strip() or 'License check failed.'
+    # Backward compatibility: older deployed Workers don't implement POST /validate,
+    # and currently fall through to sign-in which returns 401 "Invalid credentials."
+    # for our validate payload (no password). Treat this as a transient/unavailable
+    # validation endpoint instead of hard-invalidating the local session.
+    if r.status_code == 401 and err.casefold() in ('invalid credentials.', 'invalid credentials'):
+        return None, 'Server validation endpoint unavailable (deploy latest Worker).'
     if r.status_code in (400, 401, 403, 404):
         return False, err
     return None, err
