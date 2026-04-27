@@ -38,7 +38,7 @@ def _validate_paid_license_or_exit(icon) -> None:
     Paid branch is always gated: no app access without a valid paid license.
     If missing/invalid, user must sign in successfully before main UI launches.
     """
-    if str(UPDATE_CHANNEL or '').strip().lower() != 'paid':
+    if str(UPDATE_CHANNEL or '').strip().lower() not in ('paid', 'experimental'):
         return
     res = load_and_validate_installed_license()
     if res.ok:
@@ -70,7 +70,7 @@ def _validate_paid_license_or_exit(icon) -> None:
 
 def _start_paid_runtime_validation(gui, icon) -> None:
     """On paid builds, re-check account validity against server every 10 minutes."""
-    if str(UPDATE_CHANNEL or '').strip().lower() != 'paid':
+    if str(UPDATE_CHANNEL or '').strip().lower() not in ('paid', 'experimental'):
         return
 
     def _force_lockout_and_exit(reason: str) -> None:

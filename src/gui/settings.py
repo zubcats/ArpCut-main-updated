@@ -71,7 +71,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setWindowIcon(icon)
         self.setupUi(self)
         self.setObjectName('zubcutAuxiliaryWindow')
-        if str(UPDATE_CHANNEL or '').strip().lower() == 'paid':
+        if str(UPDATE_CHANNEL or '').strip().lower() in ('paid', 'experimental'):
             self.setMaximumSize(
                 self.maximumSize().width(),
                 self.maximumSize().height() + 48,
