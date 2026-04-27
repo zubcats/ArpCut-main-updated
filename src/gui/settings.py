@@ -76,7 +76,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.maximumSize().width(),
                 self.maximumSize().height() + 48,
             )
-            self.btnPaidSignIn = QPushButton('Paid: Sign in or change license…', self.centralwidget)
+            self.btnPaidSignIn = QPushButton('Sign in or change license…', self.centralwidget)
             self.btnPaidSignIn.setObjectName('btnPaidSignIn')
             self.btnPaidSignIn.setMinimumHeight(34)
             self.gridLayout.addWidget(self.btnPaidSignIn, 6, 0, 1, 4)

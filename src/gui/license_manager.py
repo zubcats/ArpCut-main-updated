@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
@@ -152,6 +152,21 @@ def _human_remaining(seconds: int) -> str:
     if hours > 0:
         return f'{hours}h {mins}m'
     return f'{mins}m'
+
+
+def _format_utc_label(iso_text: str) -> str:
+    raw = str(iso_text or '').strip()
+    if not raw:
+        return ''
+    try:
+        s = raw[:-1] + '+00:00' if raw.endswith('Z') else raw
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(timezone.utc)
+        return dt.strftime('%m-%d-%Y | %I:%M %p')
+    except Exception:
+        return raw
 
 
 def _license_manager_qss() -> str:
@@ -310,9 +325,9 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
         lay.addLayout(btn_row)
 
         self.table = QTableWidget(self)
-        self.table.setColumnCount(5)
+        self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(
-            ['User', 'License ID', 'Status', 'Expires (UTC)', 'Time Left']
+            ['User', 'License ID', 'Status', 'Expires (UTC)', 'Time Left', 'Expired (days)']
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(self.table.SelectRows)
@@ -453,8 +468,9 @@ class LicenseManagerWindow(FramelessResizableMixin, QMainWindow):
                 row['user_name'],
                 row['license_id'],
                 status,
-                row['expires_at'],
+                _format_utc_label(row['expires_at']),
                 _human_remaining(int(row['remaining_sec'])),
+                '-' if row.get('expired_days') is None else str(int(row['expired_days'])),
             ]
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(str(v))

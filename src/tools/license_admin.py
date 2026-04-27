@@ -275,7 +275,11 @@ def list_license_rows() -> list[dict[str, Any]]:
             exp = _parse_iso_utc(expires_raw)
             remaining_sec = int((exp - now).total_seconds())
         except Exception:
+            exp = None
             remaining_sec = -1
+        expired_days = None
+        if exp is not None and remaining_sec < 0:
+            expired_days = max(0, int((now - exp).total_seconds() // 86400))
         rows.append(
             {
                 'license_id': lic_id,
@@ -283,6 +287,7 @@ def list_license_rows() -> list[dict[str, Any]]:
                 'status': status,
                 'expires_at': expires_raw,
                 'remaining_sec': remaining_sec,
+                'expired_days': expired_days,
                 'device_hash': str(p.get('device_hash') or '').strip(),
             }
         )

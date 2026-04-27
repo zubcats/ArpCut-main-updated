@@ -4,6 +4,7 @@ Uses Last-Modified on the channel installer URL vs APP_BUILD_TIME_ISO from CI.
 """
 
 import os
+import ssl
 import subprocess
 import tempfile
 import time
@@ -39,6 +40,23 @@ def _parse_build_time_iso(raw):
         return None
 
 
+def _make_updater_ssl_context():
+    """
+    Build an SSL context for updater HTTPS calls.
+    Prefer certifi CA bundle when available (more reliable in frozen builds),
+    otherwise fall back to Python/OpenSSL defaults.
+    """
+    try:
+        import certifi
+
+        cafile = certifi.where()
+        if cafile and os.path.exists(cafile):
+            return ssl.create_default_context(cafile=cafile)
+    except Exception:
+        pass
+    return ssl.create_default_context()
+
+
 def selected_update_url():
     channel = str(UPDATE_CHANNEL or 'experimental').strip().lower()
     if channel not in ('stable', 'experimental', 'paid'):
@@ -64,7 +82,9 @@ def get_update_status():
             method='HEAD',
             headers={'User-Agent': f'{APP_BUNDLE_NAME}-update-check'},
         )
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(
+            req, timeout=8, context=_make_updater_ssl_context()
+        ) as resp:
             last_modified = resp.headers.get('Last-Modified', '').strip()
         if not last_modified:
             return False, ''
@@ -188,7 +208,9 @@ def download_installer(
     try:
         from tools.updater_debug import updater_log
 
-        resp_cm = urllib.request.urlopen(req, timeout=300)
+        resp_cm = urllib.request.urlopen(
+            req, timeout=300, context=_make_updater_ssl_context()
+        )
     except Exception:
         try:
             from tools.updater_debug import updater_log
