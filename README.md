@@ -14,6 +14,7 @@ Cross-platform network control tool for ARP spoofing. Works on Windows and macOS
 Pre-built binaries are available from the **Releases** tab on this repository.
 
 **CI builds:** Push the repo to GitHub, open the **Actions** tab, run workflow **Build Release** (or **Build Windows installer only**). Pushes to **`main`** build the regular ZubCut installer; pushes to **`experimental`** build the tester installer. Manual runs can set `release_channel` (`stable` / `experimental` / `auto` — `auto` follows branch rules). For paid macOS builds, use **Build macOS installer (paid)** (runs on `paid` pushes and publishes `ZubCut-macOS-paid.zip` to `paid-latest`).
+For paid builds with strict local license signature verification, set repository secret `PAID_LICENSE_PUBLIC_KEY_B64` (public verify key from License Manager).
 
 From artifacts:
 - Regular (main) installer: `ZubCut-Windows-Installer`

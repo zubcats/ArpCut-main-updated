@@ -31,6 +31,7 @@ jobs:
           UPDATE_URL_STABLE: ${{ vars.UPDATE_DOWNLOAD_URL_STABLE }}
           UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
           UPDATE_URL_PAID: ${{ vars.UPDATE_DOWNLOAD_URL_PAID }}
+          PAID_LICENSE_PUBLIC_KEY_B64: ${{ secrets.PAID_LICENSE_PUBLIC_KEY_B64 }}
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -45,6 +46,7 @@ jobs:
           stable_url = os.getenv("UPDATE_URL_STABLE", "")
           experimental_url = os.getenv("UPDATE_URL_EXPERIMENTAL", "")
           paid_url = os.getenv("UPDATE_URL_PAID", "")
+          paid_pubkey = os.getenv("PAID_LICENSE_PUBLIC_KEY_B64", "").strip()
 
           txt = re.sub(r"^UPDATE_CHANNEL\s*=.*$", f"UPDATE_CHANNEL = '{channel}'", txt, flags=re.M)
           if stable_url:
@@ -53,6 +55,8 @@ jobs:
               txt = re.sub(r"^UPDATE_DOWNLOAD_URL_EXPERIMENTAL\s*=.*$", f"UPDATE_DOWNLOAD_URL_EXPERIMENTAL = {experimental_url!r}", txt, flags=re.M)
           if paid_url:
               txt = re.sub(r"^UPDATE_DOWNLOAD_URL_PAID\s*=.*$", f"UPDATE_DOWNLOAD_URL_PAID = {paid_url!r}", txt, flags=re.M)
+          if paid_pubkey:
+              txt = re.sub(r"^PAID_LICENSE_PUBLIC_KEY_B64\s*=.*$", f"PAID_LICENSE_PUBLIC_KEY_B64 = {paid_pubkey!r}", txt, flags=re.M)
 
           build_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
           txt = re.sub(r"^APP_BUILD_TIME_ISO\s*=.*$", f"APP_BUILD_TIME_ISO = {build_iso!r}", txt, flags=re.M)
