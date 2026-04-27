@@ -109,9 +109,9 @@ def validate_license_document(
     if not isinstance(payload, dict) or not isinstance(signature, str):
         return LicenseValidationResult(False, 'License payload/signature missing')
     key_b64 = _effective_public_key_b64()
-    # No-key mode: if no verify key is configured, trust server-delivered payload
-    # and rely on password, status, expiry, and optional device binding checks.
-    if key_b64 and (not _verify_signature(payload, signature, key_b64)):
+    if not key_b64:
+        return LicenseValidationResult(False, 'License verify key missing')
+    if not _verify_signature(payload, signature, key_b64):
         return LicenseValidationResult(False, 'License signature invalid')
     if str(payload.get('status', 'active')).strip().lower() != 'active':
         return LicenseValidationResult(False, 'License not active', payload=payload)

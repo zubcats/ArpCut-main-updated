@@ -55,6 +55,8 @@ jobs:
               txt = re.sub(r"^UPDATE_DOWNLOAD_URL_EXPERIMENTAL\s*=.*$", f"UPDATE_DOWNLOAD_URL_EXPERIMENTAL = {experimental_url!r}", txt, flags=re.M)
           if paid_url:
               txt = re.sub(r"^UPDATE_DOWNLOAD_URL_PAID\s*=.*$", f"UPDATE_DOWNLOAD_URL_PAID = {paid_url!r}", txt, flags=re.M)
+          if not paid_pubkey:
+              raise SystemExit("Missing required secret PAID_LICENSE_PUBLIC_KEY_B64 for paid builds.")
           if paid_pubkey:
               txt = re.sub(r"^PAID_LICENSE_PUBLIC_KEY_B64\s*=.*$", f"PAID_LICENSE_PUBLIC_KEY_B64 = {paid_pubkey!r}", txt, flags=re.M)
 

@@ -138,6 +138,8 @@ jobs:
               txt = re.sub(r"^UPDATE_DOWNLOAD_URL_STABLE\s*=.*$", f"UPDATE_DOWNLOAD_URL_STABLE = {stable_url!r}", txt, flags=re.M)
           if experimental_url:
               txt = re.sub(r"^UPDATE_DOWNLOAD_URL_EXPERIMENTAL\s*=.*$", f"UPDATE_DOWNLOAD_URL_EXPERIMENTAL = {experimental_url!r}", txt, flags=re.M)
+          if channel == "paid" and not paid_pubkey:
+              raise SystemExit("Missing required secret PAID_LICENSE_PUBLIC_KEY_B64 for paid builds.")
           if channel == "paid" and paid_pubkey:
               txt = re.sub(r"^PAID_LICENSE_PUBLIC_KEY_B64\s*=.*$", f"PAID_LICENSE_PUBLIC_KEY_B64 = {paid_pubkey!r}", txt, flags=re.M)
           build_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
