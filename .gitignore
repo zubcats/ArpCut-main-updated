@@ -162,3 +162,6 @@ ZubCut.dmg
 *.zip
 *.dmg
 *.app
+
+# Cloudflare Wrangler local dev cache
+backend/**/.wrangler/

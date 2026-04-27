@@ -37,6 +37,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify tracked files exist on disk
+        run: python tools/verify_tracked_files_exist.py
+
       # GitHub "edit file" uploads often destroy Python indentation; restore known-good copies.
       - name: Restore build.py and src/constants.py for CI
         shell: bash
