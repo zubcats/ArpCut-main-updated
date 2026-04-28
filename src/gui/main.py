@@ -2223,6 +2223,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     lag_off_seq = self._bump_flow_off_intent('lag', prev_mac)
                     self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 60, victim)
                     self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 180, victim)
+                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 350, victim)
                 except Exception:
                     pass
         self._sync_killed_devices()

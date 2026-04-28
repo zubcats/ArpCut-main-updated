@@ -92,10 +92,11 @@ class Killer:
         Registers ``self.killed`` on the caller thread so UI state (e.g. toggleKill)
         stays in sync; only the ARP loop runs in a background thread.
         """
-        if victim['mac'] in self.killed:
-            return
-        seq = self._next_op_seq(victim['mac'])
-        self.killed[victim['mac']] = victim
+        mac = victim['mac']
+        # Desync recovery: if UI/backend think this MAC is already ON, still refresh the
+        # victim record and restart the ARP worker generation to reassert poisoning.
+        seq = self._next_op_seq(mac)
+        self.killed[mac] = victim
         self._kill_arp_worker(victim, wait_after, seq)
 
     @threaded
