@@ -14,7 +14,7 @@ class Scanner():
     def __init__(self):
         self.iface = get_default_iface()
         self.device_count = 25
-        self.max_threads = 8
+        self.max_threads = 12
         self.__ping_done = 0
         self.devices = []
         self.old_ips = {}

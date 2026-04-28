@@ -99,7 +99,7 @@ SETTINGS_KEYS = [
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
-SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', False, False]
+SETTINGS_VALS = [25, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', False, False]
 
 # Paid-channel licensing (online account + password only; see PAID_LICENSE_SIGNIN_URL).
 # Put License Manager's "Public Verify Key" in PAID_LICENSE_PUBLIC_KEY_B64 for customer builds:
