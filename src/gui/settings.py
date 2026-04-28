@@ -1,4 +1,16 @@
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLineEdit, QPushButton
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QLineEdit,
+    QPushButton,
+    QGroupBox,
+    QFormLayout,
+    QHBoxLayout,
+    QSpinBox,
+    QSlider,
+    QCheckBox,
+    QWidget,
+)
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer
 import os
@@ -69,6 +81,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setWindowIcon(icon)
         self.setupUi(self)
         self.setObjectName('zubcutAuxiliaryWindow')
+        self._install_percent_cut_controls()
         if str(UPDATE_CHANNEL or '').strip().lower() in ('paid', 'experimental'):
             self.setMaximumSize(
                 self.maximumSize().width(),
@@ -77,7 +90,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnPaidSignIn = QPushButton('Sign in or change license…', self.centralwidget)
             self.btnPaidSignIn.setObjectName('btnPaidSignIn')
             self.btnPaidSignIn.setMinimumHeight(34)
-            self.gridLayout.addWidget(self.btnPaidSignIn, 6, 0, 1, 4)
+            self.gridLayout.addWidget(self.btnPaidSignIn, 7, 0, 1, 4)
             self.btnPaidSignIn.clicked.connect(self._on_paid_sign_in)
         self.adjustSize()
         self.setFixedSize(self.size())
@@ -109,6 +122,47 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
         register_window_surface_effects(self)
+
+    def _install_percent_cut_controls(self):
+        self.groupBoxPercentCut = QGroupBox('Traffic cut strength')
+        self.groupBoxPercentCut.setObjectName('groupBoxPercentCut')
+        layout = QFormLayout(self.groupBoxPercentCut)
+        layout.setObjectName('formLayoutPercentCut')
+
+        row = QWidget(self.groupBoxPercentCut)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+
+        self.sliderPercentCut = QSlider(Qt.Horizontal, row)
+        self.sliderPercentCut.setRange(1, 100)
+        self.sliderPercentCut.setValue(100)
+        self.spinPercentCut = QSpinBox(row)
+        self.spinPercentCut.setRange(1, 100)
+        self.spinPercentCut.setValue(100)
+        self.spinPercentCut.setSuffix('%')
+        row_layout.addWidget(self.sliderPercentCut)
+        row_layout.addWidget(self.spinPercentCut)
+        layout.addRow('Allowed traffic', row)
+
+        self.chkPercentKill = QCheckBox('Apply to Kill toggle', self.groupBoxPercentCut)
+        self.chkPercentLag = QCheckBox('Apply to Lag', self.groupBoxPercentCut)
+        self.chkPercentDupe = QCheckBox('Apply to Dupe', self.groupBoxPercentCut)
+        layout.addRow(self.chkPercentKill)
+        layout.addRow(self.chkPercentLag)
+        layout.addRow(self.chkPercentDupe)
+
+        self.sliderPercentCut.valueChanged.connect(self.spinPercentCut.setValue)
+        self.spinPercentCut.valueChanged.connect(self.sliderPercentCut.setValue)
+
+        self.gridLayout.addWidget(self.groupBoxPercentCut, 4, 0, 1, 4)
+        self.gridLayout.addWidget(self.btnDefaults, 5, 0, 1, 2)
+        self.gridLayout.addWidget(self.btnApply, 5, 2, 1, 2)
+        self.gridLayout.addWidget(self.btnUpdate, 6, 0, 1, 4)
+        self.setMaximumSize(
+            self.maximumSize().width(),
+            self.maximumSize().height() + 220,
+        )
 
     def _on_paid_sign_in(self):
         from gui.paid_license_signin import run_paid_license_signin
@@ -206,6 +260,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             k_dupe,
             bool(get_settings('show_scan_mac_column')),
             bool(get_settings('show_scan_vendor_column')),
+            int(self.spinPercentCut.value()),
+            bool(self.chkPercentKill.isChecked()),
+            bool(self.chkPercentLag.isChecked()),
+            bool(self.chkPercentDupe.isChecked()),
             ]
         )
 
@@ -333,6 +391,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.keySeqKill.setKeySequence(keyseq_from_setting(s.get('key_kill'), Qt.Key_L))
         self.keySeqLag.setKeySequence(keyseq_from_setting(s.get('key_lag'), Qt.Key_M))
         self.keySeqDupe.setKeySequence(keyseq_from_setting(s.get('key_dupe'), Qt.Key_P))
+        self.spinPercentCut.setValue(max(1, min(100, int(s.get('traffic_percent', 100)))))
+        self.chkPercentKill.setChecked(bool(s.get('apply_percent_kill', False)))
+        self.chkPercentLag.setChecked(bool(s.get('apply_percent_lag', False)))
+        self.chkPercentDupe.setChecked(bool(s.get('apply_percent_dupe', False)))
 
         self._apply_keybind_section_fonts()
         self.setStyleSheet(zubcut_dark_stylesheet())

@@ -2132,10 +2132,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 break
 
     def _apply_victim_block(self, device, direction):
-        if device['mac'] not in self.killer.killed:
-            self.killer.kill(device)
-        iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-        block_ip(iface, device['ip'], direction)
+        percent_mode = self._percent_cut_enabled_for('lag' if self.lag_active else 'dupe')
+        if percent_mode:
+            self.killer.apply_percent_cut(
+                device,
+                pass_percent=self._percent_cut_value(),
+                direction=direction,
+            )
+        else:
+            self.killer.disable_percent_cut(device['mac'])
+            if device['mac'] not in self.killer.killed:
+                self.killer.kill(device)
+            iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+            block_ip(iface, device['ip'], direction)
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
@@ -2342,6 +2351,33 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if dupe_dlg and dupe_dlg.isVisible():
             dupe_dlg.refresh_toggle_state()
 
+    @staticmethod
+    def _clamp_percent(value):
+        try:
+            return max(1, min(100, int(value)))
+        except Exception:
+            return 100
+
+    def _percent_cut_value(self):
+        try:
+            return self._clamp_percent(get_settings('traffic_percent'))
+        except Exception:
+            return 100
+
+    def _percent_cut_enabled_for(self, flow_kind):
+        key_map = {
+            'kill': 'apply_percent_kill',
+            'lag': 'apply_percent_lag',
+            'dupe': 'apply_percent_dupe',
+        }
+        key = key_map.get(flow_kind)
+        if not key:
+            return False
+        try:
+            return bool(get_settings(key))
+        except Exception:
+            return False
+
     def _ignore_duplicate_toggle_edge(self, kind: str, mac: str | None, edge: str) -> bool:
         """
         Ignore a second identical edge (same MAC, same activate/stop/…) within a few
@@ -2427,8 +2463,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if self.dupe_active and self.dupe_device_mac == mac:
                 self.stopDupe(log=False)
             if not actual_on and device:
-                self.killer.kill(device)
-                self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                if self._percent_cut_enabled_for('kill'):
+                    pct = self._percent_cut_value()
+                    self.killer.apply_percent_cut(device, pass_percent=pct, direction='both')
+                    self.log(
+                        f'Kill ON for {device["ip"]} ({pct}% traffic allowed in/out)',
+                        UI_LOG_VICTIM_BLOCK_FG,
+                    )
+                else:
+                    self.killer.disable_percent_cut(mac)
+                    self.killer.kill(device)
+                    self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
         else:
             victim = self._victim_record_for_mac(mac) or device
             if victim:

