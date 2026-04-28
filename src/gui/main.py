@@ -1,4 +1,5 @@
-﻿import time
+﻿import sys
+import time
 
 from pyperclip import copy
 
@@ -50,7 +51,7 @@ from tools.branding import (
 )
 from tools.utils import goto, is_connected, get_default_iface
 from tools.tray_cleanup import hide_all_system_tray_icons
-from tools.pfctl import block_ip, unblock_ip
+from tools.pfctl import block_ip, unblock_ip, last_error as pf_last_error
 
 from assets import *
 
@@ -2422,10 +2423,26 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.stopDupe(log=False)
             if not actual_on and device:
                 self.killer.kill(device)
+                if sys.platform == 'darwin':
+                    iface = self.scanner.iface.name if self.scanner.iface else ''
+                    if iface and iface != 'NULL':
+                        if not block_ip(iface, device['ip'], 'both'):
+                            err = (pf_last_error() or 'unknown pf error').strip()
+                            self.log(
+                                f'Kill warning: firewall block failed ({err}). Run ZubCut with sudo.',
+                                'orange',
+                            )
                 self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
         else:
             victim = self._victim_record_for_mac(mac) or device
             if victim:
+                if sys.platform == 'darwin':
+                    if not unblock_ip(victim['ip']):
+                        err = (pf_last_error() or 'unknown pf error').strip()
+                        self.log(
+                            f'Kill OFF warning: firewall unblock failed ({err}).',
+                            'orange',
+                        )
                 self.killer.unkill(victim)
                 self.killer.reinforce_restore(victim)
                 if actual_on:
@@ -2453,6 +2470,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if not victim:
                 return
             try:
+                if sys.platform == 'darwin':
+                    unblock_ip(victim['ip'])
                 self.killer.unkill(victim)
                 self.killer.reinforce_restore(victim)
             except Exception:
