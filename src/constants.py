@@ -15,6 +15,9 @@ UPDATE_CHANNEL = 'paid'
 UPDATE_DOWNLOAD_URL_STABLE = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/stable-latest/ZubCut-Setup.exe'
 UPDATE_DOWNLOAD_URL_EXPERIMENTAL = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/experimental-latest/ZubCut-Setup-experimental.exe'
 UPDATE_DOWNLOAD_URL_PAID = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/paid-latest/ZubCut-Setup-paid.exe'
+UPDATE_DOWNLOAD_URL_STABLE_MAC = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/stable-latest/ZubCut-Setup-macOS.zip'
+UPDATE_DOWNLOAD_URL_EXPERIMENTAL_MAC = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/experimental-latest/ZubCut-Setup-experimental-macOS.zip'
+UPDATE_DOWNLOAD_URL_PAID_MAC = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/paid-latest/ZubCut-macOS-paid.zip'
 # UTC ISO timestamp when this binary was built (CI overwrites). Used to detect newer installers online.
 APP_BUILD_TIME_ISO = ''
 

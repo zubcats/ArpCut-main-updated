@@ -6,6 +6,7 @@ Uses Last-Modified on the channel installer URL vs APP_BUILD_TIME_ISO from CI.
 import os
 import ssl
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -18,8 +19,11 @@ from constants import (
     APP_BUILD_TIME_ISO,
     UPDATE_CHANNEL,
     UPDATE_DOWNLOAD_URL_EXPERIMENTAL,
+    UPDATE_DOWNLOAD_URL_EXPERIMENTAL_MAC,
     UPDATE_DOWNLOAD_URL_PAID,
+    UPDATE_DOWNLOAD_URL_PAID_MAC,
     UPDATE_DOWNLOAD_URL_STABLE,
+    UPDATE_DOWNLOAD_URL_STABLE_MAC,
 )
 
 # GitHub's Last-Modified on the installer is usually later than APP_BUILD_TIME_ISO
@@ -61,10 +65,17 @@ def selected_update_url():
     channel = str(UPDATE_CHANNEL or 'experimental').strip().lower()
     if channel not in ('stable', 'experimental', 'paid'):
         channel = 'experimental'
+    is_mac = sys.platform == 'darwin'
     if channel == 'stable':
+        if is_mac:
+            return (UPDATE_DOWNLOAD_URL_STABLE_MAC or '').strip()
         return (UPDATE_DOWNLOAD_URL_STABLE or '').strip()
     if channel == 'paid':
+        if is_mac:
+            return (UPDATE_DOWNLOAD_URL_PAID_MAC or '').strip()
         return (UPDATE_DOWNLOAD_URL_PAID or '').strip()
+    if is_mac:
+        return (UPDATE_DOWNLOAD_URL_EXPERIMENTAL_MAC or '').strip()
     return (UPDATE_DOWNLOAD_URL_EXPERIMENTAL or '').strip()
 
 
@@ -116,7 +127,7 @@ def update_is_available():
 _READ_CHUNK = 256 * 1024
 
 
-def _validate_installer_exe(tmp_path):
+def _validate_downloaded_installer(tmp_path, src_url):
     if not os.path.exists(tmp_path):
         raise RuntimeError('Downloaded file missing.')
     sz = os.path.getsize(tmp_path)
@@ -135,6 +146,10 @@ def _validate_installer_exe(tmp_path):
         raise RuntimeError(
             f'Downloaded file is too small ({sz} bytes) to be a valid installer.{hint}'
         )
+    url_path = (urlparse(src_url).path or '').lower()
+    is_windows_installer = url_path.endswith('.exe')
+    if not is_windows_installer:
+        return
     with open(tmp_path, 'rb') as fp:
         if fp.read(2) != b'MZ':
             raise RuntimeError(
@@ -144,11 +159,16 @@ def _validate_installer_exe(tmp_path):
 
 def _temp_installer_path(url):
     url_path = urlparse(url).path or ''
-    fname = os.path.basename(url_path) or f'{APP_BUNDLE_NAME}-Setup-latest.exe'
-    if not fname.lower().endswith('.exe'):
-        fname = f'{APP_BUNDLE_NAME}-Setup-latest.exe'
+    fname = os.path.basename(url_path) or f'{APP_BUNDLE_NAME}-Setup-latest.bin'
+    if '.' not in os.path.basename(fname):
+        if sys.platform.startswith('win'):
+            fname = f'{APP_BUNDLE_NAME}-Setup-latest.exe'
+        elif sys.platform == 'darwin':
+            fname = f'{APP_BUNDLE_NAME}-Setup-latest.zip'
+        else:
+            fname = f'{APP_BUNDLE_NAME}-Setup-latest.bin'
     stem, ext = os.path.splitext(fname)
-    tmp_fname = f'{stem}-{int(time.time())}{ext or ".exe"}'
+    tmp_fname = f'{stem}-{int(time.time())}{ext or ".bin"}'
     return os.path.join(tempfile.gettempdir(), tmp_fname)
 
 
@@ -248,7 +268,7 @@ def download_installer(
             pass
         raise RuntimeError('Download cancelled.')
 
-    _validate_installer_exe(tmp_path)
+    _validate_downloaded_installer(tmp_path, url)
     return tmp_path
 
 
@@ -263,6 +283,13 @@ def launch_installer(tmp_path, *, no_ui=False):
         updater_log('launch_installer: path=%r no_ui=%s', tmp_path, no_ui)
     except Exception:
         pass
+    if sys.platform == 'darwin':
+        lower = (tmp_path or '').lower()
+        if lower.endswith(('.pkg', '.mpkg', '.dmg', '.zip')):
+            subprocess.Popen(['open', tmp_path], close_fds=True)
+            return
+        raise RuntimeError('Downloaded update package is not a supported macOS installer format.')
+
     install_log = os.path.join(
         tempfile.gettempdir(), f'{APP_BUNDLE_NAME.lower()}-update-install.log'
     )

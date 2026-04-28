@@ -2130,7 +2130,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if device['mac'] not in self.killer.killed:
             self.killer.kill(device)
         iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-        block_ip(iface, device['ip'], direction)
+        blocked = block_ip(iface, device['ip'], direction)
+        if sys.platform == 'darwin':
+            if not blocked:
+                err = (pf_last_error() or 'unknown pf error').strip()
+                started = self.killer.start_directional_drop(device, direction=direction)
+                if started:
+                    self.log(
+                        f'Lag/Dupe warning: pf block failed ({err}); using packet-drop fallback.',
+                        'orange',
+                    )
+                else:
+                    self.log(
+                        f'Lag/Dupe warning: block failed ({err}). Run ZubCut with sudo.',
+                        'orange',
+                    )
+            else:
+                self.killer.stop_directional_drop(device['mac'])
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
@@ -2140,6 +2156,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             unblock_ip(device['ip'])
         except Exception:
             pass
+        self.killer.stop_directional_drop(device['mac'])
         if device['mac'] in self.killer.killed:
             try:
                 victim = self._victim_record_for_mac(device['mac']) or device

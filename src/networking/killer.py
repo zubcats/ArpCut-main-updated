@@ -96,7 +96,39 @@ class Killer:
             return
         seq = self._next_op_seq(victim['mac'])
         self.killed[victim['mac']] = victim
+        self._stop_forwarder(victim['mac'])
         self._kill_arp_worker(victim, wait_after, seq)
+
+    def start_directional_drop(self, victim, direction='both', debug=False):
+        """
+        Start user-space forwarding with directional packet drops.
+        Useful fallback when pf/firewall rules are unavailable.
+        """
+        if victim['mac'] not in self.killed:
+            self.kill(victim)
+        if victim['mac'] in self.forwarders:
+            self.forwarders[victim['mac']].stop()
+        if not self.router.get('mac'):
+            return False
+        iface_to_use = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
+        if not iface_to_use or iface_to_use == 'NULL':
+            return False
+        drop_from_victim = direction in ('both', 'out')
+        drop_to_victim = direction in ('both', 'in')
+        fw = MitmForwarder(debug=debug)
+        fw.start(
+            victim=victim,
+            router=self.router,
+            iface_name=iface_to_use,
+            iface_mac=self.iface.mac,
+            drop_from_victim=drop_from_victim,
+            drop_to_victim=drop_to_victim,
+        )
+        self.forwarders[victim['mac']] = fw
+        return True
+
+    def stop_directional_drop(self, mac):
+        self._stop_forwarder(mac)
 
     @threaded
     def _kill_arp_worker(self, victim, wait_after=2, seq=0):

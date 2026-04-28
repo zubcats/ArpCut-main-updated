@@ -388,8 +388,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'Install Latest Build',
             (
                 f'This will install the latest {self._channel_label()} build.\n'
-                'You will see download progress, then a setup window while it installs, '
-                'and ZubCut will start again when finished.\n'
+                'You will see download progress, then the installer package will open.\n'
+                'Follow the installer prompts, then start ZubCut again.\n'
                 'Continue?'
             ),
             Buttons.YES | Buttons.NO,
