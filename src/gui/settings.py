@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QSlider,
     QCheckBox,
     QWidget,
+    QSizePolicy,
 )
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer
@@ -126,6 +127,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _install_percent_cut_controls(self):
         self.groupBoxPercentCut = QGroupBox('Traffic cut strength')
         self.groupBoxPercentCut.setObjectName('groupBoxPercentCut')
+        self.groupBoxPercentCut.setMinimumHeight(128)
+        self.groupBoxPercentCut.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         layout = QFormLayout(self.groupBoxPercentCut)
         layout.setObjectName('formLayoutPercentCut')
 
