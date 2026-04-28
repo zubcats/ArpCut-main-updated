@@ -14,17 +14,21 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
-from constants import (
-    APP_BUNDLE_NAME,
-    APP_BUILD_TIME_ISO,
-    UPDATE_CHANNEL,
-    UPDATE_DOWNLOAD_URL_EXPERIMENTAL,
-    UPDATE_DOWNLOAD_URL_EXPERIMENTAL_MAC,
-    UPDATE_DOWNLOAD_URL_PAID,
-    UPDATE_DOWNLOAD_URL_PAID_MAC,
-    UPDATE_DOWNLOAD_URL_STABLE,
-    UPDATE_DOWNLOAD_URL_STABLE_MAC,
+import constants as _zcut_constants
+
+APP_BUNDLE_NAME = getattr(_zcut_constants, 'APP_BUNDLE_NAME', 'ZubCut')
+APP_BUILD_TIME_ISO = getattr(_zcut_constants, 'APP_BUILD_TIME_ISO', '')
+UPDATE_CHANNEL = getattr(_zcut_constants, 'UPDATE_CHANNEL', 'experimental')
+UPDATE_DOWNLOAD_URL_EXPERIMENTAL = getattr(
+    _zcut_constants, 'UPDATE_DOWNLOAD_URL_EXPERIMENTAL', ''
 )
+UPDATE_DOWNLOAD_URL_EXPERIMENTAL_MAC = getattr(
+    _zcut_constants, 'UPDATE_DOWNLOAD_URL_EXPERIMENTAL_MAC', ''
+)
+UPDATE_DOWNLOAD_URL_PAID = getattr(_zcut_constants, 'UPDATE_DOWNLOAD_URL_PAID', '')
+UPDATE_DOWNLOAD_URL_PAID_MAC = getattr(_zcut_constants, 'UPDATE_DOWNLOAD_URL_PAID_MAC', '')
+UPDATE_DOWNLOAD_URL_STABLE = getattr(_zcut_constants, 'UPDATE_DOWNLOAD_URL_STABLE', '')
+UPDATE_DOWNLOAD_URL_STABLE_MAC = getattr(_zcut_constants, 'UPDATE_DOWNLOAD_URL_STABLE_MAC', '')
 
 # GitHub's Last-Modified on the installer is usually later than APP_BUILD_TIME_ISO
 # (CI stamps time before packaging/upload). Require this much skew so we do not
