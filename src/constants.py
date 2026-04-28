@@ -102,4 +102,4 @@ SETTINGS_KEYS = [
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
-SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', False, False, 100, False, False, False]
+SETTINGS_VALS = [25, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', False, False, 100, False, False, False]
