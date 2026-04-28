@@ -85,6 +85,8 @@ jobs:
           if channel in ("paid", "experimental") and not paid_pubkey:
               raise SystemExit("Missing required secret PAID_LICENSE_PUBLIC_KEY_B64 for paid/experimental builds.")
           if channel in ("paid", "experimental") and paid_pubkey:
+              if "PAID_LICENSE_PUBLIC_KEY_B64" not in txt:
+                  raise SystemExit("constants.py is missing PAID_LICENSE_PUBLIC_KEY_B64; cannot inject signing key.")
               txt = re.sub(r"^PAID_LICENSE_PUBLIC_KEY_B64\s*=.*$", f"PAID_LICENSE_PUBLIC_KEY_B64 = {paid_pubkey!r}", txt, flags=re.M)
           build_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
           txt = re.sub(r"^APP_BUILD_TIME_ISO\s*=.*$", f"APP_BUILD_TIME_ISO = {build_iso!r}", txt, flags=re.M)

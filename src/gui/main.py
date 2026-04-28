@@ -1884,9 +1884,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return aw is not None and aw is self
 
     def _app_window_is_foreground(self):
-        aw = QApplication.activeWindow()
-        if aw is None:
-            return False
         app_windows = [
             self,
             getattr(self, 'settings_window', None),
@@ -1896,7 +1893,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             getattr(self, 'lag_switch_dialog', None),
             getattr(self, 'dupe_switch_dialog', None),
         ]
-        return any(w is not None and aw is w for w in app_windows)
+        aw = QApplication.activeWindow()
+        if any(w is not None and aw is w for w in app_windows):
+            return True
+        # Frameless/top-level dialog focus on Windows can sometimes report no activeWindow
+        # (or not the expected top-level). Fall back to focused widget ownership.
+        fw = QApplication.focusWidget()
+        if fw is None:
+            return False
+        top = fw.window()
+        return any(w is not None and top is w for w in app_windows)
 
     def _shortcut_scan_easy(self):
         if not self._main_window_is_foreground():

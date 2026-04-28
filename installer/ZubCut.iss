@@ -56,11 +56,98 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Install Npcap only when it is missing.
-Filename: "{tmp}\{#NpcapInstallerName}"; Parameters: "/S"; Flags: waituntilterminated skipifdoesntexist; Check: ShouldInstallNpcap
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall shellexec
 
 [Code]
+function WinPcapUninstallString(var UninstallString: String): Boolean;
+begin
+  Result := RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\WinPcapInst', 'UninstallString', UninstallString);
+  if not Result then
+    Result := RegQueryStringValue(HKLM64, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\WinPcapInst', 'UninstallString', UninstallString);
+  if not Result then
+    Result := RegQueryStringValue(HKLM32, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\WinPcapInst', 'UninstallString', UninstallString);
+end;
+
+function SplitCommand(const FullCmd: String; var ExePath: String; var Params: String): Boolean;
+var
+  S: String;
+  P: Integer;
+begin
+  Result := False;
+  ExePath := '';
+  Params := '';
+  S := Trim(FullCmd);
+  if S = '' then
+    Exit;
+  if S[1] = '"' then
+  begin
+    Delete(S, 1, 1);
+    P := Pos('"', S);
+    if P <= 0 then
+      Exit;
+    ExePath := Copy(S, 1, P - 1);
+    Params := Trim(Copy(S, P + 1, MaxInt));
+    Result := ExePath <> '';
+    Exit;
+  end;
+  P := Pos(' ', S);
+  if P > 0 then
+  begin
+    ExePath := Copy(S, 1, P - 1);
+    Params := Trim(Copy(S, P + 1, MaxInt));
+  end
+  else
+    ExePath := S;
+  Result := ExePath <> '';
+end;
+
+procedure MsgWinPcapManualUninstallNeeded(const Detail: String);
+begin
+  MsgBox(
+    'WinPcap could not be removed automatically.' + #13#10 + #13#10 +
+    'WinPcap installs a packet capture driver that conflicts with Npcap, which ZubCut requires.' + #13#10 + #13#10 +
+    'Please uninstall WinPcap manually from Apps & Features (or Programs and Features), then run this installer again.' + #13#10 + #13#10 +
+    'Contact your administrator if you need help.' + #13#10 + #13#10 +
+    Detail,
+    mbError,
+    MB_OK);
+end;
+
+procedure UninstallWinPcapIfPresent();
+var
+  UninstallString: String;
+  UninstallExe: String;
+  UninstallParams: String;
+  ResultCode: Integer;
+begin
+  if not WinPcapUninstallString(UninstallString) then
+    Exit;
+
+  if not SplitCommand(UninstallString, UninstallExe, UninstallParams) then
+  begin
+    Log('WinPcap uninstall string is invalid: ' + UninstallString);
+    MsgWinPcapManualUninstallNeeded('Reason: could not read the WinPcap uninstall path from the registry.');
+    Exit;
+  end;
+
+  if Pos('/S', Uppercase(UninstallParams)) = 0 then
+    UninstallParams := Trim(UninstallParams + ' /S');
+
+  Log('WinPcap detected. Running silent uninstall: ' + UninstallExe + ' ' + UninstallParams);
+  if not Exec(UninstallExe, UninstallParams, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log('Failed to launch WinPcap uninstaller.');
+    MsgWinPcapManualUninstallNeeded('Reason: the uninstall program could not be started.');
+  end
+  else
+  begin
+    Log('WinPcap uninstall finished with exit code ' + IntToStr(ResultCode) + '.');
+    // 3010/1641/3017 = success but reboot may be required (do not treat as hard failure).
+    if (ResultCode <> 0) and (ResultCode <> 3010) and (ResultCode <> 1641) and (ResultCode <> 3017) then
+      MsgWinPcapManualUninstallNeeded('Reason: uninstall exited with code ' + IntToStr(ResultCode) + '.');
+  end;
+end;
+
 function NpcapServiceInstalled: Boolean;
 begin
   Result := RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\npcap');
@@ -90,4 +177,27 @@ begin
   Result := (not NpcapServiceInstalled) and (not NpcapInstallPathExists) and NpcapInstallerBundled;
   if Result then
     Log('Npcap not detected. Installing bundled Npcap.');
+end;
+
+procedure InstallNpcapIfMissing();
+var
+  InstallerPath: String;
+  ResultCode: Integer;
+begin
+  if not ShouldInstallNpcap() then
+    Exit;
+  InstallerPath := ExpandConstant('{tmp}\{#NpcapInstallerName}');
+  if not Exec(InstallerPath, '/S', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('Failed to launch bundled Npcap installer.')
+  else
+    Log('Npcap installer finished with exit code ' + IntToStr(ResultCode) + '.');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    UninstallWinPcapIfPresent();
+    InstallNpcapIfMissing();
+  end;
 end;

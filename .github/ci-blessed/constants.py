@@ -33,6 +33,9 @@ else:
 
 OLD_SETTINGS_PATH = path.join(OLD_DOCUMENTS_PATH, 'elmocut.json')
 SETTINGS_PATH = path.join(DOCUMENTS_PATH, 'zubcut.json')
+PAID_LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'paid-license.json')
+# CI injects this for paid/experimental builds from secret PAID_LICENSE_PUBLIC_KEY_B64.
+PAID_LICENSE_PUBLIC_KEY_B64 = ''
 
 # Extra legacy settings to migrate if zubcut.json is missing (Windows)
 LEGACY_SETTINGS_CANDIDATES = []
