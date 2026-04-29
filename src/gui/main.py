@@ -970,15 +970,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.gridLayout.addWidget(self.groupDupeInline, 6, 5, 1, 4)
 
         self.lblPercentCut = QLabel('Cut %', self.centralwidget)
+        self.lblPercentCut.setObjectName('lblPercentCut')
         self.lblPercentCut.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
         self.gridLayout.addWidget(self.lblPercentCut, 7, 1, 1, 1)
 
         self.sliderPercentCutMain = QSlider(Qt.Horizontal, self.centralwidget)
+        self.sliderPercentCutMain.setObjectName('sliderPercentCutMain')
         self.sliderPercentCutMain.setRange(1, 100)
         self.sliderPercentCutMain.setSingleStep(1)
         self.gridLayout.addWidget(self.sliderPercentCutMain, 7, 2, 1, 3)
 
         self.spinPercentCutMain = QSpinBox(self.centralwidget)
+        self.spinPercentCutMain.setObjectName('spinPercentCutMain')
         self.spinPercentCutMain.setRange(1, 100)
         self.spinPercentCutMain.setSuffix('%')
         self.gridLayout.addWidget(self.spinPercentCutMain, 7, 5, 1, 1)
@@ -2192,8 +2195,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         sel_bg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_BG', '#316E69')
         admin_bg = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
         sel_fg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_FG', '#f2f2f2')
-        panel_bg = '#1a1f1d'
-        field_bg = '#111614'
+        panel_bg = admin_bg
+        field_bg = sel_bg
         panel_style = (
             'QGroupBox#groupLagInline, QGroupBox#groupDupeInline {'
             f' border: 1px solid {sel_bg}; border-radius: 6px; margin-top: 8px;'
@@ -2201,15 +2204,31 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'QGroupBox#groupLagInline::title, QGroupBox#groupDupeInline::title {'
             f' subcontrol-origin: margin; left: 8px; padding: 0 4px; color: {sel_fg}; font-weight: bold; }}'
             'QGroupBox#groupLagInline QWidget, QGroupBox#groupDupeInline QWidget { background-color: transparent; }'
-            f'QGroupBox#groupLagInline QLabel, QGroupBox#groupDupeInline QLabel {{ color: {admin_bg}; background-color: transparent; }}'
+            f'QGroupBox#groupLagInline QLabel, QGroupBox#groupDupeInline QLabel {{ color: {sel_fg}; background-color: transparent; }}'
             f'QGroupBox#groupLagInline QCheckBox, QGroupBox#groupDupeInline QCheckBox {{ color: {sel_fg}; background-color: transparent; }}'
             'QGroupBox#groupLagInline QSpinBox, QGroupBox#groupDupeInline QSpinBox {'
-            f' min-height: 24px; border: 1px solid {admin_bg}; border-radius: 4px;'
+            f' min-height: 24px; border: 1px solid {sel_fg}; border-radius: 4px;'
             f' padding: 2px 6px; background-color: {field_bg}; color: {sel_fg}; }}'
             f'QLabel#lblDupeCountdownMain {{ color: {sel_bg}; font-weight: bold; }}'
         )
         self.groupLagInline.setStyleSheet(panel_style)
         self.groupDupeInline.setStyleSheet(panel_style)
+        percent_style = (
+            f'QLabel#lblPercentCut {{ color: {sel_fg}; background-color: transparent; }}'
+            f'QSpinBox#spinPercentCutMain {{'
+            f' border: 1px solid {admin_bg}; border-radius: 4px;'
+            f' padding: 2px 6px; background-color: {field_bg}; color: {sel_fg}; }}'
+            'QSlider#sliderPercentCutMain { background-color: transparent; }'
+            f'QSlider#sliderPercentCutMain::groove:horizontal {{'
+            f' background-color: {field_bg}; height: 4px; border-radius: 2px; }}'
+            f'QSlider#sliderPercentCutMain::sub-page:horizontal {{'
+            f' background-color: {sel_bg}; height: 4px; border-radius: 2px; }}'
+            f'QSlider#sliderPercentCutMain::add-page:horizontal {{'
+            f' background-color: {panel_bg}; height: 4px; border-radius: 2px; }}'
+        )
+        self.lblPercentCut.setStyleSheet(percent_style)
+        self.sliderPercentCutMain.setStyleSheet(percent_style)
+        self.spinPercentCutMain.setStyleSheet(percent_style)
 
     def startLagSwitch(self, device):
         if self._toggle_start_blocked('lag'):

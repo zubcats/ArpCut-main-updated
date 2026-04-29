@@ -77,32 +77,35 @@ QMenu::item:selected, QMenuBar::item:selected {
     background-color: #000000;
 }
 /* QTabBar: see _chrome_status_strip_and_tabs_qss() (transparent, matches window chrome). */
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {
+    border: 1px solid #5D706E;
+}
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {
-    background-color: #000000;
-    border: 1px solid #3a3a3a;
+    background-color: #316E69;
+    border: 1px solid #5D706E;
 }
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-    background-color: #000000;
+    background-color: #316E69;
     min-height: 24px;
     min-width: 24px;
     border-radius: 4px;
 }
 QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
-    background-color: #1a1a1a;
+    background-color: #5D706E;
 }
 QSlider::groove:horizontal {
     background-color: #1a1a1a;
 }
 QSlider::handle:horizontal {
-    background-color: #000000;
-    border: 1px solid #3a3a3a;
+    background-color: #316E69;
+    border: 1px solid #5D706E;
 }
 QSlider::handle:horizontal:hover {
-    background-color: #1a1a1a;
+    background-color: #5D706E;
 }
 /* qdark paints the filled groove segment blue; keep it on the same charcoal as the window. */
 QSlider::sub-page:horizontal {
-    background-color: #141414;
+    background-color: #316E69;
     border-radius: 2px;
     height: 4px;
 }
@@ -118,8 +121,12 @@ QToolButton:pressed {
     background-color: #0d0d0d;
 }
 QComboBox QAbstractItemView {
-    selection-background-color: #000000;
+    selection-background-color: #5D706E;
     selection-color: #f2f2f2;
+}
+QComboBox QAbstractItemView::item:hover {
+    background-color: #5D706E;
+    color: #f2f2f2;
 }
 /* Main device table: row chrome from item BackgroundRole; reset inherited QAbstractItemView selection tint. */
 QTableWidget#tableScan {
@@ -303,19 +310,22 @@ def _auxiliary_windows_qss() -> str:
     (Lag Switch, Dupe, message boxes): same charcoal buttons / panels as the main window.
     """
     toggle_acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#316E69')
+    sel_bg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_BG', '#316E69')
+    admin_bg = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
+    sel_fg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_FG', '#f2f2f2')
     if _experimental_charcoal_ui():
         bg, bd, bh, bp = '#2b2b2b', '#3d3d3d', '#383838', '#323232'
         tx, th, tp, mute = '#e8eaed', '#d0d0d0', '#9a9a9a', '#9a9a9a'
         panel = '#141414'
         tbl_alt = '#0a0a0a'
-        sel_bg, sel_fg = '#2b2b2b', '#f2f2f2'
+        _aux_sel_bg, _aux_sel_fg = '#2b2b2b', '#f2f2f2'
         field_bd = toggle_acc
     else:
         bg, bd, bh, bp = '#2d323c', '#3d4a5c', '#3a3f49', '#353942'
         tx, th, tp, mute = '#e8eaed', '#aeb4bf', '#8b909a', '#8b909a'
         panel = '#000000'
         tbl_alt = '#1e2228'
-        sel_bg, sel_fg = '#324e7a', '#ffffff'
+        _aux_sel_bg, _aux_sel_fg = '#324e7a', '#ffffff'
         field_bd = bd
     return f"""
 QDialog {{
@@ -398,6 +408,15 @@ QDialog QCheckBox {{
     color: {tx};
     background-color: transparent;
 }}
+QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:hover,
+QDialog QCheckBox::indicator:hover {{
+    border: 1px solid {admin_bg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:checked,
+QDialog QCheckBox::indicator:checked {{
+    background-color: {sel_bg};
+    border: 1px solid {admin_bg};
+}}
 QMainWindow#zubcutAuxiliaryWindow QSlider::groove:horizontal,
 QDialog QSlider::groove:horizontal {{
     background-color: #1a1a1a;
@@ -406,7 +425,7 @@ QDialog QSlider::groove:horizontal {{
 }}
 QMainWindow#zubcutAuxiliaryWindow QSlider::sub-page:horizontal,
 QDialog QSlider::sub-page:horizontal {{
-    background-color: {panel};
+    background-color: {sel_bg};
     border-radius: 2px;
     height: 4px;
 }}
@@ -458,7 +477,7 @@ QMainWindow#zubcutAuxiliaryWindow QSpinBox::up-button:hover,
 QMainWindow#zubcutAuxiliaryWindow QSpinBox::down-button:hover,
 QDialog QSpinBox::up-button:hover,
 QDialog QSpinBox::down-button:hover {{
-    background-color: {bh};
+    background-color: {admin_bg};
 }}
 QMainWindow#zubcutAuxiliaryWindow QComboBox::drop-down,
 QDialog QComboBox::drop-down {{
@@ -472,8 +491,13 @@ QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView,
 QDialog QComboBox QAbstractItemView {{
     border: 1px solid {field_bd};
     background-color: #000000;
-    selection-background-color: #000000;
-    selection-color: #f2f2f2;
+    selection-background-color: {admin_bg};
+    selection-color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:hover,
+QDialog QComboBox QAbstractItemView::item:hover {{
+    background-color: {admin_bg};
+    color: {sel_fg};
 }}
 QMainWindow#zubcutAuxiliaryWindow QTableWidget,
 QDialog QTableWidget {{
@@ -486,8 +510,8 @@ QDialog QTableWidget {{
 QMainWindow#zubcutAuxiliaryWindow QTableWidget::item:selected,
 QDialog QTableWidget::item:selected {{
     font-weight: normal;
-    background-color: {sel_bg};
-    color: {sel_fg};
+    background-color: {_aux_sel_bg};
+    color: {_aux_sel_fg};
 }}
 QMainWindow#zubcutAuxiliaryWindow QHeaderView::section,
 QDialog QHeaderView::section {{
