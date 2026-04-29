@@ -80,6 +80,13 @@ QMenu::item:selected, QMenuBar::item:selected {
 QCheckBox::indicator:hover, QRadioButton::indicator:hover {
     border: 1px solid #5D706E;
 }
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #5D706E;
+    background-color: transparent;
+    margin: 0px;
+}
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {
     background-color: #316E69;
     border: 1px solid #5D706E;
@@ -92,6 +99,12 @@ QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
 }
 QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
     background-color: #5D706E;
+}
+QScrollBar::up-arrow:vertical, QScrollBar::down-arrow:vertical,
+QScrollBar::left-arrow:horizontal, QScrollBar::right-arrow:horizontal {
+    background: #5D706E;
+    width: 8px;
+    height: 8px;
 }
 QSlider::groove:horizontal {
     background-color: #1a1a1a;
@@ -124,9 +137,19 @@ QComboBox QAbstractItemView {
     selection-background-color: #5D706E;
     selection-color: #f2f2f2;
 }
+QComboBox QAbstractItemView::item:selected {
+    background-color: #5D706E;
+    color: #f2f2f2;
+}
 QComboBox QAbstractItemView::item:hover {
     background-color: #5D706E;
     color: #f2f2f2;
+}
+QSpinBox::up-arrow, QSpinBox::down-arrow, QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow,
+QComboBox::down-arrow {
+    background: #5D706E;
+    width: 8px;
+    height: 8px;
 }
 /* Main device table: row chrome from item BackgroundRole; reset inherited QAbstractItemView selection tint. */
 QTableWidget#tableScan {
@@ -370,7 +393,7 @@ QDialog QPushButton:disabled {{
 QMainWindow#zubcutAuxiliaryWindow QGroupBox,
 QDialog QGroupBox {{
     font-weight: normal;
-    color: {tx};
+    color: {admin_bg};
     border: 1px solid {bd};
     border-radius: 4px;
     margin-top: 12px;
@@ -394,23 +417,31 @@ QDialog QGroupBox QWidget {{
 QDialog QGroupBox QLabel,
 QDialog QGroupBox QCheckBox {{
     font-weight: normal;
-    color: {tx};
+    color: {admin_bg};
     background-color: transparent;
 }}
 QMainWindow#zubcutAuxiliaryWindow QLabel,
 QDialog QLabel {{
-    color: {tx};
+    color: {admin_bg};
     background-color: transparent;
 }}
 QMainWindow#zubcutAuxiliaryWindow QCheckBox,
 QDialog QCheckBox {{
     font-weight: normal;
-    color: {tx};
+    color: {admin_bg};
     background-color: transparent;
+}}
+QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator,
+QDialog QCheckBox::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {admin_bg};
+    background-color: transparent;
+    margin: 0px;
 }}
 QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:hover,
 QDialog QCheckBox::indicator:hover {{
-    border: 1px solid {admin_bg};
+    border: 1px solid {sel_bg};
 }}
 QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:checked,
 QDialog QCheckBox::indicator:checked {{
@@ -479,6 +510,16 @@ QDialog QSpinBox::up-button:hover,
 QDialog QSpinBox::down-button:hover {{
     background-color: {admin_bg};
 }}
+QMainWindow#zubcutAuxiliaryWindow QSpinBox::up-arrow,
+QMainWindow#zubcutAuxiliaryWindow QSpinBox::down-arrow,
+QDialog QSpinBox::up-arrow,
+QDialog QSpinBox::down-arrow,
+QMainWindow#zubcutAuxiliaryWindow QComboBox::down-arrow,
+QDialog QComboBox::down-arrow {{
+    background: {admin_bg};
+    width: 8px;
+    height: 8px;
+}}
 QMainWindow#zubcutAuxiliaryWindow QComboBox::drop-down,
 QDialog QComboBox::drop-down {{
     subcontrol-origin: padding;
@@ -493,6 +534,11 @@ QDialog QComboBox QAbstractItemView {{
     background-color: #000000;
     selection-background-color: {admin_bg};
     selection-color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:selected,
+QDialog QComboBox QAbstractItemView::item:selected {{
+    background-color: {admin_bg};
+    color: {sel_fg};
 }}
 QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:hover,
 QDialog QComboBox QAbstractItemView::item:hover {{
