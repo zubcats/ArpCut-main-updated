@@ -157,6 +157,7 @@ def _main_chrome_action_buttons_qss() -> str:
         '#btnKill',
         '#btnLagSwitch',
         '#btnDupe',
+        '#btnPercentCut',
     )
     sel = ', '.join(f'QPushButton{i}' for i in _ids)
     out = f"""
