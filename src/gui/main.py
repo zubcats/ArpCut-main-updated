@@ -2196,7 +2196,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         admin_bg = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
         sel_fg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_FG', '#f2f2f2')
         panel_bg = '#141414'
-        field_bg = sel_bg
+        field_bg = '#141414'
         panel_style = (
             'QGroupBox#groupLagInline, QGroupBox#groupDupeInline {'
             f' border: 1px solid {sel_bg}; border-radius: 6px; margin-top: 8px;'
