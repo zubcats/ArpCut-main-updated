@@ -759,8 +759,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Per-flow OFF intent generation (lag/dupe/unkill-all).
         self._flow_off_intent_seq = {}
         self.lag_active = False
-        self.lag_block_ms = 1500
-        self.lag_release_ms = 1500
+        self.lag_block_ms = 9000
+        self.lag_release_ms = 100
         self.lag_device_mac = None
         self.lag_direction = 'both'  # 'both', 'in', or 'out'
         self.lag_timer = QTimer(self)
@@ -899,6 +899,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnDupe.pressed.connect(lambda: self._shortcut_global_dupe())
 
         self.groupLagInline = QGroupBox('Lag Switch Controls', self.centralwidget)
+        self.groupLagInline.setObjectName('groupLagInline')
         self.groupLagInline.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.groupLagInlineLayout = QVBoxLayout(self.groupLagInline)
         self.groupLagInlineLayout.setContentsMargins(8, 8, 8, 8)
@@ -908,14 +909,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lagSpinMain = QSpinBox(self.groupLagInline)
         self.lagSpinMain.setRange(1, 2147483647)
         self.lagSpinMain.setSingleStep(100)
-        self.lagSpinMain.setValue(1500)
+        self.lagSpinMain.setValue(9000)
         self.lagSpinMain.setSuffix(' ms')
         self.lagTimingRow.addWidget(self.lagSpinMain)
         self.lagTimingRow.addWidget(QLabel('Normal', self.groupLagInline))
         self.normalSpinMain = QSpinBox(self.groupLagInline)
         self.normalSpinMain.setRange(25, 2147483647)
         self.normalSpinMain.setSingleStep(25)
-        self.normalSpinMain.setValue(1500)
+        self.normalSpinMain.setValue(100)
         self.normalSpinMain.setSuffix(' ms')
         self.lagTimingRow.addWidget(self.normalSpinMain)
         self.groupLagInlineLayout.addLayout(self.lagTimingRow)
@@ -932,22 +933,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lagDirRow.addWidget(self.lagDirIncoming)
         self.lagDirRow.addWidget(self.lagDirOutgoing)
         self.groupLagInlineLayout.addLayout(self.lagDirRow)
-        self.lagPresetRow = QHBoxLayout()
-        self.lagPresetRow.addWidget(QLabel('Presets', self.groupLagInline))
-        self.btnLagPresetFast = QPushButton('Fast', self.groupLagInline)
-        self.btnLagPresetFast.clicked.connect(lambda: (self.lagSpinMain.setValue(500), self.normalSpinMain.setValue(500)))
-        self.btnLagPresetMedium = QPushButton('Medium', self.groupLagInline)
-        self.btnLagPresetMedium.clicked.connect(lambda: (self.lagSpinMain.setValue(1500), self.normalSpinMain.setValue(1500)))
-        self.btnLagPresetHeavy = QPushButton('Heavy', self.groupLagInline)
-        self.btnLagPresetHeavy.clicked.connect(lambda: (self.lagSpinMain.setValue(9000), self.normalSpinMain.setValue(100)))
-        self._lag_preset_buttons = [self.btnLagPresetFast, self.btnLagPresetMedium, self.btnLagPresetHeavy]
-        self.lagPresetRow.addWidget(self.btnLagPresetFast)
-        self.lagPresetRow.addWidget(self.btnLagPresetMedium)
-        self.lagPresetRow.addWidget(self.btnLagPresetHeavy)
-        self.groupLagInlineLayout.addLayout(self.lagPresetRow)
         self.gridLayout.addWidget(self.groupLagInline, 6, 1, 1, 4)
 
         self.groupDupeInline = QGroupBox('Dupe Controls', self.centralwidget)
+        self.groupDupeInline.setObjectName('groupDupeInline')
         self.groupDupeInline.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.groupDupeInlineLayout = QVBoxLayout(self.groupDupeInline)
         self.groupDupeInlineLayout.setContentsMargins(8, 8, 8, 8)
@@ -975,6 +964,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupeDirRow.addWidget(self.dupeDirOutgoing)
         self.groupDupeInlineLayout.addLayout(self.dupeDirRow)
         self.lblDupeCountdownMain = QLabel('', self.groupDupeInline)
+        self.lblDupeCountdownMain.setObjectName('lblDupeCountdownMain')
         self.lblDupeCountdownMain.setVisible(False)
         self.groupDupeInlineLayout.addWidget(self.lblDupeCountdownMain)
         self.gridLayout.addWidget(self.groupDupeInline, 6, 5, 1, 4)
@@ -1110,6 +1100,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
         self._updatePercentCutButtonState()
+        self._apply_inline_panel_styles()
         self._sync_inline_flow_controls_enabled()
 
         _chrome_btns = (
@@ -2189,8 +2180,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _sync_inline_flow_controls_enabled(self):
         lag_locked = bool(self.lag_active and self.lag_device_mac)
-        for b in getattr(self, '_lag_preset_buttons', []):
-            b.setEnabled(not lag_locked)
         self.lagDirBoth.setEnabled(not lag_locked)
         self.lagDirIncoming.setEnabled(not lag_locked)
         self.lagDirOutgoing.setEnabled(not lag_locked)
@@ -2198,6 +2187,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupeDirBoth.setEnabled(not dupe_locked)
         self.dupeDirIncoming.setEnabled(not dupe_locked)
         self.dupeDirOutgoing.setEnabled(not dupe_locked)
+
+    def _apply_inline_panel_styles(self):
+        panel_style = (
+            'QGroupBox#groupLagInline, QGroupBox#groupDupeInline {'
+            ' border: 1px solid #2d5738; border-radius: 6px; margin-top: 8px;'
+            ' padding-top: 8px; background-color: #1a1f1d; }'
+            'QGroupBox#groupLagInline::title, QGroupBox#groupDupeInline::title {'
+            ' subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #d8f0e4; font-weight: bold; }'
+            'QGroupBox#groupLagInline QLabel, QGroupBox#groupDupeInline QLabel { color: #c7d8d0; }'
+            'QGroupBox#groupLagInline QCheckBox, QGroupBox#groupDupeInline QCheckBox { color: #d8f0e4; }'
+            'QGroupBox#groupLagInline QSpinBox, QGroupBox#groupDupeInline QSpinBox {'
+            ' min-height: 24px; border: 1px solid #3a4d43; border-radius: 4px;'
+            ' padding: 2px 6px; background-color: #111614; color: #e2efe9; }'
+            'QLabel#lblDupeCountdownMain { color: #9ed8bc; font-weight: bold; }'
+        )
+        self.groupLagInline.setStyleSheet(panel_style)
+        self.groupDupeInline.setStyleSheet(panel_style)
 
     def startLagSwitch(self, device):
         if self._toggle_start_blocked('lag'):
