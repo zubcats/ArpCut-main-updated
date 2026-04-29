@@ -865,14 +865,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnLagSwitch.setAttribute(Qt.WA_StyledBackground, True)
         self.btnLagSwitch.setAutoDefault(False)
         self.btnLagSwitch.setDefault(False)
-        self.btnLagSwitch.setMinimumHeight(88)
+        self.btnLagSwitch.setMinimumHeight(72)
         self.btnLagSwitch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnLagSwitch.setToolTip(
-            'Lag Switch — Opens a window where you set lag / allow times and toggle intermittent blocking on or off. '
-            'Shortcut: M starts/stops while the Lag Switch window is active (L is Kill on the main window).'
+            'Lag Switch — start/stop intermittent blocking for selected device. '
+            'Timing/direction controls are always visible below. Shortcut: M.'
         )
         self.gridLayout.addWidget(self.btnLagSwitch, 5, 1, 1, 3)
-        self.btnLagSwitch.clicked.connect(self.openLagSwitchDialog)
+        self.btnLagSwitch.pressed.connect(lambda: self._shortcut_global_lag())
         lag_font = QFont(self.btnLagSwitch.font())
         lag_font.setPointSize(13)
         lag_font.setBold(True)
@@ -885,33 +885,113 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnDupe.setAttribute(Qt.WA_StyledBackground, True)
         self.btnDupe.setAutoDefault(False)
         self.btnDupe.setDefault(False)
-        self.btnDupe.setMinimumHeight(88)
+        self.btnDupe.setMinimumHeight(72)
         self.btnDupe.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         dupe_font = QFont(self.btnDupe.font())
         dupe_font.setPointSize(14)
         dupe_font.setBold(True)
         self.btnDupe.setFont(dupe_font)
         self.btnDupe.setToolTip(
-            'Dupe — One-shot lag for a set time (ms), then full stop. '
-            'Does not repeat; use Lag Switch for cycles. '
-            'Shortcut: P runs/stops while the Dupe window is active.'
+            'Dupe — one-shot lag for a set duration, then full stop. '
+            'Duration/direction controls are always visible below. Shortcut: P.'
         )
         self.gridLayout.addWidget(self.btnDupe, 5, 6, 1, 3)
-        self.btnDupe.clicked.connect(self.openDupeDialog)
+        self.btnDupe.pressed.connect(lambda: self._shortcut_global_dupe())
+
+        self.groupLagInline = QGroupBox('Lag Switch Controls', self.centralwidget)
+        self.groupLagInline.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.groupLagInlineLayout = QVBoxLayout(self.groupLagInline)
+        self.groupLagInlineLayout.setContentsMargins(8, 8, 8, 8)
+        self.groupLagInlineLayout.setSpacing(4)
+        self.lagTimingRow = QHBoxLayout()
+        self.lagTimingRow.addWidget(QLabel('Lag', self.groupLagInline))
+        self.lagSpinMain = QSpinBox(self.groupLagInline)
+        self.lagSpinMain.setRange(1, 2147483647)
+        self.lagSpinMain.setSingleStep(100)
+        self.lagSpinMain.setValue(1500)
+        self.lagSpinMain.setSuffix(' ms')
+        self.lagTimingRow.addWidget(self.lagSpinMain)
+        self.lagTimingRow.addWidget(QLabel('Normal', self.groupLagInline))
+        self.normalSpinMain = QSpinBox(self.groupLagInline)
+        self.normalSpinMain.setRange(25, 2147483647)
+        self.normalSpinMain.setSingleStep(25)
+        self.normalSpinMain.setValue(1500)
+        self.normalSpinMain.setSuffix(' ms')
+        self.lagTimingRow.addWidget(self.normalSpinMain)
+        self.groupLagInlineLayout.addLayout(self.lagTimingRow)
+        self.lagDirRow = QHBoxLayout()
+        self.lagDirBoth = QCheckBox('Both', self.groupLagInline)
+        self.lagDirBoth.setChecked(True)
+        self.lagDirIncoming = QCheckBox('In', self.groupLagInline)
+        self.lagDirOutgoing = QCheckBox('Out', self.groupLagInline)
+        self.lagDirBoth.toggled.connect(
+            lambda checked: checked and (self.lagDirIncoming.setChecked(False), self.lagDirOutgoing.setChecked(False))
+        )
+        self.lagDirRow.addWidget(QLabel('Block', self.groupLagInline))
+        self.lagDirRow.addWidget(self.lagDirBoth)
+        self.lagDirRow.addWidget(self.lagDirIncoming)
+        self.lagDirRow.addWidget(self.lagDirOutgoing)
+        self.groupLagInlineLayout.addLayout(self.lagDirRow)
+        self.lagPresetRow = QHBoxLayout()
+        self.lagPresetRow.addWidget(QLabel('Presets', self.groupLagInline))
+        self.btnLagPresetFast = QPushButton('Fast', self.groupLagInline)
+        self.btnLagPresetFast.clicked.connect(lambda: (self.lagSpinMain.setValue(500), self.normalSpinMain.setValue(500)))
+        self.btnLagPresetMedium = QPushButton('Medium', self.groupLagInline)
+        self.btnLagPresetMedium.clicked.connect(lambda: (self.lagSpinMain.setValue(1500), self.normalSpinMain.setValue(1500)))
+        self.btnLagPresetHeavy = QPushButton('Heavy', self.groupLagInline)
+        self.btnLagPresetHeavy.clicked.connect(lambda: (self.lagSpinMain.setValue(9000), self.normalSpinMain.setValue(100)))
+        self._lag_preset_buttons = [self.btnLagPresetFast, self.btnLagPresetMedium, self.btnLagPresetHeavy]
+        self.lagPresetRow.addWidget(self.btnLagPresetFast)
+        self.lagPresetRow.addWidget(self.btnLagPresetMedium)
+        self.lagPresetRow.addWidget(self.btnLagPresetHeavy)
+        self.groupLagInlineLayout.addLayout(self.lagPresetRow)
+        self.gridLayout.addWidget(self.groupLagInline, 6, 1, 1, 4)
+
+        self.groupDupeInline = QGroupBox('Dupe Controls', self.centralwidget)
+        self.groupDupeInline.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.groupDupeInlineLayout = QVBoxLayout(self.groupDupeInline)
+        self.groupDupeInlineLayout.setContentsMargins(8, 8, 8, 8)
+        self.groupDupeInlineLayout.setSpacing(4)
+        self.dupeTimingRow = QHBoxLayout()
+        self.dupeTimingRow.addWidget(QLabel('Duration', self.groupDupeInline))
+        self.dupeSpinMain = QSpinBox(self.groupDupeInline)
+        self.dupeSpinMain.setRange(1, 2147483647)
+        self.dupeSpinMain.setSingleStep(100)
+        self.dupeSpinMain.setValue(5000)
+        self.dupeSpinMain.setSuffix(' ms')
+        self.dupeTimingRow.addWidget(self.dupeSpinMain)
+        self.groupDupeInlineLayout.addLayout(self.dupeTimingRow)
+        self.dupeDirRow = QHBoxLayout()
+        self.dupeDirBoth = QCheckBox('Both', self.groupDupeInline)
+        self.dupeDirBoth.setChecked(True)
+        self.dupeDirIncoming = QCheckBox('In', self.groupDupeInline)
+        self.dupeDirOutgoing = QCheckBox('Out', self.groupDupeInline)
+        self.dupeDirBoth.toggled.connect(
+            lambda checked: checked and (self.dupeDirIncoming.setChecked(False), self.dupeDirOutgoing.setChecked(False))
+        )
+        self.dupeDirRow.addWidget(QLabel('Block', self.groupDupeInline))
+        self.dupeDirRow.addWidget(self.dupeDirBoth)
+        self.dupeDirRow.addWidget(self.dupeDirIncoming)
+        self.dupeDirRow.addWidget(self.dupeDirOutgoing)
+        self.groupDupeInlineLayout.addLayout(self.dupeDirRow)
+        self.lblDupeCountdownMain = QLabel('', self.groupDupeInline)
+        self.lblDupeCountdownMain.setVisible(False)
+        self.groupDupeInlineLayout.addWidget(self.lblDupeCountdownMain)
+        self.gridLayout.addWidget(self.groupDupeInline, 6, 5, 1, 4)
 
         self.lblPercentCut = QLabel('Cut %', self.centralwidget)
         self.lblPercentCut.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
-        self.gridLayout.addWidget(self.lblPercentCut, 6, 1, 1, 1)
+        self.gridLayout.addWidget(self.lblPercentCut, 7, 1, 1, 1)
 
         self.sliderPercentCutMain = QSlider(Qt.Horizontal, self.centralwidget)
         self.sliderPercentCutMain.setRange(1, 100)
         self.sliderPercentCutMain.setSingleStep(1)
-        self.gridLayout.addWidget(self.sliderPercentCutMain, 6, 2, 1, 3)
+        self.gridLayout.addWidget(self.sliderPercentCutMain, 7, 2, 1, 3)
 
         self.spinPercentCutMain = QSpinBox(self.centralwidget)
         self.spinPercentCutMain.setRange(1, 100)
         self.spinPercentCutMain.setSuffix('%')
-        self.gridLayout.addWidget(self.spinPercentCutMain, 6, 5, 1, 1)
+        self.gridLayout.addWidget(self.spinPercentCutMain, 7, 5, 1, 1)
 
         self.btnPercentCut = QPushButton('Percent Cut: OFF', self.centralwidget)
         self.btnPercentCut.setObjectName('btnPercentCut')
@@ -924,7 +1004,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'Percent Cut toggle — applies percentage-based traffic cut to selected device. '
             'Shortcut: K (main app window in foreground).'
         )
-        self.gridLayout.addWidget(self.btnPercentCut, 6, 6, 1, 3)
+        self.gridLayout.addWidget(self.btnPercentCut, 7, 6, 1, 3)
         self.btnPercentCut.pressed.connect(lambda: self.togglePercentCut('mouse_pressed'))
 
         self.sliderPercentCutMain.valueChanged.connect(self.spinPercentCutMain.setValue)
@@ -934,6 +1014,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.lag_switch_dialog = None
         self.dupe_switch_dialog = None
+        self.gridLayout.setSpacing(4)
+        self.gridLayout.setVerticalSpacing(4)
+        self.setMinimumSize(QSize(800, 560))
 
         self.refresh_keyboard_shortcuts_from_settings()
 
@@ -1027,6 +1110,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
         self._updatePercentCutButtonState()
+        self._sync_inline_flow_controls_enabled()
 
         _chrome_btns = (
             self.btnScanEasy,
@@ -1341,14 +1425,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnKill.setEnabled(not_enabled)
         self.btnLagSwitch.setEnabled(not_enabled)
         self.btnDupe.setEnabled(not_enabled)
+        self.groupLagInline.setEnabled(not_enabled)
+        self.groupDupeInline.setEnabled(not_enabled)
         
         self._updateKillButtonState()
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
-        if getattr(self, 'lag_switch_dialog', None) and self.lag_switch_dialog.isVisible():
-            self.lag_switch_dialog.refresh_toggle_state()
-        if getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
-            self.dupe_switch_dialog.refresh_toggle_state()
+        self._sync_inline_flow_controls_enabled()
         self._repaint_all_table_rows_for_hover()
         self._schedule_table_selection_repaint()
 
@@ -1361,6 +1444,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             self.btnLagSwitch.setText('Lag Switch')
             self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        self._sync_inline_flow_controls_enabled()
     
     def deviceDoubleClicked(self):
         """
@@ -1935,8 +2019,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             getattr(self, 'about_window', None),
             getattr(self, 'device_window', None),
             getattr(self, 'traffic_window', None),
-            getattr(self, 'lag_switch_dialog', None),
-            getattr(self, 'dupe_switch_dialog', None),
         ]
         aw = QApplication.activeWindow()
         if any(w is not None and aw is w for w in app_windows):
@@ -1984,39 +2066,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
         self.btnKill.setToolTip(self._btn_kill_tooltip_static)
         self.btnLagSwitch.setToolTip(
-            'Lag Switch — Opens a window where you set lag / allow times and toggle intermittent blocking on or off. '
-            'Shortcut: %s starts/stops while the Lag Switch window is active (%s is Kill on the main window).'
-            % (nl, nk)
+            'Lag Switch — start/stop intermittent blocking for selected device. '
+            'Controls below set timing and direction. Shortcut: %s.'
+            % nl
         )
         self.btnDupe.setToolTip(
-            'Dupe — One-shot lag for a set time (ms), then full stop. '
-            'Does not repeat; use Lag Switch for cycles. '
-            'Shortcut: %s runs/stops while the Dupe window is active.' % np
+            'Dupe — one-shot lag for selected duration, then full stop. '
+            'Controls below set duration and direction. Shortcut: %s.' % np
         )
         self.btnPercentCut.setToolTip(
             'Percent Cut toggle — percentage-based cut on selected device. '
             'Shortcut: %s (main app window in foreground).' % nk_pct
         )
-        lag = self.lag_switch_dialog
-        if lag:
-            # Keep Lag on one path (global ApplicationShortcut) to avoid dialog-focus routing
-            # inconsistencies in the frameless Lag window.
-            lag._shortcut_m.setKey(k_lag)
-            lag._shortcut_m.setAutoRepeat(False)
-            lag._shortcut_m.setEnabled(False)
-            lag.btnLagStartStop.setToolTip(
-                'Start or stop intermittent lag for the device selected in the main list. '
-                'Shortcut: %s when this window is active (not in ms fields).' % nl
-            )
-        dupe = self.dupe_switch_dialog
-        if dupe:
-            dupe._shortcut_p.setKey(k_dupe)
-            dupe._shortcut_p.setAutoRepeat(False)
-            dupe._shortcut_p.setEnabled(False)
-            dupe.btnDupeRun.setToolTip(
-                'Run a single lag burst for the device selected in the main list, then stop completely. '
-                'Shortcut: %s when this window is active (not in ms fields).' % np
-            )
         self._updateKillButtonState()
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
@@ -2038,11 +2099,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
             return
-        # Lag dialog uses this global handler too (single key path across main + lag window).
-        lag_dlg = getattr(self, 'lag_switch_dialog', None)
-        if lag_dlg is not None and lag_dlg.isVisible() and lag_dlg.isActiveWindow():
-            lag_dlg._on_lag_start_stop_clicked()
-            return
         if self.lag_active and self.lag_device_mac:
             lag_edge = 'stop'
             if self._ignore_duplicate_toggle_edge('lag', self.lag_device_mac, lag_edge):
@@ -2061,9 +2117,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         lag_edge = 'start'
         if self._ignore_duplicate_toggle_edge('lag', device['mac'], lag_edge):
             return
-        if self.lag_switch_dialog is not None:
-            lag_ms, normal_ms, direction = self.lag_switch_dialog.values()
-            self.applyLagSwitchSettings(lag_ms, normal_ms, direction)
+        lag_ms, normal_ms, direction = self._lag_inline_values()
+        self.applyLagSwitchSettings(lag_ms, normal_ms, direction)
         self.startLagSwitch(device)
 
     def _shortcut_global_dupe(self):
@@ -2071,11 +2126,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self._app_window_is_foreground():
             return
         if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
-            return
-        # Dupe dialog uses this global handler too (single key path across main + dupe window).
-        dupe_dlg = getattr(self, 'dupe_switch_dialog', None)
-        if dupe_dlg is not None and dupe_dlg.isVisible() and dupe_dlg.isActiveWindow():
-            dupe_dlg._on_run_clicked()
             return
         if self.dupe_active and self.dupe_device_mac:
             dupe_edge = 'stop'
@@ -2095,10 +2145,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         dupe_edge = 'start'
         if self._ignore_duplicate_toggle_edge('dupe', device['mac'], dupe_edge):
             return
-        if self.dupe_switch_dialog is not None:
-            ms, direction = self.dupe_switch_dialog.values()
-            self.dupe_duration_ms = ms
-            self.dupe_direction = direction
+        ms, direction = self._dupe_inline_values()
+        self.dupe_duration_ms = ms
+        self.dupe_direction = direction
         self.startDupe(device, self.dupe_duration_ms, self.dupe_direction)
 
     def _shortcut_global_pctcut(self):
@@ -2108,57 +2157,47 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         self.togglePercentCut('shortcut_key')
 
-    def openLagSwitchDialog(self):
-        if not self.connected():
-            return
-        if not self.tableScan.selectedItems():
-            self.log('No device selected', 'red')
-            return
-        device = self.current_index()
-        if device['admin']:
-            self.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
-            return
-        self._lag_dialog_target_mac = device.get('mac')
-        if self.lag_switch_dialog is None:
-            self.lag_switch_dialog = LagSwitchDialog(self)
-            self.refresh_keyboard_shortcuts_from_settings()
-        self.lag_switch_dialog.show()
-        self.lag_switch_dialog.raise_()
-        self.lag_switch_dialog.activateWindow()
-
-    def openDupeDialog(self):
-        if not self.connected():
-            return
-        if not self.tableScan.selectedItems():
-            self.log('No device selected', 'red')
-            return
-        device = self.current_index()
-        if device['admin']:
-            self.log('Cannot dupe admin device', UI_LOG_VICTIM_BLOCK_FG)
-            return
-        self._dupe_dialog_target_mac = device.get('mac')
-        if self.dupe_switch_dialog is None:
-            self.dupe_switch_dialog = DupeDialog(self)
-            self.refresh_keyboard_shortcuts_from_settings()
-        self.dupe_switch_dialog.show()
-        self.dupe_switch_dialog.raise_()
-        self.dupe_switch_dialog.activateWindow()
-
     def applyLagSwitchSettings(self, block_ms, release_ms, direction):
         self.lag_block_ms = block_ms
         self.lag_release_ms = release_ms
         self.lag_direction = direction
 
     def _refresh_lag_timing_from_dialog(self):
-        """Keep lag_block_ms / lag_release_ms in sync with the panel (each phase and while editing)."""
-        d = getattr(self, 'lag_switch_dialog', None)
-        if d is None or not d.isVisible():
-            return
+        """Keep lag settings in sync with always-visible inline controls."""
         try:
-            lag_ms, normal_ms, direction = d.values()
+            lag_ms, normal_ms, direction = self._lag_inline_values()
             self.applyLagSwitchSettings(lag_ms, normal_ms, direction)
         except Exception:
             pass
+
+    def _direction_from_checks(self, both_cb, in_cb, out_cb):
+        if in_cb.isChecked() and not out_cb.isChecked():
+            return 'in'
+        if out_cb.isChecked() and not in_cb.isChecked():
+            return 'out'
+        return 'both'
+
+    def _lag_inline_values(self):
+        return self.lagSpinMain.value(), self.normalSpinMain.value(), self._direction_from_checks(
+            self.lagDirBoth, self.lagDirIncoming, self.lagDirOutgoing
+        )
+
+    def _dupe_inline_values(self):
+        return self.dupeSpinMain.value(), self._direction_from_checks(
+            self.dupeDirBoth, self.dupeDirIncoming, self.dupeDirOutgoing
+        )
+
+    def _sync_inline_flow_controls_enabled(self):
+        lag_locked = bool(self.lag_active and self.lag_device_mac)
+        for b in getattr(self, '_lag_preset_buttons', []):
+            b.setEnabled(not lag_locked)
+        self.lagDirBoth.setEnabled(not lag_locked)
+        self.lagDirIncoming.setEnabled(not lag_locked)
+        self.lagDirOutgoing.setEnabled(not lag_locked)
+        dupe_locked = bool(self.dupe_active and self.dupe_device_mac)
+        self.dupeDirBoth.setEnabled(not dupe_locked)
+        self.dupeDirIncoming.setEnabled(not dupe_locked)
+        self.dupeDirOutgoing.setEnabled(not dupe_locked)
 
     def startLagSwitch(self, device):
         if self._toggle_start_blocked('lag'):
@@ -2351,9 +2390,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _tick_dupe_countdown(self):
         if not self.dupe_active:
             self._dupe_countdown_timer.stop()
-            dlg = getattr(self, 'dupe_switch_dialog', None)
-            if dlg:
-                dlg.set_dupe_countdown(None)
+            self.lblDupeCountdownMain.setVisible(False)
+            self.lblDupeCountdownMain.setText('')
             return
         rem = self.dupe_remaining_ms()
         # Finish as soon as elapsed time says so; avoids showing "0.0 s" until the
@@ -2362,9 +2400,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._dupe_countdown_timer.stop()
             self.stopDupe(log_message='Dupe finished')
             return
-        dlg = getattr(self, 'dupe_switch_dialog', None)
-        if dlg and dlg.isVisible():
-            dlg.set_dupe_countdown(rem)
+        if rem is None or rem <= 0:
+            self.lblDupeCountdownMain.setVisible(False)
+            self.lblDupeCountdownMain.setText('')
+        else:
+            sec = rem / 1000.0
+            self.lblDupeCountdownMain.setVisible(True)
+            if sec >= 60:
+                whole = int(sec)
+                m, s = divmod(whole, 60)
+                self.lblDupeCountdownMain.setText(f'Time left: {m}:{s:02d}')
+            else:
+                self.lblDupeCountdownMain.setText(f'Time left: {sec:.1f} s')
 
     def _dupe_timer_fired(self):
         self.stopDupe(log_message='Dupe finished')
@@ -2378,9 +2425,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_device_mac = None
         self._dupe_countdown_timer.stop()
         self.dupe_timer.stop()
-        dlg = getattr(self, 'dupe_switch_dialog', None)
-        if dlg:
-            dlg.set_dupe_countdown(None)
+        self.lblDupeCountdownMain.setVisible(False)
+        self.lblDupeCountdownMain.setText('')
         device = self._get_device_by_mac(prev_mac)
         if device:
             try:
@@ -2409,6 +2455,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        self._sync_inline_flow_controls_enabled()
 
     def _updatePercentCutButtonState(self):
         pct = self._clamp_percent(self.spinPercentCutMain.value())
@@ -2426,12 +2473,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateDupeButtonState()
         self._updateKillButtonState()
         self._updatePercentCutButtonState()
-        lag_dlg = getattr(self, 'lag_switch_dialog', None)
-        if lag_dlg and lag_dlg.isVisible():
-            lag_dlg.refresh_toggle_state()
-        dupe_dlg = getattr(self, 'dupe_switch_dialog', None)
-        if dupe_dlg and dupe_dlg.isVisible():
-            dupe_dlg.refresh_toggle_state()
+        self._sync_inline_flow_controls_enabled()
 
     @staticmethod
     def _clamp_percent(value):
