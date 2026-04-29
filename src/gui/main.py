@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QMenu, QSystemTrayIcon, QAction, QPushButton, \
                             QDialog, QFormLayout, QDialogButtonBox, QSpinBox, \
                             QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QGroupBox, \
-                            QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, \
+                            QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, QSlider, \
                             QTextEdit, QPlainTextEdit, QWidget
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush
 from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent
