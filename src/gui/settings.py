@@ -2,15 +2,9 @@ from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
     QLineEdit,
+    QLabel,
     QPushButton,
-    QGroupBox,
-    QFormLayout,
-    QHBoxLayout,
-    QSpinBox,
-    QSlider,
-    QCheckBox,
-    QWidget,
-    QSizePolicy,
+    QKeySequenceEdit,
 )
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer
@@ -82,7 +76,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setWindowIcon(icon)
         self.setupUi(self)
         self.setObjectName('zubcutAuxiliaryWindow')
-        self._install_percent_cut_controls()
+        self._install_percent_keybind_row()
         if str(UPDATE_CHANNEL or '').strip().lower() in ('paid', 'experimental'):
             self.setMaximumSize(
                 self.maximumSize().width(),
@@ -124,48 +118,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
         register_window_surface_effects(self)
 
-    def _install_percent_cut_controls(self):
-        self.groupBoxPercentCut = QGroupBox('Traffic cut strength')
-        self.groupBoxPercentCut.setObjectName('groupBoxPercentCut')
-        self.groupBoxPercentCut.setMinimumHeight(128)
-        self.groupBoxPercentCut.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        layout = QFormLayout(self.groupBoxPercentCut)
-        layout.setObjectName('formLayoutPercentCut')
-
-        row = QWidget(self.groupBoxPercentCut)
-        row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(8)
-
-        self.sliderPercentCut = QSlider(Qt.Horizontal, row)
-        self.sliderPercentCut.setRange(1, 100)
-        self.sliderPercentCut.setValue(100)
-        self.spinPercentCut = QSpinBox(row)
-        self.spinPercentCut.setRange(1, 100)
-        self.spinPercentCut.setValue(100)
-        self.spinPercentCut.setSuffix('%')
-        row_layout.addWidget(self.sliderPercentCut)
-        row_layout.addWidget(self.spinPercentCut)
-        layout.addRow('Allowed traffic', row)
-
-        self.chkPercentKill = QCheckBox('Apply to Kill toggle', self.groupBoxPercentCut)
-        self.chkPercentLag = QCheckBox('Apply to Lag', self.groupBoxPercentCut)
-        self.chkPercentDupe = QCheckBox('Apply to Dupe', self.groupBoxPercentCut)
-        layout.addRow(self.chkPercentKill)
-        layout.addRow(self.chkPercentLag)
-        layout.addRow(self.chkPercentDupe)
-
-        self.sliderPercentCut.valueChanged.connect(self.spinPercentCut.setValue)
-        self.spinPercentCut.valueChanged.connect(self.sliderPercentCut.setValue)
-
-        self.gridLayout.addWidget(self.groupBoxPercentCut, 4, 0, 1, 4)
-        self.gridLayout.addWidget(self.btnDefaults, 5, 0, 1, 2)
-        self.gridLayout.addWidget(self.btnApply, 5, 2, 1, 2)
-        self.gridLayout.addWidget(self.btnUpdate, 6, 0, 1, 4)
-        self.setMaximumSize(
-            self.maximumSize().width(),
-            self.maximumSize().height() + 220,
-        )
+    def _install_percent_keybind_row(self):
+        self.labelKeyPctCut = QLabel('Percent Cut toggle (main window)', self.groupBox_keys)
+        self.keySeqPctCut = QKeySequenceEdit(self.groupBox_keys)
+        self.keySeqPctCut.setObjectName('keySeqPctCut')
+        self.formLayout_keys.addRow(self.labelKeyPctCut, self.keySeqPctCut)
 
     def _on_paid_sign_in(self):
         from gui.paid_license_signin import run_paid_license_signin
@@ -215,7 +172,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         k_kill = _portable_key(self.keySeqKill)
         k_lag = _portable_key(self.keySeqLag)
         k_dupe = _portable_key(self.keySeqDupe)
-        if not k_kill or not k_lag or not k_dupe:
+        k_pct = _portable_key(self.keySeqPctCut)
+        if not k_kill or not k_lag or not k_dupe or not k_pct:
             MsgType.WARN(
                 self,
                 'Keyboard shortcuts',
@@ -223,11 +181,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 Buttons.OK,
             )
             return
-        if len({k_kill, k_lag, k_dupe}) < 3:
+        if len({k_kill, k_lag, k_dupe, k_pct}) < 4:
             MsgType.WARN(
                 self,
                 'Keyboard shortcuts',
-                'Kill, Lag Switch, and Dupe shortcuts must all be different.',
+                'Kill, Lag Switch, Dupe, and Percent Cut shortcuts must all be different.',
                 Buttons.OK,
             )
             return
@@ -261,12 +219,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             k_kill,
             k_lag,
             k_dupe,
+            k_pct,
             bool(get_settings('show_scan_mac_column')),
             bool(get_settings('show_scan_vendor_column')),
-            int(self.spinPercentCut.value()),
-            bool(self.chkPercentKill.isChecked()),
-            bool(self.chkPercentLag.isChecked()),
-            bool(self.chkPercentDupe.isChecked()),
+            int(get_settings('traffic_percent')),
             ]
         )
 
@@ -394,10 +350,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.keySeqKill.setKeySequence(keyseq_from_setting(s.get('key_kill'), Qt.Key_L))
         self.keySeqLag.setKeySequence(keyseq_from_setting(s.get('key_lag'), Qt.Key_M))
         self.keySeqDupe.setKeySequence(keyseq_from_setting(s.get('key_dupe'), Qt.Key_P))
-        self.spinPercentCut.setValue(max(1, min(100, int(s.get('traffic_percent', 100)))))
-        self.chkPercentKill.setChecked(bool(s.get('apply_percent_kill', False)))
-        self.chkPercentLag.setChecked(bool(s.get('apply_percent_lag', False)))
-        self.chkPercentDupe.setChecked(bool(s.get('apply_percent_dupe', False)))
+        self.keySeqPctCut.setKeySequence(keyseq_from_setting(s.get('key_pctcut'), Qt.Key_K))
 
         self._apply_keybind_section_fonts()
         self.setStyleSheet(zubcut_dark_stylesheet())
@@ -409,12 +362,14 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.labelKeyKill,
             self.labelKeyLag,
             self.labelKeyDupe,
+            self.labelKeyPctCut,
             self.keySeqKill,
             self.keySeqLag,
             self.keySeqDupe,
+            self.keySeqPctCut,
         ):
             w.setFont(f)
-        for ks in (self.keySeqKill, self.keySeqLag, self.keySeqDupe):
+        for ks in (self.keySeqKill, self.keySeqLag, self.keySeqDupe, self.keySeqPctCut):
             for le in ks.findChildren(QLineEdit):
                 le.setFont(f)
     

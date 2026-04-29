@@ -95,11 +95,11 @@ HKEY_AUTOSTART_PATH = 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run'
 
 SETTINGS_KEYS = [
     'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'nicknames',
-    'key_kill', 'key_lag', 'key_dupe',
+    'key_kill', 'key_lag', 'key_dupe', 'key_pctcut',
     'show_scan_mac_column', 'show_scan_vendor_column',
-    'traffic_percent', 'apply_percent_kill', 'apply_percent_lag', 'apply_percent_dupe',
+    'traffic_percent',
 ]
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
-SETTINGS_VALS = [25, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', False, False, 100, False, False, False]
+SETTINGS_VALS = [25, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', 'K', False, False, 50]

@@ -92,11 +92,12 @@ class Killer:
         Registers ``self.killed`` on the caller thread so UI state (e.g. toggleKill)
         stays in sync; only the ARP loop runs in a background thread.
         """
-        if victim['mac'] in self.killed:
-            return
-        seq = self._next_op_seq(victim['mac'])
-        self.killed[victim['mac']] = victim
-        self._stop_forwarder(victim['mac'])
+        mac = victim['mac']
+        # Reassert path: even if already marked killed, refresh victim record and restart
+        # ARP worker generation so ON state recovers from stale/desynced workers.
+        seq = self._next_op_seq(mac)
+        self.killed[mac] = victim
+        self._stop_forwarder(mac)
         self._kill_arp_worker(victim, wait_after, seq)
 
     def apply_percent_cut(self, victim, pass_percent=100, direction='both', debug=False):

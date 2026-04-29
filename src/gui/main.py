@@ -744,6 +744,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._shortcut_dupe_global.setContext(Qt.ApplicationShortcut)
         self._shortcut_dupe_global.setAutoRepeat(False)
         self._shortcut_dupe_global.activated.connect(self._shortcut_global_dupe)
+        self._shortcut_pctcut_global = QShortcut(QKeySequence(Qt.Key_K), self)
+        self._shortcut_pctcut_global.setContext(Qt.ApplicationShortcut)
+        self._shortcut_pctcut_global.setAutoRepeat(False)
+        self._shortcut_pctcut_global.activated.connect(self._shortcut_global_pctcut)
 
         # Main Props
         self.scanner = Scanner()
@@ -772,6 +776,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_device_mac = None
         self.dupe_direction = 'both'
         self.dupe_duration_ms = 5000
+        self.percent_cut_active = False
+        self.percent_cut_device_mac = None
         self._lag_dialog_target_mac = None
         self._dupe_dialog_target_mac = None
         self.dupe_timer = QTimer(self)
@@ -893,6 +899,39 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.gridLayout.addWidget(self.btnDupe, 5, 6, 1, 3)
         self.btnDupe.clicked.connect(self.openDupeDialog)
 
+        self.lblPercentCut = QLabel('Cut %', self.centralwidget)
+        self.lblPercentCut.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        self.gridLayout.addWidget(self.lblPercentCut, 6, 1, 1, 1)
+
+        self.sliderPercentCutMain = QSlider(Qt.Horizontal, self.centralwidget)
+        self.sliderPercentCutMain.setRange(1, 100)
+        self.sliderPercentCutMain.setSingleStep(1)
+        self.gridLayout.addWidget(self.sliderPercentCutMain, 6, 2, 1, 3)
+
+        self.spinPercentCutMain = QSpinBox(self.centralwidget)
+        self.spinPercentCutMain.setRange(1, 100)
+        self.spinPercentCutMain.setSuffix('%')
+        self.gridLayout.addWidget(self.spinPercentCutMain, 6, 5, 1, 1)
+
+        self.btnPercentCut = QPushButton('Percent Cut: OFF', self.centralwidget)
+        self.btnPercentCut.setObjectName('btnPercentCut')
+        self.btnPercentCut.setAttribute(Qt.WA_StyledBackground, True)
+        self.btnPercentCut.setAutoDefault(False)
+        self.btnPercentCut.setDefault(False)
+        self.btnPercentCut.setMinimumHeight(44)
+        self.btnPercentCut.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btnPercentCut.setToolTip(
+            'Percent Cut toggle — applies percentage-based traffic cut to selected device. '
+            'Shortcut: K (main app window in foreground).'
+        )
+        self.gridLayout.addWidget(self.btnPercentCut, 6, 6, 1, 3)
+        self.btnPercentCut.pressed.connect(lambda: self.togglePercentCut('mouse_pressed'))
+
+        self.sliderPercentCutMain.valueChanged.connect(self.spinPercentCutMain.setValue)
+        self.spinPercentCutMain.valueChanged.connect(self.sliderPercentCutMain.setValue)
+        self.spinPercentCutMain.valueChanged.connect(self._on_percent_cut_value_changed)
+        self.sliderPercentCutMain.setValue(self._percent_cut_value())
+
         self.lag_switch_dialog = None
         self.dupe_switch_dialog = None
 
@@ -987,6 +1026,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateKillButtonState()
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
+        self._updatePercentCutButtonState()
 
         _chrome_btns = (
             self.btnScanEasy,
@@ -998,6 +1038,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnKill,
             self.btnLagSwitch,
             self.btnDupe,
+            self.btnPercentCut,
         )
         self._chrome_hover_filter = _ChromePushButtonHoverFilter(self, _chrome_btns)
         for _b in _chrome_btns:
@@ -1185,6 +1226,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killer.unkill_all()
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self.stopPercentCut(log=False)
         self.settings_window.close()
         self.about_window.close()
         hide_all_system_tray_icons()
@@ -1645,6 +1687,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self.stopPercentCut(log=False)
         if not self.connected():
             return
         
@@ -1665,6 +1708,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self.stopPercentCut(log=False)
         if not self.connected():
             return
         
@@ -1706,6 +1750,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self.stopPercentCut(log=False)
         if not self.connected(show_msg_box=True):
             return
 
@@ -1911,23 +1956,28 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.scanEasy()
 
     def refresh_keyboard_shortcuts_from_settings(self):
-        """Apply key_kill / key_lag / key_dupe from settings to shortcuts and tooltips."""
+        """Apply keybind settings to global shortcuts and tooltips."""
         s = import_settings()
         k_kill = keyseq_from_setting(s.get('key_kill'), Qt.Key_L)
         k_lag = keyseq_from_setting(s.get('key_lag'), Qt.Key_M)
         k_dupe = keyseq_from_setting(s.get('key_dupe'), Qt.Key_P)
+        k_pct = keyseq_from_setting(s.get('key_pctcut'), Qt.Key_K)
         self._shortcut_kill_l.setKey(k_kill)
         self._shortcut_kill_l.setAutoRepeat(False)
         self._shortcut_lag_global.setKey(k_lag)
         self._shortcut_lag_global.setAutoRepeat(False)
         self._shortcut_dupe_global.setKey(k_dupe)
         self._shortcut_dupe_global.setAutoRepeat(False)
+        self._shortcut_pctcut_global.setKey(k_pct)
+        self._shortcut_pctcut_global.setAutoRepeat(False)
         nk = k_kill.toString(QKeySequence.NativeText)
         nl = k_lag.toString(QKeySequence.NativeText)
         np = k_dupe.toString(QKeySequence.NativeText)
+        nk_pct = k_pct.toString(QKeySequence.NativeText)
         self._shortcut_label_kill = nk or 'L'
         self._shortcut_label_lag = nl or 'M'
         self._shortcut_label_dupe = np or 'P'
+        self._shortcut_label_pctcut = nk_pct or 'K'
         self._btn_kill_tooltip_static = (
             'Kill toggle — Turn blocking on or off for the selected device. '
             'Shortcut: %s (only while the main ZubCut window is the active window).' % nk
@@ -1942,6 +1992,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'Dupe — One-shot lag for a set time (ms), then full stop. '
             'Does not repeat; use Lag Switch for cycles. '
             'Shortcut: %s runs/stops while the Dupe window is active.' % np
+        )
+        self.btnPercentCut.setToolTip(
+            'Percent Cut toggle — percentage-based cut on selected device. '
+            'Shortcut: %s (main app window in foreground).' % nk_pct
         )
         lag = self.lag_switch_dialog
         if lag:
@@ -1966,6 +2020,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateKillButtonState()
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
+        self._updatePercentCutButtonState()
 
     def _shortcut_main_l(self):
         """Kill toggle when any app window is foreground, using configured shortcut."""
@@ -2046,6 +2101,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.dupe_direction = direction
         self.startDupe(device, self.dupe_duration_ms, self.dupe_direction)
 
+    def _shortcut_global_pctcut(self):
+        if not self._app_window_is_foreground():
+            return
+        if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
+            return
+        self.togglePercentCut('shortcut_key')
+
     def openLagSwitchDialog(self):
         if not self.connected():
             return
@@ -2116,10 +2178,27 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             UI_LOG_VICTIM_BLOCK_FG,
         )
         self._lag_apply_block(device)
+        self._schedule_lag_start_reassert(device['mac'])
         self._lag_in_allow_phase = False
         self.lag_timer.start(max(1, int(self.lag_block_ms)))
         self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
+
+    def _schedule_lag_start_reassert(self, mac):
+        """Quick ON reasserts so lag takes effect immediately despite ARP/firewall race timing."""
+        def _reassert():
+            if not self.lag_active or self.lag_device_mac != mac or self._lag_in_allow_phase:
+                return
+            dev = self._get_device_by_mac(mac) or self._victim_record_for_mac(mac)
+            if not dev:
+                return
+            try:
+                self._lag_apply_block(dev)
+            except Exception:
+                pass
+
+        QTimer.singleShot(120, _reassert)
+        QTimer.singleShot(320, _reassert)
 
     def _refresh_table_row_for_mac(self, mac):
         """Update table row colors for one MAC without rebuilding the whole table."""
@@ -2132,19 +2211,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 break
 
     def _apply_victim_block(self, device, direction):
-        percent_mode = self._percent_cut_enabled_for('lag' if self.lag_active else 'dupe')
-        if percent_mode:
-            self.killer.apply_percent_cut(
-                device,
-                pass_percent=self._percent_cut_value(),
-                direction=direction,
-            )
-        else:
-            self.killer.disable_percent_cut(device['mac'])
-            if device['mac'] not in self.killer.killed:
-                self.killer.kill(device)
-            iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-            block_ip(iface, device['ip'], direction)
+        self.killer.disable_percent_cut(device['mac'])
+        if device['mac'] not in self.killer.killed:
+            self.killer.kill(device)
+        iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+        block_ip(iface, device['ip'], direction)
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
@@ -2339,11 +2410,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
 
+    def _updatePercentCutButtonState(self):
+        pct = self._clamp_percent(self.spinPercentCutMain.value())
+        key = getattr(self, '_shortcut_label_pctcut', 'K')
+        if self.percent_cut_active and self.percent_cut_device_mac:
+            self.btnPercentCut.setText(f'■ CUT {pct}% (Press {key} to turn off)')
+            self.btnPercentCut.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
+        else:
+            self.btnPercentCut.setText(f'Percent Cut: {pct}%')
+            self.btnPercentCut.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+
     def _refresh_flow_toggle_ui(self):
         """Synchronize Lag/Dupe/Kill button text after cross-flow toggles."""
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
         self._updateKillButtonState()
+        self._updatePercentCutButtonState()
         lag_dlg = getattr(self, 'lag_switch_dialog', None)
         if lag_dlg and lag_dlg.isVisible():
             lag_dlg.refresh_toggle_state()
@@ -2362,21 +2444,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         try:
             return self._clamp_percent(get_settings('traffic_percent'))
         except Exception:
-            return 100
+            return 50
 
-    def _percent_cut_enabled_for(self, flow_kind):
-        key_map = {
-            'kill': 'apply_percent_kill',
-            'lag': 'apply_percent_lag',
-            'dupe': 'apply_percent_dupe',
-        }
-        key = key_map.get(flow_kind)
-        if not key:
-            return False
+    def _on_percent_cut_value_changed(self, value):
+        pct = self._clamp_percent(value)
         try:
-            return bool(get_settings(key))
+            set_settings('traffic_percent', int(pct))
         except Exception:
-            return False
+            pass
+        if self.percent_cut_active and self.percent_cut_device_mac:
+            dev = self._get_device_by_mac(self.percent_cut_device_mac) or self._victim_record_for_mac(self.percent_cut_device_mac)
+            if dev:
+                allow_pct = max(0, 100 - pct)
+                try:
+                    self.killer.apply_percent_cut(dev, pass_percent=allow_pct, direction='both')
+                except Exception:
+                    pass
+        self._updatePercentCutButtonState()
 
     def _ignore_duplicate_toggle_edge(self, kind: str, mac: str | None, edge: str) -> bool:
         """
@@ -2406,13 +2490,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     @staticmethod
     def _toggle_kind_label(kind):
-        return {'kill': 'Kill', 'lag': 'Lag Switch', 'dupe': 'Dupe'}.get(kind, kind)
+        return {'kill': 'Kill', 'lag': 'Lag Switch', 'dupe': 'Dupe', 'pctcut': 'Percent Cut'}.get(kind, kind)
 
     def _active_toggle_kind(self):
         if self.lag_active and self.lag_device_mac:
             return 'lag'
         if self.dupe_active and self.dupe_device_mac:
             return 'dupe'
+        if self.percent_cut_active and self.percent_cut_device_mac:
+            return 'pctcut'
         if self._has_explicit_kill_active():
             return 'kill'
         return None
@@ -2447,6 +2533,69 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateKillButtonState()
         self._run_kill_command(mac, device, turn_on=next_state, source=source)
 
+    def togglePercentCut(self, source='unknown'):
+        if not self.connected():
+            return
+        device = self._get_selected_device()
+        if not device:
+            self.log('No device selected', 'red')
+            return
+        if device['admin']:
+            self.log('Cannot cut admin device', UI_LOG_VICTIM_BLOCK_FG)
+            return
+
+        mac = device['mac']
+        turning_on = not (self.percent_cut_active and self.percent_cut_device_mac == mac)
+        if turning_on and self._toggle_start_blocked('pctcut'):
+            return
+
+        if turning_on:
+            if self.percent_cut_active and self.percent_cut_device_mac and self.percent_cut_device_mac != mac:
+                self.stopPercentCut(log=False)
+            if self.lag_active and self.lag_device_mac == mac:
+                self.stopLagSwitch(refresh_dialog=True)
+            if self.dupe_active and self.dupe_device_mac == mac:
+                self.stopDupe(log=False)
+            if self._kill_ui_shows_on(mac):
+                self._run_kill_command(mac, device, turn_on=False, source='pctcut_auto_off_kill')
+            pct = self._clamp_percent(self.spinPercentCutMain.value())
+            allow_pct = max(0, 100 - pct)
+            self.killer.apply_percent_cut(device, pass_percent=allow_pct, direction='both')
+            self.percent_cut_active = True
+            self.percent_cut_device_mac = mac
+            self.log(
+                f'Percent Cut ON for {device["ip"]}: {pct}% cut ({allow_pct}% allowed)',
+                UI_LOG_VICTIM_BLOCK_FG,
+            )
+            self._refresh_flow_toggle_ui()
+            self.showDevices()
+            return
+
+        self.stopPercentCut(log=True)
+
+    def stopPercentCut(self, log=True):
+        if not self.percent_cut_active:
+            return
+        prev_mac = self.percent_cut_device_mac
+        self.percent_cut_active = False
+        self.percent_cut_device_mac = None
+        victim = self._victim_record_for_mac(prev_mac) or self._get_device_by_mac(prev_mac)
+        if victim:
+            try:
+                self.killer.disable_percent_cut(prev_mac)
+                self.killer.unkill(victim)
+                self.killer.reinforce_restore(victim)
+                pct_off_seq = self._bump_flow_off_intent('pctcut', prev_mac)
+                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 60, victim)
+                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 180, victim)
+                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 350, victim)
+            except Exception:
+                pass
+        if log and victim:
+            self.log('Percent Cut OFF for ' + victim['ip'], UI_LOG_RESTORE_FG)
+        self._refresh_flow_toggle_ui()
+        self.showDevices()
+
     def _run_kill_command(self, mac, device, turn_on, source='unknown'):
         """Immediate explicit command path: one click => one kill/unkill command."""
         snapshot_map = getattr(self, '_kill_device_snapshot', None)
@@ -2462,18 +2611,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.stopLagSwitch(refresh_dialog=True)
             if self.dupe_active and self.dupe_device_mac == mac:
                 self.stopDupe(log=False)
+            if self.percent_cut_active and self.percent_cut_device_mac == mac:
+                self.stopPercentCut(log=False)
             if not actual_on and device:
-                if self._percent_cut_enabled_for('kill'):
-                    pct = self._percent_cut_value()
-                    self.killer.apply_percent_cut(device, pass_percent=pct, direction='both')
-                    self.log(
-                        f'Kill ON for {device["ip"]} ({pct}% traffic allowed in/out)',
-                        UI_LOG_VICTIM_BLOCK_FG,
-                    )
-                else:
-                    self.killer.disable_percent_cut(mac)
-                    self.killer.kill(device)
-                    self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                self.killer.disable_percent_cut(mac)
+                self.killer.kill(device)
+                self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
         else:
             victim = self._victim_record_for_mac(mac) or device
             if victim:
@@ -2527,6 +2670,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if kind == 'lag' and self.lag_active and self.lag_device_mac == mac:
                 return
             if kind == 'dupe' and self.dupe_active and self.dupe_device_mac == mac:
+                return
+            if kind == 'pctcut' and self.percent_cut_active and self.percent_cut_device_mac == mac:
                 return
             victim = self._victim_record_for_mac(mac) or device_snapshot
             if not victim:
