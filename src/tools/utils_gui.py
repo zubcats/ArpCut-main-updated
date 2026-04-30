@@ -77,18 +77,27 @@ QMenu::item:selected, QMenuBar::item:selected {
     background-color: #000000;
 }
 /* QTabBar: see _chrome_status_strip_and_tabs_qss() (transparent, matches window chrome). */
-QCheckBox::indicator:hover, QRadioButton::indicator:hover {
-    border: 1px solid #5D706E;
-    background-color: transparent;
-}
 QCheckBox::indicator, QRadioButton::indicator {
+    image: none;
     width: 14px;
     height: 14px;
     border: 1px solid #5D706E;
     background-color: transparent;
     margin: 0px;
 }
+QCheckBox::indicator:unchecked, QRadioButton::indicator:unchecked {
+    image: none;
+    background-color: transparent;
+    border: 1px solid #5D706E;
+}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover,
+QCheckBox::indicator:unchecked:hover, QRadioButton::indicator:unchecked:hover {
+    image: none;
+    border: 1px solid #316E69;
+    background-color: transparent;
+}
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    image: none;
     background-color: #316E69;
     border: 1px solid #5D706E;
 }
@@ -149,6 +158,11 @@ QComboBox QAbstractItemView::item:hover {
     color: #f2f2f2;
 }
 QComboBox QAbstractItemView::item:hover:!selected {
+    background-color: #5D706E;
+    color: #f2f2f2;
+}
+QListView::item:hover, QListView::item:selected,
+QListView::item:selected:active, QListView::item:selected:!active {
     background-color: #5D706E;
     color: #f2f2f2;
 }
@@ -343,7 +357,7 @@ def _auxiliary_windows_qss() -> str:
         panel = '#141414'
         tbl_alt = '#0a0a0a'
         _aux_sel_bg, _aux_sel_fg = '#2b2b2b', '#f2f2f2'
-        field_bd = toggle_acc
+        field_bd = admin_bg
     else:
         bg, bd, bh, bp = '#2d323c', '#3d4a5c', '#3a3f49', '#353942'
         tx, th, tp, mute = '#e8eaed', '#aeb4bf', '#8b909a', '#8b909a'
@@ -439,19 +453,30 @@ QDialog QCheckBox:hover {{
 }}
 QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator,
 QDialog QCheckBox::indicator {{
+    image: none;
     width: 14px;
     height: 14px;
     border: 1px solid {admin_bg};
     background-color: transparent;
     margin: 0px;
 }}
+QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:unchecked,
+QDialog QCheckBox::indicator:unchecked {{
+    image: none;
+    border: 1px solid {admin_bg};
+    background-color: transparent;
+}}
 QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:hover,
-QDialog QCheckBox::indicator:hover {{
+QDialog QCheckBox::indicator:hover,
+QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:unchecked:hover,
+QDialog QCheckBox::indicator:unchecked:hover {{
+    image: none;
     border: 1px solid {sel_bg};
     background-color: transparent;
 }}
 QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:checked,
 QDialog QCheckBox::indicator:checked {{
+    image: none;
     background-color: {sel_bg};
     border: 1px solid {admin_bg};
 }}
@@ -551,6 +576,17 @@ QDialog QComboBox QAbstractItemView::item:hover {{
 }}
 QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:hover:!selected,
 QDialog QComboBox QAbstractItemView::item:hover:!selected {{
+    background-color: {admin_bg};
+    color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QListView::item:hover,
+QMainWindow#zubcutAuxiliaryWindow QListView::item:selected,
+QMainWindow#zubcutAuxiliaryWindow QListView::item:selected:active,
+QMainWindow#zubcutAuxiliaryWindow QListView::item:selected:!active,
+QDialog QListView::item:hover,
+QDialog QListView::item:selected,
+QDialog QListView::item:selected:active,
+QDialog QListView::item:selected:!active {{
     background-color: {admin_bg};
     color: {sel_fg};
 }}
