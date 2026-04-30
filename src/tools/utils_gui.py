@@ -79,6 +79,7 @@ QMenu::item:selected, QMenuBar::item:selected {
 /* QTabBar: see _chrome_status_strip_and_tabs_qss() (transparent, matches window chrome). */
 QCheckBox::indicator:hover, QRadioButton::indicator:hover {
     border: 1px solid #5D706E;
+    background-color: transparent;
 }
 QCheckBox::indicator, QRadioButton::indicator {
     width: 14px;
@@ -91,6 +92,9 @@ QCheckBox::indicator:checked, QRadioButton::indicator:checked {
     background-color: #316E69;
     border: 1px solid #5D706E;
 }
+QCheckBox:hover, QRadioButton:hover {
+    color: #316E69;
+}
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
     background-color: #316E69;
     min-height: 24px;
@@ -99,12 +103,6 @@ QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
 }
 QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
     background-color: #5D706E;
-}
-QScrollBar::up-arrow:vertical, QScrollBar::down-arrow:vertical,
-QScrollBar::left-arrow:horizontal, QScrollBar::right-arrow:horizontal {
-    background: #5D706E;
-    width: 8px;
-    height: 8px;
 }
 QSlider::groove:horizontal {
     background-color: #1a1a1a;
@@ -141,15 +139,18 @@ QComboBox QAbstractItemView::item:selected {
     background-color: #5D706E;
     color: #f2f2f2;
 }
+QComboBox QAbstractItemView::item:selected:active,
+QComboBox QAbstractItemView::item:selected:!active {
+    background-color: #5D706E;
+    color: #f2f2f2;
+}
 QComboBox QAbstractItemView::item:hover {
     background-color: #5D706E;
     color: #f2f2f2;
 }
-QSpinBox::up-arrow, QSpinBox::down-arrow, QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow,
-QComboBox::down-arrow {
-    background: #5D706E;
-    width: 8px;
-    height: 8px;
+QComboBox QAbstractItemView::item:hover:!selected {
+    background-color: #5D706E;
+    color: #f2f2f2;
 }
 /* Main device table: row chrome from item BackgroundRole; reset inherited QAbstractItemView selection tint. */
 QTableWidget#tableScan {
@@ -431,6 +432,11 @@ QDialog QCheckBox {{
     color: {admin_bg};
     background-color: transparent;
 }}
+QMainWindow#zubcutAuxiliaryWindow QCheckBox:hover,
+QDialog QCheckBox:hover {{
+    color: {sel_bg};
+    background-color: transparent;
+}}
 QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator,
 QDialog QCheckBox::indicator {{
     width: 14px;
@@ -442,6 +448,7 @@ QDialog QCheckBox::indicator {{
 QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:hover,
 QDialog QCheckBox::indicator:hover {{
     border: 1px solid {sel_bg};
+    background-color: transparent;
 }}
 QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:checked,
 QDialog QCheckBox::indicator:checked {{
@@ -510,16 +517,6 @@ QDialog QSpinBox::up-button:hover,
 QDialog QSpinBox::down-button:hover {{
     background-color: {admin_bg};
 }}
-QMainWindow#zubcutAuxiliaryWindow QSpinBox::up-arrow,
-QMainWindow#zubcutAuxiliaryWindow QSpinBox::down-arrow,
-QDialog QSpinBox::up-arrow,
-QDialog QSpinBox::down-arrow,
-QMainWindow#zubcutAuxiliaryWindow QComboBox::down-arrow,
-QDialog QComboBox::down-arrow {{
-    background: {admin_bg};
-    width: 8px;
-    height: 8px;
-}}
 QMainWindow#zubcutAuxiliaryWindow QComboBox::drop-down,
 QDialog QComboBox::drop-down {{
     subcontrol-origin: padding;
@@ -540,8 +537,20 @@ QDialog QComboBox QAbstractItemView::item:selected {{
     background-color: {admin_bg};
     color: {sel_fg};
 }}
+QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:selected:active,
+QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:selected:!active,
+QDialog QComboBox QAbstractItemView::item:selected:active,
+QDialog QComboBox QAbstractItemView::item:selected:!active {{
+    background-color: {admin_bg};
+    color: {sel_fg};
+}}
 QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:hover,
 QDialog QComboBox QAbstractItemView::item:hover {{
+    background-color: {admin_bg};
+    color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:hover:!selected,
+QDialog QComboBox QAbstractItemView::item:hover:!selected {{
     background-color: {admin_bg};
     color: {sel_fg};
 }}
