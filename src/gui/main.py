@@ -1,4 +1,6 @@
-﻿import time
+﻿import base64
+import os
+import time
 import re
 
 from pyperclip import copy
@@ -1395,9 +1397,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return "'" + str(value or '').replace("'", "''") + "'"
 
     def _run_powershell(self, script):
+        """Run PowerShell without brittle cmd quoting (-Command strips `$`, nested `"` breaks)."""
         if not script:
             return ''
-        cmd = f'powershell -NoProfile -ExecutionPolicy Bypass -Command "{script}"'
+        try:
+            enc = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+        except Exception:
+            return ''
+        sys_root = os.environ.get('SystemRoot', r'C:\Windows')
+        ps_exe = os.path.join(sys_root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+        if not os.path.isfile(ps_exe):
+            ps_exe = 'powershell.exe'
+        cmd = (
+            f'"{ps_exe}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {enc}'
+        )
         return terminal(cmd) or ''
 
     @staticmethod
@@ -1411,6 +1424,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return False
         t = str(name).strip().lower()
         if t in ('description', 'interface', 'adapter', 'name', 'type'):
+            return False
+        if t.startswith('description') or 'adapter description' in t:
             return False
         if re.match(r'^interface-\d+$', t):
             return False
@@ -1449,6 +1464,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             out2 = (self._run_powershell(script2) or '').strip()
             if self._is_plausible_windows_adapter_alias(out2):
                 return out2
+            g_braced = '{' + win_guid.upper() + '}'
+            qgb = self._ps_single_quote(g_braced)
+            script_wmi = (
+                f"$g = {qgb}; "
+                "$n = (Get-CimInstance Win32_NetworkAdapter -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.GUID -and ($_.GUID -eq $g) } | "
+                "Select-Object -First 1 -ExpandProperty NetConnectionID); "
+                "if ($n) { $n }"
+            )
+            out_wmi = (self._run_powershell(script_wmi) or '').strip()
+            if self._is_plausible_windows_adapter_alias(out_wmi):
+                return out_wmi
 
         want = self._mac_hex_no_sep(mac)
         if len(want) == 12:
@@ -1485,9 +1512,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return ('true' in out), alias
         return ('false' in out), alias
 
+    @staticmethod
+    def _short_ipv6_iface_label(s, max_len=22):
+        t = (s or '').strip()
+        if len(t) <= max_len:
+            return t
+        return t[: max(0, max_len - 1)] + '…'
+
     def _updateIPv6KillButtonState(self):
         if self.ipv6_kill_active:
-            label = self.ipv6_kill_iface_name or 'adapter'
+            label = self._short_ipv6_iface_label(self.ipv6_kill_iface_name or 'adapter')
             self.btnIPv6Kill.setText(f'■ IPv6 Kill: ON ({label})')
             self.btnIPv6Kill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         else:
