@@ -765,6 +765,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.ipv6_kill_iface_name = ''
         self.ipv6_kill_iface_guid = ''
         self.ipv6_kill_iface_mac = ''
+        self.ipv6_kill_iface_ip = ''
         self.lag_active = False
         self.lag_block_ms = 9000
         self.lag_release_ms = 100
@@ -1437,9 +1438,34 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return ''
         return re.sub(r'[^0-9A-Fa-f]', '', str(mac)).upper()
 
-    def _resolve_windows_adapter_alias(self, iface_name='', iface_guid='', mac=''):
+    @staticmethod
+    def _ipv4_usable(ip):
+        if not ip or ip in ('0.0.0.0', '127.0.0.1'):
+            return False
+        if not re.match(r'^(\d{1,3}\.){3}\d{1,3}$', str(ip).strip()):
+            return False
+        try:
+            return all(0 <= int(p) <= 255 for p in str(ip).strip().split('.'))
+        except ValueError:
+            return False
+
+    def _resolve_windows_adapter_alias(self, iface_name='', iface_guid='', mac='', iface_ip=''):
         if not sys.platform.startswith('win'):
             return ''
+        ip_use = (iface_ip or '').strip()
+        if self._ipv4_usable(ip_use):
+            qip = self._ps_single_quote(ip_use)
+            script_ip = (
+                f"$ip = {qip}; "
+                "$na = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $ip -ErrorAction SilentlyContinue | "
+                "Select-Object -First 1 | "
+                "ForEach-Object { Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -IncludeHidden -ErrorAction SilentlyContinue }; "
+                "if ($na) { $na | Select-Object -First 1 -ExpandProperty Name }"
+            )
+            out_ip = (self._run_powershell(script_ip) or '').strip()
+            if self._is_plausible_windows_adapter_alias(out_ip):
+                return out_ip
+
         n = (iface_name or '').strip()
         if self._is_plausible_windows_adapter_alias(n):
             return n
@@ -1493,10 +1519,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         return ''
 
-    def _set_ipv6_binding(self, iface_name, enable, iface_guid='', mac=''):
+    def _set_ipv6_binding(self, iface_name, enable, iface_guid='', mac='', iface_ip=''):
         if not sys.platform.startswith('win'):
             return False, ''
-        alias = self._resolve_windows_adapter_alias(iface_name, iface_guid, mac=mac)
+        alias = self._resolve_windows_adapter_alias(
+            iface_name, iface_guid, mac=mac, iface_ip=iface_ip
+        )
         if not alias:
             return False, ''
         q = self._ps_single_quote(alias)
@@ -1536,14 +1564,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         mac = self.ipv6_kill_iface_mac or (
             (self.scanner.iface.mac if self.scanner.iface else '') or ''
         )
-        if iface_name or iface_guid:
+        stored_ip = self.ipv6_kill_iface_ip or (
+            (self.scanner.iface.ip if self.scanner.iface else '') or ''
+        )
+        if iface_name or iface_guid or self._ipv4_usable(stored_ip):
             self._set_ipv6_binding(
-                iface_name, enable=True, iface_guid=iface_guid, mac=mac
+                iface_name,
+                enable=True,
+                iface_guid=iface_guid,
+                mac=mac,
+                iface_ip=stored_ip,
             )
         self.ipv6_kill_active = False
         self.ipv6_kill_iface_name = ''
         self.ipv6_kill_iface_guid = ''
         self.ipv6_kill_iface_mac = ''
+        self.ipv6_kill_iface_ip = ''
         self._updateIPv6KillButtonState()
 
     def toggleIPv6Kill(self):
@@ -1556,19 +1592,25 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         iface_name = (self.scanner.iface.name if self.scanner.iface else '') or ''
         iface_guid = (self.scanner.iface.guid if self.scanner.iface else '') or ''
         iface_mac = (self.scanner.iface.mac if self.scanner.iface else '') or ''
-        if not iface_name and not iface_guid:
+        iface_ip = (self.scanner.iface.ip if self.scanner.iface else '') or ''
+        if not iface_name and not iface_guid and not self._ipv4_usable(iface_ip):
             self.log('No network adapter selected for IPv6 Kill.', 'red')
             return
 
         if not self.ipv6_kill_active:
             ok, resolved_alias = self._set_ipv6_binding(
-                iface_name, enable=False, iface_guid=iface_guid, mac=iface_mac
+                iface_name,
+                enable=False,
+                iface_guid=iface_guid,
+                mac=iface_mac,
+                iface_ip=iface_ip,
             )
             if ok:
                 self.ipv6_kill_active = True
                 self.ipv6_kill_iface_name = resolved_alias
                 self.ipv6_kill_iface_guid = iface_guid
                 self.ipv6_kill_iface_mac = iface_mac
+                self.ipv6_kill_iface_ip = iface_ip
                 self.log(f'IPv6 Kill ON for adapter: {self.ipv6_kill_iface_name}', UI_LOG_VICTIM_BLOCK_FG)
             else:
                 self.log(
@@ -1582,14 +1624,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         restore_iface = self.ipv6_kill_iface_name or iface_name
         stored_guid = self.ipv6_kill_iface_guid or iface_guid
         stored_mac = self.ipv6_kill_iface_mac or iface_mac
+        stored_ip = self.ipv6_kill_iface_ip or iface_ip
         ok, resolved_alias = self._set_ipv6_binding(
-            restore_iface, enable=True, iface_guid=stored_guid, mac=stored_mac
+            restore_iface,
+            enable=True,
+            iface_guid=stored_guid,
+            mac=stored_mac,
+            iface_ip=stored_ip,
         )
         if ok:
             self.ipv6_kill_active = False
             self.ipv6_kill_iface_name = ''
             self.ipv6_kill_iface_guid = ''
             self.ipv6_kill_iface_mac = ''
+            self.ipv6_kill_iface_ip = ''
             self.log(f'IPv6 Kill OFF for adapter: {resolved_alias or restore_iface}', UI_LOG_RESTORE_FG)
         else:
             self.log(
