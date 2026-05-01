@@ -1,7 +1,9 @@
 ﻿import base64
 import os
-import time
 import re
+import subprocess
+import sys
+import time
 
 from pyperclip import copy
 
@@ -51,7 +53,13 @@ from tools.branding import (
     crop_logo_content,
     LOGO_UI_CONTENT_FRACTION,
 )
-from tools.utils import goto, is_connected, get_default_iface, terminal
+from tools.utils import (
+    goto,
+    is_connected,
+    get_default_iface,
+    terminal,
+    _windows_subprocess_no_window_kwargs,
+)
 from tools.tray_cleanup import hide_all_system_tray_icons
 from tools.pfctl import block_ip, unblock_ip
 
@@ -1398,21 +1406,53 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return "'" + str(value or '').replace("'", "''") + "'"
 
     def _run_powershell(self, script):
-        """Run PowerShell without brittle cmd quoting (-Command strips `$`, nested `"` breaks)."""
-        if not script:
+        """
+        Run PowerShell via argv list (no cmd.exe /c). Encoded scripts passed through cmd
+        can be truncated or mangled on some systems and break adapter resolution.
+        """
+        if not script or not sys.platform.startswith('win'):
             return ''
         try:
             enc = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
         except Exception:
             return ''
         sys_root = os.environ.get('SystemRoot', r'C:\Windows')
-        ps_exe = os.path.join(sys_root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-        if not os.path.isfile(ps_exe):
-            ps_exe = 'powershell.exe'
-        cmd = (
-            f'"{ps_exe}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {enc}'
-        )
-        return terminal(cmd) or ''
+        # 32-bit process on x64: System32 is WOW64; Sysnative reaches 64-bit PowerShell + modules.
+        cand = [
+            os.path.join(sys_root, 'Sysnative', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+            os.path.join(sys_root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+            'powershell.exe',
+        ]
+        ps_exe = next((p for p in cand if p == 'powershell.exe' or os.path.isfile(p)), 'powershell.exe')
+        argv = [
+            ps_exe,
+            '-NoProfile',
+            '-NonInteractive',
+            '-WindowStyle',
+            'Hidden',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-EncodedCommand',
+            enc,
+        ]
+        kwargs = _windows_subprocess_no_window_kwargs()
+        try:
+            out = subprocess.check_output(
+                argv,
+                stderr=subprocess.STDOUT,
+                timeout=45,
+                **kwargs,
+            )
+            return out.decode('utf-8', errors='replace')
+        except subprocess.CalledProcessError as e:
+            if getattr(e, 'output', None):
+                try:
+                    return e.output.decode('utf-8', errors='replace')
+                except Exception:
+                    pass
+            return ''
+        except Exception:
+            return ''
 
     @staticmethod
     def _extract_win_guid_from_scapy_name(scapy_name):
@@ -1663,9 +1703,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.ipv6_kill_iface_ip = iface_ip
                 self.log(f'IPv6 Kill ON for adapter: {self.ipv6_kill_iface_name}', UI_LOG_VICTIM_BLOCK_FG)
             else:
+                # Keep short: left status strip is narrow and long HTML lines get clipped.
                 self.log(
-                    f'Failed to disable IPv6: could not resolve adapter for host IP '
-                    f'{iface_ip or "?"}. Try Run as administrator.',
+                    f'IPv6: no adapter for {iface_ip or "?"}. Run as admin.',
                     'red',
                 )
             self._updateIPv6KillButtonState()
@@ -1691,8 +1731,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log(f'IPv6 Kill OFF for adapter: {resolved_alias or restore_iface}', UI_LOG_RESTORE_FG)
         else:
             self.log(
-                'Failed to re-enable IPv6: could not resolve adapter or binding command failed '
-                '(try Run as administrator).',
+                f'IPv6: re-enable failed @ {stored_ip or "?"}. Run as admin.',
                 'red',
             )
         self._updateIPv6KillButtonState()
