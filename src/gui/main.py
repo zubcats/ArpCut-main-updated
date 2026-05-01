@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QGroupBox, \
                             QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, QSlider, \
                             QTextEdit, QPlainTextEdit, QWidget
-from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush
+from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush, QFontMetrics
 from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent
 try:
     from PyQt5.QtWinExtras import QWinTaskbarButton
@@ -736,6 +736,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.gridLayout.removeWidget(self.lblcenter)
         self.gridLayout.addWidget(self.lblcenter, 3, 3, 1, 4)
 
+        # Left status strip (lblleft): elide long lines to fit; full text in tooltip.
+        self._status_strip_plain = None
+        self._status_strip_color = 'white'
+
         # Space was bound in the .ui to ARP scan; only fire when the main window is foreground.
         self.btnScanEasy.setShortcut(QKeySequence())
         sc_arp_space = QShortcut(QKeySequence(Qt.Key_Space), self)
@@ -1195,11 +1199,30 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             QMessageBox.critical(self, APP_DISPLAY_NAME, 'Connection Lost!')
         return False
 
+    def _apply_status_strip_elide(self):
+        """Re-render lblleft with ellipsis when text exceeds available width."""
+        text = self._status_strip_plain
+        if text is None:
+            return
+        color = self._status_strip_color
+        w = self.lblleft.width()
+        if w > 16:
+            fm = QFontMetrics(self.lblleft.font())
+            elided = fm.elidedText(text, Qt.ElideRight, max(w - 8, 16))
+        else:
+            max_chars = 48
+            elided = text if len(text) <= max_chars else (text[: max_chars - 1] + '\u2026')
+        self.lblleft.setText(f"<font color='{color}'>{elided}</font>")
+
     def log(self, text, color='white'):
         """
-        Print log info at left label
+        Print log info at left label (elided if long; hover shows full text).
         """
-        self.lblleft.setText(f"<font color='{color}'>{text}</font>")
+        self._status_strip_plain = text
+        self._status_strip_color = color
+        self.lblleft.setToolTip(text)
+        self._apply_status_strip_elide()
+        QTimer.singleShot(0, self._apply_status_strip_elide)
     
     def openSettings(self):
         """
@@ -1361,6 +1384,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         label_count = len(TABLE_HEADER_LABELS)
         for i in range(label_count):
             self.tableScan.setColumnWidth(i, self.tableScan.width() // label_count)
+        self._apply_status_strip_elide()
 
     def _repolish_chrome_pushbuttons(self):
         """Re-resolve app QSS on toolbar + bottom chrome (Fusion hover on icon QPushButtons)."""
