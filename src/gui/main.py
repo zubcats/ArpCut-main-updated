@@ -1,4 +1,5 @@
 ﻿import time
+import re
 
 from pyperclip import copy
 
@@ -1397,10 +1398,38 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         cmd = f'powershell -NoProfile -ExecutionPolicy Bypass -Command "{script}"'
         return terminal(cmd) or ''
 
-    def _set_ipv6_binding(self, iface_name, enable):
-        if not iface_name or not sys.platform.startswith('win'):
-            return False
-        q = self._ps_single_quote(iface_name)
+    @staticmethod
+    def _extract_win_guid_from_scapy_name(scapy_name):
+        m = re.search(r'\{([0-9A-Fa-f-]{36})\}', str(scapy_name or ''))
+        return m.group(1) if m else ''
+
+    def _resolve_windows_adapter_alias(self, iface_name='', iface_guid=''):
+        if not sys.platform.startswith('win'):
+            return ''
+        bad_names = {'', 'description', 'interface', 'adapter'}
+        n = (iface_name or '').strip()
+        if n and n.lower() not in bad_names and not re.match(r'^interface-\d+$', n.lower()):
+            return n
+
+        win_guid = self._extract_win_guid_from_scapy_name(iface_guid)
+        if not win_guid:
+            return n
+        qg = self._ps_single_quote(win_guid)
+        script = (
+            f"$a = Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | "
+            f"Where-Object {{ $_.InterfaceGuid -eq {qg} }} | Select-Object -First 1 -ExpandProperty Name; "
+            "if ($a) { $a }"
+        )
+        out = (self._run_powershell(script) or '').strip()
+        return out or n
+
+    def _set_ipv6_binding(self, iface_name, enable, iface_guid=''):
+        if not sys.platform.startswith('win'):
+            return False, ''
+        alias = self._resolve_windows_adapter_alias(iface_name, iface_guid)
+        if not alias:
+            return False, ''
+        q = self._ps_single_quote(alias)
         action = 'Enable-NetAdapterBinding' if enable else 'Disable-NetAdapterBinding'
         script = (
             f"{action} -Name {q} -ComponentID ms_tcpip6 -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; "
@@ -1410,8 +1439,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
         out = (self._run_powershell(script) or '').strip().lower()
         if enable:
-            return 'true' in out
-        return 'false' in out
+            return ('true' in out), alias
+        return ('false' in out), alias
 
     def _updateIPv6KillButtonState(self):
         if self.ipv6_kill_active:
@@ -1440,27 +1469,30 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if device and not device.get('admin'):
             self._ensure_network_context_for_victim(device)
         iface_name = (self.scanner.iface.name if self.scanner.iface else '') or ''
+        iface_guid = (self.scanner.iface.guid if self.scanner.iface else '') or ''
         if not iface_name:
             self.log('No network adapter selected for IPv6 Kill.', 'red')
             return
 
         if not self.ipv6_kill_active:
-            if self._set_ipv6_binding(iface_name, enable=False):
+            ok, resolved_alias = self._set_ipv6_binding(iface_name, enable=False, iface_guid=iface_guid)
+            if ok:
                 self.ipv6_kill_active = True
-                self.ipv6_kill_iface_name = iface_name
-                self.log(f'IPv6 Kill ON for adapter: {iface_name}', UI_LOG_VICTIM_BLOCK_FG)
+                self.ipv6_kill_iface_name = resolved_alias or iface_name
+                self.log(f'IPv6 Kill ON for adapter: {self.ipv6_kill_iface_name}', UI_LOG_VICTIM_BLOCK_FG)
             else:
-                self.log(f'Failed to disable IPv6 on adapter: {iface_name}', 'red')
+                self.log(f'Failed to disable IPv6 on adapter: {resolved_alias or iface_name}', 'red')
             self._updateIPv6KillButtonState()
             return
 
         restore_iface = self.ipv6_kill_iface_name or iface_name
-        if self._set_ipv6_binding(restore_iface, enable=True):
+        ok, resolved_alias = self._set_ipv6_binding(restore_iface, enable=True, iface_guid=iface_guid)
+        if ok:
             self.ipv6_kill_active = False
             self.ipv6_kill_iface_name = ''
-            self.log(f'IPv6 Kill OFF for adapter: {restore_iface}', UI_LOG_RESTORE_FG)
+            self.log(f'IPv6 Kill OFF for adapter: {resolved_alias or restore_iface}', UI_LOG_RESTORE_FG)
         else:
-            self.log(f'Failed to re-enable IPv6 on adapter: {restore_iface}', 'red')
+            self.log(f'Failed to re-enable IPv6 on adapter: {resolved_alias or restore_iface}', 'red')
         self._updateIPv6KillButtonState()
 
     def closeEvent(self, event):
