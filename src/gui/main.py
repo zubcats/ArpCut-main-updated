@@ -48,7 +48,7 @@ from tools.branding import (
     crop_logo_content,
     LOGO_UI_CONTENT_FRACTION,
 )
-from tools.utils import goto, is_connected, get_default_iface
+from tools.utils import goto, is_connected, get_default_iface, terminal
 from tools.tray_cleanup import hide_all_system_tray_icons
 from tools.pfctl import block_ip, unblock_ip
 
@@ -758,6 +758,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._kill_intent_seq = {}
         # Per-flow OFF intent generation (lag/dupe/unkill-all).
         self._flow_off_intent_seq = {}
+        self.ipv6_kill_active = False
+        self.ipv6_kill_iface_name = ''
         self.lag_active = False
         self.lag_block_ms = 9000
         self.lag_release_ms = 100
@@ -837,6 +839,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnAbout.setIcon(self.icon)
         # Match ui_main (40); larger icons clip in the top grid cell.
         self.btnAbout.setIconSize(QSize(40, 40))
+        self.btnIPv6Kill = QPushButton('IPv6 Kill: OFF', self.centralwidget)
+        self.btnIPv6Kill.setObjectName('btnIPv6Kill')
+        self.btnIPv6Kill.setAttribute(Qt.WA_StyledBackground, True)
+        self.btnIPv6Kill.setAutoDefault(False)
+        self.btnIPv6Kill.setDefault(False)
+        self.btnIPv6Kill.setMinimumSize(QSize(0, 50))
+        self.btnIPv6Kill.setToolTip(
+            'IPv6 Kill (test) - disable/enable IPv6 binding on the active adapter. '
+            'Targets selected device adapter when one is selected.'
+        )
+        self.gridLayout.addWidget(self.btnIPv6Kill, 0, 5, 2, 1)
+        self.btnIPv6Kill.clicked.connect(self.toggleIPv6Kill)
 
         self.btnKill = QPushButton(self.centralwidget)
         self.btnKill.setObjectName('btnKill')
@@ -1103,6 +1117,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
         self._updatePercentCutButtonState()
+        self._updateIPv6KillButtonState()
         self._apply_inline_panel_styles()
         self._sync_inline_flow_controls_enabled()
 
@@ -1111,6 +1126,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnScanHard,
             self.btnKillAll,
             self.btnUnkillAll,
+            self.btnIPv6Kill,
             self.btnSettings,
             self.btnAbout,
             self.btnKill,
@@ -1301,6 +1317,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Unkill any killed device on exit from tray icon
         """
+        self._restore_ipv6_binding_on_exit()
         self.killer.unkill_all()
         self.stopLagSwitch()
         self.stopDupe(log=False)
@@ -1342,6 +1359,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnScanHard,
             self.btnKillAll,
             self.btnUnkillAll,
+            self.btnIPv6Kill,
             self.btnSettings,
             self.btnAbout,
             self.btnKill,
@@ -1362,10 +1380,88 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._updateLagSwitchButtonState()
             elif btn is self.btnDupe:
                 self._updateDupeButtonState()
+            elif btn is self.btnIPv6Kill:
+                self._updateIPv6KillButtonState()
             else:
                 btn.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         except RuntimeError:
             pass
+
+    @staticmethod
+    def _ps_single_quote(value):
+        return "'" + str(value or '').replace("'", "''") + "'"
+
+    def _run_powershell(self, script):
+        if not script:
+            return ''
+        cmd = f'powershell -NoProfile -ExecutionPolicy Bypass -Command "{script}"'
+        return terminal(cmd) or ''
+
+    def _set_ipv6_binding(self, iface_name, enable):
+        if not iface_name or not sys.platform.startswith('win'):
+            return False
+        q = self._ps_single_quote(iface_name)
+        action = 'Enable-NetAdapterBinding' if enable else 'Disable-NetAdapterBinding'
+        script = (
+            f"{action} -Name {q} -ComponentID ms_tcpip6 -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; "
+            f"$v = Get-NetAdapterBinding -Name {q} -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue | "
+            "Select-Object -ExpandProperty Enabled; "
+            "if ($null -eq $v) { 'UNKNOWN' } else { $v }"
+        )
+        out = (self._run_powershell(script) or '').strip().lower()
+        if enable:
+            return 'true' in out
+        return 'false' in out
+
+    def _updateIPv6KillButtonState(self):
+        if self.ipv6_kill_active:
+            label = self.ipv6_kill_iface_name or 'adapter'
+            self.btnIPv6Kill.setText(f'■ IPv6 Kill: ON ({label})')
+            self.btnIPv6Kill.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
+        else:
+            self.btnIPv6Kill.setText('IPv6 Kill: OFF')
+            self.btnIPv6Kill.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+
+    def _restore_ipv6_binding_on_exit(self):
+        if not self.ipv6_kill_active:
+            return
+        iface_name = self.ipv6_kill_iface_name
+        if iface_name:
+            self._set_ipv6_binding(iface_name, enable=True)
+        self.ipv6_kill_active = False
+        self.ipv6_kill_iface_name = ''
+        self._updateIPv6KillButtonState()
+
+    def toggleIPv6Kill(self):
+        if not sys.platform.startswith('win'):
+            self.log('IPv6 Kill test is currently supported on Windows only.', 'red')
+            return
+        device = self._get_selected_device()
+        if device and not device.get('admin'):
+            self._ensure_network_context_for_victim(device)
+        iface_name = (self.scanner.iface.name if self.scanner.iface else '') or ''
+        if not iface_name:
+            self.log('No network adapter selected for IPv6 Kill.', 'red')
+            return
+
+        if not self.ipv6_kill_active:
+            if self._set_ipv6_binding(iface_name, enable=False):
+                self.ipv6_kill_active = True
+                self.ipv6_kill_iface_name = iface_name
+                self.log(f'IPv6 Kill ON for adapter: {iface_name}', UI_LOG_VICTIM_BLOCK_FG)
+            else:
+                self.log(f'Failed to disable IPv6 on adapter: {iface_name}', 'red')
+            self._updateIPv6KillButtonState()
+            return
+
+        restore_iface = self.ipv6_kill_iface_name or iface_name
+        if self._set_ipv6_binding(restore_iface, enable=True):
+            self.ipv6_kill_active = False
+            self.ipv6_kill_iface_name = ''
+            self.log(f'IPv6 Kill OFF for adapter: {restore_iface}', UI_LOG_RESTORE_FG)
+        else:
+            self.log(f'Failed to re-enable IPv6 on adapter: {restore_iface}', 'red')
+        self._updateIPv6KillButtonState()
 
     def closeEvent(self, event):
         """
@@ -1381,6 +1477,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         # Close button path: unkill all and shutdown.
+        self._restore_ipv6_binding_on_exit()
         self.killer.unkill_all()
         self._sync_killed_devices()
         self.settings_window.close()
