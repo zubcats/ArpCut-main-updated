@@ -5,7 +5,16 @@ import subprocess
 
 from networking.forwarder import MitmForwarder
 from tools.pfctl import ensure_pf_enabled, install_anchor, block_all_for, unblock_all_for
-from tools.utils import threaded, get_default_iface
+from tools.utils import (
+    threaded,
+    get_default_iface,
+    get_iface_for_victim_ip,
+    get_gateway_ip,
+    get_gateway_mac,
+    get_my_ip,
+    good_mac,
+    get_vendor,
+)
 from constants import *
 
 
@@ -82,6 +91,42 @@ class Killer:
             except Exception:
                 pass
             self._socket = None
+
+    def _sync_iface_for_victim(self, victim):
+        """
+        Rebind killer iface/router context to whatever NIC reaches victim['ip'].
+        Safe no-op if already on the right interface.
+        """
+        ip = victim.get('ip') if isinstance(victim, dict) else None
+        if not ip:
+            return
+        target = get_iface_for_victim_ip(ip, fallback=self.iface)
+        if (
+            getattr(target, 'guid', None) == getattr(self.iface, 'guid', None)
+            and getattr(target, 'name', None) == getattr(self.iface, 'name', None)
+        ):
+            return
+        self.iface = target
+        self._close_socket()
+        guid = self.iface.guid if getattr(self.iface, 'guid', None) else self.iface.name
+        try:
+            conf.iface = guid
+        except Exception:
+            pass
+        router_ip = get_gateway_ip(guid)
+        iface_ip = get_my_ip(guid)
+        router_mac = get_gateway_mac(iface_ip, router_ip)
+        self.router = {
+            'ip': router_ip,
+            'mac': router_mac,
+            'vendor': get_vendor(router_mac),
+            'type': 'Router',
+            'name': '',
+            'admin': True,
+        }
+        # Keep iface fields in sync for packet crafting / forwarder metadata.
+        self.iface.ip = iface_ip
+        self.iface.mac = good_mac(getattr(self.iface, 'mac', GLOBAL_MAC))
     
     def kill(self, victim, wait_after=2):
         """
@@ -92,6 +137,7 @@ class Killer:
         Registers ``self.killed`` on the caller thread so UI state (e.g. toggleKill)
         stays in sync; only the ARP loop runs in a background thread.
         """
+        self._sync_iface_for_victim(victim)
         mac = victim['mac']
         # Reassert path: even if already marked killed, refresh victim record and restart
         # ARP worker generation so ON state recovers from stale/desynced workers.
@@ -195,6 +241,7 @@ class Killer:
         Removes from ``self.killed`` on the caller thread before ARP restore runs
         in the background, so the UI does not race with _sync_killed_devices().
         """
+        self._sync_iface_for_victim(victim)
         seq = self._next_op_seq(victim['mac'])
         if victim['mac'] in self.killed:
             self.killed.pop(victim['mac'])
@@ -212,6 +259,7 @@ class Killer:
             return
         if mac in self.killed:
             return
+        self._sync_iface_for_victim(victim)
         seq = self._op_seq.get(mac, 0)
         self._restore_arp_now(victim, seq, repeats=2, delay_s=0.05)
 
@@ -259,6 +307,7 @@ class Killer:
             if device['admin']:
                 continue
             if device['mac'] not in self.killed:
+                self._sync_iface_for_victim(device)
                 self.kill(device)
 
     def unkill_all(self):
@@ -267,6 +316,7 @@ class Killer:
         """
         victims = list(self.killed.values())
         for victim in victims:
+            self._sync_iface_for_victim(victim)
             mac = victim['mac']
             seq = self._next_op_seq(mac)
             self.killed.pop(mac, None)

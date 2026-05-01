@@ -1718,6 +1718,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         
         # Killing process
+        self._ensure_network_context_for_victim(device)
         self.killer.kill(device)
         self.killed_devices[device['mac']] = True
         self._sync_killed_devices()
@@ -1749,6 +1750,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         victim = self._victim_record_for_mac(device['mac']) or device
+        self._ensure_network_context_for_victim(victim)
         self.killer.unkill(victim)
         self.killed_devices[device['mac']] = False
         self._sync_killed_devices()
@@ -2301,7 +2303,54 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._repaint_table_row_for_hover(row)
                 break
 
+    def _ensure_network_context_for_victim(self, device) -> bool:
+        """
+        Bind scanner + killer to the NIC that routes to the victim (e.g. hotspot vs Ethernet).
+        Does not persist Settings; runtime only so ARP/firewall use the correct adapter.
+        """
+        if not device or not device.get('ip'):
+            return False
+        try:
+            changed = self.scanner.sync_iface_for_victim_ip(device['ip'])
+        except Exception:
+            return False
+        if not changed:
+            return False
+        self.killer.iface = self.scanner.iface
+        self.killer.router = self.scanner.router
+        self.killer._close_socket()
+        try:
+            from scapy.all import conf as scapy_conf
+
+            guid = self.scanner.iface.guid if self.scanner.iface else None
+            if guid:
+                scapy_conf.iface = guid
+        except Exception:
+            pass
+        label = (getattr(self.scanner.iface, 'name', None) or '').strip() or getattr(
+            self.scanner.iface, 'guid', ''
+        )
+        try:
+            # Persist auto-selected adapter so Settings reflects the active runtime NIC.
+            iface_name = getattr(self.scanner.iface, 'name', None) or ''
+            if iface_name:
+                set_settings('iface', iface_name)
+                sw = getattr(self, 'settings_window', None)
+                combo = getattr(sw, 'comboInterface', None) if sw is not None else None
+                if combo is not None:
+                    idx = combo.findData(iface_name)
+                    if idx >= 0:
+                        combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+        self.log(
+            f'Using network adapter for {device["ip"]}: {label}',
+            UI_LOG_RESTORE_FG,
+        )
+        return True
+
     def _apply_victim_block(self, device, direction):
+        self._ensure_network_context_for_victim(device)
         self.killer.disable_percent_cut(device['mac'])
         if device['mac'] not in self.killer.killed:
             self.killer.kill(device)
@@ -2312,6 +2361,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateKillButtonState()
 
     def _clear_victim_block(self, device):
+        self._ensure_network_context_for_victim(device)
         try:
             unblock_ip(device['ip'])
         except Exception:
@@ -2388,11 +2438,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if device and device.get('mac') == prev_mac:
             # During the "normal" phase the victim is already unkill()'d; we still must enforce
             # teardown here so MITM/ARP cannot stick after the UI shows OFF (same idea as Kill OFF).
+            victim = self._victim_record_for_mac(prev_mac) or device
+            if victim:
+                try:
+                    self._ensure_network_context_for_victim(victim)
+                except Exception:
+                    pass
             try:
                 unblock_ip(device['ip'])
             except Exception:
                 pass
-            victim = self._victim_record_for_mac(prev_mac) or device
             if victim:
                 try:
                     self.killer.unkill(victim)
@@ -2551,6 +2606,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if dev:
                 allow_pct = max(0, 100 - pct)
                 try:
+                    self._ensure_network_context_for_victim(dev)
                     self.killer.apply_percent_cut(dev, pass_percent=allow_pct, direction='both')
                 except Exception:
                     pass
@@ -2654,6 +2710,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._run_kill_command(mac, device, turn_on=False, source='pctcut_auto_off_kill')
             pct = self._clamp_percent(self.spinPercentCutMain.value())
             allow_pct = max(0, 100 - pct)
+            self._ensure_network_context_for_victim(device)
             self.killer.apply_percent_cut(device, pass_percent=allow_pct, direction='both')
             self.percent_cut_active = True
             self.percent_cut_device_mac = mac
@@ -2676,6 +2733,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         victim = self._victim_record_for_mac(prev_mac) or self._get_device_by_mac(prev_mac)
         if victim:
             try:
+                self._ensure_network_context_for_victim(victim)
                 self.killer.disable_percent_cut(prev_mac)
                 self.killer.unkill(victim)
                 self.killer.reinforce_restore(victim)
@@ -2700,6 +2758,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         actual_on = mac in self.killer.killed
         next_seq = int(self._kill_intent_seq.get(mac, 0)) + 1
         self._kill_intent_seq[mac] = next_seq
+        if device:
+            self._ensure_network_context_for_victim(device)
         if turn_on:
             if self.lag_active and self.lag_device_mac == mac:
                 self.stopLagSwitch(refresh_dialog=True)
@@ -2741,6 +2801,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if not victim:
                 return
             try:
+                self._ensure_network_context_for_victim(victim)
                 self.killer.unkill(victim)
                 self.killer.reinforce_restore(victim)
             except Exception:
@@ -2771,6 +2832,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if not victim:
                 return
             try:
+                self._ensure_network_context_for_victim(victim)
                 self.killer.unkill(victim)
                 self.killer.reinforce_restore(victim)
             except Exception:

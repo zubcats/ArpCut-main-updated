@@ -44,7 +44,53 @@ class Scanner():
         
         self.perfix = self.my_ip.rsplit(".", 1)[0]
         self.generate_ips()
-    
+
+    def sync_iface_for_victim_ip(self, victim_ip: str) -> bool:
+        """
+        If victim_ip is on a different local interface than self.iface, rebind scanner
+        topology (gateway, me, router dict) so Killer/ARP/firewall use the right NIC.
+        """
+        target = get_iface_for_victim_ip(victim_ip, fallback=self.iface)
+        if target.guid == self.iface.guid:
+            return False
+        self.iface = target
+        self.router_ip = get_gateway_ip(self.iface.guid)
+        self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
+        self.my_ip = get_my_ip(self.iface.guid)
+        self.my_mac = good_mac(self.iface.mac)
+        try:
+            self.perfix = self.my_ip.rsplit(".", 1)[0]
+        except Exception:
+            pass
+        self.generate_ips()
+        self.router = {
+            'ip': self.router_ip,
+            'mac': self.router_mac,
+            'vendor': get_vendor(self.router_mac),
+            'type': 'Router',
+            'name': '',
+            'admin': True,
+        }
+        self.me = {
+            'ip': self.my_ip,
+            'mac': self.my_mac,
+            'vendor': get_vendor(self.my_mac),
+            'type': 'Me',
+            'name': '',
+            'admin': True,
+        }
+        for row in self.devices:
+            t = row.get('type')
+            if t == 'Router':
+                row['ip'] = self.router_ip
+                row['mac'] = self.router_mac
+                row['vendor'] = get_vendor(self.router_mac)
+            elif t == 'Me':
+                row['ip'] = self.my_ip
+                row['mac'] = self.my_mac
+                row['vendor'] = get_vendor(self.my_mac)
+        return True
+
     def flush_arp(self):
         """
         Flush ARP cache

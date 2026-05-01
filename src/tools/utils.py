@@ -8,6 +8,7 @@ from manuf import manuf
 import sys
 import webbrowser
 import re
+import ipaddress
 
 from networking.ifaces import NetFace
 from constants import *
@@ -508,6 +509,130 @@ def get_default_iface():
     
     # Last resort: return first interface
     return ifaces_list[0] if ifaces_list else NetFace(DUMMY_IFACE)
+
+_IPV4_DOTTED_QUAD = re.compile(r'^(\d{1,3}\.){3}\d{1,3}$')
+
+
+def _ipv4_valid(ip: str) -> bool:
+    if not ip or not _IPV4_DOTTED_QUAD.match(ip):
+        return False
+    try:
+        return all(0 <= int(p) <= 255 for p in ip.split('.'))
+    except ValueError:
+        return False
+
+
+def _mask_prefix_len(mask_value) -> int:
+    """Convert route-table mask (int or dotted string) to prefix length."""
+    try:
+        if isinstance(mask_value, str):
+            return ipaddress.IPv4Network(f"0.0.0.0/{mask_value}", strict=False).prefixlen
+        mv = int(mask_value)
+        return bin(mv & 0xFFFFFFFF).count("1")
+    except Exception:
+        return 0
+
+
+def _network_for_route(route_entry):
+    """
+    Build IPv4Network from a scapy route entry when possible.
+    Route rows are usually: (dst, mask, gw, iface, src_ip, ...).
+    """
+    try:
+        if len(route_entry) < 2:
+            return None
+        dst, mask = route_entry[:2]
+        prefix = _mask_prefix_len(mask)
+        if prefix < 0 or prefix > 32:
+            return None
+        dst_i = int(dst) & 0xFFFFFFFF
+        return ipaddress.IPv4Network((dst_i, prefix), strict=False)
+    except Exception:
+        return None
+
+
+def get_iface_for_victim_ip(victim_ip: str, fallback=None):
+    """
+    Pick the local NetFace Scapy would use to reach victim_ip (same subnet / route table).
+
+    Use this when Settings points at one NIC (e.g. Ethernet) but the selected device is on
+    another (e.g. mobile hotspot / ICS) so ARP + pf rules target the correct adapter.
+    """
+    if not _ipv4_valid(victim_ip) or victim_ip in ('0.0.0.0', '127.0.0.1'):
+        return fallback if fallback is not None else get_default_iface()
+    try:
+        conf.route.resync()
+    except Exception:
+        pass
+    ifaces = list(get_ifaces())
+    if not ifaces:
+        return fallback if fallback is not None else get_default_iface()
+
+    rt = None
+    try:
+        rt = conf.route.route(victim_ip)
+    except Exception:
+        rt = None
+
+    if rt:
+        for token in rt:
+            ts = str(token)
+            for iface in ifaces:
+                if iface.guid == ts or ts == iface.guid:
+                    return iface
+        for token in rt:
+            ts = str(token)
+            if 'NPF_' in ts or ts.startswith('\\Device'):
+                for iface in ifaces:
+                    if iface.guid == ts:
+                        return iface
+
+    # Fallback #1: longest-prefix match from full route table.
+    try:
+        victim_addr = ipaddress.IPv4Address(victim_ip)
+    except Exception:
+        return fallback if fallback is not None else get_default_iface()
+    best_route = None
+    best_prefix = -1
+    try:
+        for entry in getattr(conf.route, 'routes', []):
+            if len(entry) < 4:
+                continue
+            net = _network_for_route(entry)
+            if not net or victim_addr not in net:
+                continue
+            prefix = int(net.prefixlen)
+            if prefix <= best_prefix:
+                continue
+            iface_token = str(entry[3])
+            for iface in ifaces:
+                if iface.guid == iface_token:
+                    best_route = iface
+                    best_prefix = prefix
+                    break
+        if best_route is not None:
+            return best_route
+    except Exception:
+        pass
+
+    # Fallback #2: same /24 as a configured interface (hotspot clients, odd route tables).
+    try:
+        v_oct = [int(x) for x in victim_ip.split('.')]
+    except ValueError:
+        return fallback if fallback is not None else get_default_iface()
+    for iface in ifaces:
+        ip = getattr(iface, 'ip', None) or ''
+        if not ip or ip in ('0.0.0.0', '127.0.0.1'):
+            continue
+        try:
+            a = [int(x) for x in ip.split('.')]
+        except ValueError:
+            continue
+        if len(a) == 4 and len(v_oct) == 4 and a[:3] == v_oct[:3]:
+            return iface
+
+    return fallback if fallback is not None else get_default_iface()
+
 
 def get_iface_by_name(name):
     """
