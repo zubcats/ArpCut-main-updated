@@ -1749,7 +1749,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             else:
                 sa = self._short_ipv6_err_alias(resolved_alias)
                 if ipv6_err == 'binding_failed' and sa:
-                    self.log(f'IPv6: denied ({sa}). Run as admin.', 'red')
+                    self.log(f'IPv6: binding failed ({sa}).', 'red')
                 else:
                     self.log(f'IPv6: no iface @ {iface_ip or "?"}', 'red')
             self._updateIPv6KillButtonState()
@@ -1776,7 +1776,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             sa = self._short_ipv6_err_alias(resolved_alias)
             if ipv6_err == 'binding_failed' and sa:
-                self.log(f'IPv6: off denied ({sa}). Run as admin.', 'red')
+                self.log(f'IPv6: re-enable failed ({sa}).', 'red')
             else:
                 self.log(f'IPv6: off failed @ {stored_ip or "?"}', 'red')
         self._updateIPv6KillButtonState()
