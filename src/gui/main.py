@@ -1489,6 +1489,34 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except ValueError:
             return False
 
+    def _resolve_adapter_name_from_ipconfig(self, target_ip):
+        """
+        Last-resort: parse ``ipconfig /all`` (no PowerShell NetTCPIP). Matches the Windows
+        UI adapter section that lists this IPv4 — works when cmdlet pipelines return nothing.
+        """
+        if not sys.platform.startswith('win') or not self._ipv4_usable(target_ip):
+            return ''
+        raw = terminal('ipconfig /all')
+        if not raw:
+            return ''
+        ip_token = target_ip.strip()
+        current_adapter = None
+        for line in raw.splitlines():
+            s = line.strip()
+            low = s.lower()
+            if s.endswith(':') and 'adapter' in low:
+                idx = low.rfind('adapter')
+                tail = s[idx + len('adapter') :].strip()
+                if tail.endswith(':'):
+                    tail = tail[:-1].strip()
+                current_adapter = tail or None
+                continue
+            if current_adapter and ip_token in s and re.search(
+                r'\d{1,3}(?:\.\d{1,3}){3}', s
+            ):
+                return current_adapter.strip()
+        return ''
+
     def _resolve_windows_adapter_alias_from_ipv4(self, iface_ip):
         """
         Map a local IPv4 to the Get-NetAdapter Name. Tries several APIs because
@@ -1539,7 +1567,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             out = (self._run_powershell(script) or '').strip()
             if self._is_plausible_windows_adapter_alias(out):
                 return out
-        return ''
+        cfg = self._resolve_adapter_name_from_ipconfig(ip_use)
+        return (cfg or '').strip()
 
     def _resolve_windows_adapter_alias(self, iface_name='', iface_guid='', mac='', iface_ip=''):
         if not sys.platform.startswith('win'):
@@ -1602,13 +1631,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return ''
 
     def _set_ipv6_binding(self, iface_name, enable, iface_guid='', mac='', iface_ip=''):
+        """
+        Returns (success, resolved_alias, err_kind) where err_kind is None, 'no_alias',
+        or 'binding_failed' (e.g. needs elevation).
+        """
         if not sys.platform.startswith('win'):
-            return False, ''
+            return False, '', 'no_alias'
         alias = self._resolve_windows_adapter_alias(
             iface_name, iface_guid, mac=mac, iface_ip=iface_ip
         )
         if not alias:
-            return False, ''
+            return False, '', 'no_alias'
         q = self._ps_single_quote(alias)
         action = 'Enable-NetAdapterBinding' if enable else 'Disable-NetAdapterBinding'
         script = (
@@ -1619,8 +1652,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
         out = (self._run_powershell(script) or '').strip().lower()
         if enable:
-            return ('true' in out), alias
-        return ('false' in out), alias
+            ok = 'true' in out
+        else:
+            ok = 'false' in out
+        if ok:
+            return True, alias, None
+        return False, alias, 'binding_failed'
+
+    @staticmethod
+    def _short_ipv6_err_alias(alias):
+        a = (alias or '').strip()
+        if len(a) <= 20:
+            return a
+        return a[:18] + '…'
 
     @staticmethod
     def _short_ipv6_iface_label(s, max_len=22):
@@ -1688,7 +1732,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         if not self.ipv6_kill_active:
-            ok, resolved_alias = self._set_ipv6_binding(
+            ok, resolved_alias, ipv6_err = self._set_ipv6_binding(
                 iface_name,
                 enable=False,
                 iface_guid=iface_guid,
@@ -1703,11 +1747,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.ipv6_kill_iface_ip = iface_ip
                 self.log(f'IPv6 Kill ON for adapter: {self.ipv6_kill_iface_name}', UI_LOG_VICTIM_BLOCK_FG)
             else:
-                # Keep short: left status strip is narrow and long HTML lines get clipped.
-                self.log(
-                    f'IPv6: no adapter for {iface_ip or "?"}. Run as admin.',
-                    'red',
-                )
+                sa = self._short_ipv6_err_alias(resolved_alias)
+                if ipv6_err == 'binding_failed' and sa:
+                    self.log(f'IPv6: denied ({sa}). Run as admin.', 'red')
+                else:
+                    self.log(f'IPv6: no iface @ {iface_ip or "?"}', 'red')
             self._updateIPv6KillButtonState()
             return
 
@@ -1715,7 +1759,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         stored_guid = self.ipv6_kill_iface_guid or iface_guid
         stored_mac = self.ipv6_kill_iface_mac or iface_mac
         stored_ip = self.ipv6_kill_iface_ip or iface_ip
-        ok, resolved_alias = self._set_ipv6_binding(
+        ok, resolved_alias, ipv6_err = self._set_ipv6_binding(
             restore_iface,
             enable=True,
             iface_guid=stored_guid,
@@ -1730,10 +1774,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.ipv6_kill_iface_ip = ''
             self.log(f'IPv6 Kill OFF for adapter: {resolved_alias or restore_iface}', UI_LOG_RESTORE_FG)
         else:
-            self.log(
-                f'IPv6: re-enable failed @ {stored_ip or "?"}. Run as admin.',
-                'red',
-            )
+            sa = self._short_ipv6_err_alias(resolved_alias)
+            if ipv6_err == 'binding_failed' and sa:
+                self.log(f'IPv6: off denied ({sa}). Run as admin.', 'red')
+            else:
+                self.log(f'IPv6: off failed @ {stored_ip or "?"}', 'red')
         self._updateIPv6KillButtonState()
 
     def closeEvent(self, event):
