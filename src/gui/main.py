@@ -1449,22 +1449,64 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except ValueError:
             return False
 
-    def _resolve_windows_adapter_alias(self, iface_name='', iface_guid='', mac='', iface_ip=''):
-        if not sys.platform.startswith('win'):
-            return ''
+    def _resolve_windows_adapter_alias_from_ipv4(self, iface_ip):
+        """
+        Map a local IPv4 to the Get-NetAdapter Name. Tries several APIs because
+        -IPAddress and NetTCPIP differ across Windows / PowerShell versions.
+        """
         ip_use = (iface_ip or '').strip()
-        if self._ipv4_usable(ip_use):
-            qip = self._ps_single_quote(ip_use)
-            script_ip = (
+        if not self._ipv4_usable(ip_use):
+            return ''
+        qip = self._ps_single_quote(ip_use)
+        scripts = [
+            (
                 f"$ip = {qip}; "
                 "$na = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $ip -ErrorAction SilentlyContinue | "
                 "Select-Object -First 1 | "
                 "ForEach-Object { Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -IncludeHidden -ErrorAction SilentlyContinue }; "
                 "if ($na) { $na | Select-Object -First 1 -ExpandProperty Name }"
-            )
-            out_ip = (self._run_powershell(script_ip) or '').strip()
-            if self._is_plausible_windows_adapter_alias(out_ip):
-                return out_ip
+            ),
+            (
+                f"$ip = {qip}; "
+                "$x = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.IPAddress -eq $ip } | Select-Object -First 1; "
+                "if ($null -ne $x) { "
+                "Get-NetAdapter -InterfaceIndex $x.InterfaceIndex -IncludeHidden -ErrorAction SilentlyContinue | "
+                "Select-Object -First 1 -ExpandProperty Name }"
+            ),
+            (
+                f"$target = [System.Net.IPAddress]::Parse({qip}); "
+                "$ni = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | "
+                "Where-Object { $_.GetIPProperties().UnicastAddresses | Where-Object { "
+                "$_.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and "
+                "$_.Address.Equals($target) } } | Select-Object -First 1; "
+                "if ($null -ne $ni) { "
+                "$ng = ($ni.Id -replace '[{{}}]',''); "
+                "Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | Where-Object { "
+                "($_.InterfaceGuid.ToString() -replace '[{{}}]','') -eq $ng } | "
+                "Select-Object -First 1 -ExpandProperty Name }"
+            ),
+            (
+                f"$ip = {qip}; "
+                "$cfg = Get-WmiObject Win32_NetworkAdapterConfiguration -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.IPEnabled -and $_.IPAddress -contains $ip } | Select-Object -First 1; "
+                "if ($null -ne $cfg) { "
+                "$ad = Get-WmiObject Win32_NetworkAdapter -Filter \"Index=$($cfg.Index)\" -ErrorAction SilentlyContinue; "
+                "if ($ad.NetConnectionID) { $ad.NetConnectionID } elseif ($ad.Name) { $ad.Name } }"
+            ),
+        ]
+        for script in scripts:
+            out = (self._run_powershell(script) or '').strip()
+            if self._is_plausible_windows_adapter_alias(out):
+                return out
+        return ''
+
+    def _resolve_windows_adapter_alias(self, iface_name='', iface_guid='', mac='', iface_ip=''):
+        if not sys.platform.startswith('win'):
+            return ''
+        alias_ip = self._resolve_windows_adapter_alias_from_ipv4(iface_ip)
+        if alias_ip:
+            return alias_ip
 
         n = (iface_name or '').strip()
         if self._is_plausible_windows_adapter_alias(n):
@@ -1593,6 +1635,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         iface_guid = (self.scanner.iface.guid if self.scanner.iface else '') or ''
         iface_mac = (self.scanner.iface.mac if self.scanner.iface else '') or ''
         iface_ip = (self.scanner.iface.ip if self.scanner.iface else '') or ''
+        iface_ip = (iface_ip or '').strip()
+        if not self._ipv4_usable(iface_ip):
+            iface_ip = (getattr(self.scanner, 'my_ip', None) or '').strip()
+        if not self._ipv4_usable(iface_ip):
+            for row in getattr(self.scanner, 'devices', None) or []:
+                if row.get('type') == 'Me' and self._ipv4_usable(row.get('ip')):
+                    iface_ip = (row.get('ip') or '').strip()
+                    break
         if not iface_name and not iface_guid and not self._ipv4_usable(iface_ip):
             self.log('No network adapter selected for IPv6 Kill.', 'red')
             return
@@ -1614,8 +1664,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.log(f'IPv6 Kill ON for adapter: {self.ipv6_kill_iface_name}', UI_LOG_VICTIM_BLOCK_FG)
             else:
                 self.log(
-                    'Failed to disable IPv6: could not resolve a valid Windows adapter name '
-                    '(run as Administrator and ensure NetAdapter cmdlets are available).',
+                    f'Failed to disable IPv6: could not resolve adapter for host IP '
+                    f'{iface_ip or "?"}. Try Run as administrator.',
                     'red',
                 )
             self._updateIPv6KillButtonState()
