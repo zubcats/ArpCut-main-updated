@@ -761,6 +761,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._flow_off_intent_seq = {}
         self.ipv6_kill_active = False
         self.ipv6_kill_iface_name = ''
+        self.ipv6_kill_iface_guid = ''
+        self.ipv6_kill_iface_mac = ''
         self.lag_active = False
         self.lag_block_ms = 9000
         self.lag_release_ms = 100
@@ -1403,30 +1405,71 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         m = re.search(r'\{([0-9A-Fa-f-]{36})\}', str(scapy_name or ''))
         return m.group(1) if m else ''
 
-    def _resolve_windows_adapter_alias(self, iface_name='', iface_guid=''):
+    @staticmethod
+    def _is_plausible_windows_adapter_alias(name):
+        if not name or not str(name).strip():
+            return False
+        t = str(name).strip().lower()
+        if t in ('description', 'interface', 'adapter', 'name', 'type'):
+            return False
+        if re.match(r'^interface-\d+$', t):
+            return False
+        return True
+
+    @staticmethod
+    def _mac_hex_no_sep(mac):
+        if not mac:
+            return ''
+        return re.sub(r'[^0-9A-Fa-f]', '', str(mac)).upper()
+
+    def _resolve_windows_adapter_alias(self, iface_name='', iface_guid='', mac=''):
         if not sys.platform.startswith('win'):
             return ''
-        bad_names = {'', 'description', 'interface', 'adapter'}
         n = (iface_name or '').strip()
-        if n and n.lower() not in bad_names and not re.match(r'^interface-\d+$', n.lower()):
+        if self._is_plausible_windows_adapter_alias(n):
             return n
 
         win_guid = self._extract_win_guid_from_scapy_name(iface_guid)
-        if not win_guid:
-            return n
-        qg = self._ps_single_quote(win_guid)
-        script = (
-            f"$a = Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | "
-            f"Where-Object {{ $_.InterfaceGuid -eq {qg} }} | Select-Object -First 1 -ExpandProperty Name; "
-            "if ($a) { $a }"
-        )
-        out = (self._run_powershell(script) or '').strip()
-        return out or n
+        if win_guid:
+            qg = self._ps_single_quote(win_guid)
+            script = (
+                f"$g = [guid]{qg}; "
+                f"$a = Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | "
+                f"Where-Object {{ $_.InterfaceGuid -eq $g }} | Select-Object -First 1 -ExpandProperty Name; "
+                "if ($a) { $a }"
+            )
+            out = (self._run_powershell(script) or '').strip()
+            if self._is_plausible_windows_adapter_alias(out):
+                return out
+            script2 = (
+                f"$a = Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | "
+                f"Where-Object {{ $_.InterfaceGuid.ToString() -eq {qg} }} | Select-Object -First 1 -ExpandProperty Name; "
+                "if ($a) { $a }"
+            )
+            out2 = (self._run_powershell(script2) or '').strip()
+            if self._is_plausible_windows_adapter_alias(out2):
+                return out2
 
-    def _set_ipv6_binding(self, iface_name, enable, iface_guid=''):
+        want = self._mac_hex_no_sep(mac)
+        if len(want) == 12:
+            qs = self._ps_single_quote(want)
+            script_mac = (
+                f"$want = {qs}; "
+                "$a = Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.MacAddress -and (($_.MacAddress -replace '[:-]','').ToUpper() -eq $want) } | "
+                "Select-Object -First 1 -ExpandProperty Name; "
+                "if ($a) { $a }"
+            )
+            out3 = (self._run_powershell(script_mac) or '').strip()
+            if self._is_plausible_windows_adapter_alias(out3):
+                return out3
+
+        return ''
+
+    def _set_ipv6_binding(self, iface_name, enable, iface_guid='', mac=''):
         if not sys.platform.startswith('win'):
             return False, ''
-        alias = self._resolve_windows_adapter_alias(iface_name, iface_guid)
+        alias = self._resolve_windows_adapter_alias(iface_name, iface_guid, mac=mac)
         if not alias:
             return False, ''
         q = self._ps_single_quote(alias)
@@ -1455,10 +1498,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self.ipv6_kill_active:
             return
         iface_name = self.ipv6_kill_iface_name
-        if iface_name:
-            self._set_ipv6_binding(iface_name, enable=True)
+        iface_guid = self.ipv6_kill_iface_guid
+        mac = self.ipv6_kill_iface_mac or (
+            (self.scanner.iface.mac if self.scanner.iface else '') or ''
+        )
+        if iface_name or iface_guid:
+            self._set_ipv6_binding(
+                iface_name, enable=True, iface_guid=iface_guid, mac=mac
+            )
         self.ipv6_kill_active = False
         self.ipv6_kill_iface_name = ''
+        self.ipv6_kill_iface_guid = ''
+        self.ipv6_kill_iface_mac = ''
         self._updateIPv6KillButtonState()
 
     def toggleIPv6Kill(self):
@@ -1470,29 +1521,48 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._ensure_network_context_for_victim(device)
         iface_name = (self.scanner.iface.name if self.scanner.iface else '') or ''
         iface_guid = (self.scanner.iface.guid if self.scanner.iface else '') or ''
-        if not iface_name:
+        iface_mac = (self.scanner.iface.mac if self.scanner.iface else '') or ''
+        if not iface_name and not iface_guid:
             self.log('No network adapter selected for IPv6 Kill.', 'red')
             return
 
         if not self.ipv6_kill_active:
-            ok, resolved_alias = self._set_ipv6_binding(iface_name, enable=False, iface_guid=iface_guid)
+            ok, resolved_alias = self._set_ipv6_binding(
+                iface_name, enable=False, iface_guid=iface_guid, mac=iface_mac
+            )
             if ok:
                 self.ipv6_kill_active = True
-                self.ipv6_kill_iface_name = resolved_alias or iface_name
+                self.ipv6_kill_iface_name = resolved_alias
+                self.ipv6_kill_iface_guid = iface_guid
+                self.ipv6_kill_iface_mac = iface_mac
                 self.log(f'IPv6 Kill ON for adapter: {self.ipv6_kill_iface_name}', UI_LOG_VICTIM_BLOCK_FG)
             else:
-                self.log(f'Failed to disable IPv6 on adapter: {resolved_alias or iface_name}', 'red')
+                self.log(
+                    'Failed to disable IPv6: could not resolve a valid Windows adapter name '
+                    '(run as Administrator and ensure NetAdapter cmdlets are available).',
+                    'red',
+                )
             self._updateIPv6KillButtonState()
             return
 
         restore_iface = self.ipv6_kill_iface_name or iface_name
-        ok, resolved_alias = self._set_ipv6_binding(restore_iface, enable=True, iface_guid=iface_guid)
+        stored_guid = self.ipv6_kill_iface_guid or iface_guid
+        stored_mac = self.ipv6_kill_iface_mac or iface_mac
+        ok, resolved_alias = self._set_ipv6_binding(
+            restore_iface, enable=True, iface_guid=stored_guid, mac=stored_mac
+        )
         if ok:
             self.ipv6_kill_active = False
             self.ipv6_kill_iface_name = ''
+            self.ipv6_kill_iface_guid = ''
+            self.ipv6_kill_iface_mac = ''
             self.log(f'IPv6 Kill OFF for adapter: {resolved_alias or restore_iface}', UI_LOG_RESTORE_FG)
         else:
-            self.log(f'Failed to re-enable IPv6 on adapter: {resolved_alias or restore_iface}', 'red')
+            self.log(
+                'Failed to re-enable IPv6: could not resolve adapter or binding command failed '
+                '(try Run as administrator).',
+                'red',
+            )
         self._updateIPv6KillButtonState()
 
     def closeEvent(self, event):
