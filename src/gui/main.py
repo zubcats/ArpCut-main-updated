@@ -845,7 +845,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 btn.setIcon(self.processIcon(btn_icon))
         self.btnAbout.setIcon(self.icon)
         # Match ui_main (40); larger icons clip in the top grid cell.
-        self.btnAbout.setIconSize(QSize(40, 40))
+        self.btnAbout.setIconSize(QSize(46, 46))
 
         self.btnKill = QPushButton(self.centralwidget)
         self.btnKill.setObjectName('btnKill')
