@@ -831,8 +831,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.buttons = [
             (self.btnScanEasy,   self.scanEasy,      scan_easy_icon,  'ARP Scan - Fast network scan using ARP requests (may miss some devices). Shortcut: Space (only while this main window is focused).'),
             (self.btnScanHard,   self.scanHard,      scan_hard_icon,  'Ping Scan - Thorough scan using ICMP ping (slower but finds all devices)'),
-            (self.btnKillAll,    self.killAll,       killall_icon,    'Kill All - Block internet access for ALL devices on the network'),
-            (self.btnUnkillAll,  self.unkillAll,     unkillall_icon,  'Unkill All - Restore internet access for all blocked devices'),
             (self.btnSettings,   self.openSettings,  settings_icon,   'Settings - Configure scan options and network interface'),
             (self.btnAbout,      self.openAbout,     None,            f'About {APP_DISPLAY_NAME} - View credits and version info')
         ] 
@@ -1059,21 +1057,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         show_option = QAction('Show', self)
         hide_option = QAction('Hide', self)
         quit_option = QAction('Quit', self)
-        kill_option = QAction(self.processIcon(kill_icon), '&Kill All', self)
-        unkill_option = QAction(self.processIcon(unkillall_icon), '&Unkill All', self)
-        
         show_option.triggered.connect(self.trayShowClicked)
         hide_option.triggered.connect(self.hide_all)
         quit_option.triggered.connect(self.quit_all)
-        kill_option.triggered.connect(self.killAll)
-        unkill_option.triggered.connect(self.unkillAll)
-        
+
         tray_menu = QMenu()
         tray_menu.addAction(show_option)
         tray_menu.addAction(hide_option)
-        tray_menu.addSeparator()
-        tray_menu.addAction(kill_option)
-        tray_menu.addAction(unkill_option)
         tray_menu.addSeparator()
         self.traffic_option = QAction('Traffic for Selected', self)
         self.traffic_option.triggered.connect(self.openTraffic)
@@ -1120,8 +1110,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         _chrome_btns = (
             self.btnScanEasy,
             self.btnScanHard,
-            self.btnKillAll,
-            self.btnUnkillAll,
             self.btnSettings,
             self.btnAbout,
             self.btnKill,
@@ -1381,8 +1369,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for w in (
             self.btnScanEasy,
             self.btnScanHard,
-            self.btnKillAll,
-            self.btnUnkillAll,
             self.btnSettings,
             self.btnAbout,
             self.btnKill,

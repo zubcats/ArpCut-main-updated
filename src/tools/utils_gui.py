@@ -195,8 +195,6 @@ def _main_chrome_action_buttons_qss() -> str:
     _ids = (
         '#btnScanEasy',
         '#btnScanHard',
-        '#btnKillAll',
-        '#btnUnkillAll',
         '#btnSettings',
         '#btnAbout',
         '#btnKill',
