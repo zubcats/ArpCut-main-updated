@@ -145,26 +145,20 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
     background-color: #141414;
 }
-/* qdarkstyle paints spin arrows blue; draw neutral grey triangles instead. */
+/* qdarkstyle paints spin arrows blue; SVG triangles (CSS borders render as boxes on some Qt/Windows). */
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-    image: none;
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDYgTDQuNSAwIEw5IDYgWiIvPjwvc3ZnPg==);
     border: none;
-    width: 0;
-    height: 0;
+    width: 9px;
+    height: 6px;
     margin: 0 1px 1px 1px;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid #9a9a9a;
 }
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-    image: none;
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDAgTDQuNSA2IEw5IDAgWiIvPjwvc3ZnPg==);
     border: none;
-    width: 0;
-    height: 0;
+    width: 9px;
+    height: 6px;
     margin: 1px 1px 0 1px;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #9a9a9a;
 }
 QSlider::groove:horizontal {
     background-color: #1a1a1a;
@@ -597,27 +591,21 @@ QMainWindow#zubcutAuxiliaryWindow QSpinBox::up-arrow,
 QMainWindow#zubcutAuxiliaryWindow QDoubleSpinBox::up-arrow,
 QDialog QSpinBox::up-arrow,
 QDialog QDoubleSpinBox::up-arrow {{
-    image: none;
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDYgTDQuNSAwIEw5IDYgWiIvPjwvc3ZnPg==);
     border: none;
-    width: 0;
-    height: 0;
+    width: 9px;
+    height: 6px;
     margin: 0 1px 1px 1px;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid #9a9a9a;
 }}
 QMainWindow#zubcutAuxiliaryWindow QSpinBox::down-arrow,
 QMainWindow#zubcutAuxiliaryWindow QDoubleSpinBox::down-arrow,
 QDialog QSpinBox::down-arrow,
 QDialog QDoubleSpinBox::down-arrow {{
-    image: none;
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDAgTDQuNSA2IEw5IDAgWiIvPjwvc3ZnPg==);
     border: none;
-    width: 0;
-    height: 0;
+    width: 9px;
+    height: 6px;
     margin: 1px 1px 0 1px;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #9a9a9a;
 }}
 QMainWindow#zubcutAuxiliaryWindow QComboBox::drop-down,
 QDialog QComboBox::drop-down {{
@@ -781,25 +769,19 @@ QDialog#zubcutLagDupeDialog QSpinBox::down-button:hover {{
 }}
 QDialog#zubcutLagDupeDialog QSpinBox::up-arrow,
 QDialog#zubcutLagDupeDialog QDoubleSpinBox::up-arrow {{
-    image: none;
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiNhZWI0YmYiIGQ9Ik0wIDYgTDQuNSAwIEw5IDYgWiIvPjwvc3ZnPg==);
     border: none;
-    width: 0;
-    height: 0;
+    width: 9px;
+    height: 6px;
     margin: 0 1px 1px 1px;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid #aeb4bf;
 }}
 QDialog#zubcutLagDupeDialog QSpinBox::down-arrow,
 QDialog#zubcutLagDupeDialog QDoubleSpinBox::down-arrow {{
-    image: none;
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiNhZWI0YmYiIGQ9Ik0wIDAgTDQuNSA2IEw5IDAgWiIvPjwvc3ZnPg==);
     border: none;
-    width: 0;
-    height: 0;
+    width: 9px;
+    height: 6px;
     margin: 1px 1px 0 1px;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #aeb4bf;
 }}
 QDialog#zubcutLagDupeDialog QSlider::groove:horizontal {{
     background-color: #1a1a1a;
