@@ -94,6 +94,18 @@ def _start_paid_runtime_validation(gui, icon) -> None:
 
         def _unkill_pass() -> None:
             try:
+                from tools.pfctl import unblock_ip
+
+                for v in list(getattr(gui.killer, 'killed', {}).values()):
+                    _ip = v.get('ip') if isinstance(v, dict) else None
+                    if _ip:
+                        try:
+                            unblock_ip(_ip)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            try:
                 gui.killer.unkill_all()
             except Exception:
                 pass

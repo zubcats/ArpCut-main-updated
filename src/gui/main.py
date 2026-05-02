@@ -1331,7 +1331,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Unkill any killed device on exit from tray icon
         """
+        _q_ips = [v.get('ip') for v in self.killer.killed.values() if v.get('ip')]
         self.killer.unkill_all()
+        for _ip in _q_ips:
+            try:
+                unblock_ip(_ip)
+            except Exception:
+                pass
         self.stopLagSwitch()
         self.stopDupe(log=False)
         self.stopPercentCut(log=False)
@@ -1416,7 +1422,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         # Close button path: unkill all and shutdown.
+        _x_ips = [v.get('ip') for v in self.killer.killed.values() if v.get('ip')]
         self.killer.unkill_all()
+        for _ip in _x_ips:
+            try:
+                unblock_ip(_ip)
+            except Exception:
+                pass
         self._sync_killed_devices()
         self.settings_window.close()
         self.about_window.close()
@@ -1755,6 +1767,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Killing process
         self._ensure_network_context_for_victim(device)
         self.killer.kill(device)
+        try:
+            iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+            block_ip(iface, device['ip'], 'both')
+        except Exception:
+            pass
         self.killed_devices[device['mac']] = True
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
@@ -1786,6 +1803,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         victim = self._victim_record_for_mac(device['mac']) or device
         self._ensure_network_context_for_victim(victim)
+        try:
+            unblock_ip(victim.get('ip') or '')
+        except Exception:
+            pass
         self.killer.unkill(victim)
         self.killed_devices[device['mac']] = False
         self._sync_killed_devices()
@@ -1807,6 +1828,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         
         self.killer.kill_all(self.scanner.devices)
+        for v in list(self.killer.killed.values()):
+            try:
+                self._ensure_network_context_for_victim(v)
+                iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+                block_ip(iface, v['ip'], 'both')
+            except Exception:
+                pass
         for mac in self.killer.killed:
             self.killed_devices[mac] = True
         self._sync_killed_devices()
@@ -1828,6 +1856,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         
         victims_before = [dict(v) for v in self.killer.killed.values()]
+        for v in victims_before:
+            try:
+                unblock_ip(v.get('ip') or '')
+            except Exception:
+                pass
         self.killer.unkill_all()
         for victim in victims_before:
             mac = victim.get('mac')
@@ -1874,7 +1907,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Save copy of killed devices
         self.killer.store()
         
+        _pre_scan_ips = [v.get('ip') for v in self.killer.killed.values() if v.get('ip')]
         self.killer.unkill_all()
+        for _ip in _pre_scan_ips:
+            try:
+                unblock_ip(_ip)
+            except Exception:
+                pass
         
         self.log(
             ['Arping', 'Pinging'][scan_type] + ' your network...',
@@ -2805,10 +2844,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if not actual_on and device:
                 self.killer.disable_percent_cut(mac)
                 self.killer.kill(device)
+                try:
+                    iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+                    block_ip(iface, device['ip'], 'both')
+                except Exception:
+                    pass
                 self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
         else:
             victim = self._victim_record_for_mac(mac) or device
             if victim:
+                try:
+                    unblock_ip(victim.get('ip') or '')
+                except Exception:
+                    pass
                 self.killer.unkill(victim)
                 self.killer.reinforce_restore(victim)
                 if actual_on:
