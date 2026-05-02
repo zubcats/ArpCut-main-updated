@@ -104,14 +104,67 @@ QCheckBox::indicator:checked, QRadioButton::indicator:checked {
 QCheckBox:hover, QRadioButton:hover {
     color: #316E69;
 }
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-    background-color: #316E69;
-    min-height: 24px;
-    min-width: 24px;
+/* Scroll bars: neutral greys (match toolbar chrome), not teal — easier on the eyes on #tableScan. */
+QScrollBar:vertical {
+    background-color: #141414;
+    width: 10px;
+    margin: 0;
+    border: none;
     border-radius: 4px;
 }
+QScrollBar:horizontal {
+    background-color: #141414;
+    height: 10px;
+    margin: 0;
+    border: none;
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical {
+    background-color: #3d3d3d;
+    min-height: 24px;
+    border-radius: 4px;
+    margin: 2px;
+}
+QScrollBar::handle:horizontal {
+    background-color: #3d3d3d;
+    min-width: 24px;
+    border-radius: 4px;
+    margin: 2px;
+}
 QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
-    background-color: #5D706E;
+    background-color: #4a4a4a;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    height: 0;
+    width: 0;
+    border: none;
+    background: transparent;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background-color: #141414;
+}
+/* qdarkstyle paints spin arrows blue; draw neutral grey triangles instead. */
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    image: none;
+    border: none;
+    width: 0;
+    height: 0;
+    margin: 0 1px 1px 1px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid #9a9a9a;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    image: none;
+    border: none;
+    width: 0;
+    height: 0;
+    margin: 1px 1px 0 1px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #9a9a9a;
 }
 QSlider::groove:horizontal {
     background-color: #1a1a1a;
@@ -540,6 +593,32 @@ QDialog QSpinBox::up-button:hover,
 QDialog QSpinBox::down-button:hover {{
     background-color: {admin_bg};
 }}
+QMainWindow#zubcutAuxiliaryWindow QSpinBox::up-arrow,
+QMainWindow#zubcutAuxiliaryWindow QDoubleSpinBox::up-arrow,
+QDialog QSpinBox::up-arrow,
+QDialog QDoubleSpinBox::up-arrow {{
+    image: none;
+    border: none;
+    width: 0;
+    height: 0;
+    margin: 0 1px 1px 1px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid #9a9a9a;
+}}
+QMainWindow#zubcutAuxiliaryWindow QSpinBox::down-arrow,
+QMainWindow#zubcutAuxiliaryWindow QDoubleSpinBox::down-arrow,
+QDialog QSpinBox::down-arrow,
+QDialog QDoubleSpinBox::down-arrow {{
+    image: none;
+    border: none;
+    width: 0;
+    height: 0;
+    margin: 1px 1px 0 1px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #9a9a9a;
+}}
 QMainWindow#zubcutAuxiliaryWindow QComboBox::drop-down,
 QDialog QComboBox::drop-down {{
     subcontrol-origin: padding;
@@ -699,6 +778,28 @@ QDialog#zubcutLagDupeDialog QSpinBox::down-button {{
 QDialog#zubcutLagDupeDialog QSpinBox::up-button:hover,
 QDialog#zubcutLagDupeDialog QSpinBox::down-button:hover {{
     background-color: {h_fill};
+}}
+QDialog#zubcutLagDupeDialog QSpinBox::up-arrow,
+QDialog#zubcutLagDupeDialog QDoubleSpinBox::up-arrow {{
+    image: none;
+    border: none;
+    width: 0;
+    height: 0;
+    margin: 0 1px 1px 1px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid #aeb4bf;
+}}
+QDialog#zubcutLagDupeDialog QSpinBox::down-arrow,
+QDialog#zubcutLagDupeDialog QDoubleSpinBox::down-arrow {{
+    image: none;
+    border: none;
+    width: 0;
+    height: 0;
+    margin: 1px 1px 0 1px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #aeb4bf;
 }}
 QDialog#zubcutLagDupeDialog QSlider::groove:horizontal {{
     background-color: #1a1a1a;
