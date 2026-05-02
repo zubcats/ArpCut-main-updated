@@ -1,4 +1,5 @@
 from concurrent.futures.thread import ThreadPoolExecutor
+import os
 from scapy.all import Ether, arping, conf, get_if_addr
 from time import sleep
 import re
@@ -26,7 +27,12 @@ class Scanner():
         self.qt_log_signal = print
     
     def generate_ips(self):
-        self.ips = [f'{self.perfix}.{i}' for i in range(1, self.device_count)]
+        try:
+            n = int(self.device_count)
+        except (TypeError, ValueError):
+            n = 25
+        n = max(1, min(255, n))
+        self.ips = [f'{self.perfix}.{i}' for i in range(1, n)]
 
     def init(self):
         """
@@ -348,9 +354,10 @@ class Scanner():
         self.__ping_done = 0
         
         self.generate_ips()
+        total_ips = len(self.ips)
         self.ping_thread_pool()
         
-        while self.__ping_done < self.device_count - 1:
+        while self.__ping_done < total_ips:
             # Add a sleep to overcome High CPU usage
             sleep(.01)
             self.qt_progress_signal(self.__ping_done)
@@ -362,7 +369,11 @@ class Scanner():
         """
         Control maximum threads running at once
         """
-        with ThreadPoolExecutor(self.max_threads) as executor:
+        n = len(self.ips)
+        # Cap workers: hundreds of concurrent subprocess pings exhausts threads/handles on Windows.
+        cap = min(self.max_threads, n, int(os.environ.get('ZUBCUT_PING_POOL_CAP', '96')))
+        workers = max(1, cap)
+        with ThreadPoolExecutor(workers) as executor:
             for ip in self.ips:
                 executor.submit(self.ping, ip)
 

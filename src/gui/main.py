@@ -1346,8 +1346,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         https://stackoverflow.com/a/60123914/5305953
         Connect TaskBar icon to progressbar
         """
+        super().showEvent(event)
         if QWinTaskbarButton is None:
             return
+        if getattr(self, '_taskbar_progress_linked', False):
+            return
+        self._taskbar_progress_linked = True
         self.taskbar_button = QWinTaskbarButton()
         self.taskbar_progress = self.taskbar_button.progress()
         self.taskbar_button.setWindow(self.windowHandle())

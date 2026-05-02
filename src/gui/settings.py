@@ -14,7 +14,8 @@ import sys
 from tools.utils_gui import import_settings, export_settings, get_settings, \
                       is_admin, add_to_startup, remove_from_startup, set_settings, \
                       zubcut_dark_stylesheet, \
-                      sync_translucent_chrome, register_window_surface_effects
+                      sync_translucent_chrome, register_window_surface_effects, \
+                      repair_settings
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
 from tools.qtools import MsgType, Buttons
 from tools.utils import (
@@ -46,6 +47,21 @@ _UPDATE_BTN_QSS_FALLBACK = (
     'QPushButton#btnUpdate { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
     'border: 1px solid #2d5738; border-radius: 4px; }'
 )
+
+
+def _coerce_scan_counts(s: dict) -> dict:
+    """count/threads must be ints in range; bad JSON or types would break range() / ThreadPool."""
+    out = dict(s) if s else {}
+    for key, default, lo, hi in (
+        ('count', 25, 25, 255),
+        ('threads', 12, 5, 255),
+    ):
+        try:
+            v = int(out.get(key, default))
+            out[key] = max(lo, min(hi, v))
+        except (TypeError, ValueError):
+            out[key] = default
+    return out
 
 
 def _settings_keybind_mono_font() -> QFont:
@@ -151,6 +167,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             el._sync_settings_gear_update_hint()
 
     def Apply(self, silent_apply=False):
+        repair_settings()
         nicknames = Nicknames()
 
         count         =  self.spinCount.value()
@@ -205,6 +222,22 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         killed_live = list(self.elmocut.killer.killed)
         killed_all = list(set(killed_from_json + killed_live)) * is_remember
 
+        try:
+            show_mac = bool(get_settings('show_scan_mac_column'))
+            show_ven = bool(get_settings('show_scan_vendor_column'))
+            traffic_pct = int(get_settings('traffic_percent'))
+        except Exception:
+            try:
+                s0 = import_settings()
+            except Exception:
+                s0 = {}
+            show_mac = bool(s0.get('show_scan_mac_column', False))
+            show_ven = bool(s0.get('show_scan_vendor_column', False))
+            try:
+                traffic_pct = int(s0.get('traffic_percent', 50))
+            except (TypeError, ValueError):
+                traffic_pct = 50
+
         export_settings(
             [
             count,
@@ -220,9 +253,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             k_lag,
             k_dupe,
             k_pct,
-            bool(get_settings('show_scan_mac_column')),
-            bool(get_settings('show_scan_vendor_column')),
-            int(get_settings('traffic_percent')),
+            show_mac,
+            show_ven,
+            traffic_pct,
             ]
         )
 
@@ -283,7 +316,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.Apply()
 
     def updateElmocutSettings(self):
-        s = import_settings()
+        repair_settings()
+        s = _coerce_scan_counts(import_settings())
         self.currentSettings()
         
         self.elmocut.minimize = s['minimized']
@@ -325,7 +359,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.elmocut._sync_scan_table_column_settings()
 
     def currentSettings(self):
-        s = import_settings()
+        s = _coerce_scan_counts(import_settings())
         self.chkAutostart.setChecked(s['autostart'])
         self.chkMinimized.setChecked(s['minimized'])
         self.chkRemember.setChecked(s['remember'])
