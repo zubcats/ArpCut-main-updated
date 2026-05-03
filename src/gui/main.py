@@ -727,10 +727,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.gridLayout.removeWidget(self.btnSettings)
         self.gridLayout.removeWidget(self.btnAbout)
         self.gridLayout.addWidget(self.btnSettings, 0, 6, 2, 1)
-        self.gridLayout.addWidget(self.btnAbout, 0, 7, 2, 2)
-        # Toolbar row was min 50px; 46px icons + 1px border + stylesheet rounding still clipped the ZC mark — give the row a little more height.
+        # One column like Settings so the ZC chip matches other toolbar icon buttons (scan/hard/settings).
+        self.gridLayout.addWidget(self.btnAbout, 0, 7, 2, 1)
         for _tb in (self.btnScanEasy, self.btnScanHard, self.btnSettings, self.btnAbout):
             _tb.setMinimumHeight(56)
+            _tb.setIconSize(QSize(46, 46))
         self.gridLayout.setColumnStretch(0, 0)
         for _col in range(1, 9):
             self.gridLayout.setColumnStretch(_col, 1)
@@ -853,8 +854,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if btn_icon is not None:
                 btn.setIcon(self.processIcon(btn_icon))
         self.btnAbout.setIcon(self.icon)
-        # Slightly larger than other toolbar icons to offset the looser LOGO_UI_CONTENT_FRACTION crop (full glow visible).
-        self.btnAbout.setIconSize(QSize(50, 50))
 
         self.btnKill = QPushButton(self.centralwidget)
         self.btnKill.setObjectName('btnKill')
@@ -903,7 +902,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnDupe.setMinimumHeight(72)
         self.btnDupe.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         dupe_font = QFont(self.btnDupe.font())
-        dupe_font.setPointSize(14)
+        dupe_font.setPointSize(13)
         dupe_font.setBold(True)
         self.btnDupe.setFont(dupe_font)
         self.btnDupe.setToolTip(
@@ -915,6 +914,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Row was grid columns 3+2+3; equal stretch on outer columns keeps Lag and Dupe the same width
         # even when lblleft/lblright minimum widths skew shared column sizes.
         self._flowActionsRow = QWidget(self.centralwidget)
+        self._flowActionsRow.setObjectName('flowActionsRow')
         _flow_actions_layout = QHBoxLayout(self._flowActionsRow)
         _flow_actions_layout.setContentsMargins(0, 0, 0, 0)
         _flow_actions_layout.setSpacing(self.gridLayout.spacing())
@@ -1010,6 +1010,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.spinPercentCutMain.setRange(1, 100)
         self.spinPercentCutMain.setSuffix('%')
         self.gridLayout.addWidget(self.spinPercentCutMain, 7, 5, 1, 1)
+
+        # Same minimum width for all inline timing / percent spinboxes (short "%" values shrink the Cut % box otherwise).
+        _inline_spin_min_w = 140
+        for _sb in (
+            self.lagSpinMain,
+            self.normalSpinMain,
+            self.dupeSpinMain,
+            self.spinPercentCutMain,
+        ):
+            _sb.setMinimumWidth(_inline_spin_min_w)
 
         self.btnPercentCut = QPushButton('Percent Cut: OFF', self.centralwidget)
         self.btnPercentCut.setObjectName('btnPercentCut')
@@ -2317,7 +2327,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         percent_style = (
             f'QLabel#lblPercentCut {{ color: {admin_bg}; background-color: transparent; }}'
             f'QSpinBox#spinPercentCutMain {{'
-            f' border: 1px solid {admin_bg}; border-radius: 4px;'
+            f' min-height: 24px; border: 1px solid {admin_bg}; border-radius: 4px;'
             f' padding: 2px 6px; background-color: {field_bg}; color: {admin_bg}; }}'
             f'QSpinBox#spinPercentCutMain::up-button, QSpinBox#spinPercentCutMain::down-button {{'
             f' background-color: {panel_bg}; border: 1px solid {admin_bg}; width: 16px; }}'

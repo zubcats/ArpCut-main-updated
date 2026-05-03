@@ -26,6 +26,12 @@ from constants import *
 # Backward compatibility for older packaged constants modules.
 WINDOW_CORNER_RADIUS_PX = int(globals().get('WINDOW_CORNER_RADIUS_PX', 12))
 
+# Frameless caption height (keep in sync with windows that add +TITLE_BAR_HEIGHT_PX after wrap).
+TITLE_BAR_HEIGHT_PX = 40
+# Logo pixmap is drawn at DISPLAY px; CELL is larger so antialiasing / gold halo is not clipped.
+TITLE_BAR_ICON_DISPLAY_PX = 32
+TITLE_BAR_ICON_CELL_PX = 36
+
 
 def _experimental_charcoal_titlebar() -> bool:
     """Match utils_gui charcoal chrome; channel does not change title bar palette."""
@@ -139,7 +145,7 @@ class CustomTitleBar(QFrame):
         self.setObjectName("zubcutTitleBar")
         self._window = window
         self._maximizable = maximizable
-        self.setFixedHeight(36)
+        self.setFixedHeight(TITLE_BAR_HEIGHT_PX)
         self.setAttribute(Qt.WA_StyledBackground, True)
         if caption_accent:
             _bg = '#2b2b2b'
@@ -210,8 +216,8 @@ class CustomTitleBar(QFrame):
         row.setContentsMargins(8, 0, 6, 0)
         row.setSpacing(6)
 
-        _icon_px = 32
-        _icon_box_px = _icon_px + 2
+        _icon_px = TITLE_BAR_ICON_DISPLAY_PX
+        _icon_box_px = TITLE_BAR_ICON_CELL_PX
         self._icon_label = QLabel(self)
         self._icon_label.setObjectName("logoLabel")
         self._icon_label.setFixedSize(_icon_box_px, _icon_box_px)

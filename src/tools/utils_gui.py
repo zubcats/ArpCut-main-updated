@@ -256,6 +256,11 @@ def _main_chrome_action_buttons_qss() -> str:
     color: {tx};
     border: 1px solid {bd};
     border-radius: 4px;
+    outline: none;
+}}
+{sel}:focus {{
+    outline: none;
+    border: 1px solid {bd};
 }}
 {sel}:hover {{
     background-color: {bh};
@@ -272,10 +277,10 @@ def _main_chrome_action_buttons_qss() -> str:
     border: 1px solid {bd};
     color: {tp};
 }}
-QPushButton#btnAbout {{
-    /* Horizontal inset for wide mark; no vertical padding; milder radius than other chrome so the glow is not sheared at the corners. */
-    padding: 0px 10px;
-    border-radius: 3px;
+/* Lag/Kill/Dupe row: plain QWidget can pick up qdark blue-grey behind child buttons; keep transparent. */
+QWidget#flowActionsRow {{
+    background: transparent;
+    border: none;
 }}
 """
     return out

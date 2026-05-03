@@ -23,6 +23,7 @@ HIDDEN_IMPORTS = [
     'gui.paid_license_signin',
     'gui.traffic',
     'ui.ui_traffic',
+    'tools.updater_debug',
     'PyQt5',
     'PyQt5.QtWidgets',
     'PyQt5.QtCore',
@@ -45,6 +46,23 @@ COLLECT_ALL = [
 ]
 
 
+def _windows_pyinstaller_icon_path():
+    """Prefer multi-size .ico so the taskbar / pinned shortcut shows a large-enough mark."""
+    ico = os.path.join(_ROOT, 'exe', 'zubcut_shell.ico')
+    png = os.path.join(_ROOT, 'exe', 'zubcut_icon.png')
+    script = os.path.join(_ROOT, 'tools', 'build_windows_app_icon.py')
+    if os.path.isfile(ico):
+        return ico
+    try:
+        r = subprocess.run([sys.executable, script], cwd=_ROOT)
+        if r.returncode == 0 and os.path.isfile(ico):
+            return ico
+    except OSError:
+        pass
+    print('Note: install Pillow (pip install pillow) to generate exe/zubcut_shell.ico for a richer taskbar icon.')
+    return png
+
+
 def build():
     system = platform.system()
 
@@ -58,7 +76,8 @@ def build():
         cmd.extend(['--onedir', '--windowed'])
         cmd.extend(['--add-data', 'exe/manuf;manuf'])
         cmd.extend(['--add-data', 'exe/zubcut_icon.png;.'])
-        cmd.extend(['--icon', 'exe/zubcut_icon.png'])
+        _ico = _windows_pyinstaller_icon_path()
+        cmd.extend(['--icon', os.path.relpath(_ico, _ROOT).replace('\\', '/')])
         cmd.extend(['--uac-admin'])
     elif system == 'Darwin':
         cmd.extend(['--onedir', '--windowed'])
@@ -82,7 +101,7 @@ def build():
     print(f"Command: {' '.join(cmd)}")
     print()
 
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, cwd=_ROOT)
 
     if result.returncode == 0:
         print()
