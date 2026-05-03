@@ -205,8 +205,15 @@ class _ShellIconLetterboxEngine(QIconEngine):
         return out
 
     def scaledPixmap(self, size, mode, state, scale):
-        # HiDPI icon path; size is typically device pixels — letterbox like pixmap().
-        return self.pixmap(size, mode, state)
+        # HiDPI: Qt passes logical size + devicePixelRatio; ignoring scale reused ~16px art for the taskbar.
+        if size.isEmpty():
+            return QPixmap()
+        sc = float(scale) if scale else 1.0
+        if sc <= 0.0:
+            sc = 1.0
+        w = max(1, int(round(size.width() * sc)))
+        h = max(1, int(round(size.height() * sc)))
+        return self.pixmap(QSize(w, h), mode, state)
 
     def paint(self, painter, rect, mode, state):
         if rect.isEmpty():
@@ -265,11 +272,33 @@ def _windows_native_icon_source_path() -> str | None:
     return None
 
 
+def _win_hwnd_icon_pixel_sizes(hwnd: int, user32) -> tuple[int, int]:
+    """(small_cx, large_cx) for LoadImage — scales with window DPI so taskbar ≠ blurry 16px upsample."""
+    dpi = 96
+    try:
+        d = int(user32.GetDpiForWindow(hwnd))
+        if d > 0:
+            dpi = d
+    except AttributeError:
+        pass
+    if dpi < 96:
+        dpi = 96
+    SM_CXSMICON = 49
+    SM_CXICON = 11
+    try:
+        sm = int(user32.GetSystemMetricsForDpi(SM_CXSMICON, dpi))
+        lg = int(user32.GetSystemMetricsForDpi(SM_CXICON, dpi))
+    except AttributeError:
+        sm = max(16, int(round(16 * dpi / 96.0)))
+        lg = max(32, int(round(32 * dpi / 96.0)))
+    return max(16, sm), max(32, lg)
+
+
 def install_windows_native_window_icons(window) -> bool:
     """
     Push Win32 small/large icons into the HWND (WM_SETICON + class icons).
-    Prefer Shell32.ExtractIconEx from the running .exe when frozen — same resource as the
-    desktop icon. LoadImage from .ico as fallback. Qt-only icons often never reach DWM.
+    Prefer LoadImage from zubcut_shell.ico at DPI-aware sizes (sharp taskbar on 125%/150%).
+    Fallback: ExtractIconEx from the .exe / path.
     """
     if sys.platform != 'win32':
         return False
@@ -296,27 +325,33 @@ def install_windows_native_window_icons(window) -> bool:
     IMAGE_ICON = 1
     LR_LOADFROMFILE = 0x0010
 
-    large = ctypes.c_void_p()
-    small = ctypes.c_void_p()
-    n = shell32.ExtractIconExW(src, 0, ctypes.byref(large), ctypes.byref(small), 1)
+    sm_px, lg_px = _win_hwnd_icon_pixel_sizes(hwnd, user32)
+    h_sm = 0
+    h_lg = 0
 
-    h_lg = int(large.value or 0)
-    h_sm = int(small.value or 0)
-
-    def _load_ico(cx: int, cy: int) -> int:
-        ico = resolve_zubcut_shell_ico_path()
-        if not ico or not os.path.isfile(ico):
-            return 0
+    ico = resolve_zubcut_shell_ico_path()
+    if ico and os.path.isfile(ico):
         ico_abs = os.path.abspath(ico)
-        h = user32.LoadImageW(None, ico_abs, IMAGE_ICON, cx, cy, LR_LOADFROMFILE)
-        return int(h) if h else 0
+        h_sm = int(user32.LoadImageW(None, ico_abs, IMAGE_ICON, sm_px, sm_px, LR_LOADFROMFILE) or 0)
+        h_lg = int(user32.LoadImageW(None, ico_abs, IMAGE_ICON, lg_px, lg_px, LR_LOADFROMFILE) or 0)
 
-    if n == 0 or (not h_lg and not h_sm):
-        h_sm = h_sm or _load_ico(16, 16)
-        h_lg = h_lg or _load_ico(32, 32)
-    else:
-        h_sm = h_sm or _load_ico(16, 16)
-        h_lg = h_lg or _load_ico(32, 32)
+    if not h_sm or not h_lg:
+        large = ctypes.c_void_p()
+        small = ctypes.c_void_p()
+        n = shell32.ExtractIconExW(src, 0, ctypes.byref(large), ctypes.byref(small), 1)
+        h_lg = h_lg or int(large.value or 0)
+        h_sm = h_sm or int(small.value or 0)
+
+    if not h_sm or not h_lg:
+        ico = resolve_zubcut_shell_ico_path()
+        if ico and os.path.isfile(ico):
+            ico_abs = os.path.abspath(ico)
+            h_sm = h_sm or int(
+                user32.LoadImageW(None, ico_abs, IMAGE_ICON, sm_px, sm_px, LR_LOADFROMFILE) or 0
+            )
+            h_lg = h_lg or int(
+                user32.LoadImageW(None, ico_abs, IMAGE_ICON, lg_px, lg_px, LR_LOADFROMFILE) or 0
+            )
 
     if not h_lg and not h_sm:
         return False
