@@ -27,10 +27,10 @@ from constants import *
 WINDOW_CORNER_RADIUS_PX = int(globals().get('WINDOW_CORNER_RADIUS_PX', 12))
 
 # Frameless caption height (keep in sync with windows that add +TITLE_BAR_HEIGHT_PX after wrap).
-TITLE_BAR_HEIGHT_PX = 40
-# Logo pixmap is drawn at DISPLAY px; CELL is larger so antialiasing / gold halo is not clipped.
+TITLE_BAR_HEIGHT_PX = 44
+# Logo pixmap is drawn at DISPLAY px; CELL must exceed DISPLAY enough that the gold ring is not clipped.
 TITLE_BAR_ICON_DISPLAY_PX = 32
-TITLE_BAR_ICON_CELL_PX = 36
+TITLE_BAR_ICON_CELL_PX = 40
 
 
 def _experimental_charcoal_titlebar() -> bool:

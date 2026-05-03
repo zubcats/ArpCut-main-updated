@@ -15,7 +15,7 @@ _LOGO = os.path.join(_ROOT, 'exe', 'zubcut_icon.png')
 _OUT = os.path.join(_ROOT, 'exe', 'zubcut_shell.ico')
 
 # Must match LOGO_SHELL_CONTENT_FRACTION in src/tools/branding.py
-_SHELL_FRAC = 0.45
+_SHELL_FRAC = 0.36
 _SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 

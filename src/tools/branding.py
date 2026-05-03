@@ -36,7 +36,7 @@ _STANDARD_SIZES = (
 # Include more of the source art so the gold outline is not cropped out of the toolbar About button.
 LOGO_UI_CONTENT_FRACTION = 0.64
 # Tighter crop for taskbar / window / tray: the mark fills the bitmap more so it reads larger on the shell.
-LOGO_SHELL_CONTENT_FRACTION = 0.45
+LOGO_SHELL_CONTENT_FRACTION = 0.36
 
 
 def crop_logo_content(pm: QPixmap, fraction: float = LOGO_UI_CONTENT_FRACTION) -> QPixmap:

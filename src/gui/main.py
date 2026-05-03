@@ -726,14 +726,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Rebalance top toolbar row so right-side empty space is used more evenly.
         self.gridLayout.removeWidget(self.btnSettings)
         self.gridLayout.removeWidget(self.btnAbout)
-        self.gridLayout.addWidget(self.btnSettings, 0, 6, 2, 1)
-        # One column like Settings so the ZC chip matches other toolbar icon buttons (scan/hard/settings).
-        self.gridLayout.addWidget(self.btnAbout, 0, 7, 2, 1)
+        # Flush Settings + About to columns 7–8; stretch 3–6 so the gap sits between scan cluster and right cluster.
+        self.gridLayout.addWidget(self.btnSettings, 0, 7, 2, 1)
+        self.gridLayout.addWidget(self.btnAbout, 0, 8, 2, 1)
         for _tb in (self.btnScanEasy, self.btnScanHard, self.btnSettings, self.btnAbout):
             _tb.setMinimumHeight(56)
             _tb.setIconSize(QSize(46, 46))
         self.gridLayout.setColumnStretch(0, 0)
         for _col in range(1, 9):
+            self.gridLayout.setColumnStretch(_col, 0)
+        for _col in (3, 4, 5, 6):
             self.gridLayout.setColumnStretch(_col, 1)
 
         # Legacy "ZubCut" label read like a clickable tab; remove it and widen the center status strip.
@@ -1026,7 +1028,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnPercentCut.setAttribute(Qt.WA_StyledBackground, True)
         self.btnPercentCut.setAutoDefault(False)
         self.btnPercentCut.setDefault(False)
-        self.btnPercentCut.setMinimumHeight(44)
+        self.btnPercentCut.setMinimumHeight(72)
         self.btnPercentCut.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnPercentCut.setToolTip(
             'Percent Cut toggle — applies percentage-based traffic cut to selected device. '
@@ -1115,7 +1117,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         apply_app_global_dark_stylesheet()
         self._repolish_chrome_pushbuttons()
 
-        setup_frameless_main_window(self, APP_DISPLAY_NAME, self.shell_icon, maximizable=True)
+        # Title-bar chip: UI crop keeps the gold halo inside the pixmap; shell_icon stays for OS/taskbar.
+        setup_frameless_main_window(self, APP_DISPLAY_NAME, self.icon, maximizable=True)
         _chrome_windows = [
             self,
             self.settings_window,
