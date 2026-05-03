@@ -729,16 +729,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Flush Settings + About to columns 7–8; stretch 3–6 so the gap sits between scan cluster and right cluster.
         self.gridLayout.addWidget(self.btnSettings, 0, 7, 2, 1)
         self.gridLayout.addWidget(self.btnAbout, 0, 8, 2, 1)
-        # Same height as Lag Switch / Dupe row (72px); square chips; right pair still cols 7–8.
-        _toolbar_chip = 72
-        _toolbar_icon = 64
+        # Pre-72px look: 50px row height, 46px icons; wide buttons (not fixed squares) via equal column stretch + Expanding.
         for _tb in (self.btnScanEasy, self.btnScanHard, self.btnSettings, self.btnAbout):
-            _tb.setFixedSize(_toolbar_chip, _toolbar_chip)
-            _tb.setIconSize(QSize(_toolbar_icon, _toolbar_icon))
+            _tb.setMinimumHeight(50)
+            _tb.setIconSize(QSize(46, 46))
+            _tb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.gridLayout.setColumnStretch(0, 0)
         for _col in range(1, 9):
-            self.gridLayout.setColumnStretch(_col, 0)
-        for _col in (3, 4, 5, 6):
             self.gridLayout.setColumnStretch(_col, 1)
 
         # Legacy "ZubCut" label read like a clickable tab; remove it and widen the center status strip.

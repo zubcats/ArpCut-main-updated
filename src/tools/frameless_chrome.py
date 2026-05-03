@@ -28,10 +28,10 @@ from constants import *
 WINDOW_CORNER_RADIUS_PX = int(globals().get('WINDOW_CORNER_RADIUS_PX', 12))
 
 # Frameless caption height (keep in sync with windows that add +TITLE_BAR_HEIGHT_PX after wrap).
-TITLE_BAR_HEIGHT_PX = 52
-# Logo pixmap is drawn at DISPLAY logical px; CELL gives margin for glow / AA (see _title_brand_pixmap).
+TITLE_BAR_HEIGHT_PX = 36
+# Logo: original compact caption; HiDPI via _title_brand_pixmap.
 TITLE_BAR_ICON_DISPLAY_PX = 32
-TITLE_BAR_ICON_CELL_PX = 48
+TITLE_BAR_ICON_CELL_PX = 34
 
 
 def _title_brand_pixmap(icon: QIcon, cell_px: int, display_px: int) -> QPixmap:
