@@ -171,6 +171,9 @@ class _ShellIconLetterboxEngine(QIconEngine):
     Windows taskbar hover thumbnail asks Qt for a wide, short QSize. QIcon then returns a
     small square pixmap; the shell stretches it to the title strip → warped Z. We always
     return a pixmap of the *requested* size with the mark letterboxed (same fix for paint()).
+    The flyout title chip next to the app name often uses the window's small (≈16px) class
+    icon from the .ico, so it can look thinner than the taskbar button — a shell/ICO layer
+    issue, not the DWM live-preview snapshot.
     """
 
     def __init__(self, source: QIcon):
@@ -331,12 +334,5 @@ def install_windows_native_window_icons(window) -> bool:
         set_cls(hwnd, GCL_HICON, h_lg)
     if h_sm:
         set_cls(hwnd, GCL_HICONSM, h_sm)
-
-    try:
-        from tools.win_dwm_thumbnail import dwm_apply_iconic_bitmap_attributes
-
-        dwm_apply_iconic_bitmap_attributes(hwnd)
-    except Exception:
-        pass
 
     return True

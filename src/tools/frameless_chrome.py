@@ -142,15 +142,6 @@ class FramelessResizableMixin:
     def nativeEvent(
         self, event_type: object, message: object
     ) -> Tuple[bool, Union[int, bytes]]:
-        if sys.platform.startswith("win"):
-            try:
-                from tools.win_dwm_thumbnail import try_handle_dwm_thumbnail_messages
-
-                r = try_handle_dwm_thumbnail_messages(self, event_type, message)
-                if r is not None:
-                    return r
-            except Exception:
-                pass
         r = try_handle_win_nchittest(self, event_type, message)
         if r is not None:
             return r
