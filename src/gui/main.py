@@ -729,8 +729,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Flush Settings + About to columns 7–8; stretch 3–6 so the gap sits between scan cluster and right cluster.
         self.gridLayout.addWidget(self.btnSettings, 0, 7, 2, 1)
         self.gridLayout.addWidget(self.btnAbout, 0, 8, 2, 1)
+        # Uniform square chips (scan / hard-scan / settings / about); right pair still uses cols 7–8.
+        _toolbar_chip = 56
         for _tb in (self.btnScanEasy, self.btnScanHard, self.btnSettings, self.btnAbout):
-            _tb.setMinimumHeight(56)
+            _tb.setFixedSize(_toolbar_chip, _toolbar_chip)
             _tb.setIconSize(QSize(46, 46))
         self.gridLayout.setColumnStretch(0, 0)
         for _col in range(1, 9):
