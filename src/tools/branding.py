@@ -5,8 +5,8 @@ A single PNG loaded with QIcon(path) often appears tiny on Windows because no si
 import os
 import sys
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIcon, QPixmap
+from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtGui import QIcon, QIconEngine, QPainter, QPixmap
 
 from tools.logo_shell_crop import shell_content_fraction_for_target_px
 
@@ -166,18 +166,79 @@ def load_shell_application_qicon():
     return qicon_from_png_path_shell(path)
 
 
+class _ShellIconLetterboxEngine(QIconEngine):
+    """
+    Windows taskbar hover thumbnail asks Qt for a wide, short QSize. QIcon then returns a
+    small square pixmap; the shell stretches it to the title strip → warped Z. We always
+    return a pixmap of the *requested* size with the mark letterboxed (same fix for paint()).
+    """
+
+    def __init__(self, source: QIcon):
+        super().__init__()
+        self._source = source
+
+    def clone(self):
+        return _ShellIconLetterboxEngine(QIcon(self._source))
+
+    def pixmap(self, size, mode, state):
+        if size.isEmpty():
+            return QPixmap()
+        side = max(size.width(), size.height())
+        inner = self._source.pixmap(QSize(side, side), mode, state)
+        if inner.isNull():
+            return inner
+        if size.width() == size.height():
+            return inner.scaled(size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        out = QPixmap(size)
+        out.fill(Qt.transparent)
+        painter = QPainter(out)
+        try:
+            scaled = inner.scaled(size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            x = (size.width() - scaled.width()) // 2
+            y = (size.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+        finally:
+            painter.end()
+        return out
+
+    def scaledPixmap(self, size, mode, state, scale):
+        # HiDPI icon path; size is typically device pixels — letterbox like pixmap().
+        return self.pixmap(size, mode, state)
+
+    def paint(self, painter, rect, mode, state):
+        if rect.isEmpty():
+            return
+        side = max(rect.width(), rect.height())
+        inner = self._source.pixmap(QSize(side, side), mode, state)
+        if inner.isNull():
+            return
+        scaled = inner.scaled(rect.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        x = rect.x() + (rect.width() - scaled.width()) // 2
+        y = rect.y() + (rect.height() - scaled.height()) // 2
+        painter.drawPixmap(x, y, scaled)
+
+
+def _wrap_shell_icon_for_windows(base: QIcon) -> QIcon:
+    if base.isNull():
+        return base
+    return QIcon(_ShellIconLetterboxEngine(base))
+
+
 def load_shell_window_icon():
     """
     Icon for setWindowIcon / tray on Windows: prefer multi-res .ico on disk.
-    Qt+DWM often distort PNG-built QIcons in the taskbar hover preview (non-square requests).
+    Letterbox engine fixes DWM stretching when thumbnail chrome requests a wide pixmap size.
     """
-    if sys.platform == 'win32':
-        ico = resolve_zubcut_shell_ico_path()
-        if ico:
-            icon = QIcon(ico)
-            if not qicon_is_empty(icon):
-                return icon
-    return load_shell_application_qicon()
+    if sys.platform != 'win32':
+        return load_shell_application_qicon()
+
+    ico = resolve_zubcut_shell_ico_path()
+    if ico:
+        icon = QIcon(ico)
+        if not qicon_is_empty(icon):
+            return _wrap_shell_icon_for_windows(icon)
+
+    return _wrap_shell_icon_for_windows(load_shell_application_qicon())
 
 
 def qicon_is_empty(icon):
