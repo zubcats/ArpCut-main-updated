@@ -9,8 +9,9 @@ import sys
 from typing import Optional, Tuple, Union
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QCursor, QFont, QIcon
+from PyQt5.QtGui import QCursor, QFont, QIcon, QPixmap
 from PyQt5.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -27,10 +28,28 @@ from constants import *
 WINDOW_CORNER_RADIUS_PX = int(globals().get('WINDOW_CORNER_RADIUS_PX', 12))
 
 # Frameless caption height (keep in sync with windows that add +TITLE_BAR_HEIGHT_PX after wrap).
-TITLE_BAR_HEIGHT_PX = 44
-# Logo pixmap is drawn at DISPLAY px; CELL must exceed DISPLAY enough that the gold ring is not clipped.
+TITLE_BAR_HEIGHT_PX = 52
+# Logo pixmap is drawn at DISPLAY logical px; CELL gives margin for glow / AA (see _title_brand_pixmap).
 TITLE_BAR_ICON_DISPLAY_PX = 32
-TITLE_BAR_ICON_CELL_PX = 40
+TITLE_BAR_ICON_CELL_PX = 48
+
+
+def _title_brand_pixmap(icon: QIcon, cell_px: int, display_px: int) -> QPixmap:
+    """Request a HiDPI pixmap so scaling stays sharp; devicePixelRatio keeps logical size ≈ display_px."""
+    dpr = 1.0
+    app = QApplication.instance()
+    if app is not None:
+        scr = app.primaryScreen()
+        if scr is not None:
+            dpr = float(scr.devicePixelRatio())
+    req = int(max(cell_px * 2, cell_px * dpr * 2))
+    pm = icon.pixmap(req, req)
+    if pm.isNull():
+        return QPixmap()
+    side = max(1, int(round(display_px * dpr)))
+    pm = pm.scaled(side, side, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    pm.setDevicePixelRatio(dpr)
+    return pm
 
 
 def _experimental_charcoal_titlebar() -> bool:
@@ -179,6 +198,8 @@ class CustomTitleBar(QFrame):
             QFrame#zubcutTitleBar QLabel#logoLabel {{
                 border: none;
                 background: transparent;
+                padding: 0px;
+                margin: 0px;
             }}
             QFrame#zubcutTitleBar QToolButton {{
                 background: transparent;
@@ -223,13 +244,11 @@ class CustomTitleBar(QFrame):
         self._icon_label.setFixedSize(_icon_box_px, _icon_box_px)
         self._icon_label.setAlignment(Qt.AlignCenter)
         if icon is not None and not icon.isNull():
-            pm = icon.pixmap(_icon_box_px * 2, _icon_box_px * 2).scaled(
-                _icon_px,
-                _icon_px,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-            self._icon_label.setPixmap(pm)
+            pm = _title_brand_pixmap(icon, _icon_box_px, _icon_px)
+            if not pm.isNull():
+                self._icon_label.setPixmap(pm)
+            else:
+                self._icon_label.hide()
         else:
             self._icon_label.hide()
 
