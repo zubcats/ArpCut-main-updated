@@ -332,4 +332,11 @@ def install_windows_native_window_icons(window) -> bool:
     if h_sm:
         set_cls(hwnd, GCL_HICONSM, h_sm)
 
+    try:
+        from tools.win_dwm_thumbnail import dwm_apply_iconic_bitmap_attributes
+
+        dwm_apply_iconic_bitmap_attributes(hwnd)
+    except Exception:
+        pass
+
     return True
