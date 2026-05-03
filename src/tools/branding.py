@@ -248,3 +248,54 @@ def qicon_is_empty(icon):
         return False
     # QIcon loaded from .ico may not populate availableSizes() until first pixmap().
     return icon.pixmap(32, 32).isNull()
+
+
+def install_windows_native_window_icons(window) -> None:
+    """
+    Force HWND large/small icons from zubcut_shell.ico via WM_SETICON + class icons.
+    Live taskbar thumbnails often read Win32 icons directly; Qt-only setWindowIcon can leave
+    DWM drawing a different/low-res pixmap than the embedded PE icon.
+    """
+    if sys.platform != 'win32':
+        return
+    path = resolve_zubcut_shell_ico_path()
+    if not path:
+        return
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        return
+    try:
+        hwnd = int(window.winId())
+    except (AttributeError, TypeError, ValueError):
+        return
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    IMAGE_ICON = 1
+    LR_LOADFROMFILE = 0x0010
+    WM_SETICON = 0x0080
+    ICON_SMALL = 0
+    ICON_BIG = 1
+    GCL_HICON = -14
+    GCL_HICONSM = -34
+
+    def _load(cx: int, cy: int) -> int:
+        h = user32.LoadImageW(None, path, IMAGE_ICON, cx, cy, LR_LOADFROMFILE)
+        return int(h) if h else 0
+
+    h16 = _load(16, 16)
+    h32 = _load(32, 32)
+    if not h16 and not h32:
+        return
+    if h16:
+        user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h16)
+    if h32:
+        user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h32)
+    try:
+        set_cls = user32.SetClassLongPtrW
+    except AttributeError:
+        set_cls = user32.SetClassLongW
+    if h32:
+        set_cls(hwnd, GCL_HICON, h32)
+    if h16:
+        set_cls(hwnd, GCL_HICONSM, h16)

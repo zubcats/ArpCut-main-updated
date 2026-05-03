@@ -1117,8 +1117,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         apply_app_global_dark_stylesheet()
         self._repolish_chrome_pushbuttons()
 
-        # Title-bar chip: UI crop keeps the gold halo inside the pixmap; shell_icon stays for OS/taskbar.
-        setup_frameless_main_window(self, APP_DISPLAY_NAME, self.icon, maximizable=True)
+        # Windows: caption uses shell_icon so title strip + DWM hover match the .exe/.ico (UI crop looks thin).
+        _caption_icon = self.shell_icon if sys.platform == 'win32' else self.icon
+        setup_frameless_main_window(self, APP_DISPLAY_NAME, _caption_icon, maximizable=True)
+        if sys.platform == 'win32':
+            from tools.branding import install_windows_native_window_icons
+
+            QTimer.singleShot(0, lambda w=self: install_windows_native_window_icons(w))
         _chrome_windows = [
             self,
             self.settings_window,
