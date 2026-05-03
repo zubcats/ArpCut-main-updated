@@ -156,9 +156,35 @@ def _start_paid_runtime_validation(gui, icon) -> None:
 # import debug.test
 
 if __name__ == "__main__":
+    # Before QApplication: real per-monitor DPI so Win32 icon loads + GetDpiForWindow match the display.
+    if _sys.platform == 'win32':
+        try:
+            import ctypes
+
+            _user32 = ctypes.windll.user32
+            _ctx_v2 = ctypes.c_void_p(-4)  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+            if hasattr(_user32, 'SetProcessDpiAwarenessContext'):
+                _user32.SetProcessDpiAwarenessContext(_ctx_v2)
+            else:
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                import ctypes
+
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     QApplication.setAttribute(Qt.AA_UseStyleSheetPropagationInWidgetStyles, True)
     app = QApplication(argv)
+    if _sys.platform == 'win32':
+        try:
+            from PyQt5.QtWinExtras import QtWin
+
+            QtWin.setCurrentProcessExplicitAppUserModelID(f'zubcats.{APP_BUNDLE_NAME}.1.0')
+        except Exception:
+            pass
     # Windows native style often ignores or mis-paints QPushButton :hover under global QSS; Fusion is reliable.
     _fusion = QStyleFactory.create('Fusion')
     if _fusion is not None:
