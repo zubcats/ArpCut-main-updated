@@ -2,6 +2,7 @@
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from pyperclip import copy
 
@@ -12,7 +13,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, QSlider, \
                             QTextEdit, QPlainTextEdit, QWidget
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush, QFontMetrics
-from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent
+from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent, pyqtSlot, QMetaObject
 try:
     from PyQt5.QtWinExtras import QWinTaskbarButton
 except Exception:
@@ -60,6 +61,22 @@ from tools.utils import (
 )
 from tools.tray_cleanup import hide_all_system_tray_icons
 from tools.pfctl import block_ip, unblock_ip
+
+
+def _dupe_net_run_unblock(ip: str) -> None:
+    try:
+        unblock_ip(ip)
+    except Exception:
+        pass
+
+
+def _dupe_net_run_block(iface: str, ip: str, direction: str):
+    try:
+        block_ip(iface, ip, direction)
+        return None
+    except Exception as exc:
+        return exc
+
 
 from assets import *
 
@@ -819,6 +836,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_deferred_clear_timer.setSingleShot(True)
         self._dupe_pending_clear = None  # (mac, device_snapshot|None) for deferred unblock/unkill
         self._dupe_arm_device = None  # snapshot while deferred apply is pending
+        self._dupe_net_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='dupe_net')
+        self._dupe_end_mono = None  # wall deadline for countdown (set when block_ip finishes)
+        self._dupe_clear_future = None
+        self._dupe_async_unblock_ctx = None  # (device, prev_mac) until post-unblock slot runs
+        self._dupe_block_future = None
+        self._dupe_block_apply_pending = False
+        self._dupe_block_ctx = None  # (device, direction) while block worker runs
 
         # Button active state styles
         self.BUTTON_ACTIVE_STYLE = "background-color: #c0392b; color: white; font-weight: bold;"
@@ -1451,6 +1475,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.stopLagSwitch()
         self.stopDupe(log=False)
         self._flush_pending_dupe_clear_sync()
+        try:
+            self._dupe_net_executor.shutdown(wait=False, cancel_futures=False)
+        except TypeError:
+            self._dupe_net_executor.shutdown(wait=False)
+        except Exception:
+            pass
         # If event recieved from tray icon
         if self.from_tray:
             hide_all_system_tray_icons()
@@ -2526,6 +2556,58 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
 
+    def _drain_dupe_async_network(self):
+        """Wait for in-flight async unblock_ip; Queued unkill slot must run on the GUI thread."""
+        fut = getattr(self, '_dupe_clear_future', None)
+        if fut is not None:
+            try:
+                fut.result(timeout=120)
+            except Exception:
+                pass
+            self._dupe_clear_future = None
+        app = QApplication.instance()
+        for _ in range(2000):
+            if getattr(self, '_dupe_async_unblock_ctx', None) is None:
+                return
+            if app:
+                app.processEvents()
+            time.sleep(0.0005)
+        ctx = getattr(self, '_dupe_async_unblock_ctx', None)
+        if ctx:
+            device, prev_mac = ctx
+            self._dupe_async_unblock_ctx = None
+            try:
+                if device and device.get('mac') == prev_mac and device['mac'] in self.killer.killed:
+                    victim = self._victim_record_for_mac(device['mac']) or device
+                    self.killer.unkill(victim)
+                dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+            except Exception:
+                pass
+            self._sync_killed_devices()
+
+    def _drain_dupe_block_if_needed(self):
+        """Wait for in-flight async block_ip and its main-thread completion slot."""
+        fut = getattr(self, '_dupe_block_future', None)
+        if fut is None and not getattr(self, '_dupe_block_apply_pending', False):
+            return
+        if fut is not None:
+            try:
+                fut.result(timeout=120)
+            except Exception:
+                pass
+            self._dupe_block_future = None
+        app = QApplication.instance()
+        for _ in range(2000):
+            if not getattr(self, '_dupe_block_apply_pending', False):
+                return
+            if app:
+                app.processEvents()
+            time.sleep(0.0005)
+        self._dupe_block_apply_pending = False
+        self._dupe_block_ctx = None
+
     def _flush_pending_dupe_clear_sync(self):
         """Run any scheduled dupe OFF firewall/ARP work immediately (before starting a new dupe)."""
         self._dupe_deferred_clear_timer.stop()
@@ -2533,6 +2615,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._dupe_deferred_clear_timer.timeout.disconnect()
         except TypeError:
             pass
+        self._drain_dupe_async_network()
+        self._drain_dupe_block_if_needed()
         pending = self._dupe_pending_clear
         self._dupe_pending_clear = None
         if not pending:
@@ -2552,21 +2636,135 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._sync_killed_devices()
 
     def _do_deferred_dupe_clear(self):
-        """Next-tick dupe teardown so the UI is not frozen on netsh/unkill at timer end."""
-        self._flush_pending_dupe_clear_sync()
+        """Teardown unblock_ip off the GUI thread; unkill/reinforce on the main thread."""
+        self._dupe_deferred_clear_timer.stop()
+        try:
+            self._dupe_deferred_clear_timer.timeout.disconnect()
+        except TypeError:
+            pass
+        pending = self._dupe_pending_clear
+        self._dupe_pending_clear = None
+        if not pending:
+            return
+        prev_mac, snap = pending[0], pending[1]
+        device = self._get_device_by_mac(prev_mac) or snap
+        if not device or device.get('mac') != prev_mac:
+            self._sync_killed_devices()
+            return
+        ip = device.get('ip') or ''
+        ex = getattr(self, '_dupe_net_executor', None)
+        if ex is None:
+            try:
+                self._clear_victim_block(device)
+                dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+            except Exception:
+                pass
+            self._sync_killed_devices()
+            return
+        self._dupe_async_unblock_ctx = (device, prev_mac)
+        fut = ex.submit(_dupe_net_run_unblock, ip)
+        self._dupe_clear_future = fut
+
+        def _done(_f):
+            QMetaObject.invokeMethod(self, '_slot_finish_async_dupe_unblock', Qt.QueuedConnection)
+
+        fut.add_done_callback(_done)
+
+    @pyqtSlot()
+    def _slot_finish_async_dupe_unblock(self):
+        ctx = getattr(self, '_dupe_async_unblock_ctx', None)
+        self._dupe_async_unblock_ctx = None
+        self._dupe_clear_future = None
+        if not ctx:
+            return
+        device, prev_mac = ctx
+        if not device or device.get('mac') != prev_mac:
+            self._sync_killed_devices()
+            return
+        try:
+            if device['mac'] in self.killer.killed:
+                victim = self._victim_record_for_mac(device['mac']) or device
+                self.killer.unkill(victim)
+            dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
+            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
+            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+        except Exception:
+            pass
+        self._sync_killed_devices()
+        self._refresh_table_row_for_mac(prev_mac)
+        self._updateKillButtonState()
 
     def _apply_dupe_deferred(self):
-        """Apply victim block + start dupe timers after optimistic UI (next event-loop tick)."""
+        """Kill on main thread; block_ip in worker; timers after block returns."""
         dev = self._dupe_arm_device
         self._dupe_arm_device = None
         if not dev or not self.dupe_active or self.dupe_device_mac != dev.get('mac'):
             return
         direction = getattr(self, '_dupe_arm_direction', 'both')
+        ex = getattr(self, '_dupe_net_executor', None)
         try:
-            self._apply_victim_block(dev, direction)
+            self._ensure_network_context_for_victim(dev)
+            self.killer.disable_percent_cut(dev['mac'])
+            if dev['mac'] not in self.killer.killed:
+                self.killer.kill(dev)
+            iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+            if ex is None:
+                exc = _dupe_net_run_block(iface, dev['ip'], direction)
+                if exc is not None:
+                    raise exc
+                self._sync_killed_devices()
+                self._refresh_table_row_for_mac(dev['mac'])
+                self._updateKillButtonState()
+                self._start_dupe_timers_after_network_ready()
+                return
+            self._dupe_block_ctx = (dev, direction)
+            self._dupe_block_apply_pending = True
+            fut = ex.submit(_dupe_net_run_block, iface, dev['ip'], direction)
+            self._dupe_block_future = fut
+
+            def _done(_f):
+                QMetaObject.invokeMethod(self, '_slot_finish_dupe_block', Qt.QueuedConnection)
+
+            fut.add_done_callback(_done)
         except Exception as exc:
             self.dupe_active = False
             self.dupe_device_mac = None
+            self._dupe_end_mono = None
+            self._dupe_block_apply_pending = False
+            self._dupe_block_ctx = None
+            self._dupe_block_future = None
+            self.btnDupe.setText('Dupe')
+            self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+            try:
+                self._clear_victim_block(dev)
+            except Exception:
+                pass
+            self.log(f'Dupe failed to start: {exc}', 'red')
+            self._refresh_flow_toggle_ui()
+            self._repaint_all_table_rows_for_hover()
+
+    @pyqtSlot()
+    def _slot_finish_dupe_block(self):
+        fut = getattr(self, '_dupe_block_future', None)
+        self._dupe_block_future = None
+        self._dupe_block_apply_pending = False
+        ctx = getattr(self, '_dupe_block_ctx', None)
+        self._dupe_block_ctx = None
+        exc = None
+        if fut is not None:
+            try:
+                exc = fut.result(timeout=0)
+            except Exception as e:
+                exc = e
+        if not ctx:
+            return
+        dev, direction = ctx
+        if exc is not None:
+            self.dupe_active = False
+            self.dupe_device_mac = None
+            self._dupe_end_mono = None
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
             try:
@@ -2577,8 +2775,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._refresh_flow_toggle_ui()
             self._repaint_all_table_rows_for_hover()
             return
+        if not self.dupe_active or self.dupe_device_mac != dev.get('mac'):
+            return
+        try:
+            self._sync_killed_devices()
+            self._refresh_table_row_for_mac(dev['mac'])
+            self._updateKillButtonState()
+        except Exception:
+            pass
+        self._start_dupe_timers_after_network_ready()
+
+    def _start_dupe_timers_after_network_ready(self):
         dur = max(1, int(self.dupe_duration_ms))
         self._dupe_elapsed.start()
+        self._dupe_end_mono = time.monotonic() + dur / 1000.0
         self.dupe_timer.start(dur)
         self._dupe_countdown_timer.start()
         self._tick_dupe_countdown()
@@ -2703,6 +2913,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_device_mac = device['mac']
         self.dupe_direction = direction
         self.dupe_duration_ms = duration_ms
+        self._dupe_end_mono = None
         self.dupe_active = True
         self.btnDupe.setText('■ DUPE')
         self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
@@ -2718,9 +2929,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def dupe_remaining_ms(self):
         if not self.dupe_active:
             return None
-        if not self._dupe_elapsed.isValid():
+        end = getattr(self, '_dupe_end_mono', None)
+        if end is None:
             return int(self.dupe_duration_ms)
-        return max(0, int(self.dupe_duration_ms - self._dupe_elapsed.elapsed()))
+        return max(0, int((end - time.monotonic()) * 1000))
 
     def _tick_dupe_countdown(self):
         if not self.dupe_active:
@@ -2770,6 +2982,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_timer.stop()
         self.lblDupeCountdownMain.setVisible(False)
         self.lblDupeCountdownMain.setText('')
+        self._dupe_end_mono = None
         if not was_active:
             return
         # Mark inactive after timers are stopped so _tick cannot race with teardown.
@@ -2785,6 +2998,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._updateDupeButtonState()
             self._updateKillButtonState()
         self._repaint_all_table_rows_for_hover()
+        self._drain_dupe_block_if_needed()
         device = self._get_device_by_mac(prev_mac)
         snap = dict(device) if device else None
         self._dupe_pending_clear = (prev_mac, snap)
