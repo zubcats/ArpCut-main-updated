@@ -89,6 +89,7 @@ def _start_paid_runtime_validation(gui, icon) -> None:
             pass
         try:
             gui.stopDupe(log=False)
+            gui._flush_pending_dupe_clear_sync()
         except Exception:
             pass
 

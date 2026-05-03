@@ -810,9 +810,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_timer.timeout.connect(self._dupe_timer_fired)
         self._dupe_elapsed = QElapsedTimer()
         self._dupe_countdown_timer = QTimer(self)
-        self._dupe_countdown_timer.setInterval(100)
+        self._dupe_countdown_timer.setInterval(50)
         self._dupe_countdown_timer.setTimerType(Qt.PreciseTimer)
         self._dupe_countdown_timer.timeout.connect(self._tick_dupe_countdown)
+        self._dupe_arm_timer = QTimer(self)
+        self._dupe_arm_timer.setSingleShot(True)
+        self._dupe_deferred_clear_timer = QTimer(self)
+        self._dupe_deferred_clear_timer.setSingleShot(True)
+        self._dupe_pending_clear = None  # (mac, device_snapshot|None) for deferred unblock/unkill
+        self._dupe_arm_device = None  # snapshot while deferred apply is pending
 
         # Button active state styles
         self.BUTTON_ACTIVE_STYLE = "background-color: #c0392b; color: white; font-weight: bold;"
@@ -1360,6 +1366,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
         self.stopPercentCut(log=False)
         self.settings_window.close()
         self.about_window.close()
@@ -1443,6 +1450,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
         # If event recieved from tray icon
         if self.from_tray:
             hide_all_system_tray_icons()
@@ -1811,6 +1819,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
         if not self.connected():
             return
         
@@ -1846,6 +1855,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
         self.stopPercentCut(log=False)
         if not self.connected():
             return
@@ -1874,6 +1884,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
         self.stopPercentCut(log=False)
         if not self.connected():
             return
@@ -1921,6 +1932,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
         self.stopPercentCut(log=False)
         if not self.connected(show_msg_box=True):
             return
@@ -2366,6 +2378,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self._toggle_start_blocked('lag'):
             return
         self.stopDupe(refresh_dialog=True, log=False)
+        self._flush_pending_dupe_clear_sync()
         if self.lag_active:
             self.stopLagSwitch(refresh_dialog=False)
         self.lag_device_mac = device['mac']
@@ -2513,6 +2526,65 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
 
+    def _flush_pending_dupe_clear_sync(self):
+        """Run any scheduled dupe OFF firewall/ARP work immediately (before starting a new dupe)."""
+        self._dupe_deferred_clear_timer.stop()
+        try:
+            self._dupe_deferred_clear_timer.timeout.disconnect()
+        except TypeError:
+            pass
+        pending = self._dupe_pending_clear
+        self._dupe_pending_clear = None
+        if not pending:
+            return
+        prev_mac, snap = pending[0], pending[1]
+        device = self._get_device_by_mac(prev_mac) or snap
+        if not device or device.get('mac') != prev_mac:
+            self._sync_killed_devices()
+            return
+        try:
+            self._clear_victim_block(device)
+            dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
+            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
+            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+        except Exception:
+            pass
+        self._sync_killed_devices()
+
+    def _do_deferred_dupe_clear(self):
+        """Next-tick dupe teardown so the UI is not frozen on netsh/unkill at timer end."""
+        self._flush_pending_dupe_clear_sync()
+
+    def _apply_dupe_deferred(self):
+        """Apply victim block + start dupe timers after optimistic UI (next event-loop tick)."""
+        dev = self._dupe_arm_device
+        self._dupe_arm_device = None
+        if not dev or not self.dupe_active or self.dupe_device_mac != dev.get('mac'):
+            return
+        direction = getattr(self, '_dupe_arm_direction', 'both')
+        try:
+            self._apply_victim_block(dev, direction)
+        except Exception as exc:
+            self.dupe_active = False
+            self.dupe_device_mac = None
+            self.btnDupe.setText('Dupe')
+            self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+            try:
+                self._clear_victim_block(dev)
+            except Exception:
+                pass
+            self.log(f'Dupe failed to start: {exc}', 'red')
+            self._refresh_flow_toggle_ui()
+            self._repaint_all_table_rows_for_hover()
+            return
+        dur = max(1, int(self.dupe_duration_ms))
+        self._dupe_elapsed.start()
+        self.dupe_timer.start(dur)
+        self._dupe_countdown_timer.start()
+        self._tick_dupe_countdown()
+        self._refresh_flow_toggle_ui()
+        self._repaint_all_table_rows_for_hover()
+
     def _lag_enter_allow_phase(self, device):
         """
         Allow window (bottom spin): drop firewall rules and stop ARP spoof for this victim.
@@ -2622,37 +2694,32 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         self.stopLagSwitch(refresh_dialog=True)
         self.stopDupe(refresh_dialog=False, log=False)
+        self._flush_pending_dupe_clear_sync()
+        self._dupe_arm_timer.stop()
+        try:
+            self._dupe_arm_timer.timeout.disconnect()
+        except TypeError:
+            pass
         self.dupe_device_mac = device['mac']
         self.dupe_direction = direction
         self.dupe_duration_ms = duration_ms
-        try:
-            self._apply_victim_block(device, direction)
-        except Exception as exc:
-            self.dupe_device_mac = None
-            self.dupe_active = False
-            try:
-                self._clear_victim_block(device)
-            except Exception:
-                pass
-            self.log(f'Dupe failed to start: {exc}', 'red')
-            self._refresh_flow_toggle_ui()
-            self._repaint_all_table_rows_for_hover()
-            return
         self.dupe_active = True
         self.btnDupe.setText('■ DUPE')
         self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         dir_text = {'both': 'all', 'in': 'incoming', 'out': 'outgoing'}[direction]
         self.log(f'Dupe: {duration_ms}ms ({dir_text}), then full stop', UI_LOG_VICTIM_BLOCK_FG)
-        self._dupe_elapsed.start()
-        self.dupe_timer.start(max(1, int(duration_ms)))
-        self._dupe_countdown_timer.start()
-        self._tick_dupe_countdown()
+        self._dupe_arm_device = dict(device)
+        self._dupe_arm_direction = direction
         self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
+        self._dupe_arm_timer.timeout.connect(self._apply_dupe_deferred, Qt.UniqueConnection)
+        self._dupe_arm_timer.start(0)
 
     def dupe_remaining_ms(self):
         if not self.dupe_active:
             return None
+        if not self._dupe_elapsed.isValid():
+            return int(self.dupe_duration_ms)
         return max(0, int(self.dupe_duration_ms - self._dupe_elapsed.elapsed()))
 
     def _tick_dupe_countdown(self):
@@ -2691,6 +2758,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.stopDupe(log_message='Dupe finished')
 
     def stopDupe(self, refresh_dialog=True, log=True, log_message='Dupe stopped'):
+        self._dupe_arm_timer.stop()
+        try:
+            self._dupe_arm_timer.timeout.disconnect()
+        except TypeError:
+            pass
+        self._dupe_arm_device = None
         was_active = self.dupe_active
         prev_mac = self.dupe_device_mac
         self._dupe_countdown_timer.stop()
@@ -2713,15 +2786,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._updateKillButtonState()
         self._repaint_all_table_rows_for_hover()
         device = self._get_device_by_mac(prev_mac)
-        if device:
-            try:
-                self._clear_victim_block(device)
-                dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
-            except Exception:
-                pass
-        self._sync_killed_devices()
+        snap = dict(device) if device else None
+        self._dupe_pending_clear = (prev_mac, snap)
+        try:
+            self._dupe_deferred_clear_timer.timeout.disconnect()
+        except TypeError:
+            pass
+        self._dupe_deferred_clear_timer.timeout.connect(self._do_deferred_dupe_clear, Qt.UniqueConnection)
+        self._dupe_deferred_clear_timer.start(0)
 
     def _updateDupeButtonState(self):
         if self.dupe_active and self.dupe_device_mac:
@@ -2879,6 +2951,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.stopLagSwitch(refresh_dialog=True)
             if self.dupe_active and self.dupe_device_mac == mac:
                 self.stopDupe(log=False)
+                self._flush_pending_dupe_clear_sync()
             if self._kill_ui_shows_on(mac):
                 dev = dict(device)
                 QTimer.singleShot(
@@ -2942,6 +3015,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.stopLagSwitch(refresh_dialog=True)
             if self.dupe_active and self.dupe_device_mac == mac:
                 self.stopDupe(log=False)
+                self._flush_pending_dupe_clear_sync()
             if self.percent_cut_active and self.percent_cut_device_mac == mac:
                 self.stopPercentCut(log=False)
             if not actual_on and device:
