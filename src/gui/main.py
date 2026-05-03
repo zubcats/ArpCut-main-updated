@@ -811,6 +811,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_elapsed = QElapsedTimer()
         self._dupe_countdown_timer = QTimer(self)
         self._dupe_countdown_timer.setInterval(100)
+        self._dupe_countdown_timer.setTimerType(Qt.PreciseTimer)
         self._dupe_countdown_timer.timeout.connect(self._tick_dupe_countdown)
 
         # Button active state styles
@@ -1493,8 +1494,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnKill.setEnabled(not_enabled)
         self.btnLagSwitch.setEnabled(not_enabled)
         self.btnDupe.setEnabled(not_enabled)
-        self.groupLagInline.setEnabled(not_enabled)
-        self.groupDupeInline.setEnabled(not_enabled)
+        # Keep inline panels usable while lag/dupe runs on a victim row even if user selects admin/Me
+        # (otherwise the whole group disables and the countdown looks frozen or "off").
+        self.groupLagInline.setEnabled(not_enabled or bool(self.lag_active and self.lag_device_mac))
+        self.groupDupeInline.setEnabled(not_enabled or bool(self.dupe_active and self.dupe_device_mac))
         
         self._updateKillButtonState()
         self._updateLagSwitchButtonState()
@@ -2587,10 +2590,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.stopLagSwitch(refresh_dialog=True)
         self.stopDupe(refresh_dialog=False, log=False)
         self.dupe_device_mac = device['mac']
-        self.dupe_active = True
         self.dupe_direction = direction
         self.dupe_duration_ms = duration_ms
-        self._apply_victim_block(device, direction)
+        try:
+            self._apply_victim_block(device, direction)
+        except Exception as exc:
+            self.dupe_device_mac = None
+            self.dupe_active = False
+            try:
+                self._clear_victim_block(device)
+            except Exception:
+                pass
+            self.log(f'Dupe failed to start: {exc}', 'red')
+            self._refresh_flow_toggle_ui()
+            self._repaint_all_table_rows_for_hover()
+            return
+        self.dupe_active = True
         self.btnDupe.setText('■ DUPE')
         self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         dir_text = {'both': 'all', 'in': 'incoming', 'out': 'outgoing'}[direction]
@@ -2632,21 +2647,28 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.lblDupeCountdownMain.setText(f'Time left: {m}:{s:02d}')
             else:
                 self.lblDupeCountdownMain.setText(f'Time left: {sec:.1f} s')
+        dlg = getattr(self, 'dupe_switch_dialog', None)
+        if dlg is not None and dlg.isVisible():
+            try:
+                dlg.refresh_toggle_state()
+            except Exception:
+                pass
 
     def _dupe_timer_fired(self):
         self.stopDupe(log_message='Dupe finished')
 
     def stopDupe(self, refresh_dialog=True, log=True, log_message='Dupe stopped'):
-        if not self.dupe_active:
-            return
+        was_active = self.dupe_active
         prev_mac = self.dupe_device_mac
-        # Mark inactive first to prevent re-entrant timer paths from reapplying state.
-        self.dupe_active = False
-        self.dupe_device_mac = None
         self._dupe_countdown_timer.stop()
         self.dupe_timer.stop()
         self.lblDupeCountdownMain.setVisible(False)
         self.lblDupeCountdownMain.setText('')
+        if not was_active:
+            return
+        # Mark inactive after timers are stopped so _tick cannot race with teardown.
+        self.dupe_active = False
+        self.dupe_device_mac = None
         device = self._get_device_by_mac(prev_mac)
         if device:
             try:
