@@ -273,8 +273,9 @@ def _main_chrome_action_buttons_qss() -> str:
     color: {tp};
 }}
 QPushButton#btnAbout {{
-    /* Wide logo needs horizontal inset; keep vertical padding low so a 46×46 icon fits in the 50px toolbar row (8px padding was clipping top/bottom). */
-    padding: 1px 10px;
+    /* Horizontal inset for wide mark; no vertical padding; milder radius than other chrome so the glow is not sheared at the corners. */
+    padding: 0px 10px;
+    border-radius: 3px;
 }}
 """
     return out

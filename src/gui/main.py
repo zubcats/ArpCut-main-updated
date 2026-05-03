@@ -722,6 +722,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.gridLayout.removeWidget(self.btnAbout)
         self.gridLayout.addWidget(self.btnSettings, 0, 6, 2, 1)
         self.gridLayout.addWidget(self.btnAbout, 0, 7, 2, 2)
+        # Toolbar row was min 50px; 46px icons + 1px border + stylesheet rounding still clipped the ZC mark — give the row a little more height.
+        for _tb in (self.btnScanEasy, self.btnScanHard, self.btnSettings, self.btnAbout):
+            _tb.setMinimumHeight(56)
         self.gridLayout.setColumnStretch(0, 0)
         for _col in range(1, 9):
             self.gridLayout.setColumnStretch(_col, 1)
@@ -844,8 +847,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if btn_icon is not None:
                 btn.setIcon(self.processIcon(btn_icon))
         self.btnAbout.setIcon(self.icon)
-        # Match ui_main (40); larger icons clip in the top grid cell.
-        self.btnAbout.setIconSize(QSize(46, 46))
+        # Slightly larger than other toolbar icons to offset the looser LOGO_UI_CONTENT_FRACTION crop (full glow visible).
+        self.btnAbout.setIconSize(QSize(50, 50))
 
         self.btnKill = QPushButton(self.centralwidget)
         self.btnKill.setObjectName('btnKill')

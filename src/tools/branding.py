@@ -15,7 +15,8 @@ _STANDARD_SIZES = (16, 20, 24, 32, 40, 48, 64, 72, 96, 128, 256)
 
 # zubcut_icon.png has a lot of empty margin; crop the center before building QIcons so
 # toolbar / tray / title bar show a larger mark. About dialog uses the uncropped file.
-LOGO_UI_CONTENT_FRACTION = 0.56
+# Include more of the source art so the gold outline is not cropped out of the UI icon.
+LOGO_UI_CONTENT_FRACTION = 0.64
 
 
 def crop_logo_content(pm: QPixmap, fraction: float = LOGO_UI_CONTENT_FRACTION) -> QPixmap:
