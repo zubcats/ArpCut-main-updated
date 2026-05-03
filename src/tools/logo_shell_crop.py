@@ -8,16 +8,17 @@ larger layers (desktop shortcuts, hover thumbnails).
 """
 from __future__ import annotations
 
-_SHELL_SMALL_MAX_PX = 48
-# ≤48px (taskbar, lists): tighter crop than mid/large layers so the mark reads larger.
-_FRACTION_LEQ_48 = 0.34
-# >48px (desktop shortcuts, hover, 256px ICO): looser crop so the logo is not over-zoomed.
-_FRACTION_GT_48 = 0.58
+# Taskbar / tray mostly asks for ≤32px; keep a tighter crop only there so the mark reads larger.
+_SHELL_TIGHT_MAX_PX = 32
+_FRACTION_LEQ_32 = 0.34
+# Match tools.branding.LOGO_UI_CONTENT_FRACTION: same framing as in-app / license-style shortcuts
+# (Explorer large icons & hover were still over-zoomed at 0.58).
+_FRACTION_SHELL_LARGE = 0.64
 
 
 def shell_content_fraction_for_target_px(size: int) -> float:
     if size <= 0:
-        return _FRACTION_GT_48
-    if size <= _SHELL_SMALL_MAX_PX:
-        return _FRACTION_LEQ_48
-    return _FRACTION_GT_48
+        return _FRACTION_SHELL_LARGE
+    if size <= _SHELL_TIGHT_MAX_PX:
+        return _FRACTION_LEQ_32
+    return _FRACTION_SHELL_LARGE

@@ -38,7 +38,7 @@ _STANDARD_SIZES = (
 # Include more of the source art so the gold outline is not cropped out of the toolbar About button.
 LOGO_UI_CONTENT_FRACTION = 0.64
 # Legacy single fraction (shell icons now use shell_content_fraction_for_target_px per size).
-LOGO_SHELL_CONTENT_FRACTION = 0.34
+LOGO_SHELL_CONTENT_FRACTION = 0.34  # legacy; shell uses logo_shell_crop tiers
 
 
 def crop_logo_content(pm: QPixmap, fraction: float = LOGO_UI_CONTENT_FRACTION) -> QPixmap:
