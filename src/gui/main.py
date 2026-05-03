@@ -1579,19 +1579,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _device_row_blocked_chrome(self, device):
         """
-        True when this row should use kill-row styling: explicit kill, or lag/dupe victim
-        (lag allow-phase temporarily removes the MAC from killer.killed — still show red).
+        Kill-row styling: active lag/dupe victim, or explicit Kill ON for a MAC still held
+        in killer. Do not key off killer alone — lag/dupe teardown can lag behind unkill(),
+        which made rows (and perceived state) stick red after timers/buttons went OFF.
         """
         if not device or device.get('admin'):
             return False
         mac = device['mac']
-        if mac in self.killer.killed:
-            return True
         if getattr(self, 'lag_active', False) and self.lag_device_mac == mac:
             return True
         if getattr(self, 'dupe_active', False) and self.dupe_device_mac == mac:
             return True
-        return False
+        if mac not in self.killer.killed:
+            return False
+        return bool(self.killed_devices.get(mac, False))
 
     def _table_hover_cell_palette(self, row, device):
         """
@@ -2548,6 +2549,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_timer.stop()
         snap = getattr(self, '_lag_device_snapshot', None)
         self._lag_device_snapshot = None
+        self._sync_killed_devices()
+        self.btnLagSwitch.setText('Lag Switch')
+        self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        self.log('Lag switch OFF', UI_LOG_RESTORE_FG)
+        if refresh_dialog:
+            self._refresh_flow_toggle_ui()
+        else:
+            self._updateLagSwitchButtonState()
+            self._updateKillButtonState()
+        self._repaint_all_table_rows_for_hover()
         device = self._get_device_by_mac(prev_mac)
         if not device and snap and snap.get('mac') == prev_mac:
             device = snap
@@ -2574,15 +2585,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 except Exception:
                     pass
         self._sync_killed_devices()
-        self.btnLagSwitch.setText('Lag Switch')
-        self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-        self.log('Lag switch OFF', UI_LOG_RESTORE_FG)
-        if refresh_dialog:
-            self._refresh_flow_toggle_ui()
-        else:
-            self._updateLagSwitchButtonState()
-            self._updateKillButtonState()
-        self._repaint_all_table_rows_for_hover()
 
     def startDupe(self, device, duration_ms, direction):
         if self._toggle_start_blocked('dupe'):
@@ -2669,15 +2671,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Mark inactive after timers are stopped so _tick cannot race with teardown.
         self.dupe_active = False
         self.dupe_device_mac = None
-        device = self._get_device_by_mac(prev_mac)
-        if device:
-            try:
-                self._clear_victim_block(device)
-                dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
-            except Exception:
-                pass
         self.btnDupe.setText('Dupe')
         self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         if log:
@@ -2688,6 +2681,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._updateDupeButtonState()
             self._updateKillButtonState()
         self._repaint_all_table_rows_for_hover()
+        device = self._get_device_by_mac(prev_mac)
+        if device:
+            try:
+                self._clear_victim_block(device)
+                dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+            except Exception:
+                pass
+        self._sync_killed_devices()
 
     def _updateDupeButtonState(self):
         if self.dupe_active and self.dupe_device_mac:
@@ -2816,6 +2819,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         self.killed_devices[mac] = next_state
         self._updateKillButtonState()
+        self._repaint_all_table_rows_for_hover()
         self._run_kill_command(mac, device, turn_on=next_state, source=source)
 
     def togglePercentCut(self, source='unknown'):
