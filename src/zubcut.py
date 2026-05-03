@@ -9,7 +9,7 @@ from tools.crash_feedback import install_crash_feedback
 from tools.utils_gui import npcap_exists, duplicate_zubcut, repair_settings, migrate_settings_file
 from tools.license_offline import load_and_validate_installed_license
 from tools.license_remote_signin import effective_signin_url, validate_active_license_session
-from tools.branding import load_application_qicon, qicon_is_empty
+from tools.branding import load_application_qicon, qicon_is_empty, LOGO_SHELL_CONTENT_FRACTION
 from tools.qtools import msg_box, Buttons, MsgIcon
 
 from gui.main import ElmoCut
@@ -27,7 +27,7 @@ _UI_LOG_RESTORE_FG = getattr(
 
 
 def _load_window_icon():
-    icon = load_application_qicon()
+    icon = load_application_qicon(LOGO_SHELL_CONTENT_FRACTION)
     if qicon_is_empty(icon):
         return ElmoCut.processIcon(app_icon, crop_margins=True)
     return icon

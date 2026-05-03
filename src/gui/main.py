@@ -50,6 +50,7 @@ from tools.branding import (
     qicon_is_empty,
     crop_logo_content,
     LOGO_UI_CONTENT_FRACTION,
+    LOGO_SHELL_CONTENT_FRACTION,
 )
 from tools.utils import (
     goto,
@@ -705,14 +706,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         super().__init__()
         self.version = '1.29'
         if window_icon is not None:
-            self.icon = window_icon
+            self.shell_icon = window_icon
         else:
-            self.icon = load_application_qicon()
-            if qicon_is_empty(self.icon):
-                self.icon = self.processIcon(app_icon, crop_margins=True)
+            self.shell_icon = load_application_qicon(LOGO_SHELL_CONTENT_FRACTION)
+            if qicon_is_empty(self.shell_icon):
+                self.shell_icon = self.processIcon(app_icon, crop_margins=True)
+        # About toolbar: looser crop keeps the full gold outline; shell uses a tighter crop (larger on taskbar).
+        self.icon = load_application_qicon(LOGO_UI_CONTENT_FRACTION)
+        if qicon_is_empty(self.icon):
+            self.icon = self.processIcon(app_icon, crop_margins=True)
+        if qicon_is_empty(self.shell_icon):
+            self.shell_icon = self.icon
 
-        # Add window icon
-        self.setWindowIcon(self.icon)
+        self.setWindowIcon(self.shell_icon)
         self.setupUi(self)
         self.setWindowTitle(APP_DISPLAY_NAME)
         apply_app_global_dark_stylesheet()
@@ -825,10 +831,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # self.update_thread.thread_finished.connect(self.UpdateThread_Reciever)
         
         # Initialize other sub-windows
-        self.settings_window = Settings(self, self.icon)
-        self.about_window = About(self, self.icon)
-        self.device_window = Device(self, self.icon)
-        self.traffic_window = Traffic(self, self.icon)
+        self.settings_window = Settings(self, self.shell_icon)
+        self.about_window = About(self, self.shell_icon)
+        self.device_window = Device(self, self.shell_icon)
+        self.traffic_window = Traffic(self, self.shell_icon)
 
         # Connect buttons with icons and tooltips
         self.buttons = [
@@ -883,14 +889,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'Lag Switch — start/stop intermittent blocking for selected device. '
             'Timing/direction controls are always visible below. Shortcut: M.'
         )
-        self.gridLayout.addWidget(self.btnLagSwitch, 5, 1, 1, 3)
         self.btnLagSwitch.pressed.connect(lambda: self._shortcut_global_lag())
         lag_font = QFont(self.btnLagSwitch.font())
         lag_font.setPointSize(13)
         lag_font.setBold(True)
         self.btnLagSwitch.setFont(lag_font)
-
-        self.gridLayout.addWidget(self.btnKill, 5, 4, 1, 2)
 
         self.btnDupe = QPushButton('Dupe', self.centralwidget)
         self.btnDupe.setObjectName('btnDupe')
@@ -907,8 +910,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'Dupe — one-shot lag for a set duration, then full stop. '
             'Duration/direction controls are always visible below. Shortcut: P.'
         )
-        self.gridLayout.addWidget(self.btnDupe, 5, 6, 1, 3)
         self.btnDupe.pressed.connect(lambda: self._shortcut_global_dupe())
+
+        # Row was grid columns 3+2+3; equal stretch on outer columns keeps Lag and Dupe the same width
+        # even when lblleft/lblright minimum widths skew shared column sizes.
+        self._flowActionsRow = QWidget(self.centralwidget)
+        _flow_actions_layout = QHBoxLayout(self._flowActionsRow)
+        _flow_actions_layout.setContentsMargins(0, 0, 0, 0)
+        _flow_actions_layout.setSpacing(self.gridLayout.spacing())
+        _flow_actions_layout.addWidget(self.btnLagSwitch, 3)
+        _flow_actions_layout.addWidget(self.btnKill, 2)
+        _flow_actions_layout.addWidget(self.btnDupe, 3)
+        self.gridLayout.addWidget(self._flowActionsRow, 5, 1, 1, 8)
 
         self.groupLagInline = QGroupBox('Lag Switch Controls', self.centralwidget)
         self.groupLagInline.setObjectName('groupLagInline')
@@ -1076,7 +1089,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Parent the tray to the QApplication, not the main window, so teardown order
         # does not drop the icon before hide() runs (reduces ghost icons on Windows).
         self.tray_icon = QSystemTrayIcon(QApplication.instance())
-        self.tray_icon.setIcon(self.icon)
+        self.tray_icon.setIcon(self.shell_icon)
         self.tray_icon.setToolTip(APP_DISPLAY_NAME)
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.show()
@@ -1092,7 +1105,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         apply_app_global_dark_stylesheet()
         self._repolish_chrome_pushbuttons()
 
-        setup_frameless_main_window(self, APP_DISPLAY_NAME, self.icon, maximizable=True)
+        setup_frameless_main_window(self, APP_DISPLAY_NAME, self.shell_icon, maximizable=True)
         _chrome_windows = [
             self,
             self.settings_window,

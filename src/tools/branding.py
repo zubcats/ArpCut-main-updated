@@ -11,12 +11,32 @@ from PyQt5.QtGui import QIcon, QPixmap
 _ICON_FILE = 'zubcut_icon.png'
 
 # Sizes commonly requested by Windows shells and Qt (device-independent pixels).
-_STANDARD_SIZES = (16, 20, 24, 32, 40, 48, 64, 72, 96, 128, 256)
+# Extra mids (22–44) help Windows 10/11 taskbar pick a sharp pixmap at 125%/150% DPI.
+_STANDARD_SIZES = (
+    16,
+    20,
+    22,
+    24,
+    28,
+    30,
+    32,
+    36,
+    40,
+    44,
+    48,
+    56,
+    64,
+    72,
+    96,
+    128,
+    256,
+)
 
-# zubcut_icon.png has a lot of empty margin; crop the center before building QIcons so
-# toolbar / tray / title bar show a larger mark. About dialog uses the uncropped file.
-# Include more of the source art so the gold outline is not cropped out of the UI icon.
+# zubcut_icon.png has a lot of empty margin; crop the center before building QIcons.
+# Include more of the source art so the gold outline is not cropped out of the toolbar About button.
 LOGO_UI_CONTENT_FRACTION = 0.64
+# Tighter crop for taskbar / window / tray: the mark fills the bitmap more so it reads larger on the shell.
+LOGO_SHELL_CONTENT_FRACTION = 0.52
 
 
 def crop_logo_content(pm: QPixmap, fraction: float = LOGO_UI_CONTENT_FRACTION) -> QPixmap:
