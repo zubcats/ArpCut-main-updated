@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-DEFAULT_FG = (232, 234, 237, 255)
+from toolbar_icon_color import DEFAULT_FG
 DEFAULT_FONT = Path(r"C:\Windows\Fonts\segmdl2.ttf")
 
 

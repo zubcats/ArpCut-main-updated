@@ -104,7 +104,7 @@ QCheckBox::indicator:checked, QRadioButton::indicator:checked {
 QCheckBox:hover, QRadioButton:hover {
     color: #316E69;
 }
-/* Scroll bars: neutral greys (match toolbar chrome), not teal — easier on the eyes on #tableScan. */
+/* Scroll bars: idle thumb = medium grey; hover = selection teal (same as UI_TABLE_SELECTION_BG). */
 QScrollBar:vertical {
     background-color: #141414;
     width: 10px;
@@ -120,19 +120,19 @@ QScrollBar:horizontal {
     border-radius: 4px;
 }
 QScrollBar::handle:vertical {
-    background-color: #3d3d3d;
+    background-color: #4a4a4a;
     min-height: 24px;
     border-radius: 4px;
     margin: 2px;
 }
 QScrollBar::handle:horizontal {
-    background-color: #3d3d3d;
+    background-color: #4a4a4a;
     min-width: 24px;
     border-radius: 4px;
     margin: 2px;
 }
 QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
-    background-color: #4a4a4a;
+    background-color: #316E69;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
@@ -273,7 +273,8 @@ def _main_chrome_action_buttons_qss() -> str:
     color: {tp};
 }}
 QPushButton#btnAbout {{
-    padding: 8px;
+    /* Wide logo needs horizontal inset; keep vertical padding low so a 46×46 icon fits in the 50px toolbar row (8px padding was clipping top/bottom). */
+    padding: 1px 10px;
 }}
 """
     return out

@@ -1,24 +1,65 @@
 """
+
 Regenerate exe/actions/scan_hard.png (Ping / hard scan toolbar).
 
-MDL2 globe (U+E909) — “whole network” sweep vs ARP scan’s circular arrows (U+E895).
-Run on Windows, then: python tools/sync_assets_pngs.py
+
+
+If assets/reference_scan_hard_dish.png exists, it is normalized (transparent +
+
+toolbar grey) via normalize_scan_hard_png.py. Otherwise falls back to Lucide
+
+satellite-dish vectors.
+
+
+
+Then: python tools/sync_assets_pngs.py
+
 """
+
 from __future__ import annotations
+
+
 
 from pathlib import Path
 
-from mdl2_toolbar_icon import DEFAULT_FG, render_mdl2_png
+
 
 ROOT = Path(__file__).resolve().parent.parent
+
 OUT = ROOT / "exe" / "actions" / "scan_hard.png"
-GLYPH = "\uE909"
+
+REF = ROOT / "assets" / "reference_scan_hard_dish.png"
+
+
+
 
 
 def main() -> None:
-    render_mdl2_png(OUT, 127, 127, GLYPH, fg=DEFAULT_FG)
-    print(f"Wrote {OUT} (127x127)")
+
+    if REF.is_file():
+
+        from normalize_scan_hard_png import normalize
+
+
+
+        normalize(REF, OUT)
+
+    else:
+
+        from lucide_satellite_dish_png import DEFAULT_FG, render_lucide_satellite_dish_png
+
+
+
+        render_lucide_satellite_dish_png(OUT, 127, 127, fg=DEFAULT_FG)
+
+        print(f"Wrote {OUT} (Lucide satellite-dish fallback)")
+
+
+
 
 
 if __name__ == "__main__":
+
     main()
+
+

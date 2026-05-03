@@ -4,7 +4,7 @@ Regenerate exe/actions/scan_easy.png (ARP scan toolbar).
 Uses Segoe MDL2 Assets glyph U+E895 (Sync / circular arrows). Run on Windows
 where segmdl2.ttf exists, then: python tools/sync_assets_pngs.py
 
-Glyph is scaled to maximize fill inside the PNG (matches Settings icon workflow).
+Glyph is scaled to maximize fill; colour = ADMIN_DEVICE_TABLE_ROW_BG (Me/Router sage).
 """
 from __future__ import annotations
 

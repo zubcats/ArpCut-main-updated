@@ -15,11 +15,12 @@ OUT = ROOT / "exe" / "actions" / "settings.png"
 # MDL2 "Settings" (gear)
 GLYPH = "\uE713"
 
-OUT_W, OUT_H = 180, 130
+# Match scan_easy canvas so the gear scales like other toolbar icons (no extra letterboxing).
+OUT_W, OUT_H = 115, 127
 
 
 def main() -> None:
-    render_mdl2_png(OUT, OUT_W, OUT_H, GLYPH, fg=DEFAULT_FG)
+    render_mdl2_png(OUT, OUT_W, OUT_H, GLYPH, fg=DEFAULT_FG, margin=0.04)
     print(f"Wrote {OUT} ({OUT_W}x{OUT_H})")
 
 
