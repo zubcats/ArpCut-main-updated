@@ -1707,16 +1707,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.fillTableRow(row, device)
 
         self._table_hover_row = -1
-        
-        status = f'{len(self.scanner.devices) - 2} devices' \
-                 f' ({len(self.killer.killed)} killed)'
-        
-        status_tray = f'Devices Found: {len(self.scanner.devices) - 2}\n' \
-                      f'Devices Killed: {len(self.killer.killed)}\n' \
-                      f'Interface: {self.scanner.iface.name}'
-        
-        self.lblright.setText(status)
-        self.tray_icon.setToolTip(status_tray)
+
+        self._update_scan_count_status()
 
         # Restore selection by MAC identity first (row index can move after rescans),
         # then fall back to the first non-admin row.
@@ -2410,6 +2402,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         QTimer.singleShot(120, _reassert)
         QTimer.singleShot(320, _reassert)
 
+    def _update_scan_count_status(self):
+        """Update device/kill counts in lblright + tray without rebuilding the scan table."""
+        try:
+            n = max(0, len(self.scanner.devices) - 2)
+            self.lblright.setText(f'{n} devices ({len(self.killer.killed)} killed)')
+            if getattr(self, 'tray_icon', None) and getattr(self.scanner, 'iface', None):
+                self.tray_icon.setToolTip(
+                    f'Devices Found: {n}\n'
+                    f'Devices Killed: {len(self.killer.killed)}\n'
+                    f'Interface: {self.scanner.iface.name}'
+                )
+        except Exception:
+            pass
+
     def _refresh_table_row_for_mac(self, mac):
         """Update table row colors for one MAC without rebuilding the whole table."""
         if not mac:
@@ -2935,7 +2941,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
         self._updateKillButtonState()
-        self.showDevices()
+        self._update_scan_count_status()
+        self._refresh_table_row_for_mac(mac)
+        self._repaint_all_table_rows_for_hover()
 
     def _schedule_kill_off_reinforce(self, mac, intent_seq, delay_ms):
         """Delayed OFF reinforcement that self-cancels if intent changed."""

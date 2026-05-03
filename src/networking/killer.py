@@ -245,8 +245,9 @@ class Killer:
         seq = self._next_op_seq(victim['mac'])
         if victim['mac'] in self.killed:
             self.killed.pop(victim['mac'])
-        # Strong immediate restore burst so OFF reflects on network quickly.
-        self._restore_arp_now(victim, seq, repeats=3, delay_s=0.05)
+        # Immediate ARP burst with no sleep — sleeps belong in @threaded _unkill_restore_worker
+        # so the GUI thread returns instantly on Kill/Lag/Dupe OFF.
+        self._restore_arp_now(victim, seq, repeats=3, delay_s=0)
         self._unkill_restore_worker(victim, seq)
 
     def reinforce_restore(self, victim):
@@ -261,7 +262,7 @@ class Killer:
             return
         self._sync_iface_for_victim(victim)
         seq = self._op_seq.get(mac, 0)
-        self._restore_arp_now(victim, seq, repeats=2, delay_s=0.05)
+        self._restore_arp_now(victim, seq, repeats=2, delay_s=0)
 
     def _restore_arp_now(self, victim, seq=0, repeats=1, delay_s=0.1):
         """Best-effort ARP restore; aborts if a newer op supersedes this sequence."""
@@ -320,8 +321,8 @@ class Killer:
             mac = victim['mac']
             seq = self._next_op_seq(mac)
             self.killed.pop(mac, None)
-            # Immediate restore burst for OFF parity with per-device unkill.
-            self._restore_arp_now(victim, seq, repeats=3, delay_s=0.05)
+            # Immediate restore burst for OFF parity with per-device unkill (no GUI-thread sleep).
+            self._restore_arp_now(victim, seq, repeats=3, delay_s=0)
             self._unkill_restore_worker(victim, seq)
             self._stop_forwarder(mac)
         for ip in list(self.pf_blocks):
