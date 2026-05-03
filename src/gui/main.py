@@ -47,10 +47,10 @@ from tools.frameless_chrome import (
 from tools.keybinds import keyseq_from_setting
 from tools.branding import (
     load_application_qicon,
+    load_shell_application_qicon,
     qicon_is_empty,
     crop_logo_content,
     LOGO_UI_CONTENT_FRACTION,
-    LOGO_SHELL_CONTENT_FRACTION,
 )
 from tools.utils import (
     goto,
@@ -708,7 +708,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if window_icon is not None:
             self.shell_icon = window_icon
         else:
-            self.shell_icon = load_application_qicon(LOGO_SHELL_CONTENT_FRACTION)
+            self.shell_icon = load_shell_application_qicon()
             if qicon_is_empty(self.shell_icon):
                 self.shell_icon = self.processIcon(app_icon, crop_margins=True)
         # About toolbar: looser crop keeps the full gold outline; shell uses a tighter crop (larger on taskbar).

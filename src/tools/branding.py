@@ -8,6 +8,8 @@ import sys
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon, QPixmap
 
+from tools.logo_shell_crop import shell_content_fraction_for_target_px
+
 _ICON_FILE = 'zubcut_icon.png'
 
 # Sizes commonly requested by Windows shells and Qt (device-independent pixels).
@@ -35,8 +37,8 @@ _STANDARD_SIZES = (
 # zubcut_icon.png has a lot of empty margin; crop the center before building QIcons.
 # Include more of the source art so the gold outline is not cropped out of the toolbar About button.
 LOGO_UI_CONTENT_FRACTION = 0.64
-# Tighter crop for taskbar / window / tray: the mark fills the bitmap more so it reads larger on the shell.
-LOGO_SHELL_CONTENT_FRACTION = 0.36
+# Legacy single fraction (shell icons now use shell_content_fraction_for_target_px per size).
+LOGO_SHELL_CONTENT_FRACTION = 0.34
 
 
 def crop_logo_content(pm: QPixmap, fraction: float = LOGO_UI_CONTENT_FRACTION) -> QPixmap:
@@ -105,6 +107,32 @@ def load_application_qicon(content_fraction=LOGO_UI_CONTENT_FRACTION):
     if not path:
         return QIcon()
     return qicon_from_png_path(path, content_fraction)
+
+
+def qicon_from_png_path_shell(path: str) -> QIcon:
+    """QIcon ladder for taskbar / tray / OS chrome: tiered crop by requested pixmap size."""
+    pm_orig = QPixmap(path)
+    if pm_orig.isNull():
+        return QIcon()
+    icon = QIcon()
+    for s in _STANDARD_SIZES:
+        frac = shell_content_fraction_for_target_px(s)
+        pm = crop_logo_content(pm_orig, frac)
+        icon.addPixmap(
+            pm.scaled(s, s, Qt.KeepAspectRatio, Qt.SmoothTransformation),
+            QIcon.Normal,
+            QIcon.Off,
+        )
+    hi = shell_content_fraction_for_target_px(256)
+    icon.addPixmap(crop_logo_content(pm_orig, hi), QIcon.Normal, QIcon.Off)
+    return icon
+
+
+def load_shell_application_qicon():
+    path = resolve_zubcut_png_path()
+    if not path:
+        return QIcon()
+    return qicon_from_png_path_shell(path)
 
 
 def qicon_is_empty(icon):
