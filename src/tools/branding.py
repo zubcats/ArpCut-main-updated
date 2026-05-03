@@ -11,6 +11,8 @@ from PyQt5.QtGui import QIcon, QPixmap
 from tools.logo_shell_crop import shell_content_fraction_for_target_px
 
 _ICON_FILE = 'zubcut_icon.png'
+# Windows: same multi-res file PyInstaller uses for the .exe; better DWM / taskbar preview than PNG QIcon.
+_SHELL_ICO_FILE = 'zubcut_shell.ico'
 
 # Sizes commonly requested by Windows shells and Qt (device-independent pixels).
 # Extra mids (22–44) help Windows 10/11 taskbar pick a sharp pixmap at 125%/150% DPI.
@@ -78,8 +80,39 @@ def zubcut_png_candidates():
     return out
 
 
+def zubcut_shell_ico_candidates():
+    """Search paths for zubcut_shell.ico (mirrors zubcut_png_candidates)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    src_dir = os.path.dirname(here)
+    root = os.path.dirname(src_dir)
+    c = [
+        os.path.join(root, 'exe', _SHELL_ICO_FILE),
+        os.path.normpath(os.path.join(src_dir, '..', 'exe', _SHELL_ICO_FILE)),
+    ]
+    if getattr(sys, 'frozen', False):
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass:
+            c.insert(0, os.path.join(meipass, _SHELL_ICO_FILE))
+        c.insert(0, os.path.join(os.path.dirname(sys.executable), _SHELL_ICO_FILE))
+    seen = set()
+    out = []
+    for p in c:
+        rp = os.path.normpath(p)
+        if rp not in seen:
+            seen.add(rp)
+            out.append(rp)
+    return out
+
+
 def resolve_zubcut_png_path():
     for p in zubcut_png_candidates():
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def resolve_zubcut_shell_ico_path():
+    for p in zubcut_shell_ico_candidates():
         if os.path.isfile(p):
             return p
     return None
@@ -123,8 +156,6 @@ def qicon_from_png_path_shell(path: str) -> QIcon:
             QIcon.Normal,
             QIcon.Off,
         )
-    hi = shell_content_fraction_for_target_px(256)
-    icon.addPixmap(crop_logo_content(pm_orig, hi), QIcon.Normal, QIcon.Off)
     return icon
 
 
@@ -135,5 +166,24 @@ def load_shell_application_qicon():
     return qicon_from_png_path_shell(path)
 
 
+def load_shell_window_icon():
+    """
+    Icon for setWindowIcon / tray on Windows: prefer multi-res .ico on disk.
+    Qt+DWM often distort PNG-built QIcons in the taskbar hover preview (non-square requests).
+    """
+    if sys.platform == 'win32':
+        ico = resolve_zubcut_shell_ico_path()
+        if ico:
+            icon = QIcon(ico)
+            if not qicon_is_empty(icon):
+                return icon
+    return load_shell_application_qicon()
+
+
 def qicon_is_empty(icon):
-    return icon.isNull() or not icon.availableSizes()
+    if icon.isNull():
+        return True
+    if icon.availableSizes():
+        return False
+    # QIcon loaded from .ico may not populate availableSizes() until first pixmap().
+    return icon.pixmap(32, 32).isNull()

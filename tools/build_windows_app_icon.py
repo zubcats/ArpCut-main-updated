@@ -4,7 +4,7 @@ Build exe/zubcut_shell.ico for PyInstaller on Windows. Multi-resolution ICO make
 taskbar/pinned shortcut glyph read larger than a single PNG embedded as the Win32 icon.
 
 Crop per embedded size must match src/tools/logo_shell_crop.shell_content_fraction_for_target_px
-(Qt uses the same tiers via branding.load_shell_application_qicon).
+(Qt PNG ladder uses the same tiers via branding.qicon_from_png_path_shell).
 """
 from __future__ import annotations
 

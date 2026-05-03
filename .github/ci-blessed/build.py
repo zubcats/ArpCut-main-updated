@@ -76,6 +76,7 @@ def build():
         cmd.extend(['--onedir', '--windowed'])
         cmd.extend(['--add-data', 'exe/manuf;manuf'])
         cmd.extend(['--add-data', 'exe/zubcut_icon.png;.'])
+        cmd.extend(['--add-data', 'exe/zubcut_shell.ico;.'])
         _ico = _windows_pyinstaller_icon_path()
         cmd.extend(['--icon', os.path.relpath(_ico, _ROOT).replace('\\', '/')])
         cmd.extend(['--uac-admin'])
