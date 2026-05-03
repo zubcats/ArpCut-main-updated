@@ -272,17 +272,31 @@ def _windows_native_icon_source_path() -> str | None:
     return None
 
 
-def _win_hwnd_icon_pixel_sizes(hwnd: int, user32) -> tuple[int, int]:
-    """(small_cx, large_cx) for LoadImage — scales with window DPI so taskbar ≠ blurry 16px upsample."""
-    dpi = 96
+def _effective_window_dpi(window, hwnd: int, user32) -> int:
+    """
+    Qt frameless windows often report 96 from GetDpiForWindow while the screen is 125%/150%.
+    Blend Win32 DPI with QScreen.devicePixelRatio so LoadImage requests match the real taskbar.
+    """
+    dpi_win = 0
     try:
         d = int(user32.GetDpiForWindow(hwnd))
         if d > 0:
-            dpi = d
+            dpi_win = d
     except AttributeError:
         pass
-    if dpi < 96:
-        dpi = 96
+    dpi_qt = 0
+    try:
+        wh = window.windowHandle()
+        if wh is not None and wh.screen() is not None:
+            dpi_qt = int(round(96.0 * float(wh.screen().devicePixelRatio())))
+    except Exception:
+        pass
+    return max(dpi_win, dpi_qt, 96)
+
+
+def _win_hwnd_icon_pixel_sizes(window, hwnd: int, user32) -> tuple[int, int]:
+    """(small_cx, large_cx) for LoadImage — scales with effective DPI."""
+    dpi = _effective_window_dpi(window, hwnd, user32)
     SM_CXSMICON = 49
     SM_CXICON = 11
     try:
@@ -325,7 +339,7 @@ def install_windows_native_window_icons(window) -> bool:
     IMAGE_ICON = 1
     LR_LOADFROMFILE = 0x0010
 
-    sm_px, lg_px = _win_hwnd_icon_pixel_sizes(hwnd, user32)
+    sm_px, lg_px = _win_hwnd_icon_pixel_sizes(window, hwnd, user32)
     h_sm = 0
     h_lg = 0
 

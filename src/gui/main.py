@@ -1372,11 +1372,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Connect TaskBar icon to progressbar
         """
         super().showEvent(event)
-        if sys.platform == 'win32' and not getattr(self, '_win_hwnd_icons_ok', False):
-            if install_windows_native_window_icons(self):
-                self._win_hwnd_icons_ok = True
-            else:
-                QTimer.singleShot(50, self._deferred_install_win_hwnd_icons)
+        if sys.platform == 'win32':
+            # Qt may (re)apply small window icons after first show; push Win32 icons several times.
+            def _push_hwnd_icons():
+                install_windows_native_window_icons(self)
+
+            _push_hwnd_icons()
+            QTimer.singleShot(50, _push_hwnd_icons)
+            QTimer.singleShot(300, _push_hwnd_icons)
+            QTimer.singleShot(1200, _push_hwnd_icons)
 
         if QWinTaskbarButton is None:
             return
@@ -1387,12 +1391,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.taskbar_progress = self.taskbar_button.progress()
         self.taskbar_button.setWindow(self.windowHandle())
         self.pgbar.valueChanged.connect(self.taskbar_progress.setValue)
-
-    def _deferred_install_win_hwnd_icons(self):
-        if sys.platform != 'win32' or getattr(self, '_win_hwnd_icons_ok', False):
-            return
-        if install_windows_native_window_icons(self):
-            self._win_hwnd_icons_ok = True
 
     def resizeEvent(self, event=True):
         """
