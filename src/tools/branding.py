@@ -6,13 +6,15 @@ import os
 import sys
 
 from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QIcon, QPixmap
+from PyQt5.QtGui import QIcon, QPainter, QPixmap
 
 from tools.logo_shell_crop import shell_content_fraction_for_target_px
 
 _ICON_FILE = 'zubcut_icon.png'
 # Windows: same multi-res file PyInstaller uses for the .exe; better DWM / taskbar preview than PNG QIcon.
 _SHELL_ICO_FILE = 'zubcut_shell.ico'
+# HWND class icons only (taskbar + hover flyout chip). Title bar / tray / toolbar use full QIcon size.
+SHELL_HWND_ICON_INNER_FRACTION = 0.87
 
 # Sizes commonly requested by Windows shells and Qt (device-independent pixels).
 # Extra mids (22–44) help Windows 10/11 taskbar pick a sharp pixmap at 125%/150% DPI.
@@ -226,6 +228,30 @@ def _effective_window_dpi(window, hwnd: int, user32) -> int:
     return max(dpi_win, dpi_qt, 96)
 
 
+def _hwnd_hicon_from_ico_padded(ico_abs: str, canvas_px: int) -> int:
+    """Build HICON with the mark scaled to a fraction of the shell square (smaller glyph in taskbar/peek)."""
+    if canvas_px < 4:
+        return 0
+    try:
+        from PyQt5.QtWinExtras import QtWin
+    except ImportError:
+        return 0
+    ic = QIcon(ico_abs)
+    if ic.isNull():
+        return 0
+    pm = QPixmap(canvas_px, canvas_px)
+    pm.fill(Qt.transparent)
+    inner_side = max(1, int(round(canvas_px * SHELL_HWND_ICON_INNER_FRACTION)))
+    inner = ic.pixmap(inner_side, inner_side)
+    if inner.isNull():
+        return 0
+    painter = QPainter(pm)
+    painter.drawPixmap((canvas_px - inner.width()) // 2, (canvas_px - inner.height()) // 2, inner)
+    painter.end()
+    h = QtWin.toHICON(pm)
+    return int(h) if h else 0
+
+
 def _win_hwnd_icon_pixel_sizes(window, hwnd: int, user32) -> tuple[int, int]:
     """(small_cx, large_cx) for LoadImage — scales with effective DPI."""
     dpi = _effective_window_dpi(window, hwnd, user32)
@@ -278,8 +304,12 @@ def install_windows_native_window_icons(window) -> bool:
     ico = resolve_zubcut_shell_ico_path()
     if ico and os.path.isfile(ico):
         ico_abs = os.path.abspath(ico)
-        h_sm = int(user32.LoadImageW(None, ico_abs, IMAGE_ICON, sm_px, sm_px, LR_LOADFROMFILE) or 0)
-        h_lg = int(user32.LoadImageW(None, ico_abs, IMAGE_ICON, lg_px, lg_px, LR_LOADFROMFILE) or 0)
+        h_sm = _hwnd_hicon_from_ico_padded(ico_abs, sm_px)
+        h_lg = _hwnd_hicon_from_ico_padded(ico_abs, lg_px)
+        if not h_sm:
+            h_sm = int(user32.LoadImageW(None, ico_abs, IMAGE_ICON, sm_px, sm_px, LR_LOADFROMFILE) or 0)
+        if not h_lg:
+            h_lg = int(user32.LoadImageW(None, ico_abs, IMAGE_ICON, lg_px, lg_px, LR_LOADFROMFILE) or 0)
 
     if not h_sm or not h_lg:
         large = ctypes.c_void_p()
