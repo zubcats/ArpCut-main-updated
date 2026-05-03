@@ -49,6 +49,9 @@ def main() -> int:
         frac = shell_content_fraction_for_target_px(s)
         master = _crop_square_center(im, frac)
         images.append(master.resize((s, s), Image.Resampling.LANCZOS))
+    # Pillow only embeds sizes <= the first image's width/height; a 16×16 first frame
+    # drops every larger layer (Explorer then upscales → zoomed/pixelated shortcuts).
+    images.sort(key=lambda i: i.size[0], reverse=True)
     images[0].save(_OUT, format='ICO', append_images=images[1:])
     print(f'Wrote {_OUT}')
     return 0
