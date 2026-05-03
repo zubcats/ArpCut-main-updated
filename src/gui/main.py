@@ -2379,10 +2379,24 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             f'Lag switch ON: {self.lag_block_ms}ms lag ({dir_text}) / {self.lag_release_ms}ms normal',
             UI_LOG_VICTIM_BLOCK_FG,
         )
-        self._lag_apply_block(device)
-        self._schedule_lag_start_reassert(device['mac'])
-        self._lag_in_allow_phase = False
-        self.lag_timer.start(max(1, int(self.lag_block_ms)))
+        dev = dict(device)
+        mac = device['mac']
+        block_ms = max(1, int(self.lag_block_ms))
+
+        def _arm_lag_start():
+            if not self.lag_active or self.lag_device_mac != mac:
+                return
+            try:
+                self._lag_apply_block(dev)
+            except Exception:
+                pass
+            self._schedule_lag_start_reassert(mac)
+            self._lag_in_allow_phase = False
+            self.lag_timer.start(block_ms)
+            self._refresh_flow_toggle_ui()
+            self._repaint_all_table_rows_for_hover()
+
+        QTimer.singleShot(0, _arm_lag_start)
         self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
 
@@ -2523,26 +2537,37 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         block_ms = max(1, int(self.lag_block_ms))
         allow_ms = max(25, int(self.lag_release_ms))
+        mac = self.lag_device_mac
+        dev = dict(device)
 
         if not self._lag_in_allow_phase:
             # Block interval (top spin) just finished -> allow traffic for bottom spin duration.
+            def _go_allow():
+                if not self.lag_active or self.lag_device_mac != mac:
+                    return
+                try:
+                    self._lag_enter_allow_phase(dev)
+                except Exception:
+                    pass
+                self._lag_in_allow_phase = True
+                if self.lag_active and self.lag_device_mac == mac:
+                    self.lag_timer.start(allow_ms)
+
+            QTimer.singleShot(0, _go_allow)
+            return
+
+        def _go_block():
+            if not self.lag_active or self.lag_device_mac != mac:
+                return
             try:
-                self._lag_enter_allow_phase(device)
-            except Exception:
-                pass
-            self._lag_in_allow_phase = True
-            next_ms = allow_ms
-        else:
-            # Allow interval (bottom spin) just finished -> block again for top spin duration.
-            try:
-                self._lag_apply_block(device)
+                self._lag_apply_block(dev)
             except Exception:
                 pass
             self._lag_in_allow_phase = False
-            next_ms = block_ms
+            if self.lag_active and self.lag_device_mac == mac:
+                self.lag_timer.start(block_ms)
 
-        if self.lag_active:
-            self.lag_timer.start(next_ms)
+        QTimer.singleShot(0, _go_block)
 
     def stopLagSwitch(self, refresh_dialog=True):
         if not self.lag_active:
@@ -2826,7 +2851,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killed_devices[mac] = next_state
         self._updateKillButtonState()
         self._repaint_all_table_rows_for_hover()
-        self._run_kill_command(mac, device, turn_on=next_state, source=source)
+        dev = dict(device)
+        on = next_state
+        src = source
+        QTimer.singleShot(0, lambda m=mac, d=dev, o=on, s=src: self._run_kill_command(m, d, turn_on=o, source=s))
 
     def togglePercentCut(self, source='unknown'):
         if not self.connected():
@@ -2852,7 +2880,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if self.dupe_active and self.dupe_device_mac == mac:
                 self.stopDupe(log=False)
             if self._kill_ui_shows_on(mac):
-                self._run_kill_command(mac, device, turn_on=False, source='pctcut_auto_off_kill')
+                dev = dict(device)
+                QTimer.singleShot(
+                    0,
+                    lambda m=mac, d=dev: self._run_kill_command(m, d, turn_on=False, source='pctcut_auto_off_kill'),
+                )
             pct = self._clamp_percent(self.spinPercentCutMain.value())
             allow_pct = max(0, 100 - pct)
             self._ensure_network_context_for_victim(device)
@@ -3102,5 +3134,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """After lag/dupe stop: execute an explicit OFF command immediately."""
         self.killed_devices[mac] = False
         self._updateKillButtonState()
-        self._run_kill_command(mac, device, turn_on=False, source='enqueue_off_only')
+        dev = dict(device)
+        QTimer.singleShot(0, lambda m=mac, d=dev: self._run_kill_command(m, d, turn_on=False, source='enqueue_off_only'))
 
