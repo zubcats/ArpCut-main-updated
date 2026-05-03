@@ -250,52 +250,86 @@ def qicon_is_empty(icon):
     return icon.pixmap(32, 32).isNull()
 
 
-def install_windows_native_window_icons(window) -> None:
+def _windows_native_icon_source_path() -> str | None:
+    """Frozen builds: same PE as the desktop shortcut (best match). Dev: zubcut_shell.ico."""
+    if getattr(sys, 'frozen', False) and getattr(sys, 'executable', None):
+        exe = os.path.abspath(sys.executable)
+        if os.path.isfile(exe):
+            return exe
+    ico = resolve_zubcut_shell_ico_path()
+    if ico and os.path.isfile(ico):
+        return os.path.abspath(ico)
+    return None
+
+
+def install_windows_native_window_icons(window) -> bool:
     """
-    Force HWND large/small icons from zubcut_shell.ico via WM_SETICON + class icons.
-    Live taskbar thumbnails often read Win32 icons directly; Qt-only setWindowIcon can leave
-    DWM drawing a different/low-res pixmap than the embedded PE icon.
+    Push Win32 small/large icons into the HWND (WM_SETICON + class icons).
+    Prefer Shell32.ExtractIconEx from the running .exe when frozen — same resource as the
+    desktop icon. LoadImage from .ico as fallback. Qt-only icons often never reach DWM.
     """
     if sys.platform != 'win32':
-        return
-    path = resolve_zubcut_shell_ico_path()
-    if not path:
-        return
-    path = os.path.abspath(path)
-    if not os.path.isfile(path):
-        return
+        return False
     try:
         hwnd = int(window.winId())
     except (AttributeError, TypeError, ValueError):
-        return
+        return False
+    if hwnd == 0:
+        return False
+
     import ctypes
 
+    src = _windows_native_icon_source_path()
+    if not src:
+        return False
+
+    shell32 = ctypes.windll.shell32
     user32 = ctypes.windll.user32
-    IMAGE_ICON = 1
-    LR_LOADFROMFILE = 0x0010
     WM_SETICON = 0x0080
     ICON_SMALL = 0
     ICON_BIG = 1
     GCL_HICON = -14
     GCL_HICONSM = -34
+    IMAGE_ICON = 1
+    LR_LOADFROMFILE = 0x0010
 
-    def _load(cx: int, cy: int) -> int:
-        h = user32.LoadImageW(None, path, IMAGE_ICON, cx, cy, LR_LOADFROMFILE)
+    large = ctypes.c_void_p()
+    small = ctypes.c_void_p()
+    n = shell32.ExtractIconExW(src, 0, ctypes.byref(large), ctypes.byref(small), 1)
+
+    h_lg = int(large.value or 0)
+    h_sm = int(small.value or 0)
+
+    def _load_ico(cx: int, cy: int) -> int:
+        ico = resolve_zubcut_shell_ico_path()
+        if not ico or not os.path.isfile(ico):
+            return 0
+        ico_abs = os.path.abspath(ico)
+        h = user32.LoadImageW(None, ico_abs, IMAGE_ICON, cx, cy, LR_LOADFROMFILE)
         return int(h) if h else 0
 
-    h16 = _load(16, 16)
-    h32 = _load(32, 32)
-    if not h16 and not h32:
-        return
-    if h16:
-        user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h16)
-    if h32:
-        user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h32)
+    if n == 0 or (not h_lg and not h_sm):
+        h_sm = h_sm or _load_ico(16, 16)
+        h_lg = h_lg or _load_ico(32, 32)
+    else:
+        h_sm = h_sm or _load_ico(16, 16)
+        h_lg = h_lg or _load_ico(32, 32)
+
+    if not h_lg and not h_sm:
+        return False
+
     try:
         set_cls = user32.SetClassLongPtrW
     except AttributeError:
         set_cls = user32.SetClassLongW
-    if h32:
-        set_cls(hwnd, GCL_HICON, h32)
-    if h16:
-        set_cls(hwnd, GCL_HICONSM, h16)
+
+    if h_sm:
+        user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_sm)
+    if h_lg:
+        user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_lg)
+    if h_lg:
+        set_cls(hwnd, GCL_HICON, h_lg)
+    if h_sm:
+        set_cls(hwnd, GCL_HICONSM, h_sm)
+
+    return True

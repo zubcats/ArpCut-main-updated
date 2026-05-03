@@ -48,6 +48,7 @@ from tools.keybinds import keyseq_from_setting
 from tools.branding import (
     load_application_qicon,
     load_shell_window_icon,
+    install_windows_native_window_icons,
     qicon_is_empty,
     crop_logo_content,
     LOGO_UI_CONTENT_FRACTION,
@@ -1120,10 +1121,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Windows: caption uses shell_icon so title strip + DWM hover match the .exe/.ico (UI crop looks thin).
         _caption_icon = self.shell_icon if sys.platform == 'win32' else self.icon
         setup_frameless_main_window(self, APP_DISPLAY_NAME, _caption_icon, maximizable=True)
-        if sys.platform == 'win32':
-            from tools.branding import install_windows_native_window_icons
-
-            QTimer.singleShot(0, lambda w=self: install_windows_native_window_icons(w))
         _chrome_windows = [
             self,
             self.settings_window,
@@ -1375,6 +1372,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Connect TaskBar icon to progressbar
         """
         super().showEvent(event)
+        if sys.platform == 'win32' and not getattr(self, '_win_hwnd_icons_ok', False):
+            if install_windows_native_window_icons(self):
+                self._win_hwnd_icons_ok = True
+            else:
+                QTimer.singleShot(50, self._deferred_install_win_hwnd_icons)
+
         if QWinTaskbarButton is None:
             return
         if getattr(self, '_taskbar_progress_linked', False):
@@ -1384,6 +1387,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.taskbar_progress = self.taskbar_button.progress()
         self.taskbar_button.setWindow(self.windowHandle())
         self.pgbar.valueChanged.connect(self.taskbar_progress.setValue)
+
+    def _deferred_install_win_hwnd_icons(self):
+        if sys.platform != 'win32' or getattr(self, '_win_hwnd_icons_ok', False):
+            return
+        if install_windows_native_window_icons(self):
+            self._win_hwnd_icons_ok = True
 
     def resizeEvent(self, event=True):
         """
