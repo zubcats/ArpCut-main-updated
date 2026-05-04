@@ -2,6 +2,9 @@
 #   wrangler kv key put --namespace-id=<id> "<account_lowercase>" --path=path/to/kv-bundle.json
 # Deploy:
 #   npx wrangler deploy
+#
+# Optional (local dev): create a preview namespace and set preview_id so `wrangler dev`
+# can read KV — see https://developers.cloudflare.com/kv/concepts/kv-namespaces/
 
 name = "zubcut-license-signin"
 main = "worker.mjs"
