@@ -843,6 +843,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_pending_clear = None  # (mac, device_snapshot|None) for deferred unblock/unkill
         self._dupe_arm_device = None  # snapshot while deferred apply is pending
         self._dupe_restoring_after_stop = False  # true until async/sync dupe OFF clears firewall+ARP
+        self._dupe_restoring_mac = None  # victim MAC during that window (pending clear may be cleared early)
         self._dupe_dlg_refresh_mono = 0.0
         self._dupe_net_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='dupe_net')
         self._dupe_end_mono = None  # wall deadline for countdown (set when block_ip finishes)
@@ -2620,6 +2621,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _drop_dupe_restoring_banner(self):
         """Clear 'Restoring network…' after dupe firewall/unkill teardown completes."""
         self._dupe_restoring_after_stop = False
+        self._dupe_restoring_mac = None
         self.lblDupeCountdownMain.setVisible(False)
         self.lblDupeCountdownMain.setText('')
         dlg = getattr(self, 'dupe_switch_dialog', None)
@@ -3019,6 +3021,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.lblDupeCountdownMain.setText('')
             return
         self._dupe_restoring_after_stop = True
+        self._dupe_restoring_mac = prev_mac
         self.lblDupeCountdownMain.setVisible(True)
         self.lblDupeCountdownMain.setText('Restoring network…')
         # Mark inactive after timers are stopped so _tick cannot race with teardown.
@@ -3172,7 +3175,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         mac = device['mac']
-        current_ui_on = bool(self.killed_devices.get(mac, mac in self.killer.killed))
+        current_ui_on = self._kill_ui_shows_on(mac)
         next_state = not current_ui_on
         if next_state and self._toggle_start_blocked('kill'):
             return
@@ -3360,6 +3363,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _kill_ui_shows_on(self, mac):
         """Kill button / bookkeeping: visual state is authoritative for toggle UX."""
+        if (
+            getattr(self, '_dupe_restoring_after_stop', False)
+            and getattr(self, '_dupe_restoring_mac', None) == mac
+        ):
+            # Dupe uses killer.killed for ARP without setting killed_devices; unkill lags briefly.
+            return bool(self.killed_devices.get(mac, False))
         return bool(self.killed_devices.get(mac, mac in self.killer.killed))
 
     def _get_selected_device(self):
