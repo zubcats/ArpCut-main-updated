@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, QSlider, \
                             QTextEdit, QPlainTextEdit, QWidget
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush, QFontMetrics
-from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent, pyqtSlot, QMetaObject
+from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent, pyqtSlot, QMetaObject, QEventLoop
 try:
     from PyQt5.QtWinExtras import QWinTaskbarButton
 except Exception:
@@ -634,7 +634,6 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         if not main:
             return
         # Show actual active state regardless of current selection.
-        restoring = getattr(main, '_dupe_restoring_after_stop', False)
         on = bool(main.dupe_active and main.dupe_device_mac)
         self.btnDupeRun.blockSignals(True)
         if on:
@@ -644,12 +643,9 @@ class DupeDialog(FramelessResizableMixin, QDialog):
             self.btnDupeRun.setText('Run')
             self.btnDupeRun.setStyleSheet(main.BUTTON_NORMAL_STYLE)
         self.btnDupeRun.blockSignals(False)
-        self._set_controls_enabled(not on and not restoring)
-        if restoring:
-            self.lblDupeCountdown.setVisible(True)
-            self.lblDupeCountdown.setText('Restoring network…')
-            return
-        if on and main and getattr(main, 'dupe_active', False):
+        # Network may still be tearing down in the background; UI reads idle as soon as dupe_active is false.
+        self._set_controls_enabled(not on)
+        if on and getattr(main, 'dupe_active', False):
             self.set_dupe_countdown(main.dupe_remaining_ms())
         else:
             self.set_dupe_countdown(None)
@@ -2968,9 +2964,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _tick_dupe_countdown(self):
         if not self.dupe_active:
             self._dupe_countdown_timer.stop()
-            if not getattr(self, '_dupe_restoring_after_stop', False):
-                self.lblDupeCountdownMain.setVisible(False)
-                self.lblDupeCountdownMain.setText('')
+            self.lblDupeCountdownMain.setVisible(False)
+            self.lblDupeCountdownMain.setText('')
             return
         rem = self.dupe_remaining_ms()
         # Finish as soon as elapsed time says so; avoids showing "0.0 s" until the
@@ -3022,8 +3017,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         self._dupe_restoring_after_stop = True
         self._dupe_restoring_mac = prev_mac
-        self.lblDupeCountdownMain.setVisible(True)
-        self.lblDupeCountdownMain.setText('Restoring network…')
+        # Idle chrome immediately; firewall/ARP finish asynchronously (_do_deferred_dupe_clear).
+        self.lblDupeCountdownMain.setVisible(False)
+        self.lblDupeCountdownMain.setText('')
         # Mark inactive after timers are stopped so _tick cannot race with teardown.
         self.dupe_active = False
         self.dupe_device_mac = None
@@ -3037,13 +3033,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._updateDupeButtonState()
             self._updateKillButtonState()
         self._repaint_all_table_rows_for_hover()
-        self._drain_dupe_block_if_needed()
         dlg_dupe = getattr(self, 'dupe_switch_dialog', None)
         if dlg_dupe is not None and dlg_dupe.isVisible():
             try:
                 dlg_dupe.refresh_toggle_state()
             except Exception:
                 pass
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.AllEvents)
+        except Exception:
+            pass
+        self._drain_dupe_block_if_needed()
         device = self._get_device_by_mac(prev_mac)
         snap = dict(device) if device else None
         self._dupe_pending_clear = (prev_mac, snap)
