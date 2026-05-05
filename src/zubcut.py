@@ -129,6 +129,15 @@ def _start_paid_runtime_validation(gui, icon) -> None:
             icon,
         )
 
+    gui._paid_runtime_last_deferred_reason = ''
+
+    def _log_runtime_deferred(reason: str) -> None:
+        msg = str(reason or '').strip() or 'Unknown transient error.'
+        if msg == getattr(gui, '_paid_runtime_last_deferred_reason', ''):
+            return
+        gui._paid_runtime_last_deferred_reason = msg
+        gui.log(f'License check deferred: {msg}', UI_LOG_RESTORE_FG)
+
     def _enforce_runtime_license() -> None:
         res = load_and_validate_installed_license()
         if not res.ok:
@@ -140,10 +149,11 @@ def _start_paid_runtime_validation(gui, icon) -> None:
         url = effective_signin_url()
         ok, reason = validate_active_license_session(url, account, license_id, timeout_sec=12.0)
         if ok is True:
+            gui._paid_runtime_last_deferred_reason = ''
             return
         if ok is None:
             # Transient outage/network failure; retry on next interval.
-            gui.log(f'License check deferred: {reason}', UI_LOG_RESTORE_FG)
+            _log_runtime_deferred(reason)
             return
         _force_lockout_and_exit(reason)
 

@@ -34,6 +34,9 @@ SETTINGS_PATH = path.join(DOCUMENTS_PATH, 'zubcut.json')
 PAID_LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'paid-license.json')
 # CI injects this for paid/experimental builds from secret PAID_LICENSE_PUBLIC_KEY_B64.
 PAID_LICENSE_PUBLIC_KEY_B64 = ''
+# License validation/sign-in endpoint for paid builds. Can be overridden by
+# environment variable ZUBCUT_PAID_SIGNIN_URL at runtime.
+PAID_LICENSE_SIGNIN_URL = ''
 
 # Extra legacy settings to migrate if zubcut.json is missing (Windows)
 LEGACY_SETTINGS_CANDIDATES = []
