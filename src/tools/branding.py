@@ -5,7 +5,7 @@ A single PNG loaded with QIcon(path) often appears tiny on Windows because no si
 import os
 import sys
 
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon, QPainter, QPixmap
 
 from tools.logo_shell_crop import shell_content_fraction_for_target_px
@@ -15,7 +15,7 @@ _ICON_FILE = 'zubcut_icon.png'
 _SHELL_ICO_FILE = 'zubcut_shell.ico'
 # HWND class icons only (taskbar + Aero Peek title-bar chip via WM_SETICON). Custom caption / tray / toolbar
 # use full QIcon pixmaps. Lower fraction = smaller glyph inside the shell square so circular masks do not clip.
-SHELL_HWND_ICON_INNER_FRACTION = 0.72
+SHELL_HWND_ICON_INNER_FRACTION = 0.84
 
 # Sizes commonly requested by Windows shells and Qt (device-independent pixels).
 # Extra mids (22–44) help Windows 10/11 taskbar pick a sharp pixmap at 125%/150% DPI.
@@ -185,37 +185,6 @@ def load_shell_window_icon():
     return load_shell_application_qicon()
 
 
-def load_windows_window_chrome_qicon():
-    """
-    QIcon for QWidget.setWindowIcon / QApplication.setWindowIcon on Windows.
-
-    Qt periodically reapplies WM_SETICON from this property; if it is the raw .ico, Explorer uses
-    edge-to-edge pixmaps and the taskbar / Aero Peek title chip look clipped under the circular mask.
-    These pixmaps apply the same inset as install_windows_native_window_icons so Qt and HWND agree.
-    """
-    if sys.platform != 'win32':
-        return QIcon()
-    ico = resolve_zubcut_shell_ico_path()
-    if not ico or not os.path.isfile(ico):
-        return QIcon()
-    ic = QIcon(ico)
-    if ic.isNull():
-        return QIcon()
-    out = QIcon()
-    for s in _STANDARD_SIZES:
-        pm = QPixmap(s, s)
-        pm.fill(Qt.transparent)
-        inner = max(1, int(round(s * SHELL_HWND_ICON_INNER_FRACTION)))
-        inner_pm = ic.pixmap(inner, inner)
-        if inner_pm.isNull():
-            continue
-        painter = QPainter(pm)
-        painter.drawPixmap((s - inner_pm.width()) // 2, (s - inner_pm.height()) // 2, inner_pm)
-        painter.end()
-        out.addPixmap(pm, QIcon.Normal, QIcon.Off)
-    return out if not qicon_is_empty(out) else QIcon()
-
-
 def qicon_is_empty(icon):
     if icon.isNull():
         return True
@@ -259,13 +228,126 @@ def _effective_window_dpi(window, hwnd: int, user32) -> int:
     return max(dpi_win, dpi_qt, 96)
 
 
+def _qpixmap_to_hicon(pm: QPixmap) -> int:
+    """Win32 HICON from an ARGB QPixmap when QtWin.toHICON is missing or returns 0."""
+    if sys.platform != 'win32' or pm.isNull():
+        return 0
+    from PyQt5.QtGui import QImage
+    import ctypes
+    from ctypes import wintypes
+
+    img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
+    w, h = img.width(), img.height()
+    if w < 1 or h < 1:
+        return 0
+
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+
+    bpl = img.bytesPerLine()
+    total = bpl * h
+    vb = img.constBits()
+    try:
+        raw = vb.asstring(total) if hasattr(vb, 'asstring') else bytes(vb)
+    except Exception:
+        return 0
+    if isinstance(raw, memoryview):
+        raw = raw.tobytes()
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = (
+            ('biSize', wintypes.DWORD),
+            ('biWidth', wintypes.LONG),
+            ('biHeight', wintypes.LONG),
+            ('biPlanes', wintypes.WORD),
+            ('biBitCount', wintypes.WORD),
+            ('biCompression', wintypes.DWORD),
+            ('biSizeImage', wintypes.DWORD),
+            ('biXPelsPerMeter', wintypes.LONG),
+            ('biYPelsPerMeter', wintypes.LONG),
+            ('biClrUsed', wintypes.DWORD),
+            ('biClrImportant', wintypes.DWORD),
+        )
+
+    class BITMAPINFO(ctypes.Structure):
+        _fields_ = (('bmiHeader', BITMAPINFOHEADER),)
+
+    bmi = BITMAPINFO()
+    bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bmi.bmiHeader.biWidth = w
+    bmi.bmiHeader.biHeight = -h
+    bmi.bmiHeader.biPlanes = 1
+    bmi.bmiHeader.biBitCount = 32
+    bmi.bmiHeader.biCompression = 0
+
+    row_padded = ((w * 32 + 31) // 32) * 4
+    color_buf = bytearray(row_padded * h)
+    for y in range(h):
+        src_row = y * bpl
+        dst_row = y * row_padded
+        color_buf[dst_row : dst_row + w * 4] = raw[src_row : src_row + w * 4]
+
+    # 1bpp AND mask, WORD-aligned rows (opaque where alpha > threshold).
+    mask_row = ((w + 15) // 16) * 2
+    mask_buf = bytearray(mask_row * h)
+    for y in range(h):
+        for x in range(w):
+            a = raw[y * bpl + x * 4 + 3]
+            if a > 8:
+                byte_i = y * mask_row + (x >> 3)
+                bit_i = 7 - (x & 7)
+                mask_buf[byte_i] |= 1 << bit_i
+
+    hdc = user32.GetDC(0)
+    if not hdc:
+        return 0
+    try:
+        ppv_bits = ctypes.c_void_p()
+        h_color = gdi32.CreateDIBSection(
+            hdc,
+            ctypes.byref(bmi),
+            0,
+            ctypes.byref(ppv_bits),
+            None,
+            0,
+        )
+        if not h_color:
+            return 0
+        ctypes.memmove(ppv_bits, color_buf, len(color_buf))
+
+        h_mask = gdi32.CreateBitmap(w, h, 1, 1, None)
+        if not h_mask:
+            gdi32.DeleteObject(h_color)
+            return 0
+        _mb = ctypes.create_string_buffer(bytes(mask_buf), len(mask_buf))
+        gdi32.SetBitmapBits(h_mask, len(mask_buf), _mb)
+
+        class ICONINFO(ctypes.Structure):
+            _fields_ = (
+                ('fIcon', wintypes.BOOL),
+                ('xHotspot', wintypes.DWORD),
+                ('yHotspot', wintypes.DWORD),
+                ('hbmMask', wintypes.HBITMAP),
+                ('hbmColor', wintypes.HBITMAP),
+            )
+
+        ii = ICONINFO()
+        ii.fIcon = True
+        ii.xHotspot = 0
+        ii.yHotspot = 0
+        ii.hbmMask = h_mask
+        ii.hbmColor = h_color
+        h_icon = user32.CreateIconIndirect(ctypes.byref(ii))
+        gdi32.DeleteObject(h_color)
+        gdi32.DeleteObject(h_mask)
+        return int(h_icon) if h_icon else 0
+    finally:
+        user32.ReleaseDC(0, hdc)
+
+
 def _hwnd_hicon_from_ico_padded(ico_abs: str, canvas_px: int) -> int:
     """Build HICON with the mark scaled to a fraction of the shell square (smaller glyph in taskbar/peek)."""
     if canvas_px < 4:
-        return 0
-    try:
-        from PyQt5.QtWinExtras import QtWin
-    except ImportError:
         return 0
     ic = QIcon(ico_abs)
     if ic.isNull():
@@ -279,8 +361,17 @@ def _hwnd_hicon_from_ico_padded(ico_abs: str, canvas_px: int) -> int:
     painter = QPainter(pm)
     painter.drawPixmap((canvas_px - inner.width()) // 2, (canvas_px - inner.height()) // 2, inner)
     painter.end()
-    h = QtWin.toHICON(pm)
-    return int(h) if h else 0
+    h = 0
+    try:
+        from PyQt5.QtWinExtras import QtWin
+
+        hi = QtWin.toHICON(pm)
+        h = int(hi) if hi else 0
+    except Exception:
+        pass
+    if not h:
+        h = _qpixmap_to_hicon(pm)
+    return h
 
 
 def _win_hwnd_icon_pixel_sizes(window, hwnd: int, user32) -> tuple[int, int]:

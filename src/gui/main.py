@@ -50,7 +50,6 @@ from tools.keybinds import keyseq_from_setting
 from tools.branding import (
     load_application_qicon,
     load_shell_window_icon,
-    load_windows_window_chrome_qicon,
     install_windows_native_window_icons,
     qicon_is_empty,
     crop_logo_content,
@@ -726,10 +725,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def __init__(self, window_icon=None):
         super().__init__()
         self.version = '1.29'
-        # Full shell .ico for tray + custom caption; OS chrome uses an inset QIcon (see setWindowIcon below).
-        self.shell_icon = load_shell_window_icon()
-        if qicon_is_empty(self.shell_icon):
-            self.shell_icon = self.processIcon(app_icon, crop_margins=True)
+        if window_icon is not None:
+            self.shell_icon = window_icon
+        else:
+            self.shell_icon = load_shell_window_icon()
+            if qicon_is_empty(self.shell_icon):
+                self.shell_icon = self.processIcon(app_icon, crop_margins=True)
         # About toolbar: looser crop keeps the full gold outline; shell uses a tighter crop (larger on taskbar).
         self.icon = load_application_qicon(LOGO_UI_CONTENT_FRACTION)
         if qicon_is_empty(self.icon):
@@ -737,13 +738,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if qicon_is_empty(self.shell_icon):
             self.shell_icon = self.icon
 
-        if window_icon is not None and not qicon_is_empty(window_icon):
-            self.setWindowIcon(window_icon)
-        elif sys.platform == 'win32':
-            wch = load_windows_window_chrome_qicon()
-            self.setWindowIcon(wch if not qicon_is_empty(wch) else self.shell_icon)
-        else:
-            self.setWindowIcon(self.shell_icon)
+        self.setWindowIcon(self.shell_icon)
         self.setupUi(self)
         self.setWindowTitle(APP_DISPLAY_NAME)
         apply_app_global_dark_stylesheet()
