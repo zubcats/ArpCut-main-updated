@@ -171,8 +171,7 @@ def load_shell_application_qicon():
 
 def load_shell_window_icon():
     """
-    Icon for setWindowIcon / tray on Windows: native QIcon from zubcut_shell.ico (same as --icon).
-    A custom QIconEngine often fights Explorer: taskbar + hover chip then reuse tiny pixmaps.
+    Full native shell asset (zubcut_shell.ico): tray, custom caption, dialogs that should match the .exe mark.
     """
     if sys.platform != 'win32':
         return load_shell_application_qicon()
@@ -184,6 +183,37 @@ def load_shell_window_icon():
             return icon
 
     return load_shell_application_qicon()
+
+
+def load_windows_window_chrome_qicon():
+    """
+    QIcon for QWidget.setWindowIcon / QApplication.setWindowIcon on Windows.
+
+    Qt periodically reapplies WM_SETICON from this property; if it is the raw .ico, Explorer uses
+    edge-to-edge pixmaps and the taskbar / Aero Peek title chip look clipped under the circular mask.
+    These pixmaps apply the same inset as install_windows_native_window_icons so Qt and HWND agree.
+    """
+    if sys.platform != 'win32':
+        return QIcon()
+    ico = resolve_zubcut_shell_ico_path()
+    if not ico or not os.path.isfile(ico):
+        return QIcon()
+    ic = QIcon(ico)
+    if ic.isNull():
+        return QIcon()
+    out = QIcon()
+    for s in _STANDARD_SIZES:
+        pm = QPixmap(s, s)
+        pm.fill(Qt.transparent)
+        inner = max(1, int(round(s * SHELL_HWND_ICON_INNER_FRACTION)))
+        inner_pm = ic.pixmap(inner, inner)
+        if inner_pm.isNull():
+            continue
+        painter = QPainter(pm)
+        painter.drawPixmap((s - inner_pm.width()) // 2, (s - inner_pm.height()) // 2, inner_pm)
+        painter.end()
+        out.addPixmap(pm, QIcon.Normal, QIcon.Off)
+    return out if not qicon_is_empty(out) else QIcon()
 
 
 def qicon_is_empty(icon):

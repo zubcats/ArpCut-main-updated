@@ -9,7 +9,7 @@ from tools.crash_feedback import install_crash_feedback
 from tools.utils_gui import npcap_exists, duplicate_zubcut, repair_settings, migrate_settings_file
 from tools.license_offline import load_and_validate_installed_license
 from tools.license_remote_signin import effective_signin_url, validate_active_license_session
-from tools.branding import load_shell_window_icon, qicon_is_empty
+from tools.branding import load_shell_window_icon, load_windows_window_chrome_qicon, qicon_is_empty
 from tools.qtools import msg_box, Buttons, MsgIcon
 
 from gui.main import ElmoCut
@@ -26,11 +26,21 @@ _UI_LOG_RESTORE_FG = getattr(
 )
 
 
-def _load_window_icon():
+def _load_shell_brand_icon():
+    """Full shell mark: message boxes, tray, caption — not shrunk for taskbar mask."""
     icon = load_shell_window_icon()
     if qicon_is_empty(icon):
         return ElmoCut.processIcon(app_icon, crop_margins=True)
     return icon
+
+
+def _load_os_window_chrome_icon():
+    """Inset sizes for setWindowIcon so Qt's WM_SETICON matches Explorer taskbar / Aero Peek."""
+    if _sys.platform == 'win32':
+        ch = load_windows_window_chrome_qicon()
+        if not qicon_is_empty(ch):
+            return ch
+    return _load_shell_brand_icon()
 
 
 def _validate_paid_license_or_exit(icon) -> None:
@@ -201,27 +211,28 @@ if __name__ == "__main__":
     if _fusion is not None:
         app.setStyle(_fusion)
     install_crash_feedback()
-    icon = _load_window_icon()
-    app.setWindowIcon(icon)
+    shell_brand = _load_shell_brand_icon()
+    os_chrome = _load_os_window_chrome_icon()
+    app.setWindowIcon(os_chrome)
 
     # Check if Npcap is installed (Windows only)
     if not npcap_exists():
         if msg_box(APP_DISPLAY_NAME, 'Npcap is not installed\n\nClick OK to download',
-                    MsgIcon.CRITICAL, icon, Buttons.OK | Buttons.CANCEL) == Buttons.OK:
+                    MsgIcon.CRITICAL, shell_brand, Buttons.OK | Buttons.CANCEL) == Buttons.OK:
             goto(NPCAP_URL)
         exit(1)
 
     # Check if another instance is running
     if duplicate_zubcut():
-        msg_box(APP_DISPLAY_NAME, f'{APP_DISPLAY_NAME} is already running!', MsgIcon.WARN, icon)
+        msg_box(APP_DISPLAY_NAME, f'{APP_DISPLAY_NAME} is already running!', MsgIcon.WARN, shell_brand)
         exit(1)
 
     # Run the GUI
     migrate_settings_file()
     repair_settings()
-    _validate_paid_license_or_exit(icon)
-    GUI = ElmoCut(window_icon=icon)
-    _start_paid_runtime_validation(GUI, icon)
+    _validate_paid_license_or_exit(shell_brand)
+    GUI = ElmoCut(window_icon=os_chrome)
+    _start_paid_runtime_validation(GUI, shell_brand)
     GUI.show()
     GUI.resizeEvent()
 
