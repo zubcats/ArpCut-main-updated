@@ -13,8 +13,9 @@ from tools.logo_shell_crop import shell_content_fraction_for_target_px
 _ICON_FILE = 'zubcut_icon.png'
 # Windows: same multi-res file PyInstaller uses for the .exe; better DWM / taskbar preview than PNG QIcon.
 _SHELL_ICO_FILE = 'zubcut_shell.ico'
-# HWND class icons only (taskbar + hover flyout chip). Title bar / tray / toolbar use full QIcon size.
-SHELL_HWND_ICON_INNER_FRACTION = 0.87
+# HWND class icons only (taskbar + Aero Peek title-bar chip via WM_SETICON). Custom caption / tray / toolbar
+# use full QIcon pixmaps. Lower fraction = smaller glyph inside the shell square so circular masks do not clip.
+SHELL_HWND_ICON_INNER_FRACTION = 0.72
 
 # Sizes commonly requested by Windows shells and Qt (device-independent pixels).
 # Extra mids (22–44) help Windows 10/11 taskbar pick a sharp pixmap at 125%/150% DPI.
