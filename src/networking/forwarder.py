@@ -24,8 +24,8 @@ class MitmForwarder:
         self._fwd_count = 0
         self._debug = debug
         self._socket = None  # Persistent L2 socket
-        self._ratio_acc_from_victim = 0
-        self._ratio_acc_to_victim = 0
+        self._byte_budget_from_victim = 0.0
+        self._byte_budget_to_victim = 0.0
 
     def start(
         self,
@@ -51,8 +51,8 @@ class MitmForwarder:
         self.drop_to_victim = drop_to_victim
         self.pass_from_victim_pct = max(0, min(100, int(pass_from_victim_pct)))
         self.pass_to_victim_pct = max(0, min(100, int(pass_to_victim_pct)))
-        self._ratio_acc_from_victim = 0
-        self._ratio_acc_to_victim = 0
+        self._byte_budget_from_victim = 0.0
+        self._byte_budget_to_victim = 0.0
         self.running = True
 
         if not (self.victim.get('ip') and self.victim.get('mac')):
@@ -129,21 +129,23 @@ class MitmForwarder:
             'pass_to_victim_pct': self.pass_to_victim_pct,
         }
 
-    def _passes_ratio(self, pass_pct: int, direction: str) -> bool:
+    def _passes_ratio(self, pass_pct: int, direction: str, pkt_size: int) -> bool:
         pct = max(0, min(100, int(pass_pct)))
         if pct <= 0:
             return False
         if pct >= 100:
             return True
+        size = max(1, int(pkt_size))
+        grant = (size * pct) / 100.0
         if direction == 'out':
-            self._ratio_acc_from_victim += pct
-            if self._ratio_acc_from_victim >= 100:
-                self._ratio_acc_from_victim -= 100
+            self._byte_budget_from_victim += grant
+            if self._byte_budget_from_victim >= size:
+                self._byte_budget_from_victim -= size
                 return True
             return False
-        self._ratio_acc_to_victim += pct
-        if self._ratio_acc_to_victim >= 100:
-            self._ratio_acc_to_victim -= 100
+        self._byte_budget_to_victim += grant
+        if self._byte_budget_to_victim >= size:
+            self._byte_budget_to_victim -= size
             return True
         return False
 
@@ -167,7 +169,7 @@ class MitmForwarder:
                 if self._debug and self._drop_count <= 3:
                     print(f"[forwarder] DROPPING outbound: {src} -> {dst}")
                 return  # packet dies here
-            if not self._passes_ratio(self.pass_from_victim_pct, 'out'):
+            if not self._passes_ratio(self.pass_from_victim_pct, 'out', self._packet_size_bytes(pkt)):
                 self._drop_count += 1
                 return
             pkt[Ether].src = self.my_mac
@@ -183,7 +185,7 @@ class MitmForwarder:
                 if self._debug and self._drop_count <= 3:
                     print(f"[forwarder] DROPPING inbound: {src} -> {dst}")
                 return
-            if not self._passes_ratio(self.pass_to_victim_pct, 'in'):
+            if not self._passes_ratio(self.pass_to_victim_pct, 'in', self._packet_size_bytes(pkt)):
                 self._drop_count += 1
                 return
             pkt[Ether].src = self.my_mac
@@ -222,3 +224,14 @@ class MitmForwarder:
                 del pkt['UDP'].chksum
         except Exception:
             pass
+
+    @staticmethod
+    def _packet_size_bytes(pkt) -> int:
+        """Best-effort packet size for byte-aware pass-through gating."""
+        try:
+            return len(bytes(pkt))
+        except Exception:
+            try:
+                return len(pkt)
+            except Exception:
+                return 1
