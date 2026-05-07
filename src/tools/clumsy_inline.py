@@ -36,11 +36,23 @@ def clumsy_bundle_offered() -> bool:
 
 
 def windivert_driver_installed() -> bool:
+    """
+    WinDivert 2.x: no pnputil — ship WinDivert64.sys (+ WinDivert.dll) with the app.
+    Treat as "available" if the signed .sys is bundled next to the exe or already in DriverStore.
+    """
     if not sys.platform.startswith('win'):
         return False
     sys_root = os.environ.get('SystemRoot', r'C:\Windows')
-    driver = os.path.join(sys_root, 'System32', 'drivers', 'WinDivert64.sys')
-    return os.path.isfile(driver)
+    if os.path.isfile(os.path.join(sys_root, 'System32', 'drivers', 'WinDivert64.sys')):
+        return True
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.getcwd()
+    sub = os.path.join(base, 'windivert', 'WinDivert64.sys')
+    if os.path.isfile(sub):
+        return True
+    return os.path.isfile(os.path.join(base, 'WinDivert64.sys'))
 
 
 def clumsy_runtime_ready() -> bool:

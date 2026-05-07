@@ -155,6 +155,11 @@ PRN
 # macOS
 .DS_Store
 
+# WinDivert x64 binaries (downloaded by installer/fetch_windivert.ps1 before Inno compile)
+installer/windivert/WinDivert.dll
+installer/windivert/WinDivert64.sys
+installer/windivert/WinDivert-LICENSE.txt
+
 # Build outputs (don't commit binaries - use GitHub Releases)
 ZubCut-macOS.zip
 ZubCut.exe

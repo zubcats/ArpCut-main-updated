@@ -50,7 +50,7 @@ Name: "clumsymode"; Description: "Clumsy mode (WinDivert driver if missing)"; Gr
 Source: "..\dist\{#MyAppName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Bundle Npcap installer with setup. Place this file at installer\npcap-1.87.exe before compiling.
 Source: "..\installer\{#NpcapInstallerName}"; DestDir: "{tmp}"; Flags: deleteafterinstall ignoreversion skipifsourcedoesntexist
-; WinDivert: extract the x64 folder from the official WinDivert release into installer\windivert\ (WinDivert.inf + .sys side by side). Omitted from compile if missing.
+; WinDivert 2.x: run installer\fetch_windivert.ps1 before compile (CI does). Ships WinDivert.dll + WinDivert64.sys — no pnputil.
 Source: "..\installer\windivert\*"; DestDir: "{app}\windivert"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
@@ -196,44 +196,6 @@ begin
     Log('Npcap installer finished with exit code ' + IntToStr(ResultCode) + '.');
 end;
 
-function WinDivertDriverFilePresent: Boolean;
-begin
-  Result := FileExists(ExpandConstant('{sys}\drivers\WinDivert64.sys'));
-end;
-
-function WinDivertInfBundled: Boolean;
-var
-  InfPath: String;
-begin
-  InfPath := ExpandConstant('{app}\windivert\WinDivert.inf');
-  Result := FileExists(InfPath);
-  if not Result then
-    Log('WinDivert.inf not bundled at ' + InfPath + ' — skipping WinDivert install.');
-end;
-
-function ShouldInstallWinDivert: Boolean;
-begin
-  Result := WizardIsTaskSelected('clumsymode') and (not WinDivertDriverFilePresent) and WinDivertInfBundled;
-  if Result then
-    Log('WinDivert driver not found; installing from bundled inf.');
-end;
-
-procedure InstallWinDivertIfMissing();
-var
-  InfPath: String;
-  ResultCode: Integer;
-  Params: String;
-begin
-  if not ShouldInstallWinDivert() then
-    Exit;
-  InfPath := ExpandConstant('{app}\windivert\WinDivert.inf');
-  Params := '/add-driver "' + InfPath + '" /install';
-  if not Exec(ExpandConstant('{sys}\pnputil.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Log('pnputil.exe could not be started for WinDivert install.')
-  else
-    Log('pnputil (WinDivert) finished with exit code ' + IntToStr(ResultCode) + '.');
-end;
-
 procedure MaybeWriteClumsyBundleFlag();
 var
   FlagPath: String;
@@ -252,6 +214,5 @@ begin
     UninstallWinPcapIfPresent();
     InstallNpcapIfMissing();
     MaybeWriteClumsyBundleFlag();
-    InstallWinDivertIfMissing();
   end;
 end;

@@ -134,6 +134,11 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y
 
+      - name: Bundle WinDivert for Clumsy (WinDivert 2.x x64)
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}/installer/fetch_windivert.ps1"
+
       - name: Compile Windows installer
         shell: pwsh
         run: |

@@ -1,9 +1,13 @@
-WinDivert (64-bit) driver files for the Clumsy mode optional installer task.
+WinDivert (64-bit) for the Clumsy mode optional installer task (WinDivert 2.x, LGPL).
 
-1. Download the official WinDivert release (e.g. WinDivert-2.2.2-A.zip) from the WinDivert project.
-2. From the archive, copy the x64 folder contents into this directory so that WinDivert.inf and
-   WinDivert64.sys sit next to each other (same layout as the upstream x64 package).
-3. Rebuild the Inno setup. If this folder is empty, setup skips WinDivert install (same pattern as
-   a missing bundled Npcap exe).
+WinDivert 2.x does not use an .inf in the release zip: ship WinDivert.dll + WinDivert64.sys
+(next to ZubCut in {app}\windivert\). The driver loads when a program opens it (admin).
 
-The post-install step runs: pnputil /add-driver "<app>\windivert\WinDivert.inf" /install
+CI: GitHub Actions runs installer\fetch_windivert.ps1 before ISCC so this folder contains
+the real binaries for that build.
+
+Local Inno compile: from repo root, run:
+  pwsh -File installer\fetch_windivert.ps1
+then compile ZubCut.iss.
+
+If you skip the fetch step, only README.txt may be here and the installer will not bundle WinDivert.
