@@ -141,14 +141,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         register_window_surface_effects(self)
 
     def _install_clumsy_controls(self):
-        self.chkClumsy = QCheckBox(
-            'Clumsy mode (inline Ethernet / shared console)',
-            self.gridLayoutWidget_2,
-        )
-        self.chkClumsy.setToolTip(
-            'Shows a dedicated table row for a downstream host on Internet Connection Sharing '
-            '(often 192.168.137.x). Turning this on or off restarts ZubCut.'
-        )
+        self.chkClumsy = QCheckBox('Clumsy Mode', self.gridLayoutWidget_2)
+        self.chkClumsy.setToolTip('')
         self.btnClumsyInstall = QPushButton('Install Clumsy mode…', self.gridLayoutWidget_2)
         self.btnClumsyInstall.setToolTip(
             'Downloads the latest experimental installer (includes optional WinDivert setup).'
@@ -157,6 +151,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.gridLayout_3.addWidget(self.btnClumsyInstall, 2, 2, 1, 2)
         self.groupBox_3.setMinimumHeight(150)
         self.gridLayoutWidget_2.setMinimumHeight(100)
+        # Clumsy row adds vertical pressure; increase keybind group height to keep labels readable.
+        self.groupBox_keys.setMinimumHeight(140)
         self._clumsy_toggle_guard = False
         self.chkClumsy.stateChanged.connect(self._on_clumsy_checkbox_changed)
         self.btnClumsyInstall.clicked.connect(self._on_clumsy_install_clicked)
