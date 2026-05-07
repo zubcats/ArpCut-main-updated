@@ -71,7 +71,7 @@ QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QAbstractSpinBox:focus, 
     border: 1px solid #3a3a3a;
 }
 QProgressBar::chunk {
-    background-color: #000000;
+    background-color: #5D706E;
 }
 QMenu::item:selected, QMenuBar::item:selected {
     background-color: #000000;
