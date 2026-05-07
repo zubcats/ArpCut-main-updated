@@ -36,6 +36,9 @@ SETTINGS_PATH = path.join(DOCUMENTS_PATH, 'zubcut.json')
 PAID_LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'paid-license.json')
 # CI injects this for paid/experimental builds from secret PAID_LICENSE_PUBLIC_KEY_B64.
 PAID_LICENSE_PUBLIC_KEY_B64 = ''
+# License validation/sign-in endpoint for paid builds. Can be overridden by
+# environment variable ZUBCUT_PAID_SIGNIN_URL at runtime.
+PAID_LICENSE_SIGNIN_URL = ''
 
 # Extra legacy settings to migrate if zubcut.json is missing (Windows)
 LEGACY_SETTINGS_CANDIDATES = []
@@ -50,15 +53,26 @@ TABLE_HEADER_LABELS = ['IP Address', 'MAC Address', 'Vendor', 'Type', 'Nickname'
 SCAN_TABLE_COLUMN_MAC = 1
 SCAN_TABLE_COLUMN_VENDOR = 2
 
-# Experimental scan table: Me / Router rows — muted grey-green / dark sage.
+# Experimental scan table: Me / Router rows — muted grey-green / dark sage (door trim reference).
 ADMIN_DEVICE_TABLE_ROW_BG = '#5D706E'
 ADMIN_DEVICE_TABLE_ROW_FG = '#eef1f0'
+# Main status strip (lblleft HTML): victim block / kill / lag on / dupe burst — teal-grey swatch.
 UI_LOG_VICTIM_BLOCK_FG = '#32716D'
+# Kill / Lag / Dupe toolbar buttons + Settings / Lag / Dupe field borders & spin combo chrome.
 UI_TOGGLE_BORDER_ACCENT = '#316E69'
+# Scan table: selected data row (item brushes); device-count label — same teal grey-green swatch.
 UI_TABLE_SELECTION_BG = '#316E69'
 UI_TABLE_SELECTION_FG = '#f2f2f2'
+# Clumsy mode (inline Ethernet) row — tan / golden selection, dark text (user reference swatch).
+CLUMSY_INLINE_MAC = '02:00:00:00:CB:01'
+CLUMSY_TABLE_ROW_BG = '#F5E6C8'
+CLUMSY_TABLE_ROW_SEL_BG = '#E8A838'
+CLUMSY_TABLE_ROW_HOVER_BG = '#EDD4A0'
+CLUMSY_TABLE_ROW_FG = '#1a1a1a'
+# Unkill, lag off, dupe finished, kill OFF — same sage as Me/Router row background.
 UI_LOG_RESTORE_FG = ADMIN_DEVICE_TABLE_ROW_BG
-# When a newer build is available: Settings / main gear highlight (ID selectors vs global QSS).
+# When a newer build is available: reuse the prior Me/Router strip green for Settings / main gear.
+# Use object-name selectors so these beat app-level QPushButton#btnSettings / auxiliary-window rules.
 UPDATE_AVAILABLE_PUSHBUTTON_QSS = (
     'QPushButton#btnUpdate { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
     'border: 1px solid #2d5738; border-radius: 4px; }'
@@ -92,8 +106,13 @@ HKEY_AUTOSTART_PATH = 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run'
 
 SETTINGS_KEYS = [
     'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'nicknames',
-    'key_kill', 'key_lag', 'key_dupe',
+    'key_kill', 'key_lag', 'key_dupe', 'key_pctcut',
     'show_scan_mac_column', 'show_scan_vendor_column',
+    'traffic_percent',
+    'clumsy_mode',
 ]
 
-SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', False, False]
+# key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
+# show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
+# clumsy_mode default False: must be enabled in Settings (requires restart).
+SETTINGS_VALS = [25, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', 'K', False, False, 50, False]
