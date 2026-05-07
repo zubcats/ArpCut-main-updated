@@ -61,6 +61,12 @@ UI_TOGGLE_BORDER_ACCENT = '#316E69'
 # Scan table: selected data row (item brushes); device-count label — same teal grey-green swatch.
 UI_TABLE_SELECTION_BG = '#316E69'
 UI_TABLE_SELECTION_FG = '#f2f2f2'
+# Clumsy mode (inline Ethernet) row — tan / golden selection, dark text (user reference swatch).
+CLUMSY_INLINE_MAC = '02:00:00:00:CB:01'
+CLUMSY_TABLE_ROW_BG = '#F5E6C8'
+CLUMSY_TABLE_ROW_SEL_BG = '#E8A838'
+CLUMSY_TABLE_ROW_HOVER_BG = '#EDD4A0'
+CLUMSY_TABLE_ROW_FG = '#1a1a1a'
 # Unkill, lag off, dupe finished, kill OFF — same sage as Me/Router row background.
 UI_LOG_RESTORE_FG = ADMIN_DEVICE_TABLE_ROW_BG
 # When a newer build is available: reuse the prior Me/Router strip green for Settings / main gear.
@@ -101,8 +107,10 @@ SETTINGS_KEYS = [
     'key_kill', 'key_lag', 'key_dupe', 'key_pctcut',
     'show_scan_mac_column', 'show_scan_vendor_column',
     'traffic_percent',
+    'clumsy_mode',
 ]
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
-SETTINGS_VALS = [25, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', 'K', False, False, 50]
+# clumsy_mode default False: must be enabled in Settings (requires restart).
+SETTINGS_VALS = [25, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', 'K', False, False, 50, False]

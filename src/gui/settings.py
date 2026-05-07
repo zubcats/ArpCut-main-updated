@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QKeySequenceEdit,
+    QCheckBox,
 )
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer
@@ -42,6 +43,9 @@ from tools.updater_debug import (
 
 from constants import *
 import constants as _zcut_constants
+
+from tools.clumsy_inline import clumsy_bundle_offered, windivert_driver_installed
+from tools.utils_gui import restart_zubcut
 
 _UPDATE_BTN_QSS_FALLBACK = (
     'QPushButton#btnUpdate { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
@@ -93,6 +97,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setupUi(self)
         self.setObjectName('zubcutAuxiliaryWindow')
         self._install_percent_keybind_row()
+        self._install_clumsy_controls()
         if str(UPDATE_CHANNEL or '').strip().lower() in ('paid', 'experimental'):
             self.setMaximumSize(
                 self.maximumSize().width(),
@@ -127,12 +132,108 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnUpdate.setText(self._update_button_text())
         # Defer first HEAD check so it does not run synchronously during main window construction.
         QTimer.singleShot(0, self._deferred_initial_update_check)
+        QTimer.singleShot(0, self._refresh_clumsy_settings_widgets)
         self.chkAutoupdate.setToolTip(
             'Automatic startup updates are not used. Use Install Latest Build below when you want to update.'
         )
 
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
         register_window_surface_effects(self)
+
+    def _install_clumsy_controls(self):
+        self.chkClumsy = QCheckBox(
+            'Clumsy mode (inline Ethernet / shared console)',
+            self.gridLayoutWidget_2,
+        )
+        self.chkClumsy.setToolTip(
+            'Shows a dedicated table row for a downstream host on Internet Connection Sharing '
+            '(often 192.168.137.x). Turning this on or off restarts ZubCut.'
+        )
+        self.btnClumsyInstall = QPushButton('Install Clumsy mode…', self.gridLayoutWidget_2)
+        self.btnClumsyInstall.setToolTip(
+            'Downloads the latest experimental installer (includes optional WinDivert setup).'
+        )
+        self.gridLayout_3.addWidget(self.chkClumsy, 2, 0, 1, 2)
+        self.gridLayout_3.addWidget(self.btnClumsyInstall, 2, 2, 1, 2)
+        self.groupBox_3.setMinimumHeight(150)
+        self.gridLayoutWidget_2.setMinimumHeight(100)
+        self._clumsy_toggle_guard = False
+        self.chkClumsy.stateChanged.connect(self._on_clumsy_checkbox_changed)
+        self.btnClumsyInstall.clicked.connect(self._on_clumsy_install_clicked)
+
+    def _refresh_clumsy_settings_widgets(self):
+        if not sys.platform.startswith('win'):
+            self.chkClumsy.hide()
+            self.btnClumsyInstall.hide()
+            return
+        bundle = clumsy_bundle_offered()
+        driver_ok = windivert_driver_installed()
+        if bundle and driver_ok:
+            self.btnClumsyInstall.hide()
+            self.chkClumsy.show()
+        else:
+            self.chkClumsy.hide()
+            self.btnClumsyInstall.show()
+
+    def _on_clumsy_checkbox_changed(self, _state):
+        if self._clumsy_toggle_guard:
+            return
+        if not self.chkClumsy.isVisible():
+            return
+        new_v = self.chkClumsy.isChecked()
+        try:
+            old_v = bool(get_settings('clumsy_mode'))
+        except Exception:
+            old_v = False
+        if new_v == old_v:
+            return
+        if MsgType.WARN(
+            self,
+            'Restart ZubCut',
+            'Changing Clumsy mode requires a full restart.\nRestart now?',
+            Buttons.YES | Buttons.NO,
+        ) == Buttons.NO:
+            self._clumsy_toggle_guard = True
+            self.chkClumsy.setChecked(old_v)
+            self._clumsy_toggle_guard = False
+            return
+        set_settings('clumsy_mode', new_v)
+        restart_zubcut(self.elmocut)
+
+    def _on_clumsy_install_clicked(self):
+        url = (UPDATE_DOWNLOAD_URL_EXPERIMENTAL or '').strip()
+        if not url:
+            MsgType.WARN(
+                self,
+                'Download not configured',
+                'No experimental installer URL is configured in this build.',
+                Buttons.OK,
+            )
+            return
+        if MsgType.WARN(
+            None,
+            'Install Clumsy mode',
+            (
+                'This downloads the latest experimental ZubCut installer '
+                '(with optional WinDivert / Clumsy components).\n'
+                'Continue?'
+            ),
+            Buttons.YES | Buttons.NO,
+        ) == Buttons.NO:
+            return
+        try:
+            path = download_update_with_progress_dialog(self, url)
+            if path is None:
+                return
+            launch_installer(path)
+            self.elmocut.quit_all()
+        except Exception as e:
+            MsgType.ERROR(
+                None,
+                'Download failed',
+                f'Could not download installer.\n{e}',
+                Buttons.OK,
+            )
 
     def _install_percent_keybind_row(self):
         self.labelKeyPctCut = QLabel('Percent Cut toggle (main window)', self.groupBox_keys)
@@ -165,6 +266,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         el = getattr(self, 'elmocut', None)
         if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
             el._sync_settings_gear_update_hint()
+        self._refresh_clumsy_settings_widgets()
 
     def Apply(self, silent_apply=False):
         repair_settings()
@@ -238,6 +340,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except (TypeError, ValueError):
                 traffic_pct = 50
 
+        try:
+            clumsy_mode = bool(get_settings('clumsy_mode'))
+        except Exception:
+            clumsy_mode = False
+
         export_settings(
             [
             count,
@@ -256,6 +363,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             show_mac,
             show_ven,
             traffic_pct,
+            clumsy_mode,
             ]
         )
 
@@ -385,6 +493,15 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.keySeqLag.setKeySequence(keyseq_from_setting(s.get('key_lag'), Qt.Key_M))
         self.keySeqDupe.setKeySequence(keyseq_from_setting(s.get('key_dupe'), Qt.Key_P))
         self.keySeqPctCut.setKeySequence(keyseq_from_setting(s.get('key_pctcut'), Qt.Key_K))
+
+        try:
+            clumsy_mode = bool(s.get('clumsy_mode', False))
+        except Exception:
+            clumsy_mode = False
+        self._clumsy_toggle_guard = True
+        self.chkClumsy.setChecked(clumsy_mode)
+        self._clumsy_toggle_guard = False
+        self._refresh_clumsy_settings_widgets()
 
         self._apply_keybind_section_fonts()
         self.setStyleSheet(zubcut_dark_stylesheet())

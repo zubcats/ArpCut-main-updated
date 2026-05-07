@@ -300,6 +300,8 @@ class Killer:
         for device in device_list[:]:
             if device['admin']:
                 continue
+            if device.get('clumsy_inline'):
+                continue
             if device['mac'] not in self.killed:
                 self._sync_iface_for_victim(device)
                 self.kill(device)

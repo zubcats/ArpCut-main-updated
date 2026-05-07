@@ -8,6 +8,7 @@ from typing import Optional
 
 from networking.nicknames import Nicknames
 from tools.device_display import infer_network_device_type
+from tools.clumsy_inline import sync_clumsy_row
 from tools.utils import *
 from constants import *
 
@@ -196,6 +197,7 @@ class Scanner():
 
         self.add_me()
         self.add_router()
+        sync_clumsy_row(self)
 
         # Clear arp cache to avoid duplicates next time
         if unique:

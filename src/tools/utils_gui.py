@@ -1,4 +1,5 @@
 from os import path, makedirs, rename
+import os
 import shutil
 from json import dump, load, JSONDecodeError
 import ctypes
@@ -1048,6 +1049,46 @@ def get_settings(key):
     Get certain setting item by key
     """
     return import_settings()[key]
+
+def restart_zubcut(main_window=None):
+    """
+    Start a new ZubCut process and quit this one (Windows-friendly detach).
+    Used when Clumsy mode (or similar) must fully reset runtime state.
+    """
+    import subprocess
+
+    app = None
+    try:
+        from PyQt5.QtWidgets import QApplication
+
+        app = QApplication.instance()
+    except Exception:
+        pass
+
+    exe = sys.executable
+    cwd = os.path.dirname(exe) if getattr(sys, 'frozen', False) else os.getcwd()
+    try:
+        if sys.platform.startswith('win'):
+            cf = getattr(subprocess, 'DETACHED_PROCESS', 0)
+            subprocess.Popen(
+                [exe],
+                cwd=cwd,
+                close_fds=True,
+                creationflags=cf,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.Popen([exe], cwd=cwd, close_fds=True)
+    except Exception as e:
+        print(f'restart_zubcut: failed to spawn process: {e}')
+        return
+    if main_window is not None and hasattr(main_window, 'quit_all'):
+        main_window.quit_all()
+    elif app is not None:
+        app.quit()
+
 
 def repair_settings():
     """
