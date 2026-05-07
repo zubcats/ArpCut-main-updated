@@ -99,68 +99,84 @@ function pathnameKey(requestUrl) {
 
 export default {
   async fetch(request, env) {
-    if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'POST, OPTIONS, GET',
-          'Access-Control-Allow-Headers': 'Content-Type, Accept',
-        },
-      });
-    }
-
-    const path = pathnameKey(request.url);
-    const kv = env.LICENSES;
-
-    if (request.method === 'GET') {
-      if (path === '/admin/upsert' || path.startsWith('/admin/')) {
-        return jsonResponse({ ok: false, error: 'Use POST.' }, 405);
-      }
-      return jsonResponse({ ok: true, service: 'zubcut-license-signin' });
-    }
-
-    if (request.method !== 'POST') {
-      return jsonResponse({ ok: false, error: 'Use POST with JSON body.' }, 405);
-    }
-
-    let body;
     try {
-      body = await request.json();
-    } catch {
-      return jsonResponse({ ok: false, error: 'Invalid JSON.' }, 400);
-    }
+      if (request.method === 'OPTIONS') {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS, GET',
+            'Access-Control-Allow-Headers': 'Content-Type, Accept',
+          },
+        });
+      }
 
-    // --- Admin: push bundle from License Manager ---
-    if (path === '/admin/upsert') {
-      const expected = env.ADMIN_SECRET;
-      const okSecret = await adminSecretOk(String(body?.secret ?? ''), expected);
-      if (!okSecret) {
-        return jsonResponse({ ok: false, error: 'Unauthorized.' }, 401);
+      const path = pathnameKey(request.url);
+      const kv = env.LICENSES;
+
+      if (request.method === 'GET') {
+        if (path === '/admin/upsert' || path.startsWith('/admin/')) {
+          return jsonResponse({ ok: false, error: 'Use POST.' }, 405);
+        }
+        return jsonResponse({ ok: true, service: 'zubcut-license-signin' });
       }
-      if (!kv) {
-        return jsonResponse({ ok: false, error: 'Server misconfigured (no KV).' }, 500);
+
+      if (request.method !== 'POST') {
+        return jsonResponse({ ok: false, error: 'Use POST with JSON body.' }, 405);
       }
-      const accountKey = String(body?.account_key || '').trim().toLowerCase();
-      const bundle = body?.bundle;
-      if (!accountKey || !bundle || typeof bundle !== 'object') {
-        return jsonResponse({ ok: false, error: 'Missing account_key or bundle.' }, 400);
-      }
-      const salt = bundle?.password_salt;
-      const hex = bundle?.password_hash_hex;
-      const license = bundle?.license;
-      if (!salt || !hex || !license || typeof license !== 'object') {
-        return jsonResponse({ ok: false, error: 'Invalid bundle shape.' }, 400);
-      }
+
+      let body;
       try {
-        await kv.put(accountKey, JSON.stringify(bundle));
-      } catch (e) {
-        return jsonResponse({ ok: false, error: 'KV write failed.' }, 500);
+        body = await request.json();
+      } catch {
+        return jsonResponse({ ok: false, error: 'Invalid JSON.' }, 400);
       }
-      return jsonResponse({ ok: true });
-    }
 
-    if (path === '/admin/delete') {
+      // --- Admin: push bundle from License Manager ---
+      if (path === '/admin/upsert') {
+        const expected = env.ADMIN_SECRET;
+        const okSecret = await adminSecretOk(String(body?.secret ?? ''), expected);
+        if (!okSecret) {
+          return jsonResponse({ ok: false, error: 'Unauthorized.' }, 401);
+        }
+        if (!kv) {
+          return jsonResponse({ ok: false, error: 'Server misconfigured (no KV).' }, 500);
+        }
+        const accountKey = String(body?.account_key || body?.account || body?.user_name || '')
+          .trim()
+          .toLowerCase();
+        let bundle = body?.bundle || body?.kv_bundle || body?.record || null;
+        if ((!bundle || typeof bundle !== 'object') && body && typeof body === 'object') {
+          const maybeSalt = body?.password_salt;
+          const maybeHex = body?.password_hash_hex;
+          const maybeLic = body?.license;
+          if (maybeSalt && maybeHex && maybeLic && typeof maybeLic === 'object') {
+            bundle = {
+              password_salt: maybeSalt,
+              password_hash_hex: maybeHex,
+              license: maybeLic,
+              ...(body?.password_iters ? { password_iters: body.password_iters } : {}),
+            };
+          }
+        }
+        if (!accountKey || !bundle || typeof bundle !== 'object') {
+          return jsonResponse({ ok: false, error: 'Missing account_key or bundle.' }, 400);
+        }
+        const salt = bundle?.password_salt;
+        const hex = bundle?.password_hash_hex;
+        const license = bundle?.license;
+        if (!salt || !hex || !license || typeof license !== 'object') {
+          return jsonResponse({ ok: false, error: 'Invalid bundle shape.' }, 400);
+        }
+        try {
+          await kv.put(accountKey, JSON.stringify(bundle));
+        } catch (e) {
+          return jsonResponse({ ok: false, error: 'KV write failed.' }, 500);
+        }
+        return jsonResponse({ ok: true });
+      }
+
+      if (path === '/admin/delete') {
       const expected = env.ADMIN_SECRET;
       const okSecret = await adminSecretOk(String(body?.secret ?? ''), expected);
       if (!okSecret) {
@@ -181,7 +197,7 @@ export default {
       return jsonResponse({ ok: true });
     }
 
-    if (path === '/validate') {
+      if (path === '/validate') {
       const account = String(body?.account || '').trim().toLowerCase();
       const expectedLicenseId = String(body?.license_id || '').trim();
       if (!account) {
@@ -234,65 +250,71 @@ export default {
       });
     }
 
-    // --- User sign-in (default POST) ---
-    const account = String(body?.account || '').trim().toLowerCase();
-    const password = String(body?.password ?? '');
+      // --- User sign-in (default POST) ---
+      const account = String(body?.account || '').trim().toLowerCase();
+      const password = String(body?.password ?? '');
 
-    if (!account || !password) {
-      return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
+      if (!account || !password) {
+        return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
+      }
+
+      if (!kv) {
+        return jsonResponse({ ok: false, error: 'Server misconfigured (no KV).' }, 500);
+      }
+
+      let raw;
+      try {
+        raw = await kv.get(account, { type: 'text' });
+      } catch {
+        return jsonResponse({ ok: false, error: 'Lookup failed.' }, 500);
+      }
+
+      if (!raw) {
+        return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
+      }
+
+      let record;
+      try {
+        record = JSON.parse(raw);
+      } catch {
+        return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
+      }
+
+      const salt = record?.password_salt;
+      const expectedHex = record?.password_hash_hex;
+      const iter = Number(record?.password_iters || record?.license?.payload?.password_iters || SIGNIN_PBKDF2_ITERS_DEFAULT);
+      const license = record?.license;
+
+      if (!salt || !expectedHex || !license || typeof license !== 'object') {
+        return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
+      }
+
+      let derived;
+      try {
+        derived = await pbkdf2Sha256Hex(password, salt, iter);
+      } catch {
+        return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
+      }
+
+      if (!timingSafeEqualHex(derived, expectedHex)) {
+        return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
+      }
+
+      const elig = licenseEligibleForLogin(license);
+      if (!elig.ok) {
+        const msg =
+          elig.code === 'expired'
+            ? 'This subscription has expired.'
+            : 'This account is no longer active.';
+        return jsonResponse({ ok: false, error: msg }, 403);
+      }
+
+      return jsonResponse({ ok: true, license });
+    } catch (e) {
+      return jsonResponse(
+        { ok: false, error: `Unhandled server error: ${String(e?.message || e || 'unknown')}` },
+        500,
+      );
     }
-
-    if (!kv) {
-      return jsonResponse({ ok: false, error: 'Server misconfigured (no KV).' }, 500);
-    }
-
-    let raw;
-    try {
-      raw = await kv.get(account, { type: 'text' });
-    } catch {
-      return jsonResponse({ ok: false, error: 'Lookup failed.' }, 500);
-    }
-
-    if (!raw) {
-      return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
-    }
-
-    let record;
-    try {
-      record = JSON.parse(raw);
-    } catch {
-      return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
-    }
-
-    const salt = record?.password_salt;
-    const expectedHex = record?.password_hash_hex;
-    const iter = Number(record?.password_iters || record?.license?.payload?.password_iters || SIGNIN_PBKDF2_ITERS_DEFAULT);
-    const license = record?.license;
-
-    if (!salt || !expectedHex || !license || typeof license !== 'object') {
-      return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
-    }
-
-    let derived;
-    try {
-      derived = await pbkdf2Sha256Hex(password, salt, iter);
-    } catch {
-      return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
-    }
-
-    if (!timingSafeEqualHex(derived, expectedHex)) {
-      return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
-    }
-
-    const elig = licenseEligibleForLogin(license);
-    if (!elig.ok) {
-      const msg =
-        elig.code === 'expired'
-          ? 'This subscription has expired.'
-          : 'This account is no longer active.';
-      return jsonResponse({ ok: false, error: msg }, 403);
-    }
-
-    return jsonResponse({ ok: true, license });
   },
 };
