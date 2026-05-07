@@ -149,20 +149,6 @@ jobs:
           $aliasName = if ($channel -eq "stable") { "ZubCut-Setup.exe" } else { "ZubCut-Setup-experimental.exe" }
           Copy-Item $latest.FullName ("output/" + $aliasName) -Force
 
-      - name: Upload portable EXE
-        if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ZubCut-Windows-Portable
-          path: dist/ZubCut
-
-      - name: Upload portable EXE (Experimental)
-        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ZubCut-Windows-Portable-Experimental
-          path: dist/ZubCut
-
       - name: Upload installer EXE
         if: ${{ github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}
         uses: actions/upload-artifact@v4
@@ -355,7 +341,6 @@ jobs:
         with:
           files: |
             artifacts/ZubCut-Windows-Installer/ZubCut-Setup.exe
-            artifacts/ZubCut-Windows-Portable/ZubCut.exe
             artifacts/ZubCut-macOS/ZubCut-macOS.zip
             artifacts/ZubCut-Linux/ZubCut
           draft: false
