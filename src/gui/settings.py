@@ -136,6 +136,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.chkAutoupdate.setToolTip(
             'Automatic startup updates are not used. Use Install Latest Build below when you want to update.'
         )
+        # Deprecated/unused: remove from UI to avoid confusion.
+        self.chkAutoupdate.hide()
+        # Killed-device persistence is deprecated: always off (users can re-kill manually).
+        self.chkRemember.hide()
+        self.chkRemember.setEnabled(False)
 
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
         register_window_surface_effects(self)
@@ -272,7 +277,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         threads       =  self.spinThreads.value()
         is_autostart  =  self.chkAutostart.isChecked()
         is_minimized  =  self.chkMinimized.isChecked()
-        is_remember   =  self.chkRemember.isChecked()
+        # Deprecated feature: never persist killed devices across restarts.
+        is_remember   =  False
         is_autoupdate =  self.chkAutoupdate.isChecked()
         iface = self.comboInterface.currentData()
         if iface in (None, ''):
@@ -314,11 +320,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             remove_from_startup()
 
-        # Make sure that real-time killed devices are included
-        # If its user's first time to apply remember option
-        killed_from_json = get_settings('killed')
-        killed_live = list(self.elmocut.killer.killed)
-        killed_all = list(set(killed_from_json + killed_live)) * is_remember
+        # Persistence removed: keep settings clean; killed devices are session-only.
+        killed_all = []
 
         try:
             show_mac = bool(get_settings('show_scan_mac_column'))
@@ -425,7 +428,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.currentSettings()
         
         self.elmocut.minimize = s['minimized']
-        self.elmocut.remember = s['remember']
+        self.elmocut.remember = False
         self.elmocut.autoupdate = s['autoupdate']
         self.elmocut.scanner.device_count = s['count']
         self.elmocut.scanner.max_threads = s['threads']
@@ -466,7 +469,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         s = _coerce_scan_counts(import_settings())
         self.chkAutostart.setChecked(s['autostart'])
         self.chkMinimized.setChecked(s['minimized'])
-        self.chkRemember.setChecked(s['remember'])
+        self.chkRemember.setChecked(False)
         self.chkAutoupdate.setEnabled(False)
         self.chkAutoupdate.setChecked(False)
         self.spinCount.setValue(s['count'])

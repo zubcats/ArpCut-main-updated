@@ -71,8 +71,15 @@ QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox, QComboBox {
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QAbstractSpinBox:focus, QComboBox:focus {
     border: 1px solid #3a3a3a;
 }
+QProgressBar {
+    background-color: #141414;
+    border: 1px solid #316E69;
+    border-radius: 4px;
+    text-align: center;
+}
 QProgressBar::chunk {
     background-color: #5D706E;
+    border-radius: 3px;
 }
 QMenu::item:selected, QMenuBar::item:selected {
     background-color: #000000;
