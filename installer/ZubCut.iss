@@ -44,7 +44,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "clumsymode"; Description: "Clumsy mode (WinDivert driver if missing)"; GroupDescription: "Optional:"; Flags: checkedbydefault
+Name: "clumsymode"; Description: "Clumsy mode (WinDivert driver if missing)"; GroupDescription: "Optional:"
 
 [Files]
 Source: "..\dist\{#MyAppName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
