@@ -146,22 +146,15 @@ class Killer:
         self._stop_forwarder(mac)
         self._kill_arp_worker(victim, wait_after, seq)
 
-    def apply_percent_cut(self, victim, pass_percent=100, direction='both', debug=False):
+    def apply_percent_cut(self, victim, pass_percent=100, debug=False):
         """
-        Keep MITM active and forward only a percentage of packets.
+        Keep MITM active and forward only a percentage of packets (both directions).
         """
         if victim['mac'] not in self.killed:
             self.kill(victim)
         pass_percent = max(0, min(100, int(pass_percent)))
-        if direction == 'in':
-            pass_from_victim = 100
-            pass_to_victim = pass_percent
-        elif direction == 'out':
-            pass_from_victim = pass_percent
-            pass_to_victim = 100
-        else:
-            pass_from_victim = pass_percent
-            pass_to_victim = pass_percent
+        pass_from_victim = pass_percent
+        pass_to_victim = pass_percent
 
         if victim['mac'] in self.forwarders:
             self.forwarders[victim['mac']].stop()

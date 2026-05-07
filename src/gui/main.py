@@ -3180,7 +3180,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 allow_pct = max(0, 100 - pct)
                 try:
                     self._ensure_network_context_for_victim(dev)
-                    self.killer.apply_percent_cut(dev, pass_percent=allow_pct, direction='both')
+                    self.killer.apply_percent_cut(dev, pass_percent=allow_pct)
                 except Exception:
                     pass
         self._updatePercentCutButtonState()
@@ -3299,7 +3299,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             pct = self._clamp_percent(self.spinPercentCutMain.value())
             allow_pct = max(0, 100 - pct)
             self._ensure_network_context_for_victim(device)
-            self.killer.apply_percent_cut(device, pass_percent=allow_pct, direction='both')
+            self.killer.apply_percent_cut(device, pass_percent=allow_pct)
             self.percent_cut_active = True
             self.percent_cut_device_mac = mac
             self.log(
