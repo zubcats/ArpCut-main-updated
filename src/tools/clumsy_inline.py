@@ -11,6 +11,7 @@ import sys
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from constants import CLUMSY_INLINE_MAC
+from tools.clumsy_ics import read_clumsy_ics_state
 
 if TYPE_CHECKING:
     from networking.scanner import Scanner
@@ -90,7 +91,13 @@ def _arp_lines_for_scanner(scanner: Scanner) -> str:
         return ''
 
 
-def _parse_ics_clients(arp_text: str, my_ip: str, router_ip: str) -> List[str]:
+def _parse_ics_clients(
+    arp_text: str,
+    my_ip: str,
+    router_ip: str,
+    subnet_prefix: str,
+    host_ip: str,
+) -> List[str]:
     if not arp_text or not arp_text.strip():
         return []
     pat_ip = re.compile(r'\b((?:\d{1,3}\.){3}\d{1,3})\b')
@@ -107,9 +114,9 @@ def _parse_ics_clients(arp_text: str, my_ip: str, router_ip: str) -> List[str]:
         if not m:
             continue
         ip = m.group(1)
-        if not ip.startswith(_ICS_SUBNET_PREFIX):
+        if not ip.startswith(subnet_prefix):
             continue
-        if ip in (my_ip, router_ip, '192.168.137.1'):
+        if ip in (my_ip, router_ip, host_ip):
             continue
         try:
             last = int(ip.rsplit('.', 1)[-1])
@@ -130,8 +137,13 @@ def detect_inline_ip(scanner: Scanner) -> Optional[str]:
     maybe_prepare_ics()
     my_ip = (getattr(scanner, 'my_ip', None) or '').strip()
     router_ip = (getattr(scanner, 'router_ip', None) or '').strip()
+    state = read_clumsy_ics_state()
+    subnet_prefix = str(state.get('downstream_prefix') or '').strip()
+    if not subnet_prefix:
+        subnet_prefix = _ICS_SUBNET_PREFIX
+    host_ip = str(state.get('downstream_ipv4') or '').strip()
     text = _arp_lines_for_scanner(scanner)
-    clients = _parse_ics_clients(text, my_ip, router_ip)
+    clients = _parse_ics_clients(text, my_ip, router_ip, subnet_prefix, host_ip)
     if not clients:
         return None
     return clients[0]
