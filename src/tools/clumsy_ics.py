@@ -36,18 +36,39 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
     try:
         with open(path, 'w', encoding='utf-8') as f:
             f.write(script_body)
-        proc = subprocess.run(
-            [
-                'powershell',
-                '-NoProfile',
-                '-ExecutionPolicy',
-                'Bypass',
-                '-File',
-                path,
-            ],
-            capture_output=True,
-            text=True,
-        )
+        system_root = os.environ.get('SystemRoot', r'C:\Windows')
+        explicit_ps = os.path.join(system_root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+        script_args = [
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            path,
+        ]
+        cmd_candidates = []
+        if os.path.isfile(explicit_ps):
+            cmd_candidates.append([explicit_ps] + script_args)
+        # Fallback to PATH-based invocations for robustness.
+        cmd_candidates.extend([
+            ['powershell'] + script_args,
+            ['powershell.exe'] + script_args,
+            ['pwsh'] + script_args,
+            ['pwsh.exe'] + script_args,
+        ])
+
+        proc = None
+        last_exc: Exception | None = None
+        for cmd in cmd_candidates:
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                break
+            except FileNotFoundError as e:
+                last_exc = e
+        if proc is None:
+            out = str(last_exc or 'PowerShell executable not found.')
+            payload = {'ok': False, 'error': out}
+            return False, payload, out
+
         out = (proc.stdout or '') + '\n' + (proc.stderr or '')
         payload: Dict[str, Any] = {}
         for line in reversed(out.splitlines()):
@@ -295,8 +316,10 @@ try {{
     Where-Object {{ $_.IPAddress -and $_.IPAddress -notlike '169.254.*' }} |
     Sort-Object SkipAsSource | Select-Object -First 1
   $downIp = if ($downIpObj) {{ $downIpObj.IPAddress }} else {{ '' }}
+  if (-not $downIp) {{ throw 'ICS sharing enabled but downstream IPv4 not assigned.' }}
   $prefix = ''
   if ($downIp -match '^(\\d+\\.\\d+\\.\\d+)\\.') {{ $prefix = $Matches[1] + '.' }}
+  if (-not $prefix) {{ throw 'ICS sharing enabled but could not determine downstream prefix.' }}
 
   $state = @{{
     enabled_by_zubcut = $true
