@@ -87,18 +87,34 @@ function JsonOut([hashtable]$o) {{
   Write-Output '{_MARKER}' + ($o | ConvertTo-Json -Compress -Depth 8)
 }}
 try {{
-  # Ensure ICS service is available.
-  try {{ Set-Service -Name SharedAccess -StartupType Manual -ErrorAction SilentlyContinue }} catch {{}}
-  try {{ Start-Service -Name SharedAccess -ErrorAction SilentlyContinue }} catch {{}}
-
-  $allAdapters = Get-NetAdapter -ErrorAction Stop | Where-Object {{
-    $_.HardwareInterface -eq $true -and -not (IsVirtualLike $_.Name $_.InterfaceDescription)
+  # ICS / sharing: start related services (best-effort).
+  foreach ($svc in @('RemoteAccess', 'SharedAccess', 'NlaSvc')) {{
+    try {{ Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue }} catch {{}}
+    try {{ Start-Service -Name $svc -ErrorAction SilentlyContinue }} catch {{}}
   }}
-  if (-not $allAdapters) {{ throw 'No physical adapters found for Clumsy sharing.' }}
 
-  # Downstream is the console-facing adapter: strongly prefer Ethernet.
+  # Include USB/LAN adapters: using only HardwareInterface excludes some USB Ethernet NICs.
+  $allAdapters = Get-NetAdapter -ErrorAction Stop | Where-Object {{
+    if ($_.Status -eq 'Disabled') {{ return $false }}
+    if (IsVirtualLike $_.Name $_.InterfaceDescription) {{ return $false }}
+    if ($null -ne $_.Virtual -and $_.Virtual -eq $true) {{ return $false }}
+    if ($_.HardwareInterface -eq $true) {{ return $true }}
+    $d = ($_.Name + ' ' + $_.InterfaceDescription)
+    if ($d -match 'USB|Ethernet|Gigabit|GbE|LAN|RNDIS|ASIX|AX88179|NDIS|Thunderbolt') {{ return $true }}
+    return $false
+  }}
+  if (-not $allAdapters) {{ throw 'No usable adapters found for Clumsy sharing.' }}
+
+  function LikelyEthernet($a) {{
+    $d = ($a.Name + ' ' + $a.InterfaceDescription)
+    if ($d -match 'Ethernet|Gigabit|GbE|^LAN|USB.*Ethernet|RNDIS|PCIe.*Family|ASIX|AX88179') {{ return $true }}
+    try {{ if ($a.MediaType -eq '802.3') {{ return $true }} }} catch {{}}
+    return $false
+  }}
+
+  # Downstream is the console-facing adapter: strongly prefer Ethernet / 802.3 media.
   $downCandidates = $allAdapters | Where-Object {{
-    ($_.Name -match 'Ethernet' -or $_.InterfaceDescription -match 'Ethernet') -and $_.Status -eq 'Up'
+    (LikelyEthernet $_) -and $_.Status -eq 'Up'
   }} | Sort-Object InterfaceMetric, ifIndex
   if (-not $downCandidates) {{
     $downCandidates = $allAdapters | Where-Object {{
@@ -151,19 +167,115 @@ try {{
       $snapshot += @{{ guid=$guid; type=[int]$cfg.SharingConnectionType; name=$props.Name }}
     }}
   }}
-  if (-not $connMap.ContainsKey($upGuid)) {{ throw 'Upstream adapter not found in sharing manager.' }}
-  if (-not $connMap.ContainsKey($downGuid)) {{ throw 'Downstream adapter not found in sharing manager.' }}
+  function Resolve-ConnGuid([string]$guid, [string]$ifaceName) {{
+    if ($connMap.ContainsKey($guid)) {{ return $guid }}
+    $want = ($ifaceName -as [string]).Trim().ToLowerInvariant()
+    foreach ($k in $connMap.Keys) {{
+      $nm = ($connMap[$k].name -as [string]).Trim().ToLowerInvariant()
+      if ($nm -and $nm -eq $want) {{ return [string]$k }}
+    }}
+    return ''
+  }}
+  $upKey = Resolve-ConnGuid $upGuid $up.Name
+  $dnKey = Resolve-ConnGuid $downGuid $down.Name
+  if (-not $upKey) {{ throw ('Upstream adapter not found in sharing manager (GUID/name). NetAdapter=' + $up.Name) }}
+  if (-not $dnKey) {{ throw ('Downstream adapter not found in sharing manager (GUID/name). NetAdapter=' + $down.Name) }}
 
-  try {{
+  function Apply-ICS([bool]$privateFirst) {{
     foreach ($k in $connMap.Keys) {{
       $cfg = $connMap[$k].cfg
       if ($cfg.SharingEnabled) {{ $cfg.DisableSharing() }}
     }}
-    $connMap[$upGuid].cfg.EnableSharing(0)   # Public (internet-facing)
-    $connMap[$downGuid].cfg.EnableSharing(1) # Private (downstream)
+    Start-Sleep -Milliseconds 400
+    if ($privateFirst) {{
+      $connMap[$dnKey].cfg.EnableSharing(1)
+      $connMap[$upKey].cfg.EnableSharing(0)
+    }} else {{
+      $connMap[$upKey].cfg.EnableSharing(0)
+      $connMap[$dnKey].cfg.EnableSharing(1)
+    }}
+  }}
+  function Verify-ICS {{
+    $sh2 = New-Object -ComObject HNetCfg.HNetShare
+    $okUp = $false
+    $okDn = $false
+    foreach ($conn in @($sh2.EnumEveryConnection())) {{
+      $props = $sh2.NetConnectionProps($conn)
+      $g = NormGuid($props.Guid)
+      $cfg = $sh2.INetSharingConfigurationForINetConnection($conn)
+      if (-not $cfg.SharingEnabled) {{ continue }}
+      if ($g -eq $upKey -and [int]$cfg.SharingConnectionType -eq 0) {{ $okUp = $true }}
+      if ($g -eq $dnKey -and [int]$cfg.SharingConnectionType -eq 1) {{ $okDn = $true }}
+    }}
+    return ($okUp -and $okDn)
+  }}
+
+  try {{
+    try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
+    try {{ Enable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
+    $applied = $false
+    foreach ($privFirst in @($false, $true)) {{
+      try {{
+        Apply-ICS $privFirst
+        Start-Sleep -Seconds 2
+        if (Verify-ICS) {{ $applied = $true; break }}
+      }} catch {{
+        foreach ($k in $connMap.Keys) {{
+          $c = $connMap[$k].cfg
+          if ($c.SharingEnabled) {{ $c.DisableSharing() }}
+        }}
+        foreach ($row in @($snapshot)) {{
+          $g = NormGuid($row.guid)
+          if (-not $connMap.ContainsKey($g)) {{ continue }}
+          $kind = [int]$row.type
+          if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
+          $connMap[$g].cfg.EnableSharing($kind)
+        }}
+        if ($privFirst -eq $true) {{ throw }}
+      }}
+    }}
+    if (-not $applied) {{
+      try {{
+        try {{
+          Disable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 1
+          Enable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+        }} catch {{}}
+        $share3 = New-Object -ComObject HNetCfg.HNetShare
+        $connMap = @{{}}
+        foreach ($conn in @($share3.EnumEveryConnection())) {{
+          $props = $share3.NetConnectionProps($conn)
+          $guid = NormGuid($props.Guid)
+          $cfg = $share3.INetSharingConfigurationForINetConnection($conn)
+          $connMap[$guid] = @{{ conn=$conn; cfg=$cfg; name=$props.Name }}
+        }}
+        $upKey = Resolve-ConnGuid $upGuid $up.Name
+        $dnKey = Resolve-ConnGuid $downGuid $down.Name
+        if (-not $upKey -or -not $dnKey) {{ throw 'Sharing manager lost adapter mapping after adapter reset.' }}
+        Apply-ICS $false
+        Start-Sleep -Seconds 2
+        if (-not (Verify-ICS)) {{
+          throw 'ICS could not be verified after adapter reset (run ZubCut as Administrator and check adapters).'
+        }}
+        $applied = $true
+      }} catch {{
+        foreach ($k in $connMap.Keys) {{
+          $cfg = $connMap[$k].cfg
+          if ($cfg.SharingEnabled) {{ $cfg.DisableSharing() }}
+        }}
+        foreach ($row in @($snapshot)) {{
+          $g = NormGuid($row.guid)
+          if (-not $connMap.ContainsKey($g)) {{ continue }}
+          $kind = [int]$row.type
+          if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
+          $connMap[$g].cfg.EnableSharing($kind)
+        }}
+        throw
+      }}
+    }}
   }}
   catch {{
-    # Roll back immediately if apply failed midway.
     foreach ($k in $connMap.Keys) {{
       $cfg = $connMap[$k].cfg
       if ($cfg.SharingEnabled) {{ $cfg.DisableSharing() }}
@@ -178,7 +290,7 @@ try {{
     throw
   }}
 
-  Start-Sleep -Seconds 3
+  Start-Sleep -Seconds 2
   $downIpObj = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $down.ifIndex -ErrorAction SilentlyContinue |
     Where-Object {{ $_.IPAddress -and $_.IPAddress -notlike '169.254.*' }} |
     Sort-Object SkipAsSource | Select-Object -First 1
