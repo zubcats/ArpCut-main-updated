@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
   Wait before starting the watcher (CI + release tag/asset propagation). Default
-  8 minutes; override with -DelaySeconds. Then runs the local-only watcher that
+  6 minutes; override with -DelaySeconds. Then runs the local-only watcher that
   blocks on GitHub Actions and launches the experimental installer.
 
   Intended to be started in a separate process so the agent does not block:
@@ -10,7 +10,7 @@
   Requires: gh auth login, .local/watch-exp-ci-and-update.ps1 (see repo docs / agent rule).
 #>
 param(
-    [int]$DelaySeconds = 480
+    [int]$DelaySeconds = 360
 )
 
 $ErrorActionPreference = 'Stop'
