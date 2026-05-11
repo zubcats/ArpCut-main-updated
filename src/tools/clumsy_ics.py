@@ -12,6 +12,45 @@ _STATE_PATH = os.path.join(DOCUMENTS_PATH, 'clumsy_ics_state.json')
 _MARKER = 'ZUBCUT_JSON:'
 
 
+def _parse_marker_json(text: str) -> Dict[str, Any]:
+    """
+    Extract the last ZUBCUT_JSON payload from PowerShell output.
+
+    Windows PowerShell may split ``Write-Output 'MARKER' + ($json)`` into two
+    lines (marker only, then JSON), which would otherwise make json.loads fail
+    and treat a successful ICS script as failure.
+    """
+    if not text:
+        return {}
+    lines = [ln.lstrip('\ufeff') for ln in text.splitlines()]
+    for i in range(len(lines) - 1, -1, -1):
+        line = lines[i]
+        if not line.startswith(_MARKER):
+            continue
+        tail = line[len(_MARKER) :].strip()
+        if tail:
+            try:
+                return json.loads(tail)
+            except Exception:
+                pass
+        if i + 1 < len(lines):
+            nxt = lines[i + 1].strip()
+            if nxt:
+                try:
+                    return json.loads(nxt)
+                except Exception:
+                    pass
+        idx = text.rfind(_MARKER)
+        if idx >= 0:
+            blob = text[idx + len(_MARKER) :].strip()
+            try:
+                return json.loads(blob)
+            except Exception:
+                pass
+        break
+    return {}
+
+
 def clumsy_ics_state_path() -> str:
     return _STATE_PATH
 
@@ -77,14 +116,7 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
             return False, payload, out
 
         out = (proc.stdout or '') + '\n' + (proc.stderr or '')
-        payload: Dict[str, Any] = {}
-        for line in reversed(out.splitlines()):
-            if line.startswith(_MARKER):
-                try:
-                    payload = json.loads(line[len(_MARKER):].strip())
-                except Exception:
-                    payload = {}
-                break
+        payload = _parse_marker_json(out)
         ok = bool(proc.returncode == 0 and payload.get('ok') is True)
         if not payload:
             payload = {'ok': ok, 'error': out.strip()}
@@ -112,7 +144,8 @@ function IsVirtualLike([string]$name, [string]$desc) {{
   return ($all -match 'hyper-v|vethernet|virtual|bluetooth|loopback|tap|vpn|wireguard|vmware|npcap loopback')
 }}
 function JsonOut([hashtable]$o) {{
-  Write-Output '{_MARKER}' + ($o | ConvertTo-Json -Compress -Depth 8)
+  $json = $o | ConvertTo-Json -Compress -Depth 8
+  Write-Output ('{_MARKER}' + $json)
 }}
 function SharingTypeNum($cfg) {{
   if ($null -eq $cfg) {{ return -1 }}
@@ -426,7 +459,8 @@ function NormGuid([object]$g) {{
   return ($g.ToString().Trim('{{','}}').ToLowerInvariant())
 }}
 function JsonOut([hashtable]$o) {{
-  Write-Output '{_MARKER}' + ($o | ConvertTo-Json -Compress -Depth 8)
+  $json = $o | ConvertTo-Json -Compress -Depth 8
+  Write-Output ('{_MARKER}' + $json)
 }}
 function SnapshotTypeInt($row) {{
   try {{ return [System.Convert]::ToInt32($row.type) }} catch {{ return -1 }}
