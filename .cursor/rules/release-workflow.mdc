@@ -15,4 +15,4 @@ alwaysApply: true
 - After a user requests a branch switch, assume all future routine commits/pushes go to the newly selected branch until instructed otherwise.
 - Push to `main` only when explicitly instructed.
 - When promoting changes between branches, carry over only intended updates and preserve separation between update paths.
-- Optional local automation: after `tools\install-git-autopush-exp.cmd` (sets `core.hooksPath` to `.githooks`), each **commit on `experimental`** runs `git push origin experimental`. Other branches are unchanged; uncommitted edits are not pushed until you commit.
+- **Bug fixes** in this repository: when you finish a fix, **commit and push to `origin/experimental`** with a clear message (unless the user directs another branch in the same thread). Do not leave bugfix changes uncommitted at the end of the turn if the user expects them merged via CI.
