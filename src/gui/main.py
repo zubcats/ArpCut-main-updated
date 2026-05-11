@@ -2089,12 +2089,51 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Installing builds is only from Settings → Install Latest Build.
         """
         self._start_periodic_update_availability_poll()
+        self._start_clumsy_inline_refresh_timer()
 
     def UpdateThread_Reciever(self):
         """
         Legacy hook from upstream; unused.
         """
         pass
+
+    def _start_clumsy_inline_refresh_timer(self):
+        """While Clumsy mode is on, periodically re-resolve ICS console IP (ARP + rate-limited ping)."""
+        import sys
+
+        if not sys.platform.startswith('win'):
+            return
+        if getattr(self, '_clumsy_inline_refresh_timer', None) is None:
+            self._clumsy_inline_refresh_timer = QTimer(self)
+            self._clumsy_inline_refresh_timer.setInterval(7000)
+            self._clumsy_inline_refresh_timer.timeout.connect(self._refresh_clumsy_inline_row_if_needed)
+        self._clumsy_inline_refresh_timer.start()
+
+    def _refresh_clumsy_inline_row_if_needed(self):
+        try:
+            from tools.clumsy_inline import clumsy_mode_enabled, clumsy_runtime_ready, sync_clumsy_row
+
+            if not clumsy_mode_enabled() or not clumsy_runtime_ready():
+                t = getattr(self, '_clumsy_inline_refresh_timer', None)
+                if t is not None and t.isActive():
+                    t.stop()
+                return
+
+            ip_before = ''
+            for d in self.scanner.devices:
+                if d.get('clumsy_inline'):
+                    ip_before = str(d.get('ip') or '').strip()
+                    break
+            sync_clumsy_row(self.scanner, allow_subnet_ping=True)
+            ip_after = ''
+            for d in self.scanner.devices:
+                if d.get('clumsy_inline'):
+                    ip_after = str(d.get('ip') or '').strip()
+                    break
+            if ip_before != ip_after:
+                self.showDevices()
+        except Exception:
+            pass
 
     def _should_poll_update_availability(self):
         import sys

@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from constants import CLUMSY_INLINE_MAC
@@ -18,6 +19,9 @@ if TYPE_CHECKING:
 
 CLUMSY_BUNDLE_FLAG_NAME = 'clumsy_mode_bundle.flag'
 _ICS_SUBNET_PREFIX = '192.168.137.'
+_LAST_ICS_PING_SWEEP_MONO = 0.0
+_ICS_PING_SWEEP_COOLDOWN_SEC = 22.0
+_ICS_PING_SWEEP_LAST_OCTET_MAX = 32
 
 
 def clumsy_bundle_flag_path() -> str:
@@ -131,7 +135,46 @@ def _parse_ics_clients(
     return out
 
 
-def detect_inline_ip(scanner: Scanner) -> Optional[str]:
+def _ping_sweep_ics_subnet_windows(subnet_prefix: str, skip_ips: set[str]) -> None:
+    """Best-effort: ping ICS range so Windows populates ARP for live consoles."""
+    if not subnet_prefix.endswith('.'):
+        return
+    try:
+        from tools.utils import terminal
+    except Exception:
+        return
+    for last in range(2, min(_ICS_PING_SWEEP_LAST_OCTET_MAX + 1, 255)):
+        ip = f'{subnet_prefix}{last}'
+        if ip in skip_ips:
+            continue
+        try:
+            terminal(f'ping -n 1 -w 150 {ip}', decode=False)
+        except Exception:
+            pass
+
+
+def _maybe_refresh_ics_clients_via_ping(
+    subnet_prefix: str,
+    my_ip: str,
+    router_ip: str,
+    host_ip: str,
+) -> None:
+    global _LAST_ICS_PING_SWEEP_MONO
+    if not sys.platform.startswith('win'):
+        return
+    now = time.monotonic()
+    if now - _LAST_ICS_PING_SWEEP_MONO < _ICS_PING_SWEEP_COOLDOWN_SEC:
+        return
+    _LAST_ICS_PING_SWEEP_MONO = now
+    skip = {x for x in (my_ip, router_ip, host_ip) if x}
+    _ping_sweep_ics_subnet_windows(subnet_prefix, skip)
+
+
+def detect_inline_ip(
+    scanner: Scanner,
+    *,
+    allow_subnet_ping: bool = False,
+) -> Optional[str]:
     if not clumsy_runtime_ready() or not clumsy_mode_enabled():
         return None
     maybe_prepare_ics()
@@ -144,6 +187,10 @@ def detect_inline_ip(scanner: Scanner) -> Optional[str]:
     host_ip = str(state.get('downstream_ipv4') or '').strip()
     text = _arp_lines_for_scanner(scanner)
     clients = _parse_ics_clients(text, my_ip, router_ip, subnet_prefix, host_ip)
+    if not clients and allow_subnet_ping:
+        _maybe_refresh_ics_clients_via_ping(subnet_prefix, my_ip, router_ip, host_ip)
+        text = _arp_lines_for_scanner(scanner)
+        clients = _parse_ics_clients(text, my_ip, router_ip, subnet_prefix, host_ip)
     if not clients:
         return None
     return clients[0]
@@ -156,17 +203,21 @@ def build_inline_device(ip: Optional[str]) -> Dict[str, Any]:
         'mac': CLUMSY_INLINE_MAC,
         'vendor': '',
         'type': 'Ethernet (inline)',
-        'name': 'Clumsy target' if ip else 'Clumsy (detecting…)',
+        'name': (
+            'Clumsy target'
+            if ip
+            else 'Clumsy (detecting… — power on console or Rescan)'
+        ),
         'admin': False,
         'clumsy_inline': True,
     }
 
 
-def sync_clumsy_row(scanner: Scanner) -> None:
+def sync_clumsy_row(scanner: Scanner, *, allow_subnet_ping: bool = False) -> None:
     scanner.devices = [d for d in scanner.devices if not d.get('clumsy_inline')]
     if not clumsy_mode_enabled() or not clumsy_runtime_ready():
         return
-    ip = detect_inline_ip(scanner)
+    ip = detect_inline_ip(scanner, allow_subnet_ping=allow_subnet_ping)
     # The ARP-derived scan can also list the ICS console with its real MAC. That row
     # shares the same IPv4 as the synthetic Clumsy row and breaks lag/kill (two keys).
     if ip:
