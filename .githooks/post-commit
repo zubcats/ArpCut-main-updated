@@ -1,0 +1,10 @@
+#!/bin/sh
+# Auto-push to origin/experimental after each commit while on branch experimental.
+# Install once: run tools/install-git-autopush-exp.cmd (or: git config core.hooksPath .githooks)
+
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0
+[ "$branch" = "experimental" ] || exit 0
+
+# Do not block the commit if the network is down or nothing to push.
+git push origin experimental || exit 0
+exit 0
