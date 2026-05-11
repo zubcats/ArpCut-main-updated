@@ -406,13 +406,15 @@ def block_ip(iface: str, ip: str, direction: str = 'both') -> bool:
         if direction in ('in', 'both'):
             name = f'{rule_base}_in'
             last_res = _exec(
-                f'netsh advfirewall firewall add rule name="{name}" dir=in action=block remoteip={ip} enable=yes'
+                f'netsh advfirewall firewall add rule name="{name}" dir=in action=block remoteip={ip} '
+                f'enable=yes profile=any'
             )
             ok = ok and last_res.returncode == 0
         if direction in ('out', 'both'):
             name = f'{rule_base}_out'
             last_res = _exec(
-                f'netsh advfirewall firewall add rule name="{name}" dir=out action=block remoteip={ip} enable=yes'
+                f'netsh advfirewall firewall add rule name="{name}" dir=out action=block remoteip={ip} '
+                f'enable=yes profile=any'
             )
             ok = ok and last_res.returncode == 0
         if not ok:
@@ -423,12 +425,12 @@ def block_ip(iface: str, ip: str, direction: str = 'both') -> bool:
         if direction in ('in', 'both'):
             _exec(
                 f'netsh advfirewall firewall add rule name="{rule_base}_in_icmp" dir=in action=block '
-                f'remoteip={ip} protocol=icmpv4 enable=yes'
+                f'remoteip={ip} protocol=icmpv4 enable=yes profile=any'
             )
         if direction in ('out', 'both'):
             _exec(
                 f'netsh advfirewall firewall add rule name="{rule_base}_out_icmp" dir=out action=block '
-                f'remoteip={ip} protocol=icmpv4 enable=yes'
+                f'remoteip={ip} protocol=icmpv4 enable=yes profile=any'
             )
         return ok
     return False

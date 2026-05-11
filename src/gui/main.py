@@ -3083,8 +3083,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not device and snap and snap.get('mac') == prev_mac:
             device = snap
         if device and device.get('mac') == prev_mac:
-            # During the "normal" phase the victim is already unkill()'d; we still must enforce
-            # teardown here so MITM/ARP cannot stick after the UI shows OFF (same idea as Kill OFF).
+            # Full teardown after OFF: firewall unblock always; ARP unkill only for MITM victims.
             victim = self._victim_record_for_mac(prev_mac) or device
             if victim:
                 try:
@@ -3095,7 +3094,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 unblock_ip(device['ip'])
             except Exception:
                 pass
-            if victim:
+            # Clumsy inline never uses killer ARP/MITM; unkill() would still send restore ARP with the
+            # synthetic MAC and wrong router context, corrupting the ICS segment and breaking lag UX.
+            if victim and not victim.get('clumsy_inline'):
                 try:
                     self.killer.unkill(victim)
                     self.killer.reinforce_restore(victim)
