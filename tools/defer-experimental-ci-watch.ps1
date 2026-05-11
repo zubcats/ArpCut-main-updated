@@ -1,27 +1,33 @@
 #Requires -Version 5.1
 <#
-  Wait before starting the watcher (CI + release tag/asset propagation). Default
-  6 minutes; override with -DelaySeconds. Then runs the local-only watcher that
-  blocks on GitHub Actions and launches the experimental installer.
+  Wait (default 6 minutes) then run tools/watch-experimental-ci-and-install.ps1.
 
-  Intended to be started in a separate process so the agent does not block:
-    Start-Process powershell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Minimized','-File', <this-file>
+  Start from repo root with working directory set, e.g.:
+    Start-Process powershell.exe -WorkingDirectory $pwd -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Resolve-Path '.\tools\defer-experimental-ci-watch.ps1')
 
-  Requires: gh auth login, .local/watch-exp-ci-and-update.ps1 (see repo docs / agent rule).
+  Log: %TEMP%\zubcut-ci-watch.log
 #>
 param(
     [int]$DelaySeconds = 360
 )
 
 $ErrorActionPreference = 'Stop'
+
+try {
+    $m = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $u = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($m) { $env:Path = $m + ';' + $env:Path }
+    if ($u) { $env:Path = $u + ';' + $env:Path }
+} catch {}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$watch = Join-Path $repoRoot '.local\watch-exp-ci-and-update.ps1'
+$watch = Join-Path $repoRoot 'tools\watch-experimental-ci-and-install.ps1'
 
 if (-not (Test-Path -LiteralPath $watch)) {
-    Write-Error "Missing $watch — add .local/watch-exp-ci-and-update.ps1 (local-only)."
+    throw "Missing committed script: $watch"
 }
 
-Write-Host "Deferring $DelaySeconds s, then running: $watch"
+Write-Host "Deferring $DelaySeconds s, then: $watch"
 Start-Sleep -Seconds $DelaySeconds
 Set-Location $repoRoot
 & $watch
