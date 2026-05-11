@@ -1,7 +1,8 @@
 #Requires -Version 5.1
 <#
-  Wait 4 minutes (CI + release upload head start), then run the local-only
-  watcher that blocks on GitHub Actions and launches the experimental installer.
+  Wait before starting the watcher (CI + release tag/asset propagation). Default
+  8 minutes; override with -DelaySeconds. Then runs the local-only watcher that
+  blocks on GitHub Actions and launches the experimental installer.
 
   Intended to be started in a separate process so the agent does not block:
     Start-Process powershell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Minimized','-File', <this-file>
@@ -9,7 +10,7 @@
   Requires: gh auth login, .local/watch-exp-ci-and-update.ps1 (see repo docs / agent rule).
 #>
 param(
-    [int]$DelaySeconds = 240
+    [int]$DelaySeconds = 480
 )
 
 $ErrorActionPreference = 'Stop'
