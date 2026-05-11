@@ -2572,7 +2572,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         def _reassert():
             if not self.lag_active or self.lag_device_mac != mac or self._lag_in_allow_phase:
                 return
-            dev = self._get_device_by_mac(mac) or self._victim_record_for_mac(mac)
+            dev = self._lag_resolved_victim()
             if not dev:
                 return
             try:
@@ -2990,28 +2990,57 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _lag_apply_block(self, device):
         self._apply_victim_block(device, self.lag_direction)
 
+    def _lag_resolved_victim(self):
+        """
+        Merge live table row with the lag snapshot. Clumsy rows can briefly disappear during
+        rescan/sync, and the ICS IP can update while lag runs — a frozen dict breaks block/unblock.
+        """
+        mac = getattr(self, 'lag_device_mac', None)
+        if not mac:
+            return None
+        live = self._get_device_by_mac(mac)
+        snap = getattr(self, '_lag_device_snapshot', None)
+        if snap is not None and snap.get('mac') != mac:
+            snap = None
+        if not live and not snap:
+            return None
+        if not live:
+            return dict(snap) if snap else None
+        if not snap:
+            return dict(live)
+        merged = dict(live)
+        lip = (live.get('ip') or '').strip()
+        sip = (snap.get('ip') or '').strip()
+        if (not lip) and sip:
+            merged['ip'] = sip
+        if live.get('clumsy_inline') or snap.get('clumsy_inline'):
+            merged['clumsy_inline'] = True
+        return merged
+
     def _lag_phase_tick(self):
         if not self.lag_active:
             return
         self._refresh_lag_timing_from_dialog()
-        device = self._get_device_by_mac(self.lag_device_mac)
+        device = self._lag_resolved_victim()
         if not device:
             self.stopLagSwitch()
             return
-        block_ms = max(1, int(self.lag_block_ms))
-        allow_ms = max(25, int(self.lag_release_ms))
         mac = self.lag_device_mac
-        dev = dict(device)
+        self._lag_device_snapshot = dict(device)
 
         if not self._lag_in_allow_phase:
             # Block interval (top spin) just finished -> allow traffic for bottom spin duration.
             def _go_allow():
                 if not self.lag_active or self.lag_device_mac != mac:
                     return
+                cur = self._lag_resolved_victim()
+                if not cur:
+                    self.stopLagSwitch()
+                    return
                 allow_arm = max(25, int(self.lag_release_ms))
                 deadline = time.monotonic() + allow_arm / 1000.0
                 try:
-                    self._lag_enter_allow_phase(dev)
+                    self._lag_enter_allow_phase(cur)
                 except Exception:
                     pass
                 self._lag_in_allow_phase = True
@@ -3028,10 +3057,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         def _go_block():
             if not self.lag_active or self.lag_device_mac != mac:
                 return
+            cur = self._lag_resolved_victim()
+            if not cur:
+                self.stopLagSwitch()
+                return
             block_arm = max(1, int(self.lag_block_ms))
             deadline = time.monotonic() + block_arm / 1000.0
             try:
-                self._lag_apply_block(dev)
+                self._lag_apply_block(cur)
             except Exception:
                 pass
             self._lag_in_allow_phase = False
@@ -3079,9 +3112,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 app.processEvents(QEventLoop.AllEvents)
         except Exception:
             pass
-        device = self._get_device_by_mac(prev_mac)
-        if not device and snap and snap.get('mac') == prev_mac:
-            device = snap
+        live = self._get_device_by_mac(prev_mac) if prev_mac else None
+        snap_ok = snap if (isinstance(snap, dict) and snap.get('mac') == prev_mac) else None
+        if not live and snap_ok:
+            device = dict(snap_ok)
+        elif live and snap_ok:
+            device = dict(live)
+            lip = (live.get('ip') or '').strip()
+            sip = (snap_ok.get('ip') or '').strip()
+            if (not lip) and sip:
+                device['ip'] = sip
+            if live.get('clumsy_inline') or snap_ok.get('clumsy_inline'):
+                device['clumsy_inline'] = True
+        elif live:
+            device = dict(live)
+        else:
+            device = None
         if device and device.get('mac') == prev_mac:
             # Full teardown after OFF: firewall unblock always; ARP unkill only for MITM victims.
             victim = self._victim_record_for_mac(prev_mac) or device
@@ -3090,10 +3136,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._ensure_network_context_for_victim(victim)
                 except Exception:
                     pass
-            try:
-                unblock_ip(device['ip'])
-            except Exception:
-                pass
+            ips = []
+            for cand in (device, snap_ok):
+                if isinstance(cand, dict):
+                    ip = (cand.get('ip') or '').strip()
+                    if ip and _is_valid_ip(ip):
+                        ips.append(ip)
+            seen_ip = set()
+            for ip in ips:
+                if ip in seen_ip:
+                    continue
+                seen_ip.add(ip)
+                try:
+                    unblock_ip(ip)
+                except Exception:
+                    pass
             # Clumsy inline never uses killer ARP/MITM; unkill() would still send restore ARP with the
             # synthetic MAC and wrong router context, corrupting the ICS segment and breaking lag UX.
             if victim and not victim.get('clumsy_inline'):
