@@ -58,9 +58,16 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
 
         proc = None
         last_exc: Exception | None = None
+        # Avoid flashing a visible PowerShell console when toggling ICS from the GUI.
+        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         for cmd in cmd_candidates:
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True)
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    creationflags=creationflags,
+                )
                 break
             except FileNotFoundError as e:
                 last_exc = e
@@ -106,6 +113,18 @@ function IsVirtualLike([string]$name, [string]$desc) {{
 }}
 function JsonOut([hashtable]$o) {{
   Write-Output '{_MARKER}' + ($o | ConvertTo-Json -Compress -Depth 8)
+}}
+function SharingTypeNum($cfg) {{
+  if ($null -eq $cfg) {{ return -1 }}
+  try {{
+    $t = $cfg.SharingConnectionType
+    if ($null -eq $t) {{ return -1 }}
+    try {{ return [System.Convert]::ToInt32($t) }} catch {{
+      try {{ return [int]$t }} catch {{ return -1 }}
+    }}
+  }} catch {{
+    return -1
+  }}
 }}
 try {{
   # ICS / sharing: start related services (best-effort).
@@ -185,7 +204,7 @@ try {{
     $cfg = $share.INetSharingConfigurationForINetConnection($conn)
     $connMap[$guid] = @{{ conn=$conn; cfg=$cfg; name=$props.Name }}
     if ($cfg.SharingEnabled) {{
-      $snapshot += @{{ guid=$guid; type=[int]$cfg.SharingConnectionType; name=$props.Name }}
+      $snapshot += @{{ guid=$guid; type=(SharingTypeNum $cfg); name=$props.Name }}
     }}
   }}
   function Resolve-ConnGuid([string]$guid, [string]$ifaceName) {{
@@ -225,8 +244,9 @@ try {{
       $g = NormGuid($props.Guid)
       $cfg = $sh2.INetSharingConfigurationForINetConnection($conn)
       if (-not $cfg.SharingEnabled) {{ continue }}
-      if ($g -eq $upKey -and [int]$cfg.SharingConnectionType -eq 0) {{ $okUp = $true }}
-      if ($g -eq $dnKey -and [int]$cfg.SharingConnectionType -eq 1) {{ $okDn = $true }}
+      $st = SharingTypeNum $cfg
+      if ($g -eq $upKey -and $st -eq 0) {{ $okUp = $true }}
+      if ($g -eq $dnKey -and $st -eq 1) {{ $okDn = $true }}
     }}
     return ($okUp -and $okDn)
   }}
@@ -248,7 +268,7 @@ try {{
         foreach ($row in @($snapshot)) {{
           $g = NormGuid($row.guid)
           if (-not $connMap.ContainsKey($g)) {{ continue }}
-          $kind = [int]$row.type
+          $kind = [System.Convert]::ToInt32($row.type)
           if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
           $connMap[$g].cfg.EnableSharing($kind)
         }}
@@ -288,7 +308,7 @@ try {{
         foreach ($row in @($snapshot)) {{
           $g = NormGuid($row.guid)
           if (-not $connMap.ContainsKey($g)) {{ continue }}
-          $kind = [int]$row.type
+          $kind = [System.Convert]::ToInt32($row.type)
           if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
           $connMap[$g].cfg.EnableSharing($kind)
         }}
@@ -304,7 +324,7 @@ try {{
     foreach ($row in @($snapshot)) {{
       $g = NormGuid($row.guid)
       if (-not $connMap.ContainsKey($g)) {{ continue }}
-      $kind = [int]$row.type
+      $kind = [System.Convert]::ToInt32($row.type)
       if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
       $connMap[$g].cfg.EnableSharing($kind)
     }}
@@ -364,6 +384,9 @@ function NormGuid([object]$g) {{
 function JsonOut([hashtable]$o) {{
   Write-Output '{_MARKER}' + ($o | ConvertTo-Json -Compress -Depth 8)
 }}
+function SnapshotTypeInt($row) {{
+  try {{ return [System.Convert]::ToInt32($row.type) }} catch {{ return -1 }}
+}}
 try {{
   if (-not (Test-Path "{state_path}")) {{
     JsonOut @{{ ok=$true; message='No rollback state file.' }}
@@ -385,7 +408,7 @@ try {{
   foreach ($row in @($state.snapshot)) {{
     $g = NormGuid($row.guid)
     if (-not $connMap.ContainsKey($g)) {{ continue }}
-    $kind = [int]$row.type
+    $kind = SnapshotTypeInt $row
     if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
     $connMap[$g].cfg.EnableSharing($kind)
   }}
