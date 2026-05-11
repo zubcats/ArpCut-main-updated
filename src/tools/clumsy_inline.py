@@ -167,6 +167,15 @@ def sync_clumsy_row(scanner: Scanner) -> None:
     if not clumsy_mode_enabled() or not clumsy_runtime_ready():
         return
     ip = detect_inline_ip(scanner)
+    # The ARP-derived scan can also list the ICS console with its real MAC. That row
+    # shares the same IPv4 as the synthetic Clumsy row and breaks lag/kill (two keys).
+    if ip:
+        ip_norm = str(ip).strip()
+        scanner.devices = [
+            d
+            for d in scanner.devices
+            if d.get('admin') or str(d.get('ip') or '').strip() != ip_norm
+        ]
     dev = build_inline_device(ip)
     insert_at = 2
     if insert_at > len(scanner.devices):
