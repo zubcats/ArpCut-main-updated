@@ -126,6 +126,41 @@ function SharingTypeNum($cfg) {{
     return -1
   }}
 }}
+function SharingEnabledSafe($cfg) {{
+  if ($null -eq $cfg) {{ return $false }}
+  try {{
+    $v = $cfg.SharingEnabled
+    if ($null -eq $v) {{ return $false }}
+    if ($v -is [bool]) {{ return $v }}
+    try {{ return [bool][int]$v }} catch {{ return $false }}
+  }} catch {{
+    return $false
+  }}
+}}
+function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
+  if ($null -eq $cfg) {{ throw 'EnableSharingSafe: null configuration object.' }}
+  try {{
+    $mi = $cfg.GetType().GetMethod('EnableSharing')
+    if ($null -ne $mi) {{
+      $parms = $mi.GetParameters()
+      if ($parms.Length -eq 1) {{
+        $enumType = $parms[0].ParameterType
+        if ($enumType.IsEnum) {{
+          $arg = [System.Enum]::ToObject($enumType, [int32]$sharingKind)
+          $mi.Invoke($cfg, @($arg))
+          return
+        }}
+      }}
+    }}
+  }} catch {{ }}
+  $lastErr = $null
+  try {{ $cfg.EnableSharing([int32]$sharingKind); return }} catch {{ $lastErr = $_ }}
+  try {{ $cfg.EnableSharing([uint32]$sharingKind); return }} catch {{ $lastErr = $_ }}
+  try {{ $cfg.EnableSharing([int16]$sharingKind); return }} catch {{ $lastErr = $_ }}
+  try {{ $cfg.EnableSharing($sharingKind); return }} catch {{ $lastErr = $_ }}
+  if ($null -ne $lastErr) {{ throw $lastErr.Exception }}
+  throw 'EnableSharing failed (no matching invocation).'
+}}
 try {{
   # ICS / sharing: start related services (best-effort).
   foreach ($svc in @('RemoteAccess', 'SharedAccess', 'NlaSvc')) {{
@@ -137,7 +172,9 @@ try {{
   $allAdapters = Get-NetAdapter -ErrorAction Stop | Where-Object {{
     if ($_.Status -eq 'Disabled') {{ return $false }}
     if (IsVirtualLike $_.Name $_.InterfaceDescription) {{ return $false }}
-    if ($null -ne $_.Virtual -and $_.Virtual -eq $true) {{ return $false }}
+    $virtBad = $false
+    try {{ if ($null -ne $_.Virtual -and $_.Virtual -eq $true) {{ $virtBad = $true }} }} catch {{ }}
+    if ($virtBad) {{ return $false }}
     if ($_.HardwareInterface -eq $true) {{ return $true }}
     $d = ($_.Name + ' ' + $_.InterfaceDescription)
     if ($d -match 'USB|Ethernet|Gigabit|GbE|LAN|RNDIS|ASIX|AX88179|NDIS|Thunderbolt') {{ return $true }}
@@ -199,13 +236,15 @@ try {{
   $connMap = @{{}}
   $snapshot = @()
   foreach ($conn in @($share.EnumEveryConnection())) {{
-    $props = $share.NetConnectionProps($conn)
-    $guid = NormGuid($props.Guid)
-    $cfg = $share.INetSharingConfigurationForINetConnection($conn)
-    $connMap[$guid] = @{{ conn=$conn; cfg=$cfg; name=$props.Name }}
-    if ($cfg.SharingEnabled) {{
-      $snapshot += @{{ guid=$guid; type=(SharingTypeNum $cfg); name=$props.Name }}
-    }}
+    try {{
+      $props = $share.NetConnectionProps($conn)
+      $guid = NormGuid($props.Guid)
+      $cfg = $share.INetSharingConfigurationForINetConnection($conn)
+      $connMap[$guid] = @{{ conn=$conn; cfg=$cfg; name=$props.Name }}
+      if (SharingEnabledSafe $cfg) {{
+        $snapshot += @{{ guid=$guid; type=(SharingTypeNum $cfg); name=$props.Name }}
+      }}
+    }} catch {{ continue }}
   }}
   function Resolve-ConnGuid([string]$guid, [string]$ifaceName) {{
     if ($connMap.ContainsKey($guid)) {{ return $guid }}
@@ -224,15 +263,15 @@ try {{
   function Apply-ICS([bool]$privateFirst) {{
     foreach ($k in $connMap.Keys) {{
       $cfg = $connMap[$k].cfg
-      if ($cfg.SharingEnabled) {{ $cfg.DisableSharing() }}
+      if (SharingEnabledSafe $cfg) {{ try {{ $cfg.DisableSharing() }} catch {{ }} }}
     }}
     Start-Sleep -Milliseconds 400
     if ($privateFirst) {{
-      $connMap[$dnKey].cfg.EnableSharing(1)
-      $connMap[$upKey].cfg.EnableSharing(0)
+      EnableSharingSafe $connMap[$dnKey].cfg 1
+      EnableSharingSafe $connMap[$upKey].cfg 0
     }} else {{
-      $connMap[$upKey].cfg.EnableSharing(0)
-      $connMap[$dnKey].cfg.EnableSharing(1)
+      EnableSharingSafe $connMap[$upKey].cfg 0
+      EnableSharingSafe $connMap[$dnKey].cfg 1
     }}
   }}
   function Verify-ICS {{
@@ -240,13 +279,15 @@ try {{
     $okUp = $false
     $okDn = $false
     foreach ($conn in @($sh2.EnumEveryConnection())) {{
-      $props = $sh2.NetConnectionProps($conn)
-      $g = NormGuid($props.Guid)
-      $cfg = $sh2.INetSharingConfigurationForINetConnection($conn)
-      if (-not $cfg.SharingEnabled) {{ continue }}
-      $st = SharingTypeNum $cfg
-      if ($g -eq $upKey -and $st -eq 0) {{ $okUp = $true }}
-      if ($g -eq $dnKey -and $st -eq 1) {{ $okDn = $true }}
+      try {{
+        $props = $sh2.NetConnectionProps($conn)
+        $g = NormGuid($props.Guid)
+        $cfg = $sh2.INetSharingConfigurationForINetConnection($conn)
+        if (-not (SharingEnabledSafe $cfg)) {{ continue }}
+        $st = SharingTypeNum $cfg
+        if ($g -eq $upKey -and $st -eq 0) {{ $okUp = $true }}
+        if ($g -eq $dnKey -and $st -eq 1) {{ $okDn = $true }}
+      }} catch {{ continue }}
     }}
     return ($okUp -and $okDn)
   }}
@@ -263,14 +304,14 @@ try {{
       }} catch {{
         foreach ($k in $connMap.Keys) {{
           $c = $connMap[$k].cfg
-          if ($c.SharingEnabled) {{ $c.DisableSharing() }}
+          if (SharingEnabledSafe $c) {{ try {{ $c.DisableSharing() }} catch {{ }} }}
         }}
         foreach ($row in @($snapshot)) {{
           $g = NormGuid($row.guid)
           if (-not $connMap.ContainsKey($g)) {{ continue }}
-          $kind = [System.Convert]::ToInt32($row.type)
+          try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
           if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
-          $connMap[$g].cfg.EnableSharing($kind)
+          EnableSharingSafe $connMap[$g].cfg $kind
         }}
         if ($privFirst -eq $true) {{ throw }}
       }}
@@ -286,10 +327,12 @@ try {{
         $share3 = New-Object -ComObject HNetCfg.HNetShare
         $connMap = @{{}}
         foreach ($conn in @($share3.EnumEveryConnection())) {{
-          $props = $share3.NetConnectionProps($conn)
-          $guid = NormGuid($props.Guid)
-          $cfg = $share3.INetSharingConfigurationForINetConnection($conn)
-          $connMap[$guid] = @{{ conn=$conn; cfg=$cfg; name=$props.Name }}
+          try {{
+            $props = $share3.NetConnectionProps($conn)
+            $guid = NormGuid($props.Guid)
+            $cfg = $share3.INetSharingConfigurationForINetConnection($conn)
+            $connMap[$guid] = @{{ conn=$conn; cfg=$cfg; name=$props.Name }}
+          }} catch {{ continue }}
         }}
         $upKey = Resolve-ConnGuid $upGuid $up.Name
         $dnKey = Resolve-ConnGuid $downGuid $down.Name
@@ -303,14 +346,14 @@ try {{
       }} catch {{
         foreach ($k in $connMap.Keys) {{
           $cfg = $connMap[$k].cfg
-          if ($cfg.SharingEnabled) {{ $cfg.DisableSharing() }}
+          if (SharingEnabledSafe $cfg) {{ try {{ $cfg.DisableSharing() }} catch {{ }} }}
         }}
         foreach ($row in @($snapshot)) {{
           $g = NormGuid($row.guid)
           if (-not $connMap.ContainsKey($g)) {{ continue }}
-          $kind = [System.Convert]::ToInt32($row.type)
+          try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
           if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
-          $connMap[$g].cfg.EnableSharing($kind)
+          EnableSharingSafe $connMap[$g].cfg $kind
         }}
         throw
       }}
@@ -319,14 +362,14 @@ try {{
   catch {{
     foreach ($k in $connMap.Keys) {{
       $cfg = $connMap[$k].cfg
-      if ($cfg.SharingEnabled) {{ $cfg.DisableSharing() }}
+      if (SharingEnabledSafe $cfg) {{ try {{ $cfg.DisableSharing() }} catch {{ }} }}
     }}
     foreach ($row in @($snapshot)) {{
       $g = NormGuid($row.guid)
       if (-not $connMap.ContainsKey($g)) {{ continue }}
-      $kind = [System.Convert]::ToInt32($row.type)
+      try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
       if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
-      $connMap[$g].cfg.EnableSharing($kind)
+      EnableSharingSafe $connMap[$g].cfg $kind
     }}
     throw
   }}
@@ -357,7 +400,8 @@ try {{
   exit 0
 }}
 catch {{
-  JsonOut @{{ ok=$false; error=$_.Exception.Message }}
+  $em = if ($null -ne $_.Exception) {{ $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }} else {{ $_ | Out-String }}
+  JsonOut @{{ ok=$false; error=$em }}
   exit 1
 }}
 """
@@ -387,6 +431,41 @@ function JsonOut([hashtable]$o) {{
 function SnapshotTypeInt($row) {{
   try {{ return [System.Convert]::ToInt32($row.type) }} catch {{ return -1 }}
 }}
+function SharingEnabledSafe($cfg) {{
+  if ($null -eq $cfg) {{ return $false }}
+  try {{
+    $v = $cfg.SharingEnabled
+    if ($null -eq $v) {{ return $false }}
+    if ($v -is [bool]) {{ return $v }}
+    try {{ return [bool][int]$v }} catch {{ return $false }}
+  }} catch {{
+    return $false
+  }}
+}}
+function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
+  if ($null -eq $cfg) {{ throw 'EnableSharingSafe: null configuration object.' }}
+  try {{
+    $mi = $cfg.GetType().GetMethod('EnableSharing')
+    if ($null -ne $mi) {{
+      $parms = $mi.GetParameters()
+      if ($parms.Length -eq 1) {{
+        $enumType = $parms[0].ParameterType
+        if ($enumType.IsEnum) {{
+          $arg = [System.Enum]::ToObject($enumType, [int32]$sharingKind)
+          $mi.Invoke($cfg, @($arg))
+          return
+        }}
+      }}
+    }}
+  }} catch {{ }}
+  $lastErr = $null
+  try {{ $cfg.EnableSharing([int32]$sharingKind); return }} catch {{ $lastErr = $_ }}
+  try {{ $cfg.EnableSharing([uint32]$sharingKind); return }} catch {{ $lastErr = $_ }}
+  try {{ $cfg.EnableSharing([int16]$sharingKind); return }} catch {{ $lastErr = $_ }}
+  try {{ $cfg.EnableSharing($sharingKind); return }} catch {{ $lastErr = $_ }}
+  if ($null -ne $lastErr) {{ throw $lastErr.Exception }}
+  throw 'EnableSharing failed (no matching invocation).'
+}}
 try {{
   if (-not (Test-Path "{state_path}")) {{
     JsonOut @{{ ok=$true; message='No rollback state file.' }}
@@ -396,28 +475,31 @@ try {{
   $share = New-Object -ComObject HNetCfg.HNetShare
   $connMap = @{{}}
   foreach ($conn in @($share.EnumEveryConnection())) {{
-    $props = $share.NetConnectionProps($conn)
-    $guid = NormGuid($props.Guid)
-    $cfg = $share.INetSharingConfigurationForINetConnection($conn)
-    $connMap[$guid] = @{{ conn=$conn; cfg=$cfg; name=$props.Name }}
+    try {{
+      $props = $share.NetConnectionProps($conn)
+      $guid = NormGuid($props.Guid)
+      $cfg = $share.INetSharingConfigurationForINetConnection($conn)
+      $connMap[$guid] = @{{ conn=$conn; cfg=$cfg; name=$props.Name }}
+    }} catch {{ continue }}
   }}
   foreach ($k in $connMap.Keys) {{
     $cfg = $connMap[$k].cfg
-    if ($cfg.SharingEnabled) {{ $cfg.DisableSharing() }}
+    if (SharingEnabledSafe $cfg) {{ try {{ $cfg.DisableSharing() }} catch {{ }} }}
   }}
   foreach ($row in @($state.snapshot)) {{
     $g = NormGuid($row.guid)
     if (-not $connMap.ContainsKey($g)) {{ continue }}
     $kind = SnapshotTypeInt $row
     if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
-    $connMap[$g].cfg.EnableSharing($kind)
+    EnableSharingSafe $connMap[$g].cfg $kind
   }}
   Remove-Item -Path "{state_path}" -Force -ErrorAction SilentlyContinue
   JsonOut @{{ ok=$true; message='Restored previous ICS sharing state.' }}
   exit 0
 }}
 catch {{
-  JsonOut @{{ ok=$false; error=$_.Exception.Message }}
+  $em = if ($null -ne $_.Exception) {{ $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }} else {{ $_ | Out-String }}
+  JsonOut @{{ ok=$false; error=$em }}
   exit 1
 }}
 """
