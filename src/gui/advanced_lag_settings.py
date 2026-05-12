@@ -2,7 +2,7 @@
 
 Builds that include MITM forwarder controls show ``Latency (delay)`` and ``Bandwidth cap``
 sections with per-section on/off toggles (immediate apply) and a master victim toggle that
-enables both sections together. ``Clumsy only`` covers ICS / WinDivert notes + status.
+starts or stops shaping without changing which sections stay enabled. ``Clumsy only`` covers ICS / WinDivert notes + status.
 """
 
 from __future__ import annotations
@@ -297,39 +297,22 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._apply_or_stop_from_toggles()
 
     def _on_victim_shaping_toggled(self, checked: bool) -> None:
-        """Master: on enables both sections and applies; off stops shaping and turns both sections off."""
+        """Master: on applies whatever sections are already enabled; off stops shaping only (sections unchanged)."""
         main = self.elmocut
         if main is None or self._mitm_sync_guard:
             return
         if checked:
-            self._mitm_sync_guard = True
-            try:
-                self._set_toggle_state(self._tog_delay_enable, True)
-                self._set_toggle_state(self._tog_cap_enable, True)
-            finally:
-                self._mitm_sync_guard = False
-            self._sync_delay_widgets_enabled()
-            self._sync_cap_widgets_enabled()
             self._persist_mitm_ui()
             du, dd, cu, cd = self._mitm_effective_params()
             if du <= 0 and dd <= 0 and cu <= 0 and cd <= 0:
                 self._log(
-                    'Set non-zero delay and/or bandwidth caps before turning the victim toggle on.',
+                    'Turn on at least one section with non-zero delay or cap, then turn the victim toggle on.',
                     'red',
                 )
                 self._set_toggle_state(self._tog_victim_all, False)
                 return
             main.start_mitm_shaping_from_advanced(du, dd, cu, cd)
         else:
-            self._mitm_sync_guard = True
-            try:
-                self._set_toggle_state(self._tog_delay_enable, False)
-                self._set_toggle_state(self._tog_cap_enable, False)
-            finally:
-                self._mitm_sync_guard = False
-            self._sync_delay_widgets_enabled()
-            self._sync_cap_widgets_enabled()
-            self._persist_mitm_ui()
             main.stop_mitm_shaping(log=True)
         self._refresh_mitm_status()
 
@@ -337,16 +320,6 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         main = self.elmocut
         if main is None:
             return
-        self._mitm_sync_guard = True
-        try:
-            self._set_toggle_state(self._tog_victim_all, False)
-            self._set_toggle_state(self._tog_delay_enable, False)
-            self._set_toggle_state(self._tog_cap_enable, False)
-        finally:
-            self._mitm_sync_guard = False
-        self._sync_delay_widgets_enabled()
-        self._sync_cap_widgets_enabled()
-        self._persist_mitm_ui()
         main.stop_mitm_shaping(log=True)
         self._refresh_mitm_status()
 
@@ -491,8 +464,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         lbl_v.setStyleSheet('color: #e8eaed;')
         self._tog_victim_all = self._mitm_toggle(
             box,
-            'On: enables delay + bandwidth toggles and applies both to the selected device. '
-            'Off: stops shaping and turns both section toggles off.',
+            'On: applies every section that is already turned on (delay and/or cap) to the selected device. '
+            'Off: stops shaping only; section toggles stay as you left them.',
         )
         self._set_toggle_state(self._tog_victim_all, False)
         self._tog_victim_all.toggled.connect(self._on_victim_shaping_toggled)
@@ -502,8 +475,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         lay.addLayout(row_v)
 
         hint = QLabel(
-            'Per-section toggles apply or remove only that piece while shaping runs. '
-            'The victim toggle turns both sections on together, or stops everything and resets both sections.',
+            'Per-section toggles choose delay and/or cap. The victim toggle starts or stops shaping for the '
+            'selected device without changing which sections stay on.',
             box,
         )
         hint.setWordWrap(True)
@@ -512,7 +485,9 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         row = QHBoxLayout()
         btn_stop = QPushButton('Stop shaping', box)
-        btn_stop.setToolTip('Stops MITM shaping for the victim (same end state as turning the victim toggle off).')
+        btn_stop.setToolTip(
+            'Stops MITM shaping for the victim. Section toggles are unchanged (same idea as turning the victim toggle off).'
+        )
         btn_stop.clicked.connect(self._on_mitm_stop)
         row.addWidget(btn_stop)
         row.addStretch()
