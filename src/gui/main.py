@@ -1333,7 +1333,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log(f'Discovered {hit[0]} {hit[1]}', UI_LOG_RESTORE_FG)
             self.showDevices()
         else:
-            self.log('No response', 'red')
+            self.log(
+                'No response — no MAC in ARP for that IP yet (wrong interface, offline host, '
+                'or need Admin/Npcap for direct probe). Try a normal scan or pick the LAN adapter in Settings.',
+                'red',
+            )
 
     def applySettings(self):
         """

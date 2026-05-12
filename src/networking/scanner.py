@@ -442,6 +442,9 @@ class Scanner():
         Probe a specific IP using multiple methods; return (ip, mac) if discovered.
         Adds to ARP cache when possible. Best-effort cross-platform.
         """
+        ip = (ip or '').strip()
+        if not ip:
+            return None
         # Ensure scanner is initialized
         if not hasattr(self, 'my_ip') or not self.my_ip or self.my_ip == '127.0.0.1':
             try:
@@ -464,7 +467,8 @@ class Scanner():
             # 1) Try scapy arping to /32 (requires admin on Windows)
             if self.iface.name != 'NULL':
                 ans = arping(f"{ip}/32", iface=self.iface.guid, timeout=1, verbose=0)  # Use guid (Scapy/pcap name)
-                hits = [(r[1].psrc, r[1].src) for r in ans[0]]
+                rows = ans[0] if ans else []
+                hits = [(r[1].psrc, r[1].src) for r in rows]
                 if hits:
                     self.merge_client_hits(hits)
                     return hits[0]
@@ -480,7 +484,7 @@ class Scanner():
         
         # Small delay to let ARP cache update (longer for Windows)
         from time import sleep
-        sleep(0.3)
+        sleep(0.55 if sys.platform.startswith('win') else 0.3)
         
         # 3) Parse ARP cache
         result = self.probe_ip_arp_cache_only(ip)
@@ -498,51 +502,66 @@ class Scanner():
         # Re-check ARP cache
         return self.probe_ip_arp_cache_only(ip)
 
-    def probe_ip_arp_cache_only(self, ip: str) -> Optional[tuple]:
-        if sys.platform.startswith('win'):
-            # Windows ARP format: "  IP_ADDRESS      MAC_ADDRESS      TYPE"
-            # Try with interface IP first
-            if self.my_ip and self.my_ip != '127.0.0.1':
-                cache = terminal(f'arp -a {ip} -N {self.my_ip}') or ''
-            else:
-                # Fallback: query all ARP entries
-                cache = terminal(f'arp -a {ip}') or ''
-            
-            if cache:
-                # Windows ARP output format:
-                # " 192.168.1.1          00-11-22-33-44-55     dynamic"
-                # or "Interface: 192.168.1.100 --- 0x3\n  192.168.1.1          00-11-22-33-44-55     dynamic"
-                for line in cache.split('\n'):
-                    line = line.strip()
-                    if not line or 'Interface:' in line:
-                        continue
-                    # Look for IP and MAC in the line
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        # Check if first part is the IP we're looking for
-                        if parts[0] == ip:
-                            # Second part should be MAC (might be in format 00-11-22 or 00:11:22)
-                            mac_candidate = parts[1].replace('-', ':')
-                            mac = good_mac(mac_candidate)
-                            if mac and mac != GLOBAL_MAC:
-                                self.merge_client_hits([(ip, mac)])
-                                return (ip, mac)
-                        # Also check if IP appears anywhere in the line
-                        elif ip in line:
-                            # Extract MAC using regex
-                            macs = re.findall(r'([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})', line)
-                            if macs:
-                                mac = good_mac(macs[0])
-                                if mac and mac != GLOBAL_MAC:
-                                    self.merge_client_hits([(ip, mac)])
-                                    return (ip, mac)
-        else:
-            cache = terminal('arp -an') or ''
-            for line in cache.split('\n'):
-                if ip in line:
-                    macs = re.findall(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', line)
+    @staticmethod
+    def _windows_parse_arp_probe_hit(cache: str, want_ip: str) -> Optional[tuple]:
+        """Parse Windows ``arp -a`` output for a single IPv4; return (ip, mac) or None."""
+        if not cache or not want_ip:
+            return None
+        for raw in cache.split('\n'):
+            line = (raw or '').strip()
+            if not line:
+                continue
+            low = line.lower()
+            if 'interface:' in low or 'schnittstelle:' in low:
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                if parts[0] == want_ip:
+                    mac_candidate = parts[1].replace('-', ':')
+                    mac = good_mac(mac_candidate)
+                    if mac and mac != GLOBAL_MAC:
+                        return (want_ip, mac)
+                elif want_ip in line:
+                    macs = re.findall(
+                        r'([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})',
+                        line,
+                    )
                     if macs:
                         mac = good_mac(macs[0])
-                        self.merge_client_hits([(ip, mac)])
-                        return (ip, mac)
+                        if mac and mac != GLOBAL_MAC:
+                            return (want_ip, mac)
+        return None
+
+    def probe_ip_arp_cache_only(self, ip: str) -> Optional[tuple]:
+        ip = (ip or '').strip()
+        if not ip:
+            return None
+        if sys.platform.startswith('win'):
+            # ``arp -a ip -N my_ip`` only sees that adapter's table. With ICS, my_ip is often
+            # 192.168.137.x while the target is on 192.168.1.x — the entry lives on Wi‑Fi/LAN.
+            # Try scoped query, then address-only, then full table.
+            sources = []
+            my = (getattr(self, 'my_ip', None) or '').strip()
+            if my and my not in ('127.0.0.1', '0.0.0.0'):
+                sources.append(terminal(f'arp -a {ip} -N {my}') or '')
+            sources.append(terminal(f'arp -a {ip}') or '')
+            sources.append(terminal('arp -a') or '')
+            seen_txt = set()
+            for cache in sources:
+                if not cache or cache in seen_txt:
+                    continue
+                seen_txt.add(cache)
+                hit = self._windows_parse_arp_probe_hit(cache, ip)
+                if hit:
+                    self.merge_client_hits([hit])
+                    return hit
+            return None
+        cache = terminal('arp -an') or ''
+        for line in cache.split('\n'):
+            if ip in line:
+                macs = re.findall(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', line)
+                if macs:
+                    mac = good_mac(macs[0])
+                    self.merge_client_hits([(ip, mac)])
+                    return (ip, mac)
         return None
