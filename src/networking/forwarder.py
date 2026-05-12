@@ -7,7 +7,8 @@ from scapy.all import IP, Ether, AsyncSniffer, conf
 # MITM user-space shaping limits (experimental).
 _MAX_DELAY_MS = 800
 _MAX_DELAY_QUEUE_PACKETS = 500
-_MAX_SHAPING_KBPS = 1_000_000.0
+# Upper bound for token-bucket rate (kbps); 10e6 kbps ≈ 10 Gbps.
+_MAX_SHAPING_KBPS = 10_000_000.0
 
 
 class MitmForwarder:

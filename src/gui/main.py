@@ -3522,9 +3522,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         du = max(0, int(delay_up))
         dd = max(0, int(delay_down))
-        cu = max(0.0, float(cap_up))
-        cd = max(0.0, float(cap_down))
-        if du <= 0 and dd <= 0 and cu <= 0 and cd <= 0:
+        # Bandwidth caps from Advanced Lag Settings are Mbps; forwarder uses kbps (1 Mbps = 1000 kbps).
+        cu_mbps = max(0.0, float(cap_up))
+        cd_mbps = max(0.0, float(cap_down))
+        if du <= 0 and dd <= 0 and cu_mbps <= 0 and cd_mbps <= 0:
             self.log('Set at least one non-zero delay or bandwidth cap.', 'red')
             return
         if self._toggle_start_blocked('mitmshape'):
@@ -3555,8 +3556,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 device,
                 delay_ms_out=du,
                 delay_ms_in=dd,
-                max_kbps_out=cu,
-                max_kbps_in=cd,
+                max_kbps_out=cu_mbps * 1000.0,
+                max_kbps_in=cd_mbps * 1000.0,
             )
         except Exception as exc:
             self.log(f'MITM shaping failed: {exc}', 'red')
@@ -3572,10 +3573,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             parts.append(f'up delay {du}ms')
         if dd > 0:
             parts.append(f'down delay {dd}ms')
-        if cu > 0:
-            parts.append(f'up cap {cu:g}Kbps')
-        if cd > 0:
-            parts.append(f'down cap {cd:g}Kbps')
+        if cu_mbps > 0:
+            parts.append(f'up cap {cu_mbps:g}Mbps')
+        if cd_mbps > 0:
+            parts.append(f'down cap {cd_mbps:g}Mbps')
         self.log(
             'MITM shaping ON (' + ', '.join(parts) + ') for ' + str(device.get('ip', '')),
             UI_LOG_VICTIM_BLOCK_FG,

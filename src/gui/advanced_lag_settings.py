@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QFormLayout,
     QSpinBox,
+    QDoubleSpinBox,
     QHBoxLayout,
 )
 from PyQt5.QtGui import QFont
@@ -69,8 +70,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._lbl_mitm_status: QLabel | None = None
         self._spin_delay_up: QSpinBox | None = None
         self._spin_delay_down: QSpinBox | None = None
-        self._spin_cap_up: QSpinBox | None = None
-        self._spin_cap_down: QSpinBox | None = None
+        self._spin_cap_up: QDoubleSpinBox | None = None
+        self._spin_cap_down: QDoubleSpinBox | None = None
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self.setWindowTitle('Advanced Lag Settings')
         self.setModal(False)
@@ -140,8 +141,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         try:
             set_settings('mitm_delay_up_ms', int(self._spin_delay_up.value()))
             set_settings('mitm_delay_down_ms', int(self._spin_delay_down.value()))
-            set_settings('mitm_cap_up_kbps', int(self._spin_cap_up.value()))
-            set_settings('mitm_cap_down_kbps', int(self._spin_cap_down.value()))
+            set_settings('mitm_cap_up_mbps', float(self._spin_cap_up.value()))
+            set_settings('mitm_cap_down_mbps', float(self._spin_cap_down.value()))
         except Exception:
             pass
 
@@ -225,7 +226,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         intro = QLabel(
             'Token-bucket rate limits per direction: traffic over the cap is dropped. '
-            '0 Kbps means unlimited for that direction. Uses the same forwarder path as above.',
+            '0 Mbps means unlimited for that direction. Uses the same forwarder path as above.',
             box,
         )
         intro.setWordWrap(True)
@@ -234,17 +235,21 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         form = QFormLayout()
         form.setSpacing(8)
-        self._spin_cap_up = QSpinBox(box)
-        self._spin_cap_up.setRange(0, 1_000_000)
-        self._spin_cap_up.setSuffix(' Kbps')
-        self._spin_cap_up.setValue(int(get_settings('mitm_cap_up_kbps') or 0))
+        self._spin_cap_up = QDoubleSpinBox(box)
+        self._spin_cap_up.setRange(0.0, 10_000.0)
+        self._spin_cap_up.setDecimals(2)
+        self._spin_cap_up.setSingleStep(0.5)
+        self._spin_cap_up.setSuffix(' Mbps')
+        self._spin_cap_up.setValue(float(get_settings('mitm_cap_up_mbps') or 0.0))
         self._spin_cap_up.setToolTip('0 = unlimited. Drops packets over this approximate rate (upload).')
         form.addRow('Upload cap', self._spin_cap_up)
 
-        self._spin_cap_down = QSpinBox(box)
-        self._spin_cap_down.setRange(0, 1_000_000)
-        self._spin_cap_down.setSuffix(' Kbps')
-        self._spin_cap_down.setValue(int(get_settings('mitm_cap_down_kbps') or 0))
+        self._spin_cap_down = QDoubleSpinBox(box)
+        self._spin_cap_down.setRange(0.0, 10_000.0)
+        self._spin_cap_down.setDecimals(2)
+        self._spin_cap_down.setSingleStep(0.5)
+        self._spin_cap_down.setSuffix(' Mbps')
+        self._spin_cap_down.setValue(float(get_settings('mitm_cap_down_mbps') or 0.0))
         self._spin_cap_down.setToolTip('0 = unlimited. Drops packets over this approximate rate (download).')
         form.addRow('Download cap', self._spin_cap_down)
 

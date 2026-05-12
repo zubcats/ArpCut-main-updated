@@ -1121,6 +1121,17 @@ def repair_settings():
         for key in SETTINGS_KEYS:
             if key in s:
                 original[key] = s[key]
+        # MITM caps were stored as Kbps; migrate to Mbps if present in old JSON.
+        if 'mitm_cap_up_mbps' not in s and 'mitm_cap_up_kbps' in s:
+            try:
+                original['mitm_cap_up_mbps'] = float(s['mitm_cap_up_kbps']) / 1000.0
+            except (TypeError, ValueError):
+                pass
+        if 'mitm_cap_down_mbps' not in s and 'mitm_cap_down_kbps' in s:
+            try:
+                original['mitm_cap_down_mbps'] = float(s['mitm_cap_down_kbps']) / 1000.0
+            except (TypeError, ValueError):
+                pass
     except (JSONDecodeError, OSError):
         pass
     export_settings([original[k] for k in SETTINGS_KEYS])
