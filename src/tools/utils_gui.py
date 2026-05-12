@@ -78,7 +78,21 @@ QProgressBar {
     text-align: center;
 }
 QProgressBar::chunk {
-    background-color: #5D706E;
+    background-color: #316E69;
+    border-radius: 3px;
+}
+QProgressBar::chunk:disabled {
+    background-color: #264d4a;
+    border-radius: 3px;
+}
+/* Main scan bar: extra specificity + object name so Win style engine does not override chunk color. */
+QProgressBar#pgbar {
+    background-color: #141414;
+    border: 1px solid #316E69;
+    border-radius: 4px;
+}
+QProgressBar#pgbar::chunk {
+    background-color: #316E69;
     border-radius: 3px;
 }
 QMenu::item:selected, QMenuBar::item:selected {

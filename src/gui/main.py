@@ -845,6 +845,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.scan_thread = ScanThread()
         self.scan_thread.thread_finished.connect(self.ScanThread_Reciever)
         self.scan_thread.progress.connect(self.pgbar.setValue)
+        self.pgbar.setAttribute(Qt.WA_StyledBackground, True)
 
         # Update thread disabled for fork
         # self.update_thread = UpdateThread()
