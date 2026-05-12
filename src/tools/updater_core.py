@@ -47,6 +47,11 @@ def _normalized_update_channel():
     return c
 
 
+def is_experimental_build():
+    """True when this binary is an experimental-channel build (feature gates)."""
+    return _normalized_update_channel() == 'experimental'
+
+
 def selected_update_url():
     channel = _normalized_update_channel()
     if channel == 'main':

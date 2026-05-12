@@ -108,6 +108,10 @@ SETTINGS_KEYS = [
     'show_scan_mac_column', 'show_scan_vendor_column',
     'traffic_percent',
     'clumsy_mode',
+    'mitm_delay_up_ms',
+    'mitm_delay_down_ms',
+    'mitm_cap_up_kbps',
+    'mitm_cap_down_kbps',
 ]
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
@@ -115,4 +119,5 @@ SETTINGS_KEYS = [
 # clumsy_mode default False: must be enabled in Settings (requires restart).
 # iface_before_clumsy: last Settings iface before enabling Clumsy; restored when Clumsy is turned off.
 # nickname_last_ip: MAC -> last known IPv4 for nicknamed devices (fills table when host is missing from scan).
-SETTINGS_VALS = [25, False, True, False, [], True, 12, '', '', {}, {}, 'L', 'M', 'P', 'K', False, False, 50, False]
+# mitm_*: last-used Advanced Lag Settings values for experimental MITM delay/bandwidth shaping.
+SETTINGS_VALS = [25, False, True, False, [], True, 12, '', '', {}, {}, 'L', 'M', 'P', 'K', False, False, 50, False, 0, 0, 0, 0]
