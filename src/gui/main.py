@@ -3512,11 +3512,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.showDevices()
 
     def start_mitm_shaping_from_advanced(self, delay_up, delay_down, cap_up, cap_down):
-        """Experimental: MITM forwarder delay + bandwidth caps (Advanced Lag Settings)."""
+        """MITM forwarder delay + bandwidth caps (Advanced Lag Settings)."""
         from tools.updater_core import is_experimental_build
 
         if not is_experimental_build():
-            self.log('MITM latency/bandwidth shaping is only enabled on experimental builds.', 'red')
+            self.log('Latency and bandwidth shaping is not available in this build.', 'red')
             return
         if not self.connected():
             return

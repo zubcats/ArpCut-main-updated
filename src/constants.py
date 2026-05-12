@@ -119,5 +119,5 @@ SETTINGS_KEYS = [
 # clumsy_mode default False: must be enabled in Settings (requires restart).
 # iface_before_clumsy: last Settings iface before enabling Clumsy; restored when Clumsy is turned off.
 # nickname_last_ip: MAC -> last known IPv4 for nicknamed devices (fills table when host is missing from scan).
-# mitm_*: last-used Advanced Lag Settings values for experimental MITM delay/bandwidth shaping.
+# mitm_*: last-used Advanced Lag Settings values for MITM delay/bandwidth shaping.
 SETTINGS_VALS = [25, False, True, False, [], True, 12, '', '', {}, {}, 'L', 'M', 'P', 'K', False, False, 50, False, 0, 0, 0, 0]

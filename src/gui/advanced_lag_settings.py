@@ -1,7 +1,7 @@
 """Advanced Lag Settings — extra lag-related options (placeholder for upcoming features).
 
-Section titles: ``More options`` (stub), optional ``Latency & bandwidth (MITM, experimental)`` when
-the build is experimental, and ``Clumsy only`` (ICS / WinDivert notes + status).
+Builds that include MITM forwarder controls show ``Latency (delay)`` and ``Bandwidth cap``
+sections (plus a shared apply row). ``Clumsy only`` covers ICS / WinDivert notes + status.
 """
 
 from __future__ import annotations
@@ -28,17 +28,11 @@ from constants import ADMIN_DEVICE_TABLE_ROW_BG
 from tools.frameless_chrome import FramelessResizableMixin, CustomTitleBar
 from tools.utils_gui import register_window_surface_effects, get_settings, set_settings
 
-MITM_SHAPING_SECTION_TITLE = 'Latency & bandwidth (MITM, experimental)'
 
-
-def _section_titles() -> tuple[str, ...]:
+def _mitm_sections_enabled() -> bool:
     from tools.updater_core import is_experimental_build
 
-    t: list[str] = ['More options']
-    if is_experimental_build():
-        t.append(MITM_SHAPING_SECTION_TITLE)
-    t.append('Clumsy only')
-    return tuple(t)
+    return is_experimental_build()
 
 
 def _section_font(box: QGroupBox) -> None:
@@ -113,16 +107,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         scroll_layout.setContentsMargins(0, 0, 4, 0)
         scroll_layout.setSpacing(10)
 
-        self._section_groups = []
-        for title in _section_titles():
-            if title == self._CLUMSY_ONLY_TITLE:
-                grp = self._clumsy_only_section(scroll_inner)
-            elif title == MITM_SHAPING_SECTION_TITLE:
-                grp = self._mitm_shaping_section(scroll_inner)
-            else:
-                grp = _stub_section(title, scroll_inner)
-            self._section_groups.append(grp)
-            scroll_layout.addWidget(grp)
+        scroll_layout.addWidget(_stub_section('More options', scroll_inner))
+        if _mitm_sections_enabled():
+            scroll_layout.addWidget(self._mitm_delay_section(scroll_inner))
+            scroll_layout.addWidget(self._mitm_bandwidth_section(scroll_inner))
+            scroll_layout.addWidget(self._mitm_apply_row(scroll_inner))
+        scroll_layout.addWidget(self._clumsy_only_section(scroll_inner))
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_inner)
@@ -190,17 +180,17 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         main.stop_mitm_shaping(log=True)
         self._refresh_mitm_status()
 
-    def _mitm_shaping_section(self, parent: QWidget) -> QGroupBox:
-        box = QGroupBox(MITM_SHAPING_SECTION_TITLE, parent)
+    def _mitm_delay_section(self, parent: QWidget) -> QGroupBox:
+        box = QGroupBox('Latency (delay)', parent)
         _section_font(box)
         inner = QVBoxLayout(box)
         inner.setContentsMargins(12, 10, 12, 12)
         inner.setSpacing(8)
 
         intro = QLabel(
-            'Adds queued delay and/or token-bucket bandwidth caps on the same ARP MITM forwarder '
-            'path as Percent Cut. Requires a selected victim on your LAN; traffic must flow through '
-            'this PC. High traffic + long delay can backlog or drop packets (experimental).',
+            'Queue packets for a fixed time before forwarding (same ARP MITM path as Percent Cut). '
+            'Select a victim on your LAN; traffic must pass through this PC. Heavy load or long '
+            'delays can backlog or drop packets.',
             box,
         )
         intro.setWordWrap(True)
@@ -214,50 +204,83 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._spin_delay_up.setSuffix(' ms')
         self._spin_delay_up.setValue(int(get_settings('mitm_delay_up_ms') or 0))
         self._spin_delay_up.setToolTip('Extra delay before forwarding victim → router traffic (0 = off).')
-        form.addRow('Delay upload (out)', self._spin_delay_up)
+        form.addRow('Upload (out)', self._spin_delay_up)
 
         self._spin_delay_down = QSpinBox(box)
         self._spin_delay_down.setRange(0, 800)
         self._spin_delay_down.setSuffix(' ms')
         self._spin_delay_down.setValue(int(get_settings('mitm_delay_down_ms') or 0))
         self._spin_delay_down.setToolTip('Extra delay before forwarding router → victim traffic (0 = off).')
-        form.addRow('Delay download (in)', self._spin_delay_down)
+        form.addRow('Download (in)', self._spin_delay_down)
 
+        inner.addLayout(form)
+        return box
+
+    def _mitm_bandwidth_section(self, parent: QWidget) -> QGroupBox:
+        box = QGroupBox('Bandwidth cap', parent)
+        _section_font(box)
+        inner = QVBoxLayout(box)
+        inner.setContentsMargins(12, 10, 12, 12)
+        inner.setSpacing(8)
+
+        intro = QLabel(
+            'Token-bucket rate limits per direction: traffic over the cap is dropped. '
+            '0 Kbps means unlimited for that direction. Uses the same forwarder path as above.',
+            box,
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet('color: #c5c5c5; font-size: 11px;')
+        inner.addWidget(intro)
+
+        form = QFormLayout()
+        form.setSpacing(8)
         self._spin_cap_up = QSpinBox(box)
         self._spin_cap_up.setRange(0, 1_000_000)
         self._spin_cap_up.setSuffix(' Kbps')
         self._spin_cap_up.setValue(int(get_settings('mitm_cap_up_kbps') or 0))
         self._spin_cap_up.setToolTip('0 = unlimited. Drops packets over this approximate rate (upload).')
-        form.addRow('Cap upload', self._spin_cap_up)
+        form.addRow('Upload cap', self._spin_cap_up)
 
         self._spin_cap_down = QSpinBox(box)
         self._spin_cap_down.setRange(0, 1_000_000)
         self._spin_cap_down.setSuffix(' Kbps')
         self._spin_cap_down.setValue(int(get_settings('mitm_cap_down_kbps') or 0))
         self._spin_cap_down.setToolTip('0 = unlimited. Drops packets over this approximate rate (download).')
-        form.addRow('Cap download', self._spin_cap_down)
+        form.addRow('Download cap', self._spin_cap_down)
 
         inner.addLayout(form)
+        return box
+
+    def _mitm_apply_row(self, parent: QWidget) -> QWidget:
+        w = QWidget(parent)
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(4, 0, 4, 4)
+        lay.setSpacing(6)
+
+        hint = QLabel('Apply commits both latency and bandwidth settings.', w)
+        hint.setWordWrap(True)
+        hint.setStyleSheet('color: #9a9a9a; font-size: 11px;')
+        lay.addWidget(hint)
 
         row = QHBoxLayout()
-        btn_apply = QPushButton('Apply shaping', box)
+        btn_apply = QPushButton('Apply', w)
         btn_apply.clicked.connect(self._on_mitm_apply)
-        btn_stop = QPushButton('Stop shaping', box)
+        btn_stop = QPushButton('Stop', w)
         btn_stop.clicked.connect(self._on_mitm_stop)
         row.addWidget(btn_apply)
         row.addWidget(btn_stop)
-        inner.addLayout(row)
+        lay.addLayout(row)
 
-        self._lbl_mitm_status = QLabel(box)
+        self._lbl_mitm_status = QLabel(w)
         self._lbl_mitm_status.setWordWrap(True)
         self._lbl_mitm_status.setVisible(False)
-        inner.addWidget(self._lbl_mitm_status)
+        lay.addWidget(self._lbl_mitm_status)
 
         for b in (btn_apply, btn_stop):
             b.setAutoDefault(False)
             b.setDefault(False)
 
-        return box
+        return w
 
     def _refresh_clumsy_status(self):
         if self._lbl_clumsy_status is None:
@@ -314,12 +337,19 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         intro.setStyleSheet('color: #c5c5c5; font-size: 11px;')
         inner.addWidget(intro)
 
-        ics_note = QLabel(
-            'Experimental-channel builds include a MITM forwarder latency/bandwidth section above '
-            'when present. On ICS shared clients or when ARP MITM is unreliable, prefer external '
-            'clumsy + WinDivert for predictable delay and rate limits.',
-            box,
-        )
+        if _mitm_sections_enabled():
+            ics_note = QLabel(
+                'On ICS shared clients or when ARP MITM is unreliable, use external clumsy + WinDivert '
+                'for predictable delay and rate limits. The Latency and Bandwidth sections above use '
+                'the in-app forwarder when traffic crosses this PC.',
+                box,
+            )
+        else:
+            ics_note = QLabel(
+                'On ICS shared clients or when ARP MITM is unreliable, use external clumsy + WinDivert '
+                'for predictable delay and rate limits.',
+                box,
+            )
         ics_note.setWordWrap(True)
         ics_note.setStyleSheet('color: #9a9a9a; font-size: 11px;')
         inner.addWidget(ics_note)
