@@ -1,7 +1,9 @@
 """
-Clumsy mode: optional Windows row for a downstream host on shared Ethernet (ICS subnet).
+Clumsy mode (Windows): ICS / inline-console helpers — no synthetic table row.
 
-Detection is best-effort (common ICS range 192.168.137.0/24). MAC/vendor may be unknown.
+When clumsy mode is enabled and the WinDivert bundle is ready, sync_clumsy_row()
+strips legacy synthetic rows and deduplicates multiple scan entries that share the
+ICS client IPv4 (keeps the first non-admin row).
 """
 from __future__ import annotations
 
@@ -9,9 +11,8 @@ import os
 import re
 import sys
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
-from constants import CLUMSY_INLINE_MAC
 from tools.clumsy_ics import read_clumsy_ics_state
 
 if TYPE_CHECKING:
@@ -196,39 +197,28 @@ def detect_inline_ip(
     return clients[0]
 
 
-def build_inline_device(ip: Optional[str]) -> Dict[str, Any]:
-    label_ip = ip if ip else ''
-    return {
-        'ip': label_ip,
-        'mac': CLUMSY_INLINE_MAC,
-        'vendor': '',
-        'type': 'Ethernet (inline)',
-        'name': (
-            'Clumsy target'
-            if ip
-            else 'Clumsy (detecting… — power on console or Rescan)'
-        ),
-        'admin': False,
-        'clumsy_inline': True,
-    }
-
-
 def sync_clumsy_row(scanner: Scanner, *, allow_subnet_ping: bool = False) -> None:
+    """
+    Remove legacy synthetic rows; when clumsy mode is on, dedupe duplicate non-admin
+    devices that share the detected ICS client IPv4 (keep first list occurrence).
+    """
     scanner.devices = [d for d in scanner.devices if not d.get('clumsy_inline')]
     if not clumsy_mode_enabled() or not clumsy_runtime_ready():
         return
     ip = detect_inline_ip(scanner, allow_subnet_ping=allow_subnet_ping)
-    # The ARP-derived scan can also list the ICS console with its real MAC. That row
-    # shares the same IPv4 as the synthetic Clumsy row and breaks lag/kill (two keys).
-    if ip:
-        ip_norm = str(ip).strip()
-        scanner.devices = [
-            d
-            for d in scanner.devices
-            if d.get('admin') or str(d.get('ip') or '').strip() != ip_norm
-        ]
-    dev = build_inline_device(ip)
-    insert_at = 2
-    if insert_at > len(scanner.devices):
-        insert_at = len(scanner.devices)
-    scanner.devices.insert(insert_at, dev)
+    if not ip:
+        return
+    ip_norm = str(ip).strip()
+    same = [
+        i
+        for i, d in enumerate(scanner.devices)
+        if not d.get('admin') and str(d.get('ip') or '').strip() == ip_norm
+    ]
+    if len(same) <= 1:
+        return
+    keep_mac = scanner.devices[same[0]]['mac']
+    scanner.devices = [
+        d
+        for d in scanner.devices
+        if d.get('admin') or str(d.get('ip') or '').strip() != ip_norm or d.get('mac') == keep_mac
+    ]

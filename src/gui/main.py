@@ -379,7 +379,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         main = self._main
         if not main or not main.lag_active or not main.lag_device_mac:
             return
-        dev = main._get_flow_target_device()
+        dev = main._get_selected_device()
         if not dev or dev.get('mac') != main.lag_device_mac:
             return
         lag_ms, normal_ms, direction = self.values()
@@ -417,7 +417,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
             main.stopLagSwitch()
             return
 
-        device = main._get_flow_target_device()
+        device = main._get_selected_device()
         if device is None:
             pinned_mac = getattr(main, '_lag_dialog_target_mac', None)
             if pinned_mac:
@@ -673,7 +673,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
             main.stopDupe()
             return
 
-        device = main._get_flow_target_device()
+        device = main._get_selected_device()
         if device is None:
             pinned_mac = getattr(main, '_dupe_dialog_target_mac', None)
             if pinned_mac:
@@ -794,9 +794,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_device_snapshot = None
         self._lag_restoring_after_stop = False
         self._lag_restoring_mac = None
-        # Canonical copy of the Clumsy ICS row; refreshed whenever sync_clumsy_row runs so
-        # Kill/Lag/Dupe can use a stable victim dict instead of a row that flickers in scanner.devices.
-        self._clumsy_flow_pin = None
 
         self.dupe_active = False
         self.dupe_device_mac = None
@@ -1506,9 +1503,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if column < 0 or column >= len(keys_order):
             return
         cell = str(device.get(keys_order[column], ''))
-        if device.get('clumsy_inline') and keys_order[column] in ('mac', 'vendor'):
-            cell = ''
-        
+
         if len(cell) > 20:
             cell = cell[:20] + '...'
         
@@ -1620,8 +1615,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return True
         if getattr(self, 'dupe_active', False) and self.dupe_device_mac == mac:
             return True
-        if device.get('clumsy_inline'):
-            return bool(self.killed_devices.get(mac, False))
         if mac not in self.killer.killed:
             return False
         return bool(self.killed_devices.get(mac, False))
@@ -1633,22 +1626,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         admin_colors = [ADMIN_DEVICE_TABLE_ROW_BG, ADMIN_DEVICE_TABLE_ROW_FG]
         if device.get('admin'):
             return tuple(admin_colors)
-        if device.get('clumsy_inline'):
-            blocked = self._device_row_blocked_chrome(device)
-            selected = self._table_row_is_selected(row)
-            hovered = row == getattr(self, '_table_hover_row', -1)
-            if blocked:
-                if selected:
-                    if hovered:
-                        return _DEVICE_ROW_KILL_SEL_HOVER_BG, _DEVICE_ROW_KILL_SEL_HOVER_FG
-                    return _DEVICE_ROW_KILL_SELECTED_BG, _DEVICE_ROW_KILL_SELECTED_FG
-                if hovered:
-                    return _DEVICE_ROW_KILL_HOVER_BG, _DEVICE_ROW_KILL_HOVER_FG
-                return _DEVICE_ROW_KILL_BG, _DEVICE_ROW_KILL_FG
-            base_bg = CLUMSY_TABLE_ROW_SEL_BG if selected else CLUMSY_TABLE_ROW_BG
-            if hovered:
-                base_bg = CLUMSY_TABLE_ROW_HOVER_BG
-            return base_bg, CLUMSY_TABLE_ROW_FG
         blocked = self._device_row_blocked_chrome(device)
         selected = self._table_row_is_selected(row)
         hovered = row == getattr(self, '_table_hover_row', -1)
@@ -1711,26 +1688,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             str(device.get('type', '')),
             str(device.get('name', '')),
         ]
-        if device.get('clumsy_inline'):
-            texts[1] = ''
-            texts[2] = ''
         for column, text in enumerate(texts):
             if device['admin']:
                 admin_colors = [ADMIN_DEVICE_TABLE_ROW_BG, ADMIN_DEVICE_TABLE_ROW_FG]
                 self.fillTableCell(row, column, text, admin_colors, selectable=False)
-            elif device.get('clumsy_inline'):
-                if self._device_row_blocked_chrome(device):
-                    kill_colors = (
-                        [_DEVICE_ROW_KILL_SELECTED_BG, _DEVICE_ROW_KILL_SELECTED_FG]
-                        if self._table_row_is_selected(row)
-                        else [_DEVICE_ROW_KILL_BG, _DEVICE_ROW_KILL_FG]
-                    )
-                else:
-                    kill_colors = [
-                        CLUMSY_TABLE_ROW_SEL_BG if self._table_row_is_selected(row) else CLUMSY_TABLE_ROW_BG,
-                        CLUMSY_TABLE_ROW_FG,
-                    ]
-                self.fillTableCell(row, column, text, kill_colors)
             else:
                 if self._device_row_blocked_chrome(device):
                     kill_colors = (
@@ -1761,7 +1722,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             sync_clumsy_row(self.scanner)
         except Exception:
             pass
-        self._refresh_clumsy_flow_pin()
         current_row = self.tableScan.currentRow()
         selected_mac = None
         selected = self._get_selected_device()
@@ -1854,23 +1814,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         device = self.current_index()
-        if device.get('clumsy_inline') and not _is_valid_ip(device.get('ip') or ''):
-            self.log('Clumsy target has no IP yet — enable Internet sharing and rescan.', 'red')
+        if not _is_valid_ip(device.get('ip') or ''):
+            self.log('Target has no IP yet — enable Internet sharing and rescan.', 'red')
             return
 
-        if not device.get('clumsy_inline') and device['mac'] in self.killer.killed:
-            self.log('Device is already killed', 'red')
-            return
-        if device.get('clumsy_inline') and self.killed_devices.get(device['mac']):
+        if device['mac'] in self.killer.killed:
             self.log('Device is already killed', 'red')
             return
         
         # Killing process
         self._ensure_network_context_for_victim(device)
-        if device.get('clumsy_inline'):
-            pass
-        else:
-            self.killer.kill(device)
+        self.killer.kill(device)
         try:
             iface = self.scanner.iface.name if self.scanner.iface else 'en0'
             block_ip(iface, device['ip'], 'both')
@@ -1902,11 +1856,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         device = self.current_index()
             
-        if device.get('clumsy_inline'):
-            if not self.killed_devices.get(device['mac']):
-                self.log('Device is already unkilled', 'red')
-                return
-        elif device['mac'] not in self.killer.killed:
+        if device['mac'] not in self.killer.killed:
             self.log('Device is already unkilled', 'red')
             return
 
@@ -1916,8 +1866,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             unblock_ip(victim.get('ip') or '')
         except Exception:
             pass
-        if not device.get('clumsy_inline'):
-            self.killer.unkill(victim)
+        self.killer.unkill(victim)
         self.killed_devices[device['mac']] = False
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
@@ -1973,12 +1922,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 unblock_ip(v.get('ip') or '')
             except Exception:
                 pass
-        for d in self.scanner.devices:
-            if d.get('clumsy_inline') and self.killed_devices.get(d.get('mac')):
-                try:
-                    unblock_ip(d.get('ip') or '')
-                except Exception:
-                    pass
         self.killer.unkill_all()
         for victim in victims_before:
             mac = victim.get('mac')
@@ -2088,8 +2031,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._clumsy_inline_refresh_timer.start()
 
     def _refresh_clumsy_inline_row_if_needed(self):
+        """While Clumsy mode is on, periodically re-sync ICS dedupe / detection (ARP + rate-limited ping)."""
         try:
-            from tools.clumsy_inline import clumsy_mode_enabled, clumsy_runtime_ready, sync_clumsy_row
+            from tools.clumsy_inline import (
+                clumsy_mode_enabled,
+                clumsy_runtime_ready,
+                detect_inline_ip,
+                sync_clumsy_row,
+            )
 
             if not clumsy_mode_enabled() or not clumsy_runtime_ready():
                 t = getattr(self, '_clumsy_inline_refresh_timer', None)
@@ -2097,67 +2046,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     t.stop()
                 return
 
-            ip_before = ''
-            for d in self.scanner.devices:
-                if d.get('clumsy_inline'):
-                    ip_before = str(d.get('ip') or '').strip()
-                    break
+            ip_before = detect_inline_ip(self.scanner, allow_subnet_ping=False)
+            n_before = len(self.scanner.devices)
             sync_clumsy_row(self.scanner, allow_subnet_ping=True)
-            self._refresh_clumsy_flow_pin()
-            ip_after = ''
-            for d in self.scanner.devices:
-                if d.get('clumsy_inline'):
-                    ip_after = str(d.get('ip') or '').strip()
-                    break
-            if ip_before != ip_after:
+            n_after = len(self.scanner.devices)
+            ip_after = detect_inline_ip(self.scanner, allow_subnet_ping=False)
+            if ip_before != ip_after or n_before != n_after:
                 self.showDevices()
         except Exception:
             pass
-
-    def _refresh_clumsy_flow_pin(self):
-        """Refresh canonical Clumsy row dict from scanner after sync_clumsy_row."""
-        self._clumsy_flow_pin = None
-        try:
-            from tools.clumsy_inline import clumsy_mode_enabled, clumsy_runtime_ready
-
-            if not clumsy_mode_enabled() or not clumsy_runtime_ready():
-                return
-        except Exception:
-            return
-        for d in getattr(self.scanner, 'devices', []) or []:
-            if d.get('clumsy_inline') or d.get('mac') == CLUMSY_INLINE_MAC:
-                self._clumsy_flow_pin = dict(d)
-                return
-
-    def _resolve_clumsy_flow_dict(self, row_dev):
-        """
-        When Clumsy mode is on and the table row is the ICS target, return the merged
-        canonical victim (pin + live) so Kill/Lag/Dupe do not depend on a fragile table ref.
-        """
-        if not isinstance(row_dev, dict):
-            return row_dev
-        try:
-            from tools.clumsy_inline import clumsy_mode_enabled, clumsy_runtime_ready
-        except Exception:
-            return row_dev
-        if not clumsy_mode_enabled() or not clumsy_runtime_ready():
-            return row_dev
-        if row_dev.get('clumsy_inline') or row_dev.get('mac') == CLUMSY_INLINE_MAC:
-            return self._get_device_by_mac(CLUMSY_INLINE_MAC) or dict(row_dev)
-        return row_dev
-
-    def _get_flow_target_device(self):
-        """
-        Victim dict for Kill / Percent Cut toolbar.
-
-        Do not require selectedItems(): clicking a flow toolbar button moves focus off the
-        table and Qt often clears the selection model while currentRow still points at the
-        intended row — selectedItems-only gating made toggles appear to do nothing.
-        """
-        row = self.tableScan.currentRow()
-        if row < 0 or row >= len(self.scanner.devices):
-            return None
-        return self._resolve_clumsy_flow_dict(self.scanner.devices[row])
 
     def _should_poll_update_availability(self):
         import sys
@@ -2379,7 +2276,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             self.stopLagSwitch()
             return
-        device = self._get_flow_target_device()
+        device = self._get_selected_device()
         if device is None:
             self.log('No device selected', 'red')
             return
@@ -2407,7 +2304,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             self.stopDupe()
             return
-        device = self._get_flow_target_device()
+        device = self._get_selected_device()
         if device is None:
             self.log('No device selected', 'red')
             return
@@ -2544,8 +2441,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.spinPercentCutMain.setStyleSheet(percent_style)
 
     def startLagSwitch(self, device):
-        if device.get('clumsy_inline') and not _is_valid_ip(device.get('ip') or ''):
-            self.log('Clumsy target has no IP yet — cannot start lag.', 'red')
+        if not _is_valid_ip(device.get('ip') or ''):
+            self.log('Target has no IP yet — cannot start lag.', 'red')
             return
         if self._toggle_start_blocked('lag'):
             return
@@ -2681,9 +2578,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _apply_victim_block(self, device, direction):
         self._ensure_network_context_for_victim(device)
         self.killer.disable_percent_cut(device['mac'])
-        if device.get('clumsy_inline'):
-            pass
-        elif device['mac'] not in self.killer.killed:
+        if device['mac'] not in self.killer.killed:
             self.killer.kill(device)
         iface = self.scanner.iface.name if self.scanner.iface else 'en0'
         block_ip(iface, device['ip'], direction)
@@ -2697,7 +2592,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             unblock_ip(device['ip'])
         except Exception:
             pass
-        if not device.get('clumsy_inline') and device['mac'] in self.killer.killed:
+        if device['mac'] in self.killer.killed:
             try:
                 victim = self._victim_record_for_mac(device['mac']) or device
                 self.killer.unkill(victim)
@@ -2907,8 +2802,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._arm_dupe_burst_wall_clock()
             self._ensure_network_context_for_victim(dev)
             self.killer.disable_percent_cut(dev['mac'])
-            # Clumsy ICS row uses a synthetic MAC — never ARP/MITM it (same as lag/kill inline).
-            if not dev.get('clumsy_inline') and dev['mac'] not in self.killer.killed:
+            if dev['mac'] not in self.killer.killed:
                 self.killer.kill(dev)
             iface = self.scanner.iface.name if self.scanner.iface else 'en0'
             if ex is None:
@@ -3039,8 +2933,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         sip = (snap.get('ip') or '').strip()
         if (not lip) and sip:
             merged['ip'] = sip
-        if live.get('clumsy_inline') or snap.get('clumsy_inline'):
-            merged['clumsy_inline'] = True
         return merged
 
     def _lag_phase_tick(self):
@@ -3148,8 +3040,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             sip = (snap_ok.get('ip') or '').strip()
             if (not lip) and sip:
                 device['ip'] = sip
-            if live.get('clumsy_inline') or snap_ok.get('clumsy_inline'):
-                device['clumsy_inline'] = True
         elif live:
             device = dict(live)
         else:
@@ -3177,9 +3067,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     unblock_ip(ip)
                 except Exception:
                     pass
-            # Clumsy inline never uses killer ARP/MITM; unkill() would still send restore ARP with the
-            # synthetic MAC and wrong router context, corrupting the ICS segment and breaking lag UX.
-            if victim and not victim.get('clumsy_inline'):
+            if victim:
                 try:
                     self.killer.unkill(victim)
                     self.killer.reinforce_restore(victim)
@@ -3192,8 +3080,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._drop_lag_restoring_banner()
 
     def startDupe(self, device, duration_ms, direction):
-        if device.get('clumsy_inline') and not _is_valid_ip(device.get('ip') or ''):
-            self.log('Clumsy target has no IP yet — cannot start dupe.', 'red')
+        if not _is_valid_ip(device.get('ip') or ''):
+            self.log('Target has no IP yet — cannot start dupe.', 'red')
             return
         if self._toggle_start_blocked('dupe'):
             return
@@ -3326,8 +3214,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             sip = (arm_ok.get('ip') or '').strip()
             if (not lip) and sip:
                 snap['ip'] = sip
-            if live.get('clumsy_inline') or arm_ok.get('clumsy_inline'):
-                snap['clumsy_inline'] = True
         elif live:
             snap = dict(live)
         elif arm_ok:
@@ -3454,7 +3340,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def toggleKill(self, source='unknown'):
         if not self.connected():
             return
-        device = self._get_flow_target_device()
+        device = self._get_selected_device()
         if not device:
             self.log('No device selected', 'red')
             return
@@ -3484,15 +3370,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def togglePercentCut(self, source='unknown'):
         if not self.connected():
             return
-        device = self._get_flow_target_device()
+        device = self._get_selected_device()
         if not device:
             self.log('No device selected', 'red')
             return
         if device['admin']:
             self.log('Cannot cut admin device', UI_LOG_VICTIM_BLOCK_FG)
-            return
-        if device.get('clumsy_inline'):
-            self.log('Percent Cut is not available for the inline Clumsy target.', UI_LOG_VICTIM_BLOCK_FG)
             return
 
         mac = device['mac']
@@ -3541,13 +3424,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             try:
                 self._ensure_network_context_for_victim(victim)
                 self.killer.disable_percent_cut(prev_mac)
-                if not victim.get('clumsy_inline'):
-                    self.killer.unkill(victim)
-                    self.killer.reinforce_restore(victim)
-                    pct_off_seq = self._bump_flow_off_intent('pctcut', prev_mac)
-                    self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 60, victim)
-                    self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 180, victim)
-                    self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 350, victim)
+                self.killer.unkill(victim)
+                self.killer.reinforce_restore(victim)
+                pct_off_seq = self._bump_flow_off_intent('pctcut', prev_mac)
+                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 60, victim)
+                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 180, victim)
+                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 350, victim)
             except Exception:
                 pass
         if log and victim:
@@ -3570,8 +3452,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._kill_device_snapshot = snapshot_map
             snapshot_map[mac] = dict(device)
             actual_on = mac in self.killer.killed
-            if device and device.get('clumsy_inline'):
-                actual_on = bool(self.killed_devices.get(mac, False))
             next_seq = int(self._kill_intent_seq.get(mac, 0)) + 1
             self._kill_intent_seq[mac] = next_seq
             if device:
@@ -3587,20 +3467,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self.stopPercentCut(log=False)
                 if not actual_on and device:
                     self.killer.disable_percent_cut(mac)
-                    if device.get('clumsy_inline'):
-                        if _is_valid_ip(device.get('ip') or ''):
-                            try:
-                                iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-                                block_ip(iface, device['ip'], 'both')
-                            except Exception:
-                                pass
-                            self.log('Kill ON for ' + device['ip'] + ' (inline)', UI_LOG_VICTIM_BLOCK_FG)
-                            kill_applied = True
-                        else:
-                            self.log(
-                                'Clumsy target has no IP yet — enable sharing and rescan.',
-                                'red',
-                            )
+                    if not _is_valid_ip(device.get('ip') or ''):
+                        self.log('Target has no IP yet — enable sharing and rescan.', 'red')
                     else:
                         self.killer.kill(device)
                         try:
@@ -3617,16 +3485,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         unblock_ip(victim.get('ip') or '')
                     except Exception:
                         pass
-                    if not victim.get('clumsy_inline'):
-                        self.killer.unkill(victim)
+                    self.killer.unkill(victim)
+                    self.killer.reinforce_restore(victim)
+                    if actual_on:
                         self.killer.reinforce_restore(victim)
-                        if actual_on:
-                            self.killer.reinforce_restore(victim)
                     self.log('Kill OFF for ' + str(victim.get('ip', '')), UI_LOG_RESTORE_FG)
                     # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
-                    if not victim.get('clumsy_inline'):
-                        self._schedule_kill_off_reinforce(mac, next_seq, 60)
-                        self._schedule_kill_off_reinforce(mac, next_seq, 180)
+                    self._schedule_kill_off_reinforce(mac, next_seq, 60)
+                    self._schedule_kill_off_reinforce(mac, next_seq, 180)
 
             self.killed_devices[mac] = bool(kill_applied) if turn_on else False
             self._sync_killed_devices()
@@ -3655,12 +3521,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             snapshot = (getattr(self, '_kill_device_snapshot', None) or {}).get(mac)
             victim = self._victim_record_for_mac(mac) or snapshot
             if not victim:
-                return
-            if victim.get('clumsy_inline'):
-                try:
-                    unblock_ip(victim.get('ip') or '')
-                except Exception:
-                    pass
                 return
             try:
                 self._ensure_network_context_for_victim(victim)
@@ -3693,12 +3553,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             victim = self._victim_record_for_mac(mac) or device_snapshot
             if not victim:
                 return
-            if victim.get('clumsy_inline'):
-                try:
-                    unblock_ip(victim.get('ip') or '')
-                except Exception:
-                    pass
-                return
             try:
                 self._ensure_network_context_for_victim(victim)
                 self.killer.unkill(victim)
@@ -3726,8 +3580,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return bool(self.killed_devices.get(mac, mac in self.killer.killed))
 
     def _get_selected_device(self):
-        if not self.tableScan.selectedItems():
-            return None
+        """Current table row device (toolbar clicks clear selection; currentRow still identifies victim)."""
         row = self.tableScan.currentRow()
         if row < 0 or row >= len(self.scanner.devices):
             return None
@@ -3741,14 +3594,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         active_macs = set(self.killer.killed.keys())
         for mac in list(self.killed_devices.keys()):
             if mac not in active_macs:
-                dev = self._get_device_by_mac(mac)
-                # Inline Clumsy kill is firewall-only (never enters killer.killed); the table row
-                # can disappear briefly during resync — do not clear UI from a transient miss.
-                if mac == CLUMSY_INLINE_MAC or (dev and dev.get('clumsy_inline')):
-                    continue
-                snap_kill = (getattr(self, '_kill_device_snapshot', None) or {}).get(mac)
-                if isinstance(snap_kill, dict) and snap_kill.get('clumsy_inline'):
-                    continue
                 self.killed_devices[mac] = False
 
     def _set_kill_button_idle_look(self):
@@ -3766,7 +3611,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnKill.setMinimumWidth(1)
 
     def _updateKillButtonState(self):
-        device = self._get_flow_target_device()
+        device = self._get_selected_device()
         if not device:
             self._set_kill_button_idle_look()
             self.btnKill.setText('Kill: OFF')
@@ -3813,25 +3658,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnKill.setStyleSheet(self.BUTTON_NORMAL_STYLE)
 
     def _get_device_by_mac(self, mac):
-        live = None
         for device in self.scanner.devices:
             if device['mac'] == mac:
-                live = device
-                break
-        if mac != CLUMSY_INLINE_MAC:
-            return live
-        pin = getattr(self, '_clumsy_flow_pin', None)
-        if not isinstance(pin, dict) or pin.get('mac') != CLUMSY_INLINE_MAC:
-            return live
-        if not live:
-            return dict(pin)
-        merged = dict(live)
-        lip = (live.get('ip') or '').strip()
-        pip = (pin.get('ip') or '').strip()
-        if (not lip) and pip:
-            merged['ip'] = pip
-        merged['clumsy_inline'] = True
-        return merged
+                return device
+        return None
 
     def _victim_record_for_mac(self, mac):
         """
@@ -3844,9 +3674,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if fresh:
                 victim['ip'] = fresh['ip']
             return victim
-        fresh = self._get_device_by_mac(mac)
-        if fresh and fresh.get('clumsy_inline'):
-            return dict(fresh)
         return None
 
     def _enqueue_kill_off_only(self, mac, device):
