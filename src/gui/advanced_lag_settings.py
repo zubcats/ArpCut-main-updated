@@ -1,7 +1,7 @@
 """Advanced Lag Settings — extra lag-related options (placeholder for upcoming features).
 
 Builds that include MITM forwarder controls show ``Latency (delay)`` and ``Bandwidth cap``
-sections (plus a shared apply row). ``Clumsy only`` covers ICS / WinDivert notes + status.
+sections with per-section enable toggles and Apply. ``Clumsy only`` covers ICS / WinDivert notes + status.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QHBoxLayout,
+    QCheckBox,
 )
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt
@@ -34,6 +35,23 @@ def _mitm_sections_enabled() -> bool:
     from tools.updater_core import is_experimental_build
 
     return is_experimental_build()
+
+
+def _settings_bool(key: str, default: bool = True) -> bool:
+    try:
+        v = get_settings(key)
+    except Exception:
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    s = str(v).strip().lower()
+    if s in ('0', 'false', 'no', ''):
+        return False
+    if s in ('1', 'true', 'yes'):
+        return True
+    return default
 
 
 def _section_font(box: QGroupBox) -> None:
@@ -68,6 +86,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self.elmocut = parent
         self._lbl_clumsy_status: QLabel | None = None
         self._lbl_mitm_status: QLabel | None = None
+        self._chk_delay_enable: QCheckBox | None = None
+        self._chk_cap_enable: QCheckBox | None = None
         self._spin_delay_up: QSpinBox | None = None
         self._spin_delay_down: QSpinBox | None = None
         self._spin_cap_up: QDoubleSpinBox | None = None
@@ -75,8 +95,9 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self.setWindowTitle('Advanced Lag Settings')
         self.setModal(False)
-        self.setMinimumWidth(400)
-        self.setMinimumHeight(320)
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(520)
+        self.resize(600, 580)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -112,7 +133,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         if _mitm_sections_enabled():
             scroll_layout.addWidget(self._mitm_delay_section(scroll_inner))
             scroll_layout.addWidget(self._mitm_bandwidth_section(scroll_inner))
-            scroll_layout.addWidget(self._mitm_apply_row(scroll_inner))
+            scroll_layout.addWidget(self._mitm_stop_row(scroll_inner))
         scroll_layout.addWidget(self._clumsy_only_section(scroll_inner))
 
         scroll_layout.addStretch()
@@ -135,16 +156,26 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._refresh_clumsy_status()
         self._refresh_mitm_status()
 
-    def _persist_mitm_spins(self) -> None:
-        if self._spin_delay_up is None:
+    def _persist_mitm_ui(self) -> None:
+        if self._spin_delay_up is None or self._chk_delay_enable is None:
             return
         try:
             set_settings('mitm_delay_up_ms', int(self._spin_delay_up.value()))
             set_settings('mitm_delay_down_ms', int(self._spin_delay_down.value()))
             set_settings('mitm_cap_up_mbps', float(self._spin_cap_up.value()))
             set_settings('mitm_cap_down_mbps', float(self._spin_cap_down.value()))
+            set_settings('mitm_delay_enabled', bool(self._chk_delay_enable.isChecked()))
+            set_settings('mitm_cap_enabled', bool(self._chk_cap_enable.isChecked()))
         except Exception:
             pass
+
+    def _mitm_effective_params(self) -> tuple[int, int, float, float]:
+        """Resolve enabled sections into values passed to the main window (Mbps for caps)."""
+        du = int(self._spin_delay_up.value()) if self._chk_delay_enable.isChecked() else 0
+        dd = int(self._spin_delay_down.value()) if self._chk_delay_enable.isChecked() else 0
+        cu = float(self._spin_cap_up.value()) if self._chk_cap_enable.isChecked() else 0.0
+        cd = float(self._spin_cap_down.value()) if self._chk_cap_enable.isChecked() else 0.0
+        return du, dd, cu, cd
 
     def _refresh_mitm_status(self) -> None:
         if self._lbl_mitm_status is None:
@@ -161,17 +192,28 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         )
         self._lbl_mitm_status.setStyleSheet('color: #8fbcbb; font-size: 11px;')
 
-    def _on_mitm_apply(self) -> None:
+    def _log(self, msg: str, color: str = 'red') -> None:
+        main = self.elmocut
+        if main is not None and hasattr(main, 'log'):
+            try:
+                main.log(msg, color)
+            except Exception:
+                pass
+
+    def _apply_mitm_merged(self, _which: str) -> None:
+        """Push merged latency + bandwidth according to each section's toggle and spins."""
         main = self.elmocut
         if main is None:
             return
-        self._persist_mitm_spins()
-        main.start_mitm_shaping_from_advanced(
-            int(self._spin_delay_up.value()),
-            int(self._spin_delay_down.value()),
-            float(self._spin_cap_up.value()),
-            float(self._spin_cap_down.value()),
-        )
+        self._persist_mitm_ui()
+        du, dd, cu, cd = self._mitm_effective_params()
+        if du <= 0 and dd <= 0 and cu <= 0 and cd <= 0:
+            self._log(
+                'Enable at least one section and set non-zero delay or bandwidth caps before applying.',
+                'red',
+            )
+            return
+        main.start_mitm_shaping_from_advanced(du, dd, cu, cd)
         self._refresh_mitm_status()
 
     def _on_mitm_stop(self) -> None:
@@ -180,6 +222,22 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             return
         main.stop_mitm_shaping(log=True)
         self._refresh_mitm_status()
+
+    def _sync_delay_widgets_enabled(self) -> None:
+        if self._chk_delay_enable is None:
+            return
+        on = self._chk_delay_enable.isChecked()
+        for w in (self._spin_delay_up, self._spin_delay_down):
+            if w is not None:
+                w.setEnabled(on)
+
+    def _sync_cap_widgets_enabled(self) -> None:
+        if self._chk_cap_enable is None:
+            return
+        on = self._chk_cap_enable.isChecked()
+        for w in (self._spin_cap_up, self._spin_cap_down):
+            if w is not None:
+                w.setEnabled(on)
 
     def _mitm_delay_section(self, parent: QWidget) -> QGroupBox:
         box = QGroupBox('Latency (delay)', parent)
@@ -198,6 +256,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         intro.setStyleSheet('color: #c5c5c5; font-size: 11px;')
         inner.addWidget(intro)
 
+        self._chk_delay_enable = QCheckBox('Use delay shaping', box)
+        self._chk_delay_enable.setChecked(_settings_bool('mitm_delay_enabled', True))
+        self._chk_delay_enable.setToolTip('When off, delay values are ignored when you apply (bandwidth may still apply).')
+        self._chk_delay_enable.toggled.connect(self._sync_delay_widgets_enabled)
+        inner.addWidget(self._chk_delay_enable)
+
         form = QFormLayout()
         form.setSpacing(8)
         self._spin_delay_up = QSpinBox(box)
@@ -215,6 +279,18 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         form.addRow('Download (in)', self._spin_delay_down)
 
         inner.addLayout(form)
+
+        row = QHBoxLayout()
+        btn = QPushButton('Apply latency', box)
+        btn.setToolTip('Apply delay settings together with the current bandwidth section toggle and values.')
+        btn.clicked.connect(lambda: self._apply_mitm_merged('delay'))
+        row.addWidget(btn)
+        row.addStretch()
+        inner.addLayout(row)
+        btn.setAutoDefault(False)
+        btn.setDefault(False)
+
+        self._sync_delay_widgets_enabled()
         return box
 
     def _mitm_bandwidth_section(self, parent: QWidget) -> QGroupBox:
@@ -232,6 +308,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         intro.setWordWrap(True)
         intro.setStyleSheet('color: #c5c5c5; font-size: 11px;')
         inner.addWidget(intro)
+
+        self._chk_cap_enable = QCheckBox('Use bandwidth cap', box)
+        self._chk_cap_enable.setChecked(_settings_bool('mitm_cap_enabled', True))
+        self._chk_cap_enable.setToolTip('When off, cap values are ignored when you apply (delay may still apply).')
+        self._chk_cap_enable.toggled.connect(self._sync_cap_widgets_enabled)
+        inner.addWidget(self._chk_cap_enable)
 
         form = QFormLayout()
         form.setSpacing(8)
@@ -254,26 +336,36 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         form.addRow('Download cap', self._spin_cap_down)
 
         inner.addLayout(form)
+
+        row = QHBoxLayout()
+        btn = QPushButton('Apply bandwidth', box)
+        btn.setToolTip('Apply bandwidth settings together with the current latency section toggle and values.')
+        btn.clicked.connect(lambda: self._apply_mitm_merged('bandwidth'))
+        row.addWidget(btn)
+        row.addStretch()
+        inner.addLayout(row)
+        btn.setAutoDefault(False)
+        btn.setDefault(False)
+
+        self._sync_cap_widgets_enabled()
         return box
 
-    def _mitm_apply_row(self, parent: QWidget) -> QWidget:
+    def _mitm_stop_row(self, parent: QWidget) -> QWidget:
         w = QWidget(parent)
         lay = QVBoxLayout(w)
         lay.setContentsMargins(4, 0, 4, 4)
         lay.setSpacing(6)
 
-        hint = QLabel('Apply commits both latency and bandwidth settings.', w)
+        hint = QLabel('Stop ends all MITM shaping for the current victim.', w)
         hint.setWordWrap(True)
         hint.setStyleSheet('color: #9a9a9a; font-size: 11px;')
         lay.addWidget(hint)
 
         row = QHBoxLayout()
-        btn_apply = QPushButton('Apply', w)
-        btn_apply.clicked.connect(self._on_mitm_apply)
-        btn_stop = QPushButton('Stop', w)
+        btn_stop = QPushButton('Stop shaping', w)
         btn_stop.clicked.connect(self._on_mitm_stop)
-        row.addWidget(btn_apply)
         row.addWidget(btn_stop)
+        row.addStretch()
         lay.addLayout(row)
 
         self._lbl_mitm_status = QLabel(w)
@@ -281,9 +373,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._lbl_mitm_status.setVisible(False)
         lay.addWidget(self._lbl_mitm_status)
 
-        for b in (btn_apply, btn_stop):
-            b.setAutoDefault(False)
-            b.setDefault(False)
+        btn_stop.setAutoDefault(False)
+        btn_stop.setDefault(False)
 
         return w
 

@@ -112,9 +112,11 @@ SETTINGS_KEYS = [
     'mitm_delay_down_ms',
     'mitm_cap_up_mbps',
     'mitm_cap_down_mbps',
+    'mitm_delay_enabled',
+    'mitm_cap_enabled',
 ]
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
 # clumsy_mode default False: must be enabled in Settings (requires restart).
-SETTINGS_VALS = [25, False, True, False, [], True, 12, '', '', {}, {}, 'L', 'M', 'P', 'K', False, False, 50, False, 0, 0, 0.0, 0.0]
+SETTINGS_VALS = [25, False, True, False, [], True, 12, '', '', {}, {}, 'L', 'M', 'P', 'K', False, False, 50, False, 0, 0, 0.0, 0.0, True, True]
