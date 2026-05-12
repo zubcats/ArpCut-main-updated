@@ -213,6 +213,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.chkClumsy.setChecked(old_v)
                 self._clumsy_toggle_guard = False
                 return
+            try:
+                cur = (get_settings('iface') or '').strip()
+            except Exception:
+                cur = ''
+            set_settings('iface_before_clumsy', cur)
         else:
             ok, detail = rollback_clumsy_ics()
             if not ok:
@@ -227,6 +232,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.chkClumsy.setChecked(old_v)
                 self._clumsy_toggle_guard = False
                 return
+            try:
+                prev = (get_settings('iface_before_clumsy') or '').strip()
+            except Exception:
+                prev = ''
+            if prev:
+                set_settings('iface', prev)
+            set_settings('iface_before_clumsy', '')
         set_settings('clumsy_mode', new_v)
         restart_zubcut(self.elmocut)
 
@@ -373,6 +385,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             clumsy_mode = False
 
+        try:
+            iface_stash = str(get_settings('iface_before_clumsy') or '')
+        except Exception:
+            iface_stash = ''
+
         export_settings(
             [
             count,
@@ -383,6 +400,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             is_autoupdate,
             threads,
             iface,
+            iface_stash,
             nicknames.nicknames_database,
             k_kill,
             k_lag,

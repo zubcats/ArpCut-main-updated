@@ -2546,7 +2546,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _ensure_network_context_for_victim(self, device) -> bool:
         """
         Bind scanner + killer to the NIC that routes to the victim (e.g. hotspot vs Ethernet).
-        Does not persist Settings; runtime only so ARP/firewall use the correct adapter.
+        Runtime only — does not write ``iface`` to settings (so Clumsy/victim auto-pick
+        does not replace your chosen adapter in zubcut.json).
         """
         if not device or not device.get('ip'):
             return False
@@ -2570,19 +2571,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         label = (getattr(self.scanner.iface, 'name', None) or '').strip() or getattr(
             self.scanner.iface, 'guid', ''
         )
-        try:
-            # Persist auto-selected adapter so Settings reflects the active runtime NIC.
-            iface_name = getattr(self.scanner.iface, 'name', None) or ''
-            if iface_name:
-                set_settings('iface', iface_name)
-                sw = getattr(self, 'settings_window', None)
-                combo = getattr(sw, 'comboInterface', None) if sw is not None else None
-                if combo is not None:
-                    idx = combo.findData(iface_name)
-                    if idx >= 0:
-                        combo.setCurrentIndex(idx)
-        except Exception:
-            pass
         self.log(
             f'Using network adapter for {device["ip"]}: {label}',
             UI_LOG_RESTORE_FG,

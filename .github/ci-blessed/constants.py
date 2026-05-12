@@ -105,7 +105,7 @@ DUMMY_IFACE = {'name': 'NULL', 'mac': GLOBAL_MAC, 'guid': 'NULL', 'ips': ['0.0.0
 HKEY_AUTOSTART_PATH = 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run'
 
 SETTINGS_KEYS = [
-    'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'nicknames',
+    'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'iface_before_clumsy', 'nicknames',
     'key_kill', 'key_lag', 'key_dupe', 'key_pctcut',
     'show_scan_mac_column', 'show_scan_vendor_column',
     'traffic_percent',
@@ -115,4 +115,4 @@ SETTINGS_KEYS = [
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
 # clumsy_mode default False: must be enabled in Settings (requires restart).
-SETTINGS_VALS = [25, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', 'K', False, False, 50, False]
+SETTINGS_VALS = [25, False, True, False, [], True, 12, '', '', {}, 'L', 'M', 'P', 'K', False, False, 50, False]
