@@ -2547,10 +2547,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         def _arm_lag_start():
             if not self.lag_active or self.lag_device_mac != mac:
                 return
+            cur = self._lag_resolved_victim() or dev
             block_ms_arm = max(1, int(self.lag_block_ms))
             deadline = time.monotonic() + block_ms_arm / 1000.0
             try:
-                self._lag_apply_block(dev)
+                self._lag_apply_block(cur)
             except Exception:
                 pass
             self._schedule_lag_start_reassert(mac)
@@ -2882,7 +2883,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._arm_dupe_burst_wall_clock()
             self._ensure_network_context_for_victim(dev)
             self.killer.disable_percent_cut(dev['mac'])
-            if dev['mac'] not in self.killer.killed:
+            # Clumsy ICS row uses a synthetic MAC — never ARP/MITM it (same as lag/kill inline).
+            if not dev.get('clumsy_inline') and dev['mac'] not in self.killer.killed:
                 self.killer.kill(dev)
             iface = self.scanner.iface.name if self.scanner.iface else 'en0'
             if ex is None:
@@ -3243,6 +3245,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         QTimer.singleShot(0, partial(self.stopDupe, True, True, 'Dupe finished'))
 
     def stopDupe(self, refresh_dialog=True, log=True, log_message='Dupe stopped'):
+        arm_snap = None
+        if isinstance(getattr(self, '_dupe_arm_device', None), dict):
+            arm_snap = dict(self._dupe_arm_device)
         self._dupe_arm_timer.stop()
         try:
             self._dupe_arm_timer.timeout.disconnect()
@@ -3289,8 +3294,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
         self._drain_dupe_block_if_needed()
-        device = self._get_device_by_mac(prev_mac)
-        snap = dict(device) if device else None
+        live = self._get_device_by_mac(prev_mac) if prev_mac else None
+        arm_ok = arm_snap if (isinstance(arm_snap, dict) and arm_snap.get('mac') == prev_mac) else None
+        if live and arm_ok:
+            snap = dict(live)
+            lip = (live.get('ip') or '').strip()
+            sip = (arm_ok.get('ip') or '').strip()
+            if (not lip) and sip:
+                snap['ip'] = sip
+            if live.get('clumsy_inline') or arm_ok.get('clumsy_inline'):
+                snap['clumsy_inline'] = True
+        elif live:
+            snap = dict(live)
+        elif arm_ok:
+            snap = dict(arm_ok)
+        else:
+            snap = None
         self._dupe_pending_clear = (prev_mac, snap)
         try:
             self._dupe_deferred_clear_timer.timeout.disconnect()
@@ -3699,7 +3718,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for mac in list(self.killed_devices.keys()):
             if mac not in active_macs:
                 dev = self._get_device_by_mac(mac)
-                if dev and dev.get('clumsy_inline'):
+                # Inline Clumsy kill is firewall-only (never enters killer.killed); the table row
+                # can disappear briefly during resync — do not clear UI from a transient miss.
+                if mac == CLUMSY_INLINE_MAC or (dev and dev.get('clumsy_inline')):
+                    continue
+                snap_kill = (getattr(self, '_kill_device_snapshot', None) or {}).get(mac)
+                if isinstance(snap_kill, dict) and snap_kill.get('clumsy_inline'):
                     continue
                 self.killed_devices[mac] = False
 
