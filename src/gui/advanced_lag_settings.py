@@ -80,7 +80,9 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
     _CLUMSY_ONLY_TITLE = 'Clumsy only'
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        # Top-level (no QWidget parent): matches Settings-style taskbar entry, hover preview,
+        # and normal minimize — child dialogs minimize to a tiny caption strip on Windows.
+        super().__init__(None)
         # Same QSS object name as Lag Switch / Dupe panels (shared chrome in utils_gui).
         self.setObjectName('zubcutLagDupeDialog')
         self.elmocut = parent
@@ -94,7 +96,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._spin_delay_down: QSpinBox | None = None
         self._spin_cap_up: QDoubleSpinBox | None = None
         self._spin_cap_down: QDoubleSpinBox | None = None
-        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setWindowTitle('Advanced Lag Settings')
         self.setModal(False)
         self.setMinimumWidth(560)
@@ -105,6 +107,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         win_icon = parent.icon if parent else None
+        if win_icon is not None and not win_icon.isNull():
+            self.setWindowIcon(win_icon)
         root.addWidget(
             CustomTitleBar(
                 self,
