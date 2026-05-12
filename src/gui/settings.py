@@ -494,6 +494,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for _dlg in (
             getattr(self.elmocut, 'lag_switch_dialog', None),
             getattr(self.elmocut, 'dupe_switch_dialog', None),
+            getattr(self.elmocut, 'advanced_lag_settings_dialog', None),
         ):
             if _dlg is not None:
                 _dlg.setStyleSheet('')
@@ -507,6 +508,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         _w.extend(d for d in (
             getattr(self.elmocut, 'lag_switch_dialog', None),
             getattr(self.elmocut, 'dupe_switch_dialog', None),
+            getattr(self.elmocut, 'advanced_lag_settings_dialog', None),
         ) if d is not None)
         sync_translucent_chrome(_w)
         self.elmocut.refresh_keyboard_shortcuts_from_settings()

@@ -25,6 +25,7 @@ from ui.ui_main import Ui_MainWindow
 from gui.settings import Settings
 from gui.about import About
 from gui.device import Device
+from gui.advanced_lag_settings import AdvancedLagSettingsDialog
 from .traffic import Traffic
 
 from networking.scanner import Scanner
@@ -1054,6 +1055,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
         self.gridLayout.addWidget(self.btnPercentCut, 7, 6, 1, 3)
         self.btnPercentCut.pressed.connect(lambda: self.togglePercentCut('mouse_pressed'))
+        for _flow_btn in (self.btnKill, self.btnLagSwitch, self.btnDupe, self.btnPercentCut):
+            _flow_btn.setContextMenuPolicy(Qt.CustomContextMenu)
+            _flow_btn.customContextMenuRequested.connect(self._on_main_flow_toggle_context_menu)
 
         self.sliderPercentCutMain.valueChanged.connect(self.spinPercentCutMain.setValue)
         self.spinPercentCutMain.valueChanged.connect(self.sliderPercentCutMain.setValue)
@@ -1062,6 +1066,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.lag_switch_dialog = None
         self.dupe_switch_dialog = None
+        self.advanced_lag_settings_dialog = None
         self.gridLayout.setSpacing(4)
         self.gridLayout.setVerticalSpacing(4)
         self.setMinimumSize(QSize(800, 560))
@@ -1145,6 +1150,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.device_window,
             self.traffic_window,
         ]
+        if self.advanced_lag_settings_dialog is not None:
+            _chrome_windows.append(self.advanced_lag_settings_dialog)
         sync_translucent_chrome(_chrome_windows)
 
         self.applySettings()
@@ -1269,6 +1276,40 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.traffic_window.hide()
         self.traffic_window.show()
         self.traffic_window.setWindowState(Qt.WindowNoState)
+
+    def _on_main_flow_toggle_context_menu(self, pos):
+        w = self.sender()
+        if w is None:
+            return
+        menu = QMenu(self)
+        act_adv = QAction('Advanced Lag Settings…', self)
+        act_adv.triggered.connect(self._open_advanced_lag_settings)
+        menu.addAction(act_adv)
+        menu.exec_(w.mapToGlobal(pos))
+
+    def _open_advanced_lag_settings(self):
+        if self.advanced_lag_settings_dialog is None:
+            self.advanced_lag_settings_dialog = AdvancedLagSettingsDialog(self)
+            self.advanced_lag_settings_dialog.setStyleSheet('')
+            _chrome = [
+                self,
+                self.settings_window,
+                self.about_window,
+                self.device_window,
+                self.traffic_window,
+                self.advanced_lag_settings_dialog,
+            ]
+            for d in (
+                getattr(self, 'lag_switch_dialog', None),
+                getattr(self, 'dupe_switch_dialog', None),
+            ):
+                if d is not None:
+                    _chrome.append(d)
+            sync_translucent_chrome(_chrome)
+        dlg = self.advanced_lag_settings_dialog
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def table_context_menu(self, pos):
         menu = QMenu(self)
