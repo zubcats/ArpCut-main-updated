@@ -8,7 +8,7 @@ from typing import Optional
 
 from networking.nicknames import Nicknames
 from tools.device_display import infer_network_device_type
-from tools.clumsy_inline import sync_clumsy_row
+from tools.clumsy_inline import sync_clumsy_row, clumsy_mode_enabled
 from tools.utils import *
 from constants import *
 
@@ -203,6 +203,45 @@ class Scanner():
         if unique:
             self.flush_arp()
 
+    def merge_client_hits(self, hits):
+        """
+        Add or update non-admin rows from probe result without discarding existing clients.
+        Keeps Me/Router rows coherent via add_me/add_router.
+        """
+        if not hits:
+            return
+        nicknames = Nicknames()
+        by_mac = {d['mac']: d for d in self.devices if not d.get('admin')}
+        for ip, mac in hits:
+            mac = good_mac(mac)
+            if ip in [self.router_ip, self.my_ip] or not mac:
+                continue
+            vend = get_vendor(mac)
+            try:
+                dev_type = infer_network_device_type(mac, vend, '')
+            except Exception:
+                dev_type = 'User'
+            by_mac[mac] = {
+                'ip': ip,
+                'mac': mac,
+                'vendor': vend,
+                'type': dev_type,
+                'name': nicknames.get_name(mac),
+                'admin': False,
+            }
+
+        def _sort_dev(d):
+            try:
+                return int(str(d['ip']).rsplit('.', 1)[-1])
+            except (ValueError, IndexError, TypeError, AttributeError):
+                return 0
+
+        self.devices = sorted(by_mac.values(), key=_sort_dev)
+        self.old_ips = {d['mac']: d['ip'] for d in self.devices}
+        self.add_me()
+        self.add_router()
+        sync_clumsy_row(self)
+
     def _windows_arp_raw_text(self):
         """Merge interface-scoped and full ARP output (``-N`` often returns nothing on some builds)."""
         chunks = []
@@ -240,6 +279,14 @@ class Scanner():
             and my
             and my not in ('127.0.0.1', '0.0.0.0')
         )
+        # ICS / Clumsy: my_ip is often 192.168.137.x so perfix becomes 192.168.137 — restricting
+        # ARP rows to that prefix would hide every device on the main LAN (192.168.1.x, etc.).
+        if restrict_subnet:
+            try:
+                if clumsy_mode_enabled():
+                    restrict_subnet = False
+            except Exception:
+                pass
         for raw in text.split('\n'):
             line = (raw or '').strip()
             if not line:
@@ -419,7 +466,7 @@ class Scanner():
                 ans = arping(f"{ip}/32", iface=self.iface.guid, timeout=1, verbose=0)  # Use guid (Scapy/pcap name)
                 hits = [(r[1].psrc, r[1].src) for r in ans[0]]
                 if hits:
-                    self.devices_appender(hits)
+                    self.merge_client_hits(hits)
                     return hits[0]
         except Exception as e:
             # Scapy arping might fail on Windows without admin or Npcap
@@ -478,7 +525,7 @@ class Scanner():
                             mac_candidate = parts[1].replace('-', ':')
                             mac = good_mac(mac_candidate)
                             if mac and mac != GLOBAL_MAC:
-                                self.devices_appender([(ip, mac)])
+                                self.merge_client_hits([(ip, mac)])
                                 return (ip, mac)
                         # Also check if IP appears anywhere in the line
                         elif ip in line:
@@ -487,7 +534,7 @@ class Scanner():
                             if macs:
                                 mac = good_mac(macs[0])
                                 if mac and mac != GLOBAL_MAC:
-                                    self.devices_appender([(ip, mac)])
+                                    self.merge_client_hits([(ip, mac)])
                                     return (ip, mac)
         else:
             cache = terminal('arp -an') or ''
@@ -496,6 +543,6 @@ class Scanner():
                     macs = re.findall(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', line)
                     if macs:
                         mac = good_mac(macs[0])
-                        self.devices_appender([(ip, mac)])
+                        self.merge_client_hits([(ip, mac)])
                         return (ip, mac)
         return None
