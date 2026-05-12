@@ -382,7 +382,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         if not main.tableScan.selectedItems():
             return
         try:
-            dev = main.current_index()
+            dev = main._resolve_clumsy_flow_dict(main.current_index())
         except Exception:
             return
         if dev['mac'] != main.lag_device_mac:
@@ -425,7 +425,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         device = None
         if main.tableScan.selectedItems():
             try:
-                device = main.current_index()
+                device = main._resolve_clumsy_flow_dict(main.current_index())
             except Exception:
                 device = None
         if device is None:
@@ -433,7 +433,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
             # at the intended victim. Use currentRow as a fallback so the Lag keybind still works.
             row = main.tableScan.currentRow()
             if 0 <= row < len(main.scanner.devices):
-                device = main.scanner.devices[row]
+                device = main._resolve_clumsy_flow_dict(main.scanner.devices[row])
         if device is None:
             pinned_mac = getattr(main, '_lag_dialog_target_mac', None)
             if pinned_mac:
@@ -692,13 +692,13 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         device = None
         if main.tableScan.selectedItems():
             try:
-                device = main.current_index()
+                device = main._resolve_clumsy_flow_dict(main.current_index())
             except Exception:
                 device = None
         if device is None:
             row = main.tableScan.currentRow()
             if 0 <= row < len(main.scanner.devices):
-                device = main.scanner.devices[row]
+                device = main._resolve_clumsy_flow_dict(main.scanner.devices[row])
         if device is None:
             pinned_mac = getattr(main, '_dupe_dialog_target_mac', None)
             if pinned_mac:
@@ -819,6 +819,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_device_snapshot = None
         self._lag_restoring_after_stop = False
         self._lag_restoring_mac = None
+        # Canonical copy of the Clumsy ICS row; refreshed whenever sync_clumsy_row runs so
+        # Kill/Lag/Dupe can use a stable victim dict instead of a row that flickers in scanner.devices.
+        self._clumsy_flow_pin = None
 
         self.dupe_active = False
         self.dupe_device_mac = None
@@ -1783,8 +1786,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             sync_clumsy_row(self.scanner)
         except Exception:
             pass
-        
-        current_row = self.tableScan.currentRow()
+        self._refresh_clumsy_flow_pin()
         selected_mac = None
         selected = self._get_selected_device()
         if selected:
@@ -2125,6 +2127,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     ip_before = str(d.get('ip') or '').strip()
                     break
             sync_clumsy_row(self.scanner, allow_subnet_ping=True)
+            self._refresh_clumsy_flow_pin()
             ip_after = ''
             for d in self.scanner.devices:
                 if d.get('clumsy_inline'):
@@ -2134,6 +2137,47 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.showDevices()
         except Exception:
             pass
+
+    def _refresh_clumsy_flow_pin(self):
+        """Refresh canonical Clumsy row dict from scanner after sync_clumsy_row."""
+        self._clumsy_flow_pin = None
+        try:
+            from tools.clumsy_inline import clumsy_mode_enabled, clumsy_runtime_ready
+
+            if not clumsy_mode_enabled() or not clumsy_runtime_ready():
+                return
+        except Exception:
+            return
+        for d in getattr(self.scanner, 'devices', []) or []:
+            if d.get('clumsy_inline') or d.get('mac') == CLUMSY_INLINE_MAC:
+                self._clumsy_flow_pin = dict(d)
+                return
+
+    def _resolve_clumsy_flow_dict(self, row_dev):
+        """
+        When Clumsy mode is on and the table row is the ICS target, return the merged
+        canonical victim (pin + live) so Kill/Lag/Dupe do not depend on a fragile table ref.
+        """
+        if not isinstance(row_dev, dict):
+            return row_dev
+        try:
+            from tools.clumsy_inline import clumsy_mode_enabled, clumsy_runtime_ready
+        except Exception:
+            return row_dev
+        if not clumsy_mode_enabled() or not clumsy_runtime_ready():
+            return row_dev
+        if row_dev.get('clumsy_inline') or row_dev.get('mac') == CLUMSY_INLINE_MAC:
+            return self._get_device_by_mac(CLUMSY_INLINE_MAC) or dict(row_dev)
+        return row_dev
+
+    def _get_flow_target_device(self):
+        """Selected device for Kill / Percent Cut toolbar; uses Clumsy pin when that row is selected."""
+        if not self.tableScan.selectedItems():
+            return None
+        row = self.tableScan.currentRow()
+        if row < 0 or row >= len(self.scanner.devices):
+            return None
+        return self._resolve_clumsy_flow_dict(self.scanner.devices[row])
 
     def _should_poll_update_availability(self):
         import sys
@@ -2358,7 +2402,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self.tableScan.selectedItems():
             self.log('No device selected', 'red')
             return
-        device = self.current_index()
+        try:
+            device = self._resolve_clumsy_flow_dict(self.current_index())
+        except Exception:
+            self.log('No device selected', 'red')
+            return
         if device['admin']:
             self.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
@@ -2386,7 +2434,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self.tableScan.selectedItems():
             self.log('No device selected', 'red')
             return
-        device = self.current_index()
+        try:
+            device = self._resolve_clumsy_flow_dict(self.current_index())
+        except Exception:
+            self.log('No device selected', 'red')
+            return
         if device['admin']:
             self.log('Cannot dupe admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
@@ -3430,7 +3482,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def toggleKill(self, source='unknown'):
         if not self.connected():
             return
-        device = self._get_selected_device()
+        device = self._get_flow_target_device()
         if not device:
             self.log('No device selected', 'red')
             return
@@ -3460,7 +3512,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def togglePercentCut(self, source='unknown'):
         if not self.connected():
             return
-        device = self._get_selected_device()
+        device = self._get_flow_target_device()
         if not device:
             self.log('No device selected', 'red')
             return
@@ -3742,7 +3794,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnKill.setMinimumWidth(1)
 
     def _updateKillButtonState(self):
-        device = self._get_selected_device()
+        device = self._get_flow_target_device()
         if not device:
             self._set_kill_button_idle_look()
             self.btnKill.setText('Kill: OFF')
@@ -3789,10 +3841,25 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnKill.setStyleSheet(self.BUTTON_NORMAL_STYLE)
 
     def _get_device_by_mac(self, mac):
+        live = None
         for device in self.scanner.devices:
             if device['mac'] == mac:
-                return device
-        return None
+                live = device
+                break
+        if mac != CLUMSY_INLINE_MAC:
+            return live
+        pin = getattr(self, '_clumsy_flow_pin', None)
+        if not isinstance(pin, dict) or pin.get('mac') != CLUMSY_INLINE_MAC:
+            return live
+        if not live:
+            return dict(pin)
+        merged = dict(live)
+        lip = (live.get('ip') or '').strip()
+        pip = (pin.get('ip') or '').strip()
+        if (not lip) and pip:
+            merged['ip'] = pip
+        merged['clumsy_inline'] = True
+        return merged
 
     def _victim_record_for_mac(self, mac):
         """
