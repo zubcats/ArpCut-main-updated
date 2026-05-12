@@ -3519,8 +3519,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
 
-    def start_mitm_shaping_from_advanced(self, delay_up, delay_down, cap_up, cap_down):
-        """MITM forwarder delay + bandwidth caps (Advanced Lag Settings)."""
+    def start_mitm_shaping_from_advanced(
+        self,
+        delay_up,
+        delay_down,
+        jitter_up=0,
+        jitter_down=0,
+        cap_up=0.0,
+        cap_down=0.0,
+        loss_up=0,
+        loss_down=0,
+    ):
+        """Forwarder shaping from Advanced Lag (delay, jitter, caps, loss)."""
         from tools.updater_core import is_experimental_build
 
         if not is_experimental_build():
@@ -3532,11 +3542,24 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         du = max(0, int(delay_up))
         dd = max(0, int(delay_down))
+        ju = max(0, int(jitter_up))
+        jd = max(0, int(jitter_down))
         # Bandwidth caps from Advanced Lag Settings are Mbps; forwarder uses kbps (1 Mbps = 1000 kbps).
         cu_mbps = max(0.0, float(cap_up))
         cd_mbps = max(0.0, float(cap_down))
-        if du <= 0 and dd <= 0 and cu_mbps <= 0 and cd_mbps <= 0:
-            self.log('Set at least one non-zero delay or bandwidth cap.', 'red')
+        lu = max(0, min(100, int(loss_up)))
+        ld = max(0, min(100, int(loss_down)))
+        if (
+            du <= 0
+            and dd <= 0
+            and ju <= 0
+            and jd <= 0
+            and cu_mbps <= 0
+            and cd_mbps <= 0
+            and lu <= 0
+            and ld <= 0
+        ):
+            self.log('Enable at least one effect with non-zero values (delay, jitter, cap, or loss).', 'red')
             self._refresh_advanced_lag_mitm_if_visible()
             return
         if self._toggle_start_blocked('mitmshape'):
@@ -3587,6 +3610,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 device,
                 delay_ms_out=du,
                 delay_ms_in=dd,
+                jitter_ms_out=ju,
+                jitter_ms_in=jd,
+                loss_pct_out=lu,
+                loss_pct_in=ld,
                 max_kbps_out=cu_mbps * 1000.0,
                 max_kbps_in=cd_mbps * 1000.0,
             )
@@ -3602,15 +3629,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         set_settings('killed', list(self.killer.killed) * self.remember)
         parts = []
         if du > 0:
-            parts.append(f'up delay {du}ms')
+            parts.append(f'out delay {du}ms')
         if dd > 0:
-            parts.append(f'down delay {dd}ms')
+            parts.append(f'in delay {dd}ms')
+        if ju > 0:
+            parts.append(f'out jitter +0–{ju}ms')
+        if jd > 0:
+            parts.append(f'in jitter +0–{jd}ms')
         if cu_mbps > 0:
-            parts.append(f'up cap {cu_mbps:g}Mbps')
+            parts.append(f'out cap {cu_mbps:g}Mbps')
         if cd_mbps > 0:
-            parts.append(f'down cap {cd_mbps:g}Mbps')
+            parts.append(f'in cap {cd_mbps:g}Mbps')
+        if lu > 0:
+            parts.append(f'out loss {lu}%')
+        if ld > 0:
+            parts.append(f'in loss {ld}%')
         self.log(
-            'MITM shaping ON (' + ', '.join(parts) + ') for ' + str(device.get('ip', '')),
+            'Advanced lag ON (' + ', '.join(parts) + ') for ' + str(device.get('ip', '')),
             UI_LOG_VICTIM_BLOCK_FG,
         )
         self._refresh_flow_toggle_ui()

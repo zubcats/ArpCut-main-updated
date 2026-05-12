@@ -114,6 +114,24 @@ SETTINGS_KEYS = [
     'mitm_cap_down_mbps',
     'mitm_delay_enabled',
     'mitm_cap_enabled',
+    # Advanced Lag clumsy-style panel (mitm_adv_*); legacy mitm_* kept for migration.
+    'mitm_adv_delay_on',
+    'mitm_adv_delay_in',
+    'mitm_adv_delay_out',
+    'mitm_adv_delay_ms',
+    'mitm_adv_jitter_on',
+    'mitm_adv_jitter_in',
+    'mitm_adv_jitter_out',
+    'mitm_adv_jitter_ms',
+    'mitm_adv_cap_on',
+    'mitm_adv_cap_in',
+    'mitm_adv_cap_out',
+    'mitm_adv_cap_out_mbps',
+    'mitm_adv_cap_in_mbps',
+    'mitm_adv_loss_on',
+    'mitm_adv_loss_in',
+    'mitm_adv_loss_out',
+    'mitm_adv_loss_pct',
 ]
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
@@ -121,5 +139,49 @@ SETTINGS_KEYS = [
 # clumsy_mode default False: must be enabled in Settings (requires restart).
 # iface_before_clumsy: last Settings iface before enabling Clumsy; restored when Clumsy is turned off.
 # nickname_last_ip: MAC -> last known IPv4 for nicknamed devices (fills table when host is missing from scan).
-# mitm_*: last-used Advanced Lag Settings for MITM shaping (caps in Mbps).
-SETTINGS_VALS = [25, False, True, False, [], True, 12, '', '', {}, {}, 'L', 'M', 'P', 'K', False, False, 50, False, 0, 0, 0.0, 0.0, True, True]
+# mitm_*: legacy Advanced Lag keys; mitm_adv_* clumsy-style rows (caps in Mbps).
+SETTINGS_VALS = [
+    25,
+    False,
+    True,
+    False,
+    [],
+    True,
+    12,
+    '',
+    '',
+    {},
+    {},
+    'L',
+    'M',
+    'P',
+    'K',
+    False,
+    False,
+    50,
+    False,
+    0,
+    0,
+    0.0,
+    0.0,
+    True,
+    True,
+    # mitm_adv_* defaults: rows off; In/Out checked so enabling a row is one click.
+    False,
+    True,
+    True,
+    0,
+    False,
+    True,
+    True,
+    0,
+    False,
+    True,
+    True,
+    0.0,
+    0.0,
+    False,
+    True,
+    True,
+    0,
+]

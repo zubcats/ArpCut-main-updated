@@ -185,18 +185,25 @@ class Killer:
         *,
         delay_ms_out=0,
         delay_ms_in=0,
+        jitter_ms_out=0,
+        jitter_ms_in=0,
+        loss_pct_out=0,
+        loss_pct_in=0,
         max_kbps_out=0.0,
         max_kbps_in=0.0,
         debug=False,
     ):
         """
-        ARP MITM forwarder with per-direction delay (queued) and/or token-bucket bandwidth caps.
-        Same reliability class as percent cut: requires traffic to traverse this forwarder.
+        Forwarder with per-direction delay, optional jitter, loss %, and token-bucket caps.
         """
         if victim['mac'] not in self.killed:
             self.kill(victim)
         delay_ms_out = max(0, min(_MAX_DELAY_MS, int(delay_ms_out)))
         delay_ms_in = max(0, min(_MAX_DELAY_MS, int(delay_ms_in)))
+        jitter_ms_out = max(0, min(_MAX_DELAY_MS, int(jitter_ms_out)))
+        jitter_ms_in = max(0, min(_MAX_DELAY_MS, int(jitter_ms_in)))
+        loss_pct_out = max(0, min(100, int(loss_pct_out)))
+        loss_pct_in = max(0, min(100, int(loss_pct_in)))
         max_kbps_out = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_out)))
         max_kbps_in = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_in)))
 
@@ -219,6 +226,10 @@ class Killer:
             pass_to_victim_pct=100,
             delay_ms_from_victim=delay_ms_out,
             delay_ms_to_victim=delay_ms_in,
+            jitter_ms_from_victim=jitter_ms_out,
+            jitter_ms_to_victim=jitter_ms_in,
+            loss_pct_from_victim=loss_pct_out,
+            loss_pct_to_victim=loss_pct_in,
             max_kbps_from_victim=max_kbps_out,
             max_kbps_to_victim=max_kbps_in,
         )

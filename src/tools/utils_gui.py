@@ -1157,6 +1157,40 @@ def repair_settings():
                 original['mitm_cap_down_mbps'] = float(s['mitm_cap_down_kbps']) / 1000.0
             except (TypeError, ValueError):
                 pass
+        # Clumsy-style Advanced Lag keys: derive from legacy mitm_* when missing from JSON.
+        if 'mitm_adv_delay_on' not in s:
+            try:
+                ena = bool(s.get('mitm_delay_enabled', False))
+                up = int(s.get('mitm_delay_up_ms') or 0)
+                down = int(s.get('mitm_delay_down_ms') or 0)
+                original['mitm_adv_delay_on'] = bool(ena and (up > 0 or down > 0))
+                original['mitm_adv_delay_out'] = up > 0
+                original['mitm_adv_delay_in'] = down > 0
+                original['mitm_adv_delay_ms'] = max(up, down)
+            except (TypeError, ValueError):
+                pass
+        if 'mitm_adv_jitter_on' not in s:
+            original['mitm_adv_jitter_on'] = False
+            original['mitm_adv_jitter_in'] = True
+            original['mitm_adv_jitter_out'] = True
+            original['mitm_adv_jitter_ms'] = 0
+        if 'mitm_adv_cap_on' not in s:
+            try:
+                ce = bool(s.get('mitm_cap_enabled', False))
+                cu = float(s.get('mitm_cap_up_mbps') or 0.0)
+                cd = float(s.get('mitm_cap_down_mbps') or 0.0)
+                original['mitm_adv_cap_on'] = bool(ce and (cu > 0.0 or cd > 0.0))
+                original['mitm_adv_cap_out'] = cu > 0.0
+                original['mitm_adv_cap_in'] = cd > 0.0
+                original['mitm_adv_cap_out_mbps'] = cu
+                original['mitm_adv_cap_in_mbps'] = cd
+            except (TypeError, ValueError):
+                pass
+        if 'mitm_adv_loss_on' not in s:
+            original['mitm_adv_loss_on'] = False
+            original['mitm_adv_loss_in'] = True
+            original['mitm_adv_loss_out'] = True
+            original['mitm_adv_loss_pct'] = 0
     except (JSONDecodeError, OSError):
         pass
     export_settings([original[k] for k in SETTINGS_KEYS])

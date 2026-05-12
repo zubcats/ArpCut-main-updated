@@ -1,4 +1,5 @@
 import heapq
+import random
 import threading
 import time
 
@@ -35,6 +36,10 @@ class MitmForwarder:
         self.pass_to_victim_pct = 100
         self.delay_ms_from_victim = 0
         self.delay_ms_to_victim = 0
+        self.jitter_ms_from_victim = 0
+        self.jitter_ms_to_victim = 0
+        self.loss_pct_from_victim = 0
+        self.loss_pct_to_victim = 0
         self.max_kbps_from_victim = 0.0
         self.max_kbps_to_victim = 0.0
         self._pkt_count = 0
@@ -68,6 +73,10 @@ class MitmForwarder:
         pass_to_victim_pct: int = 100,
         delay_ms_from_victim: int = 0,
         delay_ms_to_victim: int = 0,
+        jitter_ms_from_victim: int = 0,
+        jitter_ms_to_victim: int = 0,
+        loss_pct_from_victim: int = 0,
+        loss_pct_to_victim: int = 0,
         max_kbps_from_victim: float = 0.0,
         max_kbps_to_victim: float = 0.0,
     ):
@@ -85,6 +94,10 @@ class MitmForwarder:
         self.pass_to_victim_pct = max(0, min(100, int(pass_to_victim_pct)))
         self.delay_ms_from_victim = max(0, min(_MAX_DELAY_MS, int(delay_ms_from_victim)))
         self.delay_ms_to_victim = max(0, min(_MAX_DELAY_MS, int(delay_ms_to_victim)))
+        self.jitter_ms_from_victim = max(0, min(_MAX_DELAY_MS, int(jitter_ms_from_victim)))
+        self.jitter_ms_to_victim = max(0, min(_MAX_DELAY_MS, int(jitter_ms_to_victim)))
+        self.loss_pct_from_victim = max(0, min(100, int(loss_pct_from_victim)))
+        self.loss_pct_to_victim = max(0, min(100, int(loss_pct_to_victim)))
         self.max_kbps_from_victim = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_from_victim)))
         self.max_kbps_to_victim = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_to_victim)))
         self._byte_budget_from_victim = 0.0
@@ -129,10 +142,14 @@ class MitmForwarder:
                 % (self.pass_from_victim_pct, self.pass_to_victim_pct)
             )
             print(
-                "[forwarder] delay_ms out/in=%s/%s max_kbps out/in=%s/%s"
+                "[forwarder] delay_ms out/in=%s/%s jitter out/in=%s/%s loss%% out/in=%s/%s max_kbps out/in=%s/%s"
                 % (
                     self.delay_ms_from_victim,
                     self.delay_ms_to_victim,
+                    self.jitter_ms_from_victim,
+                    self.jitter_ms_to_victim,
+                    self.loss_pct_from_victim,
+                    self.loss_pct_to_victim,
                     self.max_kbps_from_victim,
                     self.max_kbps_to_victim,
                 )
@@ -160,7 +177,11 @@ class MitmForwarder:
                 self._socket = None
             return
 
-        if self.delay_ms_from_victim > 0 or self.delay_ms_to_victim > 0:
+        need_delay = (
+            (self.delay_ms_from_victim + self.jitter_ms_from_victim) > 0
+            or (self.delay_ms_to_victim + self.jitter_ms_to_victim) > 0
+        )
+        if need_delay:
             self._delay_event.clear()
             self._delay_thread = threading.Thread(target=self._delay_worker, daemon=True)
             self._delay_thread.start()
@@ -197,6 +218,10 @@ class MitmForwarder:
             'pass_to_victim_pct': self.pass_to_victim_pct,
             'delay_ms_from_victim': self.delay_ms_from_victim,
             'delay_ms_to_victim': self.delay_ms_to_victim,
+            'jitter_ms_from_victim': self.jitter_ms_from_victim,
+            'jitter_ms_to_victim': self.jitter_ms_to_victim,
+            'loss_pct_from_victim': self.loss_pct_from_victim,
+            'loss_pct_to_victim': self.loss_pct_to_victim,
             'max_kbps_from_victim': self.max_kbps_from_victim,
             'max_kbps_to_victim': self.max_kbps_to_victim,
         }
@@ -263,6 +288,22 @@ class MitmForwarder:
         setattr(self, tok_attr, tokens)
         return False
 
+    @staticmethod
+    def _rng_loss_drop(pct: int) -> bool:
+        p = max(0, min(100, int(pct)))
+        if p <= 0:
+            return False
+        if p >= 100:
+            return True
+        return random.random() * 100.0 < p
+
+    @staticmethod
+    def _queued_delay_ms(base: int, jitter_max: int) -> int:
+        b = max(0, min(_MAX_DELAY_MS, int(base)))
+        j = max(0, min(_MAX_DELAY_MS, int(jitter_max)))
+        extra = random.randint(0, j) if j > 0 else 0
+        return min(_MAX_DELAY_MS, b + extra)
+
     def _passes_ratio(self, pass_pct: int, direction: str, pkt_size: int) -> bool:
         pct = max(0, min(100, int(pass_pct)))
         if pct <= 0:
@@ -309,15 +350,19 @@ class MitmForwarder:
             if not self._passes_ratio(self.pass_from_victim_pct, 'out', sz):
                 self._drop_count += 1
                 return
+            if self._rng_loss_drop(self.loss_pct_from_victim):
+                self._drop_count += 1
+                return
             if not self._token_bucket_allow('out', sz, now):
                 self._drop_count += 1
                 return
             pkt[Ether].src = self.my_mac
             pkt[Ether].dst = self.router['mac']
             self._fix_checksums(pkt)
-            if self.delay_ms_from_victim > 0:
+            dms = self._queued_delay_ms(self.delay_ms_from_victim, self.jitter_ms_from_victim)
+            if dms > 0:
                 raw = bytes(pkt)
-                if self._enqueue_delayed(raw, self.delay_ms_from_victim):
+                if self._enqueue_delayed(raw, dms):
                     return
                 self._drop_count += 1
                 return
@@ -334,15 +379,19 @@ class MitmForwarder:
             if not self._passes_ratio(self.pass_to_victim_pct, 'in', sz):
                 self._drop_count += 1
                 return
+            if self._rng_loss_drop(self.loss_pct_to_victim):
+                self._drop_count += 1
+                return
             if not self._token_bucket_allow('in', sz, now):
                 self._drop_count += 1
                 return
             pkt[Ether].src = self.my_mac
             pkt[Ether].dst = self.victim['mac']
             self._fix_checksums(pkt)
-            if self.delay_ms_to_victim > 0:
+            dms = self._queued_delay_ms(self.delay_ms_to_victim, self.jitter_ms_to_victim)
+            if dms > 0:
                 raw = bytes(pkt)
-                if self._enqueue_delayed(raw, self.delay_ms_to_victim):
+                if self._enqueue_delayed(raw, dms):
                     return
                 self._drop_count += 1
                 return
