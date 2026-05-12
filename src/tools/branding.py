@@ -404,6 +404,7 @@ def install_windows_native_window_icons(window) -> bool:
         return False
 
     import ctypes
+    from ctypes import wintypes
 
     src = _windows_native_icon_source_path()
     if not src:
@@ -456,16 +457,38 @@ def install_windows_native_window_icons(window) -> bool:
 
     try:
         set_cls = user32.SetClassLongPtrW
+        _set_cls_ptr = True
     except AttributeError:
         set_cls = user32.SetClassLongW
+        _set_cls_ptr = False
 
-    if h_sm:
-        user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_sm)
-    if h_lg:
-        user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_lg)
-    if h_lg:
-        set_cls(hwnd, GCL_HICON, h_lg)
-    if h_sm:
-        set_cls(hwnd, GCL_HICONSM, h_sm)
+    # HWND / HICON may exceed 2**31-1 on Win64; default ctypes conversion for lParam overflows.
+    _sm_arg = getattr(user32.SendMessageW, 'argtypes', None)
+    _sm_res = getattr(user32.SendMessageW, 'restype', None)
+    _sc_arg = getattr(set_cls, 'argtypes', None)
+    _sc_res = getattr(set_cls, 'restype', None)
+    try:
+        user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        user32.SendMessageW.restype = wintypes.LPARAM
+        if _set_cls_ptr:
+            set_cls.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_size_t]
+            set_cls.restype = ctypes.c_size_t
+        else:
+            set_cls.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+            set_cls.restype = wintypes.DWORD
+
+        if h_sm:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_sm)
+        if h_lg:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_lg)
+        if h_lg:
+            set_cls(hwnd, GCL_HICON, h_lg)
+        if h_sm:
+            set_cls(hwnd, GCL_HICONSM, h_sm)
+    finally:
+        user32.SendMessageW.argtypes = _sm_arg
+        user32.SendMessageW.restype = _sm_res
+        set_cls.argtypes = _sc_arg
+        set_cls.restype = _sc_res
 
     return True
