@@ -1,7 +1,8 @@
 """Advanced Lag Settings — extra lag-related options (placeholder for upcoming features).
 
 Builds that include MITM forwarder controls show ``Latency (delay)`` and ``Bandwidth cap``
-sections with per-section enable toggles and Apply. ``Clumsy only`` covers ICS / WinDivert notes + status.
+sections with per-section on/off toggles (immediate apply) and a master victim toggle that
+enables both sections together. ``Clumsy only`` covers ICS / WinDivert notes + status.
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QHBoxLayout,
-    QCheckBox,
 )
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt
@@ -86,9 +86,10 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self.elmocut = parent
         self._lbl_clumsy_status: QLabel | None = None
         self._lbl_mitm_status: QLabel | None = None
-        self._chk_victim_all: QCheckBox | None = None
-        self._chk_delay_enable: QCheckBox | None = None
-        self._chk_cap_enable: QCheckBox | None = None
+        self._mitm_sync_guard = False
+        self._tog_victim_all: QPushButton | None = None
+        self._tog_delay_enable: QPushButton | None = None
+        self._tog_cap_enable: QPushButton | None = None
         self._spin_delay_up: QSpinBox | None = None
         self._spin_delay_down: QSpinBox | None = None
         self._spin_cap_up: QDoubleSpinBox | None = None
@@ -157,36 +158,63 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._refresh_clumsy_status()
         self._refresh_mitm_status()
 
+    def _mitm_toggle(self, parent: QWidget, tooltip: str = '') -> QPushButton:
+        btn = QPushButton(parent)
+        btn.setObjectName('zubcutMitmToggle')
+        btn.setCheckable(True)
+        btn.setAutoDefault(False)
+        btn.setDefault(False)
+        btn.setFixedHeight(28)
+        btn.setMinimumWidth(56)
+        if tooltip:
+            btn.setToolTip(tooltip)
+
+        def _sync_text(checked: bool) -> None:
+            btn.setText('On' if checked else 'Off')
+
+        btn.toggled.connect(_sync_text)
+        _sync_text(btn.isChecked())
+        return btn
+
+    def _set_toggle_state(self, btn: QPushButton | None, checked: bool) -> None:
+        if btn is None:
+            return
+        btn.blockSignals(True)
+        btn.setChecked(checked)
+        btn.setText('On' if checked else 'Off')
+        btn.blockSignals(False)
+
     def _persist_mitm_ui(self) -> None:
-        if self._spin_delay_up is None or self._chk_delay_enable is None:
+        if self._spin_delay_up is None or self._tog_delay_enable is None:
             return
         try:
             set_settings('mitm_delay_up_ms', int(self._spin_delay_up.value()))
             set_settings('mitm_delay_down_ms', int(self._spin_delay_down.value()))
             set_settings('mitm_cap_up_mbps', float(self._spin_cap_up.value()))
             set_settings('mitm_cap_down_mbps', float(self._spin_cap_down.value()))
-            set_settings('mitm_delay_enabled', bool(self._chk_delay_enable.isChecked()))
-            set_settings('mitm_cap_enabled', bool(self._chk_cap_enable.isChecked()))
+            set_settings('mitm_delay_enabled', bool(self._tog_delay_enable.isChecked()))
+            set_settings('mitm_cap_enabled', bool(self._tog_cap_enable.isChecked()))
         except Exception:
             pass
 
     def _mitm_effective_params(self) -> tuple[int, int, float, float]:
         """Resolve enabled sections into values passed to the main window (Mbps for caps)."""
-        du = int(self._spin_delay_up.value()) if self._chk_delay_enable.isChecked() else 0
-        dd = int(self._spin_delay_down.value()) if self._chk_delay_enable.isChecked() else 0
-        cu = float(self._spin_cap_up.value()) if self._chk_cap_enable.isChecked() else 0.0
-        cd = float(self._spin_cap_down.value()) if self._chk_cap_enable.isChecked() else 0.0
+        du = int(self._spin_delay_up.value()) if self._tog_delay_enable.isChecked() else 0
+        dd = int(self._spin_delay_down.value()) if self._tog_delay_enable.isChecked() else 0
+        cu = float(self._spin_cap_up.value()) if self._tog_cap_enable.isChecked() else 0.0
+        cd = float(self._spin_cap_down.value()) if self._tog_cap_enable.isChecked() else 0.0
         return du, dd, cu, cd
 
     def _sync_victim_master_toggle(self) -> None:
         """Keep the victim-wide toggle aligned with whether shaping is actually running."""
-        if self._chk_victim_all is None:
+        if self._tog_victim_all is None:
             return
         main = self.elmocut
         active = main is not None and bool(getattr(main, 'mitm_shaping_active', False))
-        self._chk_victim_all.blockSignals(True)
-        self._chk_victim_all.setChecked(active)
-        self._chk_victim_all.blockSignals(False)
+        self._tog_victim_all.blockSignals(True)
+        self._tog_victim_all.setChecked(active)
+        self._tog_victim_all.setText('On' if active else 'Off')
+        self._tog_victim_all.blockSignals(False)
 
     def _refresh_mitm_status(self) -> None:
         self._sync_victim_master_toggle()
@@ -200,7 +228,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         mac = getattr(main, 'mitm_shaping_mac', None) or ''
         self._lbl_mitm_status.setVisible(True)
         self._lbl_mitm_status.setText(
-            f'Shaping is active (victim MAC {mac}). Uncheck the toggle above, use Stop, or turn Kill OFF.'
+            f'Shaping is active (victim MAC {mac}). Turn the victim toggle off, use Stop, or turn Kill OFF.'
         )
         self._lbl_mitm_status.setStyleSheet('color: #8fbcbb; font-size: 11px;')
 
@@ -212,42 +240,96 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             except Exception:
                 pass
 
-    def _apply_mitm_merged(self, _which: str) -> None:
-        """Push merged latency + bandwidth according to each section's toggle and spins."""
+    def _apply_or_stop_from_toggles(self) -> None:
+        """Push merged latency + bandwidth from current toggles; stop shaping if nothing is active."""
         main = self.elmocut
         if main is None:
             return
         self._persist_mitm_ui()
         du, dd, cu, cd = self._mitm_effective_params()
         if du <= 0 and dd <= 0 and cu <= 0 and cd <= 0:
-            self._log(
-                'Enable at least one section and set non-zero delay or bandwidth caps before applying.',
-                'red',
-            )
+            if getattr(main, 'mitm_shaping_active', False):
+                main.stop_mitm_shaping(log=True)
+            self._refresh_mitm_status()
             return
         main.start_mitm_shaping_from_advanced(du, dd, cu, cd)
         self._refresh_mitm_status()
 
-    def _on_victim_shaping_toggled(self, checked: bool) -> None:
-        """Master apply/stop: on applies merged settings to the selected victim; off stops all shaping."""
+    def _on_section_delay_toggled(self, checked: bool) -> None:
+        if self._mitm_sync_guard:
+            return
+        self._persist_mitm_ui()
+        if checked:
+            du = int(self._spin_delay_up.value()) if self._spin_delay_up else 0
+            dd = int(self._spin_delay_down.value()) if self._spin_delay_down else 0
+            if du <= 0 and dd <= 0:
+                self._log('Set a non-zero upload or download delay before turning delay shaping on.', 'red')
+                self._set_toggle_state(self._tog_delay_enable, False)
+                self._sync_delay_widgets_enabled()
+                return
+        self._apply_or_stop_from_toggles()
+
+    def _on_section_cap_toggled(self, checked: bool) -> None:
+        if self._mitm_sync_guard:
+            return
+        self._persist_mitm_ui()
+        if checked:
+            cu = float(self._spin_cap_up.value()) if self._spin_cap_up else 0.0
+            cd = float(self._spin_cap_down.value()) if self._spin_cap_down else 0.0
+            if cu <= 0 and cd <= 0:
+                self._log(
+                    'Set a non-zero upload or download cap (Mbps) before turning bandwidth cap on.',
+                    'red',
+                )
+                self._set_toggle_state(self._tog_cap_enable, False)
+                self._sync_cap_widgets_enabled()
+                return
+        self._apply_or_stop_from_toggles()
+
+    def _on_mitm_spins_changed(self) -> None:
+        """While shaping is running, live-update parameters when spins change."""
+        if self._mitm_sync_guard:
+            return
         main = self.elmocut
-        if main is None:
+        if main is None or not getattr(main, 'mitm_shaping_active', False):
+            self._persist_mitm_ui()
+            return
+        self._apply_or_stop_from_toggles()
+
+    def _on_victim_shaping_toggled(self, checked: bool) -> None:
+        """Master: on enables both sections and applies; off stops shaping and turns both sections off."""
+        main = self.elmocut
+        if main is None or self._mitm_sync_guard:
             return
         if checked:
+            self._mitm_sync_guard = True
+            try:
+                self._set_toggle_state(self._tog_delay_enable, True)
+                self._set_toggle_state(self._tog_cap_enable, True)
+            finally:
+                self._mitm_sync_guard = False
+            self._sync_delay_widgets_enabled()
+            self._sync_cap_widgets_enabled()
             self._persist_mitm_ui()
             du, dd, cu, cd = self._mitm_effective_params()
             if du <= 0 and dd <= 0 and cu <= 0 and cd <= 0:
                 self._log(
-                    'Enable at least one section and set non-zero delay or bandwidth caps first.',
+                    'Set non-zero delay and/or bandwidth caps before turning the victim toggle on.',
                     'red',
                 )
-                if self._chk_victim_all is not None:
-                    self._chk_victim_all.blockSignals(True)
-                    self._chk_victim_all.setChecked(False)
-                    self._chk_victim_all.blockSignals(False)
+                self._set_toggle_state(self._tog_victim_all, False)
                 return
             main.start_mitm_shaping_from_advanced(du, dd, cu, cd)
         else:
+            self._mitm_sync_guard = True
+            try:
+                self._set_toggle_state(self._tog_delay_enable, False)
+                self._set_toggle_state(self._tog_cap_enable, False)
+            finally:
+                self._mitm_sync_guard = False
+            self._sync_delay_widgets_enabled()
+            self._sync_cap_widgets_enabled()
+            self._persist_mitm_ui()
             main.stop_mitm_shaping(log=True)
         self._refresh_mitm_status()
 
@@ -255,21 +337,31 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         main = self.elmocut
         if main is None:
             return
+        self._mitm_sync_guard = True
+        try:
+            self._set_toggle_state(self._tog_victim_all, False)
+            self._set_toggle_state(self._tog_delay_enable, False)
+            self._set_toggle_state(self._tog_cap_enable, False)
+        finally:
+            self._mitm_sync_guard = False
+        self._sync_delay_widgets_enabled()
+        self._sync_cap_widgets_enabled()
+        self._persist_mitm_ui()
         main.stop_mitm_shaping(log=True)
         self._refresh_mitm_status()
 
     def _sync_delay_widgets_enabled(self) -> None:
-        if self._chk_delay_enable is None:
+        if self._tog_delay_enable is None:
             return
-        on = self._chk_delay_enable.isChecked()
+        on = self._tog_delay_enable.isChecked()
         for w in (self._spin_delay_up, self._spin_delay_down):
             if w is not None:
                 w.setEnabled(on)
 
     def _sync_cap_widgets_enabled(self) -> None:
-        if self._chk_cap_enable is None:
+        if self._tog_cap_enable is None:
             return
-        on = self._chk_cap_enable.isChecked()
+        on = self._tog_cap_enable.isChecked()
         for w in (self._spin_cap_up, self._spin_cap_down):
             if w is not None:
                 w.setEnabled(on)
@@ -291,11 +383,20 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         intro.setStyleSheet('color: #c5c5c5; font-size: 11px;')
         inner.addWidget(intro)
 
-        self._chk_delay_enable = QCheckBox('Use delay shaping', box)
-        self._chk_delay_enable.setChecked(_settings_bool('mitm_delay_enabled', True))
-        self._chk_delay_enable.setToolTip('When off, delay values are ignored when you apply (bandwidth may still apply).')
-        self._chk_delay_enable.toggled.connect(self._sync_delay_widgets_enabled)
-        inner.addWidget(self._chk_delay_enable)
+        row_en = QHBoxLayout()
+        lbl_en = QLabel('Delay shaping', box)
+        lbl_en.setStyleSheet('color: #e8eaed;')
+        self._tog_delay_enable = self._mitm_toggle(
+            box,
+            'When off, delay is not applied; bandwidth cap may still run.',
+        )
+        self._set_toggle_state(self._tog_delay_enable, _settings_bool('mitm_delay_enabled', True))
+        self._tog_delay_enable.toggled.connect(self._sync_delay_widgets_enabled)
+        self._tog_delay_enable.toggled.connect(self._on_section_delay_toggled)
+        row_en.addWidget(lbl_en)
+        row_en.addStretch()
+        row_en.addWidget(self._tog_delay_enable)
+        inner.addLayout(row_en)
 
         form = QFormLayout()
         form.setSpacing(8)
@@ -304,6 +405,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._spin_delay_up.setSuffix(' ms')
         self._spin_delay_up.setValue(int(get_settings('mitm_delay_up_ms') or 0))
         self._spin_delay_up.setToolTip('Extra delay before forwarding victim → router traffic (0 = off).')
+        self._spin_delay_up.valueChanged.connect(lambda _v: self._on_mitm_spins_changed())
         form.addRow('Upload (out)', self._spin_delay_up)
 
         self._spin_delay_down = QSpinBox(box)
@@ -311,19 +413,10 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._spin_delay_down.setSuffix(' ms')
         self._spin_delay_down.setValue(int(get_settings('mitm_delay_down_ms') or 0))
         self._spin_delay_down.setToolTip('Extra delay before forwarding router → victim traffic (0 = off).')
+        self._spin_delay_down.valueChanged.connect(lambda _v: self._on_mitm_spins_changed())
         form.addRow('Download (in)', self._spin_delay_down)
 
         inner.addLayout(form)
-
-        row = QHBoxLayout()
-        btn = QPushButton('Apply latency', box)
-        btn.setToolTip('Apply delay settings together with the current bandwidth section toggle and values.')
-        btn.clicked.connect(lambda: self._apply_mitm_merged('delay'))
-        row.addWidget(btn)
-        row.addStretch()
-        inner.addLayout(row)
-        btn.setAutoDefault(False)
-        btn.setDefault(False)
 
         self._sync_delay_widgets_enabled()
         return box
@@ -344,11 +437,20 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         intro.setStyleSheet('color: #c5c5c5; font-size: 11px;')
         inner.addWidget(intro)
 
-        self._chk_cap_enable = QCheckBox('Use bandwidth cap', box)
-        self._chk_cap_enable.setChecked(_settings_bool('mitm_cap_enabled', True))
-        self._chk_cap_enable.setToolTip('When off, cap values are ignored when you apply (delay may still apply).')
-        self._chk_cap_enable.toggled.connect(self._sync_cap_widgets_enabled)
-        inner.addWidget(self._chk_cap_enable)
+        row_en = QHBoxLayout()
+        lbl_en = QLabel('Bandwidth cap', box)
+        lbl_en.setStyleSheet('color: #e8eaed;')
+        self._tog_cap_enable = self._mitm_toggle(
+            box,
+            'When off, caps are not applied; delay shaping may still run.',
+        )
+        self._set_toggle_state(self._tog_cap_enable, _settings_bool('mitm_cap_enabled', True))
+        self._tog_cap_enable.toggled.connect(self._sync_cap_widgets_enabled)
+        self._tog_cap_enable.toggled.connect(self._on_section_cap_toggled)
+        row_en.addWidget(lbl_en)
+        row_en.addStretch()
+        row_en.addWidget(self._tog_cap_enable)
+        inner.addLayout(row_en)
 
         form = QFormLayout()
         form.setSpacing(8)
@@ -359,6 +461,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._spin_cap_up.setSuffix(' Mbps')
         self._spin_cap_up.setValue(float(get_settings('mitm_cap_up_mbps') or 0.0))
         self._spin_cap_up.setToolTip('0 = unlimited. Drops packets over this approximate rate (upload).')
+        self._spin_cap_up.valueChanged.connect(lambda _v: self._on_mitm_spins_changed())
         form.addRow('Upload cap', self._spin_cap_up)
 
         self._spin_cap_down = QDoubleSpinBox(box)
@@ -368,19 +471,10 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._spin_cap_down.setSuffix(' Mbps')
         self._spin_cap_down.setValue(float(get_settings('mitm_cap_down_mbps') or 0.0))
         self._spin_cap_down.setToolTip('0 = unlimited. Drops packets over this approximate rate (download).')
+        self._spin_cap_down.valueChanged.connect(lambda _v: self._on_mitm_spins_changed())
         form.addRow('Download cap', self._spin_cap_down)
 
         inner.addLayout(form)
-
-        row = QHBoxLayout()
-        btn = QPushButton('Apply bandwidth', box)
-        btn.setToolTip('Apply bandwidth settings together with the current latency section toggle and values.')
-        btn.clicked.connect(lambda: self._apply_mitm_merged('bandwidth'))
-        row.addWidget(btn)
-        row.addStretch()
-        inner.addLayout(row)
-        btn.setAutoDefault(False)
-        btn.setDefault(False)
 
         self._sync_cap_widgets_enabled()
         return box
@@ -392,17 +486,24 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         lay.setContentsMargins(12, 10, 12, 12)
         lay.setSpacing(8)
 
-        self._chk_victim_all = QCheckBox('Apply all shaping to selected victim', box)
-        self._chk_victim_all.setToolTip(
-            'When checked, applies every enabled section (latency + bandwidth) to the current '
-            'table selection. When unchecked, stops all shaping for that victim.'
+        row_v = QHBoxLayout()
+        lbl_v = QLabel('All shaping for victim', box)
+        lbl_v.setStyleSheet('color: #e8eaed;')
+        self._tog_victim_all = self._mitm_toggle(
+            box,
+            'On: enables delay + bandwidth toggles and applies both to the selected device. '
+            'Off: stops shaping and turns both section toggles off.',
         )
-        self._chk_victim_all.toggled.connect(self._on_victim_shaping_toggled)
-        lay.addWidget(self._chk_victim_all)
+        self._set_toggle_state(self._tog_victim_all, False)
+        self._tog_victim_all.toggled.connect(self._on_victim_shaping_toggled)
+        row_v.addWidget(lbl_v)
+        row_v.addStretch()
+        row_v.addWidget(self._tog_victim_all)
+        lay.addLayout(row_v)
 
         hint = QLabel(
-            'Use the toggle for a single on/off for the whole stack, or use per-section Apply '
-            'to update settings while shaping runs. Stop shaping is the same as turning the toggle off.',
+            'Per-section toggles apply or remove only that piece while shaping runs. '
+            'The victim toggle turns both sections on together, or stops everything and resets both sections.',
             box,
         )
         hint.setWordWrap(True)
@@ -411,7 +512,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         row = QHBoxLayout()
         btn_stop = QPushButton('Stop shaping', box)
-        btn_stop.setToolTip('Same as unchecking “Apply all shaping to selected victim”.')
+        btn_stop.setToolTip('Stops MITM shaping for the victim (same end state as turning the victim toggle off).')
         btn_stop.clicked.connect(self._on_mitm_stop)
         row.addWidget(btn_stop)
         row.addStretch()
@@ -424,7 +525,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         btn_stop.setAutoDefault(False)
         btn_stop.setDefault(False)
-        self._chk_victim_all.setAutoDefault(False)
+        self._tog_victim_all.setAutoDefault(False)
 
         return box
 

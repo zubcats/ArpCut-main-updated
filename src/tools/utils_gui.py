@@ -838,6 +838,31 @@ QDialog#zubcutLagDupeDialog QSlider::handle:horizontal:hover {{
     background-color: {h_fill};
     border: 1px solid {acc};
 }}
+QDialog#zubcutLagDupeDialog QPushButton#zubcutMitmToggle {{
+    min-width: 52px;
+    max-width: 72px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: bold;
+    border-radius: 14px;
+}}
+QDialog#zubcutLagDupeDialog QPushButton#zubcutMitmToggle:checked {{
+    background-color: {h_fill};
+    color: #e8fffa;
+    border: 1px solid {acc};
+}}
+QDialog#zubcutLagDupeDialog QPushButton#zubcutMitmToggle:!checked {{
+    background-color: #222222;
+    color: #8a8a8a;
+    border: 1px solid #3a3a3a;
+}}
+QDialog#zubcutLagDupeDialog QPushButton#zubcutMitmToggle:hover {{
+    border: 1px solid {acc};
+}}
+QDialog#zubcutLagDupeDialog QPushButton#zubcutMitmToggle:disabled {{
+    color: #5a5a5a;
+    border: 1px solid #333333;
+}}
 """
 
 
