@@ -3511,14 +3511,24 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._refresh_flow_toggle_ui()
         self.showDevices()
 
+    def _refresh_advanced_lag_mitm_if_visible(self) -> None:
+        dlg = getattr(self, 'advanced_lag_settings_dialog', None)
+        if dlg is not None and dlg.isVisible():
+            try:
+                dlg._refresh_mitm_status()
+            except Exception:
+                pass
+
     def start_mitm_shaping_from_advanced(self, delay_up, delay_down, cap_up, cap_down):
         """MITM forwarder delay + bandwidth caps (Advanced Lag Settings)."""
         from tools.updater_core import is_experimental_build
 
         if not is_experimental_build():
             self.log('Latency and bandwidth shaping is not available in this build.', 'red')
+            self._refresh_advanced_lag_mitm_if_visible()
             return
         if not self.connected():
+            self._refresh_advanced_lag_mitm_if_visible()
             return
         du = max(0, int(delay_up))
         dd = max(0, int(delay_down))
@@ -3527,22 +3537,28 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         cd_mbps = max(0.0, float(cap_down))
         if du <= 0 and dd <= 0 and cu_mbps <= 0 and cd_mbps <= 0:
             self.log('Set at least one non-zero delay or bandwidth cap.', 'red')
+            self._refresh_advanced_lag_mitm_if_visible()
             return
         if self._toggle_start_blocked('mitmshape'):
+            self._refresh_advanced_lag_mitm_if_visible()
             return
         device = self._get_selected_device()
         if not device:
             self.log('Select a device in the list first.', 'red')
+            self._refresh_advanced_lag_mitm_if_visible()
             return
         if device.get('admin'):
             self.log('Cannot shape admin device', UI_LOG_VICTIM_BLOCK_FG)
+            self._refresh_advanced_lag_mitm_if_visible()
             return
         mac = device['mac']
         if self.mitm_shaping_active and self.mitm_shaping_mac and self.mitm_shaping_mac != mac:
             self.log('Stop shaping on the current victim before selecting another.', 'red')
+            self._refresh_advanced_lag_mitm_if_visible()
             return
         if not _is_valid_ip(device.get('ip') or ''):
             self.log('Target has no IP yet — cannot start shaping.', 'red')
+            self._refresh_advanced_lag_mitm_if_visible()
             return
 
         self.stopLagSwitch(refresh_dialog=True)
@@ -3561,6 +3577,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             )
         except Exception as exc:
             self.log(f'MITM shaping failed: {exc}', 'red')
+            self._refresh_advanced_lag_mitm_if_visible()
             return
 
         self.mitm_shaping_active = True
@@ -3582,12 +3599,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             UI_LOG_VICTIM_BLOCK_FG,
         )
         self._refresh_flow_toggle_ui()
-        dlg = getattr(self, 'advanced_lag_settings_dialog', None)
-        if dlg is not None and dlg.isVisible():
-            try:
-                dlg._refresh_mitm_status()
-            except Exception:
-                pass
+        self._refresh_advanced_lag_mitm_if_visible()
 
     def stop_mitm_shaping(self, log=True):
         if not self.mitm_shaping_active:
@@ -3620,12 +3632,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         set_settings('killed', list(self.killer.killed) * self.remember)
         self._updateKillButtonState()
         self._refresh_flow_toggle_ui()
-        dlg = getattr(self, 'advanced_lag_settings_dialog', None)
-        if dlg is not None and dlg.isVisible():
-            try:
-                dlg._refresh_mitm_status()
-            except Exception:
-                pass
+        self._refresh_advanced_lag_mitm_if_visible()
 
     def _run_kill_command(self, mac, device, turn_on, source='unknown'):
         """Immediate explicit command path: one click => one kill/unkill command."""
@@ -3672,9 +3679,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         kill_applied = True
             else:
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
-                    self.mitm_shaping_active = False
-                    self.mitm_shaping_mac = None
-                    self.killer.disable_percent_cut(mac)
+                    self.stop_mitm_shaping(log=False)
                 victim = self._victim_record_for_mac(mac) or device
                 if victim:
                     try:

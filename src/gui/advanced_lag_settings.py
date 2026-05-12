@@ -258,7 +258,6 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
     def _on_section_delay_toggled(self, checked: bool) -> None:
         if self._mitm_sync_guard:
             return
-        self._persist_mitm_ui()
         if checked:
             du = int(self._spin_delay_up.value()) if self._spin_delay_up else 0
             dd = int(self._spin_delay_down.value()) if self._spin_delay_down else 0
@@ -266,13 +265,15 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
                 self._log('Set a non-zero upload or download delay before turning delay shaping on.', 'red')
                 self._set_toggle_state(self._tog_delay_enable, False)
                 self._sync_delay_widgets_enabled()
+                self._persist_mitm_ui()
+                self._refresh_mitm_status()
                 return
+        self._persist_mitm_ui()
         self._apply_or_stop_from_toggles()
 
     def _on_section_cap_toggled(self, checked: bool) -> None:
         if self._mitm_sync_guard:
             return
-        self._persist_mitm_ui()
         if checked:
             cu = float(self._spin_cap_up.value()) if self._spin_cap_up else 0.0
             cd = float(self._spin_cap_down.value()) if self._spin_cap_down else 0.0
@@ -283,7 +284,10 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
                 )
                 self._set_toggle_state(self._tog_cap_enable, False)
                 self._sync_cap_widgets_enabled()
+                self._persist_mitm_ui()
+                self._refresh_mitm_status()
                 return
+        self._persist_mitm_ui()
         self._apply_or_stop_from_toggles()
 
     def _on_mitm_spins_changed(self) -> None:
@@ -310,6 +314,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
                     'red',
                 )
                 self._set_toggle_state(self._tog_victim_all, False)
+                self._refresh_mitm_status()
                 return
             main.start_mitm_shaping_from_advanced(du, dd, cu, cd)
         else:
