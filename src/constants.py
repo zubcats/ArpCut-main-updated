@@ -104,6 +104,7 @@ HKEY_AUTOSTART_PATH = 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run'
 
 SETTINGS_KEYS = [
     'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'iface_before_clumsy', 'nicknames',
+    'nickname_last_ip',
     'key_kill', 'key_lag', 'key_dupe', 'key_pctcut',
     'show_scan_mac_column', 'show_scan_vendor_column',
     'traffic_percent',
@@ -114,4 +115,5 @@ SETTINGS_KEYS = [
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
 # clumsy_mode default False: must be enabled in Settings (requires restart).
 # iface_before_clumsy: last Settings iface before enabling Clumsy; restored when Clumsy is turned off.
-SETTINGS_VALS = [25, False, True, False, [], True, 12, '', '', {}, 'L', 'M', 'P', 'K', False, False, 50, False]
+# nickname_last_ip: MAC -> last known IPv4 for nicknamed devices (fills table when host is missing from scan).
+SETTINGS_VALS = [25, False, True, False, [], True, 12, '', '', {}, {}, 'L', 'M', 'P', 'K', False, False, 50, False]

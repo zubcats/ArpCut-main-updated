@@ -6,7 +6,12 @@ import re
 import sys
 from typing import Optional
 
-from networking.nicknames import Nicknames
+from networking.nicknames import (
+    Nicknames,
+    get_nicknames_dict,
+    get_nickname_last_ip_map,
+    record_nickname_last_ip,
+)
 from tools.device_display import infer_network_device_type
 from tools.clumsy_inline import sync_clumsy_row, clumsy_mode_enabled
 from tools.utils import *
@@ -140,6 +145,54 @@ class Scanner():
 
         self.devices.insert(0, self.router)
 
+    def inject_nicknamed_favorites(self):
+        """
+        Insert nicknamed devices that were not in the latest scan, using the last known IPv4
+        from settings so they still appear after restart (until a scan finds them again).
+        """
+        nick_db = get_nicknames_dict()
+        if not nick_db:
+            return
+        last_map = get_nickname_last_ip_map()
+        present = {d.get('mac') for d in self.devices if isinstance(d, dict)}
+        to_add = []
+        for mac_raw, name in sorted(nick_db.items()):
+            if not name or name == '-':
+                continue
+            mac = good_mac(mac_raw)
+            if not mac or mac in present:
+                continue
+            ip = last_map.get(mac)
+            if not ip:
+                continue
+            parts = str(ip).split('.')
+            if len(parts) != 4:
+                continue
+            try:
+                if not all(0 <= int(x) <= 255 for x in parts):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            vend = get_vendor(mac)
+            try:
+                dev_type = infer_network_device_type(mac, vend, '')
+            except Exception:
+                dev_type = 'User'
+            to_add.append(
+                {
+                    'ip': ip,
+                    'mac': mac,
+                    'vendor': vend,
+                    'type': dev_type,
+                    'name': name,
+                    'admin': False,
+                }
+            )
+        insert_at = 2 if len(self.devices) >= 2 else len(self.devices)
+        for d in to_add:
+            self.devices.insert(insert_at, d)
+            insert_at += 1
+
     def devices_appender(self, scan_result):
         """
         Append scan results to self.devices
@@ -175,16 +228,19 @@ class Scanner():
                 dev_type = infer_network_device_type(mac, vend, '')
             except Exception:
                 dev_type = 'User'
+            nm = nicknames.get_name(mac)
             self.devices.append(
                 {
                     'ip':     ip,
                     'mac':    mac,
                     'vendor': vend,
                     'type':   dev_type,
-                    'name':   nicknames.get_name(mac),
+                    'name':   nm,
                     'admin':  False
                 }
             )
+            if nm and nm != '-':
+                record_nickname_last_ip(mac, ip)
         
         # Remove device with old ip
         for device in self.devices[:]:
@@ -197,6 +253,8 @@ class Scanner():
 
         self.add_me()
         self.add_router()
+        self.inject_nicknamed_favorites()
+        self.old_ips = {d['mac']: d['ip'] for d in self.devices if not d.get('admin')}
         sync_clumsy_row(self)
 
         # Clear arp cache to avoid duplicates next time
@@ -221,14 +279,17 @@ class Scanner():
                 dev_type = infer_network_device_type(mac, vend, '')
             except Exception:
                 dev_type = 'User'
+            nm = nicknames.get_name(mac)
             by_mac[mac] = {
                 'ip': ip,
                 'mac': mac,
                 'vendor': vend,
                 'type': dev_type,
-                'name': nicknames.get_name(mac),
+                'name': nm,
                 'admin': False,
             }
+            if nm and nm != '-':
+                record_nickname_last_ip(mac, ip)
 
         def _sort_dev(d):
             try:
@@ -240,6 +301,8 @@ class Scanner():
         self.old_ips = {d['mac']: d['ip'] for d in self.devices}
         self.add_me()
         self.add_router()
+        self.inject_nicknamed_favorites()
+        self.old_ips = {d['mac']: d['ip'] for d in self.devices if not d.get('admin')}
         sync_clumsy_row(self)
 
     def _windows_arp_raw_text(self):

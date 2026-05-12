@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QMainWindow
 from PyQt5.QtGui import QPalette, QColor
-from networking.nicknames import Nicknames
+from networking.nicknames import Nicknames, record_nickname_last_ip
 from ui.ui_device import Ui_MainWindow
 from tools.frameless_chrome import (
     FramelessResizableMixin,
@@ -58,6 +58,7 @@ class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             name = self.device['name']
             return self.instantApplyChanges(name)
         self.__nicknames.set_name(self.device['mac'], name)
+        record_nickname_last_ip(self.device['mac'], self.device['ip'])
         self.instantApplyChanges(name)
     
     def resetName(self):

@@ -1778,6 +1778,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             sync_clumsy_row(self.scanner)
         except Exception:
             pass
+        try:
+            self.scanner.inject_nicknamed_favorites()
+        except Exception:
+            pass
         current_row = self.tableScan.currentRow()
         selected_mac = None
         selected = self._get_selected_device()

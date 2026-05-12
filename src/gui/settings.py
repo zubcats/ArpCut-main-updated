@@ -461,7 +461,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if nickname_prompt == Buttons.NO:
             nicknames = Nicknames()
             vals = SETTINGS_VALS[:]
-            vals[SETTINGS_KEYS.index('nicknames')] = nicknames.nicknames_database
+            ix_n = SETTINGS_KEYS.index('nicknames')
+            ix_ip = SETTINGS_KEYS.index('nickname_last_ip')
+            vals[ix_n] = nicknames.nicknames_database
+            try:
+                vals[ix_ip] = dict(get_settings('nickname_last_ip') or {})
+            except Exception:
+                vals[ix_ip] = {}
             export_settings(vals)
         else:
             export_settings()
