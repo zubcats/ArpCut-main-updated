@@ -86,6 +86,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self.elmocut = parent
         self._lbl_clumsy_status: QLabel | None = None
         self._lbl_mitm_status: QLabel | None = None
+        self._chk_victim_all: QCheckBox | None = None
         self._chk_delay_enable: QCheckBox | None = None
         self._chk_cap_enable: QCheckBox | None = None
         self._spin_delay_up: QSpinBox | None = None
@@ -177,7 +178,18 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         cd = float(self._spin_cap_down.value()) if self._chk_cap_enable.isChecked() else 0.0
         return du, dd, cu, cd
 
+    def _sync_victim_master_toggle(self) -> None:
+        """Keep the victim-wide toggle aligned with whether shaping is actually running."""
+        if self._chk_victim_all is None:
+            return
+        main = self.elmocut
+        active = main is not None and bool(getattr(main, 'mitm_shaping_active', False))
+        self._chk_victim_all.blockSignals(True)
+        self._chk_victim_all.setChecked(active)
+        self._chk_victim_all.blockSignals(False)
+
     def _refresh_mitm_status(self) -> None:
+        self._sync_victim_master_toggle()
         if self._lbl_mitm_status is None:
             return
         main = self.elmocut
@@ -188,7 +200,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         mac = getattr(main, 'mitm_shaping_mac', None) or ''
         self._lbl_mitm_status.setVisible(True)
         self._lbl_mitm_status.setText(
-            f'Shaping is active (victim MAC {mac}). Use Stop below or turn Kill OFF for that device.'
+            f'Shaping is active (victim MAC {mac}). Uncheck the toggle above, use Stop, or turn Kill OFF.'
         )
         self._lbl_mitm_status.setStyleSheet('color: #8fbcbb; font-size: 11px;')
 
@@ -214,6 +226,29 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             )
             return
         main.start_mitm_shaping_from_advanced(du, dd, cu, cd)
+        self._refresh_mitm_status()
+
+    def _on_victim_shaping_toggled(self, checked: bool) -> None:
+        """Master apply/stop: on applies merged settings to the selected victim; off stops all shaping."""
+        main = self.elmocut
+        if main is None:
+            return
+        if checked:
+            self._persist_mitm_ui()
+            du, dd, cu, cd = self._mitm_effective_params()
+            if du <= 0 and dd <= 0 and cu <= 0 and cd <= 0:
+                self._log(
+                    'Enable at least one section and set non-zero delay or bandwidth caps first.',
+                    'red',
+                )
+                if self._chk_victim_all is not None:
+                    self._chk_victim_all.blockSignals(True)
+                    self._chk_victim_all.setChecked(False)
+                    self._chk_victim_all.blockSignals(False)
+                return
+            main.start_mitm_shaping_from_advanced(du, dd, cu, cd)
+        else:
+            main.stop_mitm_shaping(log=True)
         self._refresh_mitm_status()
 
     def _on_mitm_stop(self) -> None:
@@ -350,33 +385,48 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._sync_cap_widgets_enabled()
         return box
 
-    def _mitm_stop_row(self, parent: QWidget) -> QWidget:
-        w = QWidget(parent)
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(4, 0, 4, 4)
-        lay.setSpacing(6)
+    def _mitm_stop_row(self, parent: QWidget) -> QGroupBox:
+        box = QGroupBox('Selected victim', parent)
+        _section_font(box)
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(12, 10, 12, 12)
+        lay.setSpacing(8)
 
-        hint = QLabel('Stop ends all MITM shaping for the current victim.', w)
+        self._chk_victim_all = QCheckBox('Apply all shaping to selected victim', box)
+        self._chk_victim_all.setToolTip(
+            'When checked, applies every enabled section (latency + bandwidth) to the current '
+            'table selection. When unchecked, stops all shaping for that victim.'
+        )
+        self._chk_victim_all.toggled.connect(self._on_victim_shaping_toggled)
+        lay.addWidget(self._chk_victim_all)
+
+        hint = QLabel(
+            'Use the toggle for a single on/off for the whole stack, or use per-section Apply '
+            'to update settings while shaping runs. Stop shaping is the same as turning the toggle off.',
+            box,
+        )
         hint.setWordWrap(True)
         hint.setStyleSheet('color: #9a9a9a; font-size: 11px;')
         lay.addWidget(hint)
 
         row = QHBoxLayout()
-        btn_stop = QPushButton('Stop shaping', w)
+        btn_stop = QPushButton('Stop shaping', box)
+        btn_stop.setToolTip('Same as unchecking “Apply all shaping to selected victim”.')
         btn_stop.clicked.connect(self._on_mitm_stop)
         row.addWidget(btn_stop)
         row.addStretch()
         lay.addLayout(row)
 
-        self._lbl_mitm_status = QLabel(w)
+        self._lbl_mitm_status = QLabel(box)
         self._lbl_mitm_status.setWordWrap(True)
         self._lbl_mitm_status.setVisible(False)
         lay.addWidget(self._lbl_mitm_status)
 
         btn_stop.setAutoDefault(False)
         btn_stop.setDefault(False)
+        self._chk_victim_all.setAutoDefault(False)
 
-        return w
+        return box
 
     def _refresh_clumsy_status(self):
         if self._lbl_clumsy_status is None:
