@@ -6,6 +6,7 @@
  1) If the user explicitly requests a branch switch in this chat, use that branch and set it as active.
  2) Otherwise, reuse the branch used by the last successful push in this chat session.
  3) If there is no prior push in this chat session, use the current configured default active branch.
-- Treat `main` as the active branch until the user explicitly instructs a branch switch (e.g. to `experimental`).
+- **Default active branch:** `experimental`. After making commits for the user’s work, **push to `origin/experimental` automatically** unless they asked to hold pushes, work offline-only, or target another branch.
+- Push to `main` only when the user explicitly asks (promotion / stable release path).
 - After a user requests a branch switch, assume all future routine commits/pushes go to the newly selected branch until instructed otherwise.
 - When promoting changes between branches, carry over only intended updates and preserve separation between update paths.
