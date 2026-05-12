@@ -8,14 +8,40 @@ from typing import Any
 
 SIGNIN_PBKDF2_ITERS_DEFAULT = 100_000
 
-try:
-    from constants import PAID_LICENSE_FILE_PATH, PAID_LICENSE_PUBLIC_KEY_B64
-except Exception:
-    # Backward compatibility for builds with older constants modules.
-    from constants import DOCUMENTS_PATH
+# Pre-renaming on-disk license (migrated to LICENSE_FILE_PATH / zubcut-license.json on read).
+_LEGACY_LICENSE_BASENAME = 'paid-license.json'
 
-    PAID_LICENSE_FILE_PATH = os.path.join(DOCUMENTS_PATH, 'paid-license.json')
-    PAID_LICENSE_PUBLIC_KEY_B64 = ''
+try:
+    from constants import LICENSE_FILE_PATH, LICENSE_PUBLIC_KEY_B64
+except Exception:
+    _appdata = os.path.join(os.environ.get('APPDATA', ''), 'ZubCut')
+    LICENSE_FILE_PATH = os.path.join(_appdata, 'zubcut-license.json')
+    LICENSE_PUBLIC_KEY_B64 = ''
+
+
+def _legacy_license_path() -> str:
+    return os.path.join(os.path.dirname(LICENSE_FILE_PATH) or '.', _LEGACY_LICENSE_BASENAME)
+
+
+def _maybe_migrate_legacy_license_file() -> None:
+    """Move old license file beside zubcut-license.json if the new name is not present."""
+    primary = LICENSE_FILE_PATH
+    legacy = _legacy_license_path()
+    try:
+        if os.path.exists(primary) or not os.path.exists(legacy):
+            return
+        os.replace(legacy, primary)
+    except OSError:
+        pass
+
+
+def _license_read_paths() -> list[str]:
+    _maybe_migrate_legacy_license_file()
+    out = [LICENSE_FILE_PATH]
+    leg = _legacy_license_path()
+    if leg and leg not in out:
+        out.append(leg)
+    return out
 
 
 def _utc_now() -> datetime:
@@ -38,8 +64,9 @@ def _canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
 
 def _effective_public_key_b64() -> str:
     return str(
-        os.environ.get('ZUBCUT_PAID_PUBLIC_KEY_B64')
-        or PAID_LICENSE_PUBLIC_KEY_B64
+        os.environ.get('ZUBCUT_LICENSE_PUBLIC_KEY_B64')
+        or os.environ.get('ZUBCUT_PAID_PUBLIC_KEY_B64')
+        or LICENSE_PUBLIC_KEY_B64
         or ''
     ).strip()
 
@@ -136,14 +163,22 @@ def validate_license_document(
 
 def install_license_document(data: dict[str, Any]) -> None:
     """Write validated license JSON to the installed license path."""
-    os.makedirs(os.path.dirname(PAID_LICENSE_FILE_PATH) or '.', exist_ok=True)
-    with open(PAID_LICENSE_FILE_PATH, 'w', encoding='utf-8') as fh:
+    os.makedirs(os.path.dirname(LICENSE_FILE_PATH) or '.', exist_ok=True)
+    with open(LICENSE_FILE_PATH, 'w', encoding='utf-8') as fh:
         json.dump(data, fh, indent=2)
 
 
 def load_and_validate_installed_license(path: str | None = None) -> LicenseValidationResult:
-    lic_path = path or PAID_LICENSE_FILE_PATH
-    if not os.path.exists(lic_path):
+    if path:
+        candidates = [path]
+    else:
+        candidates = [p for p in _license_read_paths() if p]
+    lic_path = ''
+    for cand in candidates:
+        if cand and os.path.exists(cand):
+            lic_path = cand
+            break
+    if not lic_path:
         return LicenseValidationResult(False, 'License file missing')
     try:
         data = json.load(open(lic_path, 'r', encoding='utf-8'))

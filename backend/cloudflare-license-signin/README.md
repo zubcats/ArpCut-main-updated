@@ -1,10 +1,10 @@
-# Cloudflare Worker + KV (free tier) for ZubCut paid sign-in
+# Cloudflare Worker + KV (free tier) for ZubCut license sign-in
 
 ## The idea in plain English
 
 - You get a **normal HTTPS web address** from Cloudflare (your “license server”). Nothing runs on your home PC 24/7.
 - **License Manager** sends each customer’s login data to that address when you create or change accounts.
-- **ZubCut (paid)** uses the **same address** so customers can type **account + password** and receive their license.
+- **ZubCut** uses the **same address** so customers can type **account + password** and receive their license.
 
 You need a **free Cloudflare account** and **Node.js** installed (so the `npx` commands work).
 
@@ -37,11 +37,11 @@ You need a **free Cloudflare account** and **Node.js** installed (so the `npx` c
 3. Paste the **same** string you used for `ADMIN_SECRET` into **Admin secret**.
 4. Turn on **push to cloud automatically**, click **Save cloud settings**, then **Test connection**. If the test fails, double-check the URL and secret.
 
-### C. Put the same info into the ZubCut paid build
+### C. Put the same info into the ZubCut app build
 
 1. In **License Manager**, copy the line at the top: **Public Verify Key**.
-2. In your ZubCut source, set **`PAID_LICENSE_PUBLIC_KEY_B64`** to that key (in `src/constants.py` or however you ship builds).
-3. Set **`PAID_LICENSE_SIGNIN_URL`** to the **same Worker URL** you pasted in License Manager (or tell customers to set Windows env **`ZUBCUT_PAID_SIGNIN_URL`** to that URL).
+2. In your ZubCut source, set **`LICENSE_PUBLIC_KEY_B64`** to that key (in `src/constants.py` or however you ship builds).
+3. Set **`LICENSE_SIGNIN_URL`** to the **same Worker URL** you pasted in License Manager (or tell customers to set Windows env **`ZUBCUT_LICENSE_SIGNIN_URL`** to that URL; **`ZUBCUT_PAID_SIGNIN_URL`** is still read as a legacy alias).
 
 After that, customers only need the **account name + password** you create in License Manager.
 
@@ -60,9 +60,7 @@ After that, customers only need the **account name + password** you create in Li
 
 ## ZubCut (customer app)
 
-Same as **section C**: public verify key + Worker URL in the paid build. Customers use **Settings → “Paid: Sign in or change license…”**, or see a sign-in prompt at **first launch** if they don’t have a license file yet.
-
-**`PAID_LICENSE_ENFORCEMENT`** is optional extra strictness for CI; normal releases use the public key + sign-in URL only.
+Same as **section C**: public verify key + Worker URL in the build. Customers use **Settings → “Sign in or change license…”**, or see a sign-in prompt at **first launch** if they don’t have a license file yet.
 
 ## Admin API (used by License Manager)
 

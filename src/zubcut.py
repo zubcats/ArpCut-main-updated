@@ -33,20 +33,27 @@ def _load_window_icon():
     return icon
 
 
-def _validate_paid_license_or_exit(icon) -> None:
+def _license_gated_build() -> bool:
+    c = str(UPDATE_CHANNEL or '').strip().lower()
+    if c in ('stable', 'paid'):
+        c = 'main'
+    return c in ('main', 'experimental')
+
+
+def _validate_license_or_exit(icon) -> None:
     """
-    Paid branch is always gated: no app access without a valid paid license.
+    Main and experimental builds are gated: no app access without a valid license.
     If missing/invalid, user must sign in successfully before main UI launches.
     """
-    if str(UPDATE_CHANNEL or '').strip().lower() not in ('paid', 'experimental'):
+    if not _license_gated_build():
         return
     res = load_and_validate_installed_license()
     if res.ok:
         return
 
-    from gui.paid_license_signin import get_last_signin_error, run_paid_license_signin
+    from gui.license_signin import get_last_signin_error, run_license_signin
 
-    if run_paid_license_signin(None, icon):
+    if run_license_signin(None, icon):
         res = load_and_validate_installed_license()
         if res.ok:
             return
@@ -68,15 +75,15 @@ def _validate_paid_license_or_exit(icon) -> None:
     exit(1)
 
 
-def _start_paid_runtime_validation(gui, icon) -> None:
-    """On paid builds, re-check account validity against server every 10 minutes."""
-    if str(UPDATE_CHANNEL or '').strip().lower() not in ('paid', 'experimental'):
+def _start_license_runtime_validation(gui, icon) -> None:
+    """Re-check account validity against server every 10 minutes on license-gated builds."""
+    if not _license_gated_build():
         return
 
     def _force_lockout_and_exit(reason: str) -> None:
-        if bool(getattr(gui, '_paid_lockout_in_progress', False)):
+        if bool(getattr(gui, '_license_lockout_in_progress', False)):
             return
-        gui._paid_lockout_in_progress = True
+        gui._license_lockout_in_progress = True
         try:
             gui.log('License expired or invalid. Stopping protection and closing app.', 'red')
         except Exception:
@@ -129,13 +136,13 @@ def _start_paid_runtime_validation(gui, icon) -> None:
             icon,
         )
 
-    gui._paid_runtime_last_deferred_reason = ''
+    gui._license_runtime_last_deferred_reason = ''
 
     def _log_runtime_deferred(reason: str) -> None:
         msg = str(reason or '').strip() or 'Unknown transient error.'
-        if msg == getattr(gui, '_paid_runtime_last_deferred_reason', ''):
+        if msg == getattr(gui, '_license_runtime_last_deferred_reason', ''):
             return
-        gui._paid_runtime_last_deferred_reason = msg
+        gui._license_runtime_last_deferred_reason = msg
         gui.log(f'License check deferred: {msg}', UI_LOG_RESTORE_FG)
 
     def _enforce_runtime_license() -> None:
@@ -149,7 +156,7 @@ def _start_paid_runtime_validation(gui, icon) -> None:
         url = effective_signin_url()
         ok, reason = validate_active_license_session(url, account, license_id, timeout_sec=12.0)
         if ok is True:
-            gui._paid_runtime_last_deferred_reason = ''
+            gui._license_runtime_last_deferred_reason = ''
             return
         if ok is None:
             # Transient outage/network failure; retry on next interval.
@@ -157,10 +164,10 @@ def _start_paid_runtime_validation(gui, icon) -> None:
             return
         _force_lockout_and_exit(reason)
 
-    gui._paid_runtime_validation_timer = QTimer(gui)
-    gui._paid_runtime_validation_timer.setInterval(10 * 60 * 1000)
-    gui._paid_runtime_validation_timer.timeout.connect(_enforce_runtime_license)
-    gui._paid_runtime_validation_timer.start()
+    gui._license_runtime_validation_timer = QTimer(gui)
+    gui._license_runtime_validation_timer.setInterval(10 * 60 * 1000)
+    gui._license_runtime_validation_timer.timeout.connect(_enforce_runtime_license)
+    gui._license_runtime_validation_timer.start()
     QTimer.singleShot(30 * 1000, _enforce_runtime_license)
 
 
@@ -219,9 +226,9 @@ if __name__ == "__main__":
     # Run the GUI
     migrate_settings_file()
     repair_settings()
-    _validate_paid_license_or_exit(icon)
+    _validate_license_or_exit(icon)
     GUI = ElmoCut(window_icon=icon)
-    _start_paid_runtime_validation(GUI, icon)
+    _start_license_runtime_validation(GUI, icon)
     GUI.show()
     GUI._apply_scan_table_column_layout()
     GUI._apply_status_strip_elide()

@@ -1,4 +1,4 @@
-"""Paid build: online sign-in with account name and password only (HTTPS license server)."""
+"""Online sign-in with account name and password (HTTPS license server)."""
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt
@@ -32,7 +32,7 @@ def get_last_signin_error() -> str:
     return str(_LAST_SIGNIN_ERROR or '').strip()
 
 
-def run_paid_license_signin(parent, window_icon) -> bool:
+def run_license_signin(parent, window_icon) -> bool:
     """Show modal sign-in. Returns True if user completed install and license validates on disk."""
     _set_last_signin_error('')
     if not effective_signin_url():
@@ -40,12 +40,12 @@ def run_paid_license_signin(parent, window_icon) -> bool:
         QMessageBox.critical(
             parent,
             APP_DISPLAY_NAME,
-            'This paid build has no online sign-in server configured.\n\n'
-            'Set PAID_LICENSE_SIGNIN_URL in the app build, or the environment variable\n'
-            'ZUBCUT_PAID_SIGNIN_URL, to your license server HTTPS URL.',
+            'This build has no online sign-in server configured.\n\n'
+            'Set LICENSE_SIGNIN_URL in the app build, or the environment variable\n'
+            'ZUBCUT_LICENSE_SIGNIN_URL, to your license server HTTPS URL.',
         )
         return False
-    dlg = PaidLicenseSignInDialog(parent, window_icon)
+    dlg = LicenseSignInDialog(parent, window_icon)
     if dlg.exec_() != QDialog.Accepted:
         if not get_last_signin_error():
             _set_last_signin_error('Sign-in cancelled')
@@ -56,7 +56,7 @@ def run_paid_license_signin(parent, window_icon) -> bool:
     return res.ok
 
 
-class PaidLicenseSignInDialog(QDialog):
+class LicenseSignInDialog(QDialog):
     def __init__(self, parent, window_icon):
         super().__init__(parent)
         self.setWindowTitle(f'{APP_DISPLAY_NAME} — Sign in')

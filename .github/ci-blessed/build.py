@@ -20,7 +20,7 @@ HIDDEN_IMPORTS = [
     'ctypes.wintypes',
     'tools.license_offline',
     'tools.license_remote_signin',
-    'gui.paid_license_signin',
+    'gui.license_signin',
     'gui.traffic',
     'ui.ui_traffic',
     'tools.updater_debug',

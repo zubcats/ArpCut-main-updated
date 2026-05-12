@@ -1,5 +1,5 @@
 """
-Paid sign-in: POST account + password to a HTTPS endpoint; response includes the signed license document.
+License sign-in: POST account + password to a HTTPS endpoint; response includes the signed license document.
 
 Used with the Cloudflare Worker in backend/cloudflare-license-signin/.
 """
@@ -16,11 +16,16 @@ import requests
 def effective_signin_url() -> str:
     """HTTPS license server URL (empty if not configured)."""
     try:
-        from constants import PAID_LICENSE_SIGNIN_URL
+        from constants import LICENSE_SIGNIN_URL
     except Exception:
-        PAID_LICENSE_SIGNIN_URL = ''
+        LICENSE_SIGNIN_URL = ''
     return (
-        str(os.environ.get('ZUBCUT_PAID_SIGNIN_URL') or PAID_LICENSE_SIGNIN_URL or '').strip()
+        str(
+            os.environ.get('ZUBCUT_LICENSE_SIGNIN_URL')
+            or os.environ.get('ZUBCUT_PAID_SIGNIN_URL')
+            or LICENSE_SIGNIN_URL
+            or ''
+        ).strip()
     )
 
 

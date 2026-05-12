@@ -79,12 +79,21 @@ def _settings_keybind_mono_font() -> QFont:
     return f
 
 
+def _normalized_update_channel_setting() -> str:
+    c = str(UPDATE_CHANNEL or 'experimental').strip().lower()
+    if c in ('stable', 'paid'):
+        c = 'main'
+    if c not in ('main', 'experimental'):
+        c = 'experimental'
+    return c
+
+
 def _channel_kind_label(channel: str) -> str:
-    """User-facing build line (avoid internal names like 'stable' in dialogs)."""
+    """User-facing build line (avoid internal channel codenames in dialogs)."""
     c = str(channel or '').strip().lower()
     if c == 'experimental':
         return 'Experimental / testing build'
-    return 'Regular ZubCut release'
+    return 'ZubCut'
 
 
 class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
@@ -99,16 +108,16 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setObjectName('zubcutAuxiliaryWindow')
         self._install_percent_keybind_row()
         self._install_clumsy_controls()
-        if str(UPDATE_CHANNEL or '').strip().lower() in ('paid', 'experimental'):
+        if _normalized_update_channel_setting() in ('main', 'experimental'):
             self.setMaximumSize(
                 self.maximumSize().width(),
                 self.maximumSize().height() + 48,
             )
-            self.btnPaidSignIn = QPushButton('Sign in or change license…', self.centralwidget)
-            self.btnPaidSignIn.setObjectName('btnPaidSignIn')
-            self.btnPaidSignIn.setMinimumHeight(34)
-            self.gridLayout.addWidget(self.btnPaidSignIn, 7, 0, 1, 4)
-            self.btnPaidSignIn.clicked.connect(self._on_paid_sign_in)
+            self.btnLicenseSignIn = QPushButton('Sign in or change license…', self.centralwidget)
+            self.btnLicenseSignIn.setObjectName('btnLicenseSignIn')
+            self.btnLicenseSignIn.setMinimumHeight(34)
+            self.gridLayout.addWidget(self.btnLicenseSignIn, 7, 0, 1, 4)
+            self.btnLicenseSignIn.clicked.connect(self._on_license_sign_in)
         self.adjustSize()
         self.setFixedSize(self.size())
 
@@ -124,10 +133,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnApply.clicked.connect(self.Apply)
         self.btnDefaults.clicked.connect(self.Defaults)
         self.btnUpdate.clicked.connect(self.checkUpdate)
-        channel = str(UPDATE_CHANNEL or 'experimental').strip().lower()
-        if channel not in ('stable', 'experimental'):
-            channel = 'experimental'
-        self._update_channel = channel
+        self._update_channel = _normalized_update_channel_setting()
         self._update_published_label = ''
         self._update_available = False
         self.btnUpdate.setText(self._update_button_text())
@@ -283,11 +289,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.keySeqPctCut.setObjectName('keySeqPctCut')
         self.formLayout_keys.addRow(self.labelKeyPctCut, self.keySeqPctCut)
 
-    def _on_paid_sign_in(self):
-        from gui.paid_license_signin import run_paid_license_signin
+    def _on_license_sign_in(self):
+        from gui.license_signin import run_license_signin
         from tools.license_offline import load_and_validate_installed_license
 
-        if not run_paid_license_signin(self, self.icon):
+        if not run_license_signin(self, self.icon):
             return
         if load_and_validate_installed_license().ok:
             MsgType.INFO(

@@ -2,7 +2,7 @@
 hiddenimports = [
     'gui.traffic',
     'ui.ui_traffic',
-    'gui.paid_license_signin',
+    'gui.license_signin',
     'tools.license_offline',
     'tools.license_remote_signin',
 ]
