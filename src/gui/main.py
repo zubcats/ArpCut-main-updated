@@ -3542,20 +3542,35 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self._toggle_start_blocked('mitmshape'):
             self._refresh_advanced_lag_mitm_if_visible()
             return
-        device = self._get_selected_device()
-        if not device:
-            self.log('Select a device in the list first.', 'red')
-            self._refresh_advanced_lag_mitm_if_visible()
-            return
+        # While shaping is already running, apply parameter changes to the shaped device even if
+        # the table selection moved (otherwise toggles in Advanced Lag appear to do nothing).
+        shaping_mac = self.mitm_shaping_mac if self.mitm_shaping_active else None
+        if shaping_mac:
+            selected = self._get_selected_device()
+            if selected is not None and selected.get('mac') == shaping_mac:
+                device = selected
+            else:
+                device = self._victim_record_for_mac(shaping_mac) or self._get_device_by_mac(
+                    shaping_mac
+                )
+            if not device:
+                self.log(
+                    'The device being shaped is no longer in the list — use Stop, turn Kill off, or rescan.',
+                    'red',
+                )
+                self._refresh_advanced_lag_mitm_if_visible()
+                return
+        else:
+            device = self._get_selected_device()
+            if not device:
+                self.log('Select a device in the list first.', 'red')
+                self._refresh_advanced_lag_mitm_if_visible()
+                return
         if device.get('admin'):
             self.log('Cannot shape admin device', UI_LOG_VICTIM_BLOCK_FG)
             self._refresh_advanced_lag_mitm_if_visible()
             return
         mac = device['mac']
-        if self.mitm_shaping_active and self.mitm_shaping_mac and self.mitm_shaping_mac != mac:
-            self.log('Stop shaping on the current victim before selecting another.', 'red')
-            self._refresh_advanced_lag_mitm_if_visible()
-            return
         if not _is_valid_ip(device.get('ip') or ''):
             self.log('Target has no IP yet — cannot start shaping.', 'red')
             self._refresh_advanced_lag_mitm_if_visible()
@@ -3608,10 +3623,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.mitm_shaping_active = False
         self.mitm_shaping_mac = None
         victim = self._victim_record_for_mac(prev_mac) or self._get_device_by_mac(prev_mac)
+        if victim is None and prev_mac:
+            victim = (getattr(self.killer, 'killed', None) or {}).get(prev_mac)
+        if prev_mac:
+            try:
+                self.killer.disable_percent_cut(prev_mac)
+            except Exception:
+                pass
         if victim:
             try:
                 self._ensure_network_context_for_victim(victim)
-                self.killer.disable_percent_cut(prev_mac)
                 try:
                     unblock_ip(victim.get('ip') or '')
                 except Exception:
@@ -3626,6 +3647,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
             if log:
                 self.log('MITM shaping OFF for ' + str(victim.get('ip', '')), UI_LOG_RESTORE_FG)
+        elif log and prev_mac:
+            self.log('Advanced lag shaping stopped (device no longer in list).', UI_LOG_RESTORE_FG)
         if prev_mac:
             self.killed_devices[prev_mac] = False
         self._sync_killed_devices()

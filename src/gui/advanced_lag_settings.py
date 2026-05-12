@@ -232,7 +232,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         mac = getattr(main, 'mitm_shaping_mac', None) or ''
         self._lbl_mitm_status.setVisible(True)
         self._lbl_mitm_status.setText(
-            f'Shaping is active (victim MAC {mac}). Turn the victim toggle off, use Stop, or turn Kill OFF.'
+            f'Advanced lag is active for this session (device {mac}). '
+            'Turn the victim toggle off, use Stop, or turn Kill off.'
         )
         self._lbl_mitm_status.setStyleSheet('color: #8fbcbb; font-size: 11px;')
 
@@ -356,8 +357,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         inner.setSpacing(8)
 
         intro = QLabel(
-            'Queue packets for a fixed time before forwarding (same ARP MITM path as Percent Cut). '
-            'Select a victim on your LAN; traffic must pass through this PC. Heavy load or long '
+            'Queue packets for a fixed time before forwarding each direction. '
+            'Pick a device below and keep traffic routed through this PC. Heavy load or long '
             'delays can backlog or drop packets.',
             box,
         )
@@ -373,8 +374,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             'When off, delay is not applied; bandwidth cap may still run.',
         )
         self._set_toggle_state(self._tog_delay_enable, _settings_bool('mitm_delay_enabled', True))
-        self._tog_delay_enable.toggled.connect(self._sync_delay_widgets_enabled)
         self._tog_delay_enable.toggled.connect(self._on_section_delay_toggled)
+        self._tog_delay_enable.toggled.connect(self._sync_delay_widgets_enabled)
         row_en.addWidget(lbl_en)
         row_en.addStretch()
         row_en.addWidget(self._tog_delay_enable)
@@ -412,7 +413,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         intro = QLabel(
             'Token-bucket rate limits per direction: traffic over the cap is dropped. '
-            '0 Mbps means unlimited for that direction. Uses the same forwarder path as above.',
+            '0 Mbps means unlimited for that direction.',
             box,
         )
         intro.setWordWrap(True)
@@ -427,8 +428,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             'When off, caps are not applied; delay shaping may still run.',
         )
         self._set_toggle_state(self._tog_cap_enable, _settings_bool('mitm_cap_enabled', True))
-        self._tog_cap_enable.toggled.connect(self._sync_cap_widgets_enabled)
         self._tog_cap_enable.toggled.connect(self._on_section_cap_toggled)
+        self._tog_cap_enable.toggled.connect(self._sync_cap_widgets_enabled)
         row_en.addWidget(lbl_en)
         row_en.addStretch()
         row_en.addWidget(self._tog_cap_enable)
@@ -550,7 +551,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             self._lbl_clumsy_status.setStyleSheet('color: #9a9a9a; font-size: 11px;')
 
     def _clumsy_only_section(self, parent: QWidget) -> QGroupBox:
-        """WinDivert / ICS shared-client path — not the normal ARP + firewall lag switch."""
+        """WinDivert / ICS shared-client path — separate from the main Lag Switch."""
         box = QGroupBox(self._CLUMSY_ONLY_TITLE, parent)
         _section_font(box)
         inner = QVBoxLayout(box)
@@ -560,7 +561,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         intro = QLabel(
             'These controls apply only when Clumsy mode is enabled in Settings (Windows ICS / '
             'shared clients and the inline device row). They do not change the standard '
-            'Lag Switch, which uses ARP and the firewall on the normal adapter path.',
+            'Lag Switch on the normal adapter path.',
             box,
         )
         intro.setWordWrap(True)
@@ -569,15 +570,13 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         if _mitm_sections_enabled():
             ics_note = QLabel(
-                'On ICS shared clients or when ARP MITM is unreliable, use external clumsy + WinDivert '
-                'for predictable delay and rate limits. The Latency and Bandwidth sections above use '
-                'the in-app forwarder when traffic crosses this PC.',
+                'On ICS shared clients, if the built-in delay and cap tools misbehave, use external '
+                'clumsy + WinDivert for predictable delay and rate limits.',
                 box,
             )
         else:
             ics_note = QLabel(
-                'On ICS shared clients or when ARP MITM is unreliable, use external clumsy + WinDivert '
-                'for predictable delay and rate limits.',
+                'On ICS shared clients, use external clumsy + WinDivert for predictable delay and rate limits.',
                 box,
             )
         ics_note.setWordWrap(True)
