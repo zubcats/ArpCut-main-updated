@@ -1787,6 +1787,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
         self._refresh_clumsy_flow_pin()
+        current_row = self.tableScan.currentRow()
         selected_mac = None
         selected = self._get_selected_device()
         if selected:
