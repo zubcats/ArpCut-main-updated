@@ -1,12 +1,19 @@
 from concurrent.futures.thread import ThreadPoolExecutor
+import os
 from scapy.all import Ether, arping, conf, get_if_addr
 from time import sleep
 import re
 import sys
 from typing import Optional
 
-from networking.nicknames import Nicknames
+from networking.nicknames import (
+    Nicknames,
+    get_nicknames_dict,
+    get_nickname_last_ip_map,
+    record_nickname_last_ip,
+)
 from tools.device_display import infer_network_device_type
+from tools.clumsy_inline import sync_clumsy_row, clumsy_mode_enabled
 from tools.utils import *
 from constants import *
 
@@ -14,7 +21,7 @@ class Scanner():
     def __init__(self):
         self.iface = get_default_iface()
         self.device_count = 25
-        self.max_threads = 8
+        self.max_threads = 12
         self.__ping_done = 0
         self.devices = []
         self.old_ips = {}
@@ -26,7 +33,12 @@ class Scanner():
         self.qt_log_signal = print
     
     def generate_ips(self):
-        self.ips = [f'{self.perfix}.{i}' for i in range(1, self.device_count)]
+        try:
+            n = int(self.device_count)
+        except (TypeError, ValueError):
+            n = 25
+        n = max(1, min(255, n))
+        self.ips = [f'{self.perfix}.{i}' for i in range(1, n)]
 
     def init(self):
         """
@@ -44,7 +56,53 @@ class Scanner():
         
         self.perfix = self.my_ip.rsplit(".", 1)[0]
         self.generate_ips()
-    
+
+    def sync_iface_for_victim_ip(self, victim_ip: str) -> bool:
+        """
+        If victim_ip is on a different local interface than self.iface, rebind scanner
+        topology (gateway, me, router dict) so Killer/ARP/firewall use the right NIC.
+        """
+        target = get_iface_for_victim_ip(victim_ip, fallback=self.iface)
+        if target.guid == self.iface.guid:
+            return False
+        self.iface = target
+        self.router_ip = get_gateway_ip(self.iface.guid)
+        self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
+        self.my_ip = get_my_ip(self.iface.guid)
+        self.my_mac = good_mac(self.iface.mac)
+        try:
+            self.perfix = self.my_ip.rsplit(".", 1)[0]
+        except Exception:
+            pass
+        self.generate_ips()
+        self.router = {
+            'ip': self.router_ip,
+            'mac': self.router_mac,
+            'vendor': get_vendor(self.router_mac),
+            'type': 'Router',
+            'name': '',
+            'admin': True,
+        }
+        self.me = {
+            'ip': self.my_ip,
+            'mac': self.my_mac,
+            'vendor': get_vendor(self.my_mac),
+            'type': 'Me',
+            'name': '',
+            'admin': True,
+        }
+        for row in self.devices:
+            t = row.get('type')
+            if t == 'Router':
+                row['ip'] = self.router_ip
+                row['mac'] = self.router_mac
+                row['vendor'] = get_vendor(self.router_mac)
+            elif t == 'Me':
+                row['ip'] = self.my_ip
+                row['mac'] = self.my_mac
+                row['vendor'] = get_vendor(self.my_mac)
+        return True
+
     def flush_arp(self):
         """
         Flush ARP cache
@@ -87,6 +145,54 @@ class Scanner():
 
         self.devices.insert(0, self.router)
 
+    def inject_nicknamed_favorites(self):
+        """
+        Insert nicknamed devices that were not in the latest scan, using the last known IPv4
+        from settings so they still appear after restart (until a scan finds them again).
+        """
+        nick_db = get_nicknames_dict()
+        if not nick_db:
+            return
+        last_map = get_nickname_last_ip_map()
+        present = {d.get('mac') for d in self.devices if isinstance(d, dict)}
+        to_add = []
+        for mac_raw, name in sorted(nick_db.items()):
+            if not name or name == '-':
+                continue
+            mac = good_mac(mac_raw)
+            if not mac or mac in present:
+                continue
+            ip = last_map.get(mac)
+            if not ip:
+                continue
+            parts = str(ip).split('.')
+            if len(parts) != 4:
+                continue
+            try:
+                if not all(0 <= int(x) <= 255 for x in parts):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            vend = get_vendor(mac)
+            try:
+                dev_type = infer_network_device_type(mac, vend, '')
+            except Exception:
+                dev_type = 'User'
+            to_add.append(
+                {
+                    'ip': ip,
+                    'mac': mac,
+                    'vendor': vend,
+                    'type': dev_type,
+                    'name': name,
+                    'admin': False,
+                }
+            )
+        insert_at = 2 if len(self.devices) >= 2 else len(self.devices)
+        for d in to_add:
+            self.devices.insert(insert_at, d)
+            insert_at += 1
+
     def devices_appender(self, scan_result):
         """
         Append scan results to self.devices
@@ -122,16 +228,19 @@ class Scanner():
                 dev_type = infer_network_device_type(mac, vend, '')
             except Exception:
                 dev_type = 'User'
+            nm = nicknames.get_name(mac)
             self.devices.append(
                 {
                     'ip':     ip,
                     'mac':    mac,
                     'vendor': vend,
                     'type':   dev_type,
-                    'name':   nicknames.get_name(mac),
+                    'name':   nm,
                     'admin':  False
                 }
             )
+            if nm and nm != '-':
+                record_nickname_last_ip(mac, ip)
         
         # Remove device with old ip
         for device in self.devices[:]:
@@ -144,10 +253,57 @@ class Scanner():
 
         self.add_me()
         self.add_router()
+        self.inject_nicknamed_favorites()
+        self.old_ips = {d['mac']: d['ip'] for d in self.devices if not d.get('admin')}
+        sync_clumsy_row(self)
 
         # Clear arp cache to avoid duplicates next time
         if unique:
             self.flush_arp()
+
+    def merge_client_hits(self, hits):
+        """
+        Add or update non-admin rows from probe result without discarding existing clients.
+        Keeps Me/Router rows coherent via add_me/add_router.
+        """
+        if not hits:
+            return
+        nicknames = Nicknames()
+        by_mac = {d['mac']: d for d in self.devices if not d.get('admin')}
+        for ip, mac in hits:
+            mac = good_mac(mac)
+            if ip in [self.router_ip, self.my_ip] or not mac:
+                continue
+            vend = get_vendor(mac)
+            try:
+                dev_type = infer_network_device_type(mac, vend, '')
+            except Exception:
+                dev_type = 'User'
+            nm = nicknames.get_name(mac)
+            by_mac[mac] = {
+                'ip': ip,
+                'mac': mac,
+                'vendor': vend,
+                'type': dev_type,
+                'name': nm,
+                'admin': False,
+            }
+            if nm and nm != '-':
+                record_nickname_last_ip(mac, ip)
+
+        def _sort_dev(d):
+            try:
+                return int(str(d['ip']).rsplit('.', 1)[-1])
+            except (ValueError, IndexError, TypeError, AttributeError):
+                return 0
+
+        self.devices = sorted(by_mac.values(), key=_sort_dev)
+        self.old_ips = {d['mac']: d['ip'] for d in self.devices}
+        self.add_me()
+        self.add_router()
+        self.inject_nicknamed_favorites()
+        self.old_ips = {d['mac']: d['ip'] for d in self.devices if not d.get('admin')}
+        sync_clumsy_row(self)
 
     def _windows_arp_raw_text(self):
         """Merge interface-scoped and full ARP output (``-N`` often returns nothing on some builds)."""
@@ -186,6 +342,14 @@ class Scanner():
             and my
             and my not in ('127.0.0.1', '0.0.0.0')
         )
+        # ICS / Clumsy: my_ip is often 192.168.137.x so perfix becomes 192.168.137 — restricting
+        # ARP rows to that prefix would hide every device on the main LAN (192.168.1.x, etc.).
+        if restrict_subnet:
+            try:
+                if clumsy_mode_enabled():
+                    restrict_subnet = False
+            except Exception:
+                pass
         for raw in text.split('\n'):
             line = (raw or '').strip()
             if not line:
@@ -302,9 +466,10 @@ class Scanner():
         self.__ping_done = 0
         
         self.generate_ips()
+        total_ips = len(self.ips)
         self.ping_thread_pool()
         
-        while self.__ping_done < self.device_count - 1:
+        while self.__ping_done < total_ips:
             # Add a sleep to overcome High CPU usage
             sleep(.01)
             self.qt_progress_signal(self.__ping_done)
@@ -316,7 +481,11 @@ class Scanner():
         """
         Control maximum threads running at once
         """
-        with ThreadPoolExecutor(self.max_threads) as executor:
+        n = len(self.ips)
+        # Cap workers: hundreds of concurrent subprocess pings exhausts threads/handles on Windows.
+        cap = min(self.max_threads, n, int(os.environ.get('ZUBCUT_PING_POOL_CAP', '96')))
+        workers = max(1, cap)
+        with ThreadPoolExecutor(workers) as executor:
             for ip in self.ips:
                 executor.submit(self.ping, ip)
 
@@ -336,6 +505,9 @@ class Scanner():
         Probe a specific IP using multiple methods; return (ip, mac) if discovered.
         Adds to ARP cache when possible. Best-effort cross-platform.
         """
+        ip = (ip or '').strip()
+        if not ip:
+            return None
         # Ensure scanner is initialized
         if not hasattr(self, 'my_ip') or not self.my_ip or self.my_ip == '127.0.0.1':
             try:
@@ -358,9 +530,10 @@ class Scanner():
             # 1) Try scapy arping to /32 (requires admin on Windows)
             if self.iface.name != 'NULL':
                 ans = arping(f"{ip}/32", iface=self.iface.guid, timeout=1, verbose=0)  # Use guid (Scapy/pcap name)
-                hits = [(r[1].psrc, r[1].src) for r in ans[0]]
+                rows = ans[0] if ans else []
+                hits = [(r[1].psrc, r[1].src) for r in rows]
                 if hits:
-                    self.devices_appender(hits)
+                    self.merge_client_hits(hits)
                     return hits[0]
         except Exception as e:
             # Scapy arping might fail on Windows without admin or Npcap
@@ -374,7 +547,7 @@ class Scanner():
         
         # Small delay to let ARP cache update (longer for Windows)
         from time import sleep
-        sleep(0.3)
+        sleep(0.55 if sys.platform.startswith('win') else 0.3)
         
         # 3) Parse ARP cache
         result = self.probe_ip_arp_cache_only(ip)
@@ -392,51 +565,66 @@ class Scanner():
         # Re-check ARP cache
         return self.probe_ip_arp_cache_only(ip)
 
-    def probe_ip_arp_cache_only(self, ip: str) -> Optional[tuple]:
-        if sys.platform.startswith('win'):
-            # Windows ARP format: "  IP_ADDRESS      MAC_ADDRESS      TYPE"
-            # Try with interface IP first
-            if self.my_ip and self.my_ip != '127.0.0.1':
-                cache = terminal(f'arp -a {ip} -N {self.my_ip}') or ''
-            else:
-                # Fallback: query all ARP entries
-                cache = terminal(f'arp -a {ip}') or ''
-            
-            if cache:
-                # Windows ARP output format:
-                # " 192.168.1.1          00-11-22-33-44-55     dynamic"
-                # or "Interface: 192.168.1.100 --- 0x3\n  192.168.1.1          00-11-22-33-44-55     dynamic"
-                for line in cache.split('\n'):
-                    line = line.strip()
-                    if not line or 'Interface:' in line:
-                        continue
-                    # Look for IP and MAC in the line
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        # Check if first part is the IP we're looking for
-                        if parts[0] == ip:
-                            # Second part should be MAC (might be in format 00-11-22 or 00:11:22)
-                            mac_candidate = parts[1].replace('-', ':')
-                            mac = good_mac(mac_candidate)
-                            if mac and mac != GLOBAL_MAC:
-                                self.devices_appender([(ip, mac)])
-                                return (ip, mac)
-                        # Also check if IP appears anywhere in the line
-                        elif ip in line:
-                            # Extract MAC using regex
-                            macs = re.findall(r'([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})', line)
-                            if macs:
-                                mac = good_mac(macs[0])
-                                if mac and mac != GLOBAL_MAC:
-                                    self.devices_appender([(ip, mac)])
-                                    return (ip, mac)
-        else:
-            cache = terminal('arp -an') or ''
-            for line in cache.split('\n'):
-                if ip in line:
-                    macs = re.findall(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', line)
+    @staticmethod
+    def _windows_parse_arp_probe_hit(cache: str, want_ip: str) -> Optional[tuple]:
+        """Parse Windows ``arp -a`` output for a single IPv4; return (ip, mac) or None."""
+        if not cache or not want_ip:
+            return None
+        for raw in cache.split('\n'):
+            line = (raw or '').strip()
+            if not line:
+                continue
+            low = line.lower()
+            if 'interface:' in low or 'schnittstelle:' in low:
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                if parts[0] == want_ip:
+                    mac_candidate = parts[1].replace('-', ':')
+                    mac = good_mac(mac_candidate)
+                    if mac and mac != GLOBAL_MAC:
+                        return (want_ip, mac)
+                elif want_ip in line:
+                    macs = re.findall(
+                        r'([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})',
+                        line,
+                    )
                     if macs:
                         mac = good_mac(macs[0])
-                        self.devices_appender([(ip, mac)])
-                        return (ip, mac)
+                        if mac and mac != GLOBAL_MAC:
+                            return (want_ip, mac)
+        return None
+
+    def probe_ip_arp_cache_only(self, ip: str) -> Optional[tuple]:
+        ip = (ip or '').strip()
+        if not ip:
+            return None
+        if sys.platform.startswith('win'):
+            # ``arp -a ip -N my_ip`` only sees that adapter's table. With ICS, my_ip is often
+            # 192.168.137.x while the target is on 192.168.1.x — the entry lives on Wi‑Fi/LAN.
+            # Try scoped query, then address-only, then full table.
+            sources = []
+            my = (getattr(self, 'my_ip', None) or '').strip()
+            if my and my not in ('127.0.0.1', '0.0.0.0'):
+                sources.append(terminal(f'arp -a {ip} -N {my}') or '')
+            sources.append(terminal(f'arp -a {ip}') or '')
+            sources.append(terminal('arp -a') or '')
+            seen_txt = set()
+            for cache in sources:
+                if not cache or cache in seen_txt:
+                    continue
+                seen_txt.add(cache)
+                hit = self._windows_parse_arp_probe_hit(cache, ip)
+                if hit:
+                    self.merge_client_hits([hit])
+                    return hit
+            return None
+        cache = terminal('arp -an') or ''
+        for line in cache.split('\n'):
+            if ip in line:
+                macs = re.findall(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', line)
+                if macs:
+                    mac = good_mac(macs[0])
+                    self.merge_client_hits([(ip, mac)])
+                    return (ip, mac)
         return None

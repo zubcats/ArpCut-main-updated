@@ -332,8 +332,57 @@ def pf_test_roundtrip(iface: str, victim_ip: str) -> bool:
 
 # ============== IP BLOCKING ==============
 
+def _win_ip_block_rule_base(ip: str) -> str:
+    return f'zubcut_ip_{ip.replace(".", "_")}'
+
+
+def _win_ip_block_rule_suffixes():
+    """All names we may have created (generic any-proto + legacy per-proto)."""
+    return (
+        '_in',
+        '_out',
+        '_in_icmp',
+        '_out_icmp',
+        '_in_udp',
+        '_out_udp',
+        '_in_tcp',
+        '_out_tcp',
+    )
+
+
+def windows_delete_zubcut_ip_rules(ip: str) -> bool:
+    """
+    Remove all ZubCut firewall rules for this remote IP (best-effort; missing rules OK).
+    Used before re-applying block_ip and by unblock_ip on Windows.
+    """
+    if not sys.platform.startswith('win'):
+        return False
+    if not _is_valid_ip(ip):
+        return False
+    rule_base = _win_ip_block_rule_base(ip)
+    any_ok = False
+    last_err = ''
+    for suffix in _win_ip_block_rule_suffixes():
+        res = _exec(
+            f'netsh advfirewall firewall delete rule name="{rule_base}{suffix}"'
+        )
+        if res.returncode == 0:
+            any_ok = True
+        elif res.stderr or res.stdout:
+            last_err = (res.stderr or res.stdout or '').strip()
+    if not any_ok and last_err:
+        _set_err(last_err)
+    else:
+        _set_err('')
+    return any_ok
+
+
 def block_ip(iface: str, ip: str, direction: str = 'both') -> bool:
-    """Block all traffic to/from a specific IP."""
+    """
+    Block traffic to/from a specific IP.
+    On Windows: in/out rules with no protocol= so WFP matches all traffic for that remoteip
+    (Kill / full cut), plus explicit ICMPv4 for ping/PMTUD. macOS: ip-level block on iface.
+    """
     # Validate IP first
     if not _is_valid_ip(ip):
         _set_err(f'Invalid IP address: {ip}')
@@ -348,18 +397,41 @@ def block_ip(iface: str, ip: str, direction: str = 'both') -> bool:
         ]
         return _write_pf_rules(rules, replace=False)
     elif sys.platform.startswith('win'):
-        rule_name = f'zubcut_ip_{ip.replace(".", "_")}'
+        # Replace any prior rules for this IP so re-apply (Lag/Kill) stays idempotent.
+        windows_delete_zubcut_ip_rules(ip)
+        rule_base = _win_ip_block_rule_base(ip)
         ok = True
+        last_res = None
+        # All protocols: omit protocol= (same as "Any" in Windows Firewall).
         if direction in ('in', 'both'):
-            res = _exec(f'netsh advfirewall firewall add rule name="{rule_name}_in" dir=in action=block remoteip={ip} enable=yes')
-            ok = ok and res.returncode == 0
+            name = f'{rule_base}_in'
+            last_res = _exec(
+                f'netsh advfirewall firewall add rule name="{name}" dir=in action=block remoteip={ip} '
+                f'enable=yes profile=any'
+            )
+            ok = ok and last_res.returncode == 0
         if direction in ('out', 'both'):
-            res = _exec(f'netsh advfirewall firewall add rule name="{rule_name}_out" dir=out action=block remoteip={ip} enable=yes')
-            ok = ok and res.returncode == 0
+            name = f'{rule_base}_out'
+            last_res = _exec(
+                f'netsh advfirewall firewall add rule name="{name}" dir=out action=block remoteip={ip} '
+                f'enable=yes profile=any'
+            )
+            ok = ok and last_res.returncode == 0
         if not ok:
-            _set_err(res.stderr or res.stdout or 'netsh failed')
+            _set_err((last_res.stderr or last_res.stdout or 'netsh failed') if last_res else 'netsh failed')
         else:
             _set_err('')
+        # ICMPv4 explicit — best-effort (does not affect ok; generic rules often cover ICMP too).
+        if direction in ('in', 'both'):
+            _exec(
+                f'netsh advfirewall firewall add rule name="{rule_base}_in_icmp" dir=in action=block '
+                f'remoteip={ip} protocol=icmpv4 enable=yes profile=any'
+            )
+        if direction in ('out', 'both'):
+            _exec(
+                f'netsh advfirewall firewall add rule name="{rule_base}_out_icmp" dir=out action=block '
+                f'remoteip={ip} protocol=icmpv4 enable=yes profile=any'
+            )
         return ok
     return False
 
@@ -385,23 +457,7 @@ def unblock_ip(ip: str) -> bool:
             _set_err(str(e))
             return False
     elif sys.platform.startswith('win'):
-        # Delete both rules even if only one exists (directional block); try both every time.
-        rule_base = f'zubcut_ip_{ip.replace(".", "_")}'
-        last_err = ''
-        any_ok = False
-        for suffix in ('_in', '_out'):
-            res = _exec(
-                f'netsh advfirewall firewall delete rule name="{rule_base}{suffix}"'
-            )
-            if res.returncode == 0:
-                any_ok = True
-            elif res.stderr or res.stdout:
-                last_err = (res.stderr or res.stdout or '').strip()
-        if not any_ok and last_err:
-            _set_err(last_err)
-        else:
-            _set_err('')
-        return any_ok
+        return windows_delete_zubcut_ip_rules(ip)
     return False
 
 
@@ -432,7 +488,10 @@ def list_blocked_ips() -> list:
         import re
         res = _exec('netsh advfirewall firewall show rule name=all')
         if res.returncode == 0:
-            regex = re.compile(r'zubcut_ip_([0-9]{1,3}(?:_[0-9]{1,3}){3})_(in|out)', re.IGNORECASE)
+            regex = re.compile(
+                r'zubcut_ip_([0-9]{1,3}(?:_[0-9]{1,3}){3})_(in|out)(?:_(udp|tcp|icmp))?',
+                re.IGNORECASE,
+            )
             for line in res.stdout.splitlines():
                 line = line.strip()
                 if 'zubcut_ip_' in line.lower():

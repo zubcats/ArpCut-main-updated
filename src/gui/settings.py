@@ -1,4 +1,12 @@
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLineEdit
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QLineEdit,
+    QLabel,
+    QPushButton,
+    QKeySequenceEdit,
+    QCheckBox,
+)
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer
 import os
@@ -7,7 +15,8 @@ import sys
 from tools.utils_gui import import_settings, export_settings, get_settings, \
                       is_admin, add_to_startup, remove_from_startup, set_settings, \
                       zubcut_dark_stylesheet, \
-                      sync_translucent_chrome, register_window_surface_effects
+                      sync_translucent_chrome, register_window_surface_effects, \
+                      repair_settings
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
 from tools.qtools import MsgType, Buttons
 from tools.utils import (
@@ -35,10 +44,29 @@ from tools.updater_debug import (
 from constants import *
 import constants as _zcut_constants
 
+from tools.clumsy_inline import clumsy_bundle_offered, windivert_driver_installed
+from tools.clumsy_ics import ensure_clumsy_ics_enabled, rollback_clumsy_ics
+from tools.utils_gui import restart_zubcut
+
 _UPDATE_BTN_QSS_FALLBACK = (
     'QPushButton#btnUpdate { background-color: #1a3d28; color: #d8f0e4; font-weight: bold; '
     'border: 1px solid #2d5738; border-radius: 4px; }'
 )
+
+
+def _coerce_scan_counts(s: dict) -> dict:
+    """count/threads must be ints in range; bad JSON or types would break range() / ThreadPool."""
+    out = dict(s) if s else {}
+    for key, default, lo, hi in (
+        ('count', 25, 25, 255),
+        ('threads', 12, 5, 255),
+    ):
+        try:
+            v = int(out.get(key, default))
+            out[key] = max(lo, min(hi, v))
+        except (TypeError, ValueError):
+            out[key] = default
+    return out
 
 
 def _settings_keybind_mono_font() -> QFont:
@@ -51,12 +79,21 @@ def _settings_keybind_mono_font() -> QFont:
     return f
 
 
+def _normalized_update_channel_setting() -> str:
+    c = str(UPDATE_CHANNEL or 'experimental').strip().lower()
+    if c in ('stable', 'paid'):
+        c = 'main'
+    if c not in ('main', 'experimental'):
+        c = 'experimental'
+    return c
+
+
 def _channel_kind_label(channel: str) -> str:
-    """User-facing build line (avoid internal names like 'stable' in dialogs)."""
+    """User-facing build line (avoid internal channel codenames in dialogs)."""
     c = str(channel or '').strip().lower()
     if c == 'experimental':
         return 'Experimental / testing build'
-    return 'Regular ZubCut release'
+    return 'ZubCut'
 
 
 class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
@@ -69,6 +106,19 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setWindowIcon(icon)
         self.setupUi(self)
         self.setObjectName('zubcutAuxiliaryWindow')
+        self._install_percent_keybind_row()
+        self._install_clumsy_controls()
+        if _normalized_update_channel_setting() in ('main', 'experimental'):
+            self.setMaximumSize(
+                self.maximumSize().width(),
+                self.maximumSize().height() + 48,
+            )
+            self.btnLicenseSignIn = QPushButton('Sign in or change license…', self.centralwidget)
+            self.btnLicenseSignIn.setObjectName('btnLicenseSignIn')
+            self.btnLicenseSignIn.setMinimumHeight(34)
+            self.gridLayout.addWidget(self.btnLicenseSignIn, 7, 0, 1, 4)
+            self.btnLicenseSignIn.clicked.connect(self._on_license_sign_in)
+        self.adjustSize()
         self.setFixedSize(self.size())
 
         self.loadInterfaces()
@@ -83,21 +133,180 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnApply.clicked.connect(self.Apply)
         self.btnDefaults.clicked.connect(self.Defaults)
         self.btnUpdate.clicked.connect(self.checkUpdate)
-        channel = str(UPDATE_CHANNEL or 'experimental').strip().lower()
-        if channel not in ('stable', 'experimental'):
-            channel = 'experimental'
-        self._update_channel = channel
+        self._update_channel = _normalized_update_channel_setting()
         self._update_published_label = ''
         self._update_available = False
         self.btnUpdate.setText(self._update_button_text())
         # Defer first HEAD check so it does not run synchronously during main window construction.
         QTimer.singleShot(0, self._deferred_initial_update_check)
+        QTimer.singleShot(0, self._refresh_clumsy_settings_widgets)
         self.chkAutoupdate.setToolTip(
             'Automatic startup updates are not used. Use Install Latest Build below when you want to update.'
         )
+        # Deprecated/unused: remove from UI to avoid confusion.
+        self.chkAutoupdate.hide()
+        # Killed-device persistence is deprecated: always off (users can re-kill manually).
+        self.chkRemember.hide()
+        self.chkRemember.setEnabled(False)
 
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
         register_window_surface_effects(self)
+
+    def _install_clumsy_controls(self):
+        self.chkClumsy = QCheckBox('Clumsy Mode', self.gridLayoutWidget_2)
+        self.chkClumsy.setToolTip('')
+        self.btnClumsyInstall = QPushButton('Install Clumsy mode…', self.gridLayoutWidget_2)
+        self.btnClumsyInstall.setToolTip(
+            'Downloads the latest experimental installer (includes optional WinDivert setup).'
+        )
+        self.gridLayout_3.addWidget(self.chkClumsy, 2, 0, 1, 2)
+        self.gridLayout_3.addWidget(self.btnClumsyInstall, 2, 2, 1, 2)
+        self.groupBox_3.setMinimumHeight(150)
+        self.gridLayoutWidget_2.setMinimumHeight(100)
+        # Clumsy row adds vertical pressure; increase keybind group height to keep labels readable.
+        self.groupBox_keys.setMinimumHeight(140)
+        self._clumsy_toggle_guard = False
+        self.chkClumsy.stateChanged.connect(self._on_clumsy_checkbox_changed)
+        self.btnClumsyInstall.clicked.connect(self._on_clumsy_install_clicked)
+
+    def _refresh_clumsy_settings_widgets(self):
+        if not sys.platform.startswith('win'):
+            self.chkClumsy.hide()
+            self.btnClumsyInstall.hide()
+            return
+        bundle = clumsy_bundle_offered()
+        driver_ok = windivert_driver_installed()
+        if bundle and driver_ok:
+            self.btnClumsyInstall.hide()
+            self.chkClumsy.show()
+        else:
+            self.chkClumsy.hide()
+            self.btnClumsyInstall.show()
+
+    def _on_clumsy_checkbox_changed(self, _state):
+        if self._clumsy_toggle_guard:
+            return
+        if not self.chkClumsy.isVisible():
+            return
+        new_v = self.chkClumsy.isChecked()
+        try:
+            old_v = bool(get_settings('clumsy_mode'))
+        except Exception:
+            old_v = False
+        if new_v == old_v:
+            return
+        if MsgType.WARN(
+            self,
+            'Restart ZubCut',
+            'Changing Clumsy mode requires a full restart.\nRestart now?',
+            Buttons.YES | Buttons.NO,
+        ) == Buttons.NO:
+            self._clumsy_toggle_guard = True
+            self.chkClumsy.setChecked(old_v)
+            self._clumsy_toggle_guard = False
+            return
+        if new_v:
+            ok, detail = ensure_clumsy_ics_enabled()
+            if not ok:
+                MsgType.ERROR(
+                    self,
+                    'Clumsy Mode',
+                    'Could not enable console sharing automatically.\n\n'
+                    + (detail or 'Unknown error.'),
+                    Buttons.OK,
+                )
+                self._clumsy_toggle_guard = True
+                self.chkClumsy.setChecked(old_v)
+                self._clumsy_toggle_guard = False
+                return
+            try:
+                cur = (get_settings('iface') or '').strip()
+            except Exception:
+                cur = ''
+            set_settings('iface_before_clumsy', cur)
+        else:
+            ok, detail = rollback_clumsy_ics()
+            if not ok:
+                MsgType.ERROR(
+                    self,
+                    'Clumsy Mode',
+                    'Could not restore your previous sharing setup.\n\n'
+                    + (detail or 'Unknown error.'),
+                    Buttons.OK,
+                )
+                self._clumsy_toggle_guard = True
+                self.chkClumsy.setChecked(old_v)
+                self._clumsy_toggle_guard = False
+                return
+            try:
+                prev = (get_settings('iface_before_clumsy') or '').strip()
+            except Exception:
+                prev = ''
+            if prev:
+                set_settings('iface', prev)
+            set_settings('iface_before_clumsy', '')
+        set_settings('clumsy_mode', new_v)
+        restart_zubcut(self.elmocut)
+
+    def _on_clumsy_install_clicked(self):
+        url = (UPDATE_DOWNLOAD_URL_EXPERIMENTAL or '').strip()
+        if not url:
+            MsgType.WARN(
+                self,
+                'Download not configured',
+                'No experimental installer URL is configured in this build.',
+                Buttons.OK,
+            )
+            return
+        if MsgType.WARN(
+            None,
+            'Install Clumsy mode',
+            (
+                'This downloads the latest experimental ZubCut installer '
+                '(with optional WinDivert / Clumsy components).\n'
+                'Continue?'
+            ),
+            Buttons.YES | Buttons.NO,
+        ) == Buttons.NO:
+            return
+        try:
+            path = download_update_with_progress_dialog(self, url)
+            if path is None:
+                return
+            launch_installer(path)
+            self.elmocut.quit_all()
+        except Exception as e:
+            MsgType.ERROR(
+                None,
+                'Download failed',
+                f'Could not download installer.\n{e}',
+                Buttons.OK,
+            )
+
+    def _install_percent_keybind_row(self):
+        self.labelKeyPctCut = QLabel('Percent Cut toggle (main window)', self.groupBox_keys)
+        self.keySeqPctCut = QKeySequenceEdit(self.groupBox_keys)
+        self.keySeqPctCut.setObjectName('keySeqPctCut')
+        self.formLayout_keys.addRow(self.labelKeyPctCut, self.keySeqPctCut)
+
+    def _on_license_sign_in(self):
+        from gui.license_signin import run_license_signin
+        from tools.license_offline import load_and_validate_installed_license
+
+        if not run_license_signin(self, self.icon):
+            return
+        if load_and_validate_installed_license().ok:
+            MsgType.INFO(
+                self,
+                'License',
+                'License saved. Restart ZubCut if the app still shows an old license message.',
+            )
+        else:
+            MsgType.WARN(
+                self,
+                'License',
+                'The file could not be verified. Try again or contact your administrator.',
+            )
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -105,15 +314,18 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         el = getattr(self, 'elmocut', None)
         if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
             el._sync_settings_gear_update_hint()
+        self._refresh_clumsy_settings_widgets()
 
     def Apply(self, silent_apply=False):
+        repair_settings()
         nicknames = Nicknames()
 
         count         =  self.spinCount.value()
         threads       =  self.spinThreads.value()
         is_autostart  =  self.chkAutostart.isChecked()
         is_minimized  =  self.chkMinimized.isChecked()
-        is_remember   =  self.chkRemember.isChecked()
+        # Deprecated feature: never persist killed devices across restarts.
+        is_remember   =  False
         is_autoupdate =  self.chkAutoupdate.isChecked()
         iface = self.comboInterface.currentData()
         if iface in (None, ''):
@@ -128,7 +340,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         k_kill = _portable_key(self.keySeqKill)
         k_lag = _portable_key(self.keySeqLag)
         k_dupe = _portable_key(self.keySeqDupe)
-        if not k_kill or not k_lag or not k_dupe:
+        k_pct = _portable_key(self.keySeqPctCut)
+        if not k_kill or not k_lag or not k_dupe or not k_pct:
             MsgType.WARN(
                 self,
                 'Keyboard shortcuts',
@@ -136,11 +349,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 Buttons.OK,
             )
             return
-        if len({k_kill, k_lag, k_dupe}) < 3:
+        if len({k_kill, k_lag, k_dupe, k_pct}) < 4:
             MsgType.WARN(
                 self,
                 'Keyboard shortcuts',
-                'Kill, Lag Switch, and Dupe shortcuts must all be different.',
+                'Kill, Lag Switch, Dupe, and Percent Cut shortcuts must all be different.',
                 Buttons.OK,
             )
             return
@@ -154,11 +367,34 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             remove_from_startup()
 
-        # Make sure that real-time killed devices are included
-        # If its user's first time to apply remember option
-        killed_from_json = get_settings('killed')
-        killed_live = list(self.elmocut.killer.killed)
-        killed_all = list(set(killed_from_json + killed_live)) * is_remember
+        # Persistence removed: keep settings clean; killed devices are session-only.
+        killed_all = []
+
+        try:
+            show_mac = bool(get_settings('show_scan_mac_column'))
+            show_ven = bool(get_settings('show_scan_vendor_column'))
+            traffic_pct = int(get_settings('traffic_percent'))
+        except Exception:
+            try:
+                s0 = import_settings()
+            except Exception:
+                s0 = {}
+            show_mac = bool(s0.get('show_scan_mac_column', False))
+            show_ven = bool(s0.get('show_scan_vendor_column', False))
+            try:
+                traffic_pct = int(s0.get('traffic_percent', 50))
+            except (TypeError, ValueError):
+                traffic_pct = 50
+
+        try:
+            clumsy_mode = bool(get_settings('clumsy_mode'))
+        except Exception:
+            clumsy_mode = False
+
+        try:
+            iface_stash = str(get_settings('iface_before_clumsy') or '')
+        except Exception:
+            iface_stash = ''
 
         export_settings(
             [
@@ -170,12 +406,16 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             is_autoupdate,
             threads,
             iface,
+            iface_stash,
             nicknames.nicknames_database,
             k_kill,
             k_lag,
             k_dupe,
-            bool(get_settings('show_scan_mac_column')),
-            bool(get_settings('show_scan_vendor_column')),
+            k_pct,
+            show_mac,
+            show_ven,
+            traffic_pct,
+            clumsy_mode,
             ]
         )
 
@@ -227,7 +467,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if nickname_prompt == Buttons.NO:
             nicknames = Nicknames()
             vals = SETTINGS_VALS[:]
-            vals[SETTINGS_KEYS.index('nicknames')] = nicknames.nicknames_database
+            ix_n = SETTINGS_KEYS.index('nicknames')
+            ix_ip = SETTINGS_KEYS.index('nickname_last_ip')
+            vals[ix_n] = nicknames.nicknames_database
+            try:
+                vals[ix_ip] = dict(get_settings('nickname_last_ip') or {})
+            except Exception:
+                vals[ix_ip] = {}
             export_settings(vals)
         else:
             export_settings()
@@ -236,11 +482,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.Apply()
 
     def updateElmocutSettings(self):
-        s = import_settings()
+        repair_settings()
+        s = _coerce_scan_counts(import_settings())
         self.currentSettings()
         
         self.elmocut.minimize = s['minimized']
-        self.elmocut.remember = s['remember']
+        self.elmocut.remember = False
         self.elmocut.autoupdate = s['autoupdate']
         self.elmocut.scanner.device_count = s['count']
         self.elmocut.scanner.max_threads = s['threads']
@@ -259,6 +506,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for _dlg in (
             getattr(self.elmocut, 'lag_switch_dialog', None),
             getattr(self.elmocut, 'dupe_switch_dialog', None),
+            getattr(self.elmocut, 'advanced_lag_settings_dialog', None),
         ):
             if _dlg is not None:
                 _dlg.setStyleSheet('')
@@ -272,16 +520,17 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         _w.extend(d for d in (
             getattr(self.elmocut, 'lag_switch_dialog', None),
             getattr(self.elmocut, 'dupe_switch_dialog', None),
+            getattr(self.elmocut, 'advanced_lag_settings_dialog', None),
         ) if d is not None)
         sync_translucent_chrome(_w)
         self.elmocut.refresh_keyboard_shortcuts_from_settings()
         self.elmocut._sync_scan_table_column_settings()
 
     def currentSettings(self):
-        s = import_settings()
+        s = _coerce_scan_counts(import_settings())
         self.chkAutostart.setChecked(s['autostart'])
         self.chkMinimized.setChecked(s['minimized'])
-        self.chkRemember.setChecked(s['remember'])
+        self.chkRemember.setChecked(False)
         self.chkAutoupdate.setEnabled(False)
         self.chkAutoupdate.setChecked(False)
         self.spinCount.setValue(s['count'])
@@ -303,6 +552,16 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.keySeqKill.setKeySequence(keyseq_from_setting(s.get('key_kill'), Qt.Key_L))
         self.keySeqLag.setKeySequence(keyseq_from_setting(s.get('key_lag'), Qt.Key_M))
         self.keySeqDupe.setKeySequence(keyseq_from_setting(s.get('key_dupe'), Qt.Key_P))
+        self.keySeqPctCut.setKeySequence(keyseq_from_setting(s.get('key_pctcut'), Qt.Key_K))
+
+        try:
+            clumsy_mode = bool(s.get('clumsy_mode', False))
+        except Exception:
+            clumsy_mode = False
+        self._clumsy_toggle_guard = True
+        self.chkClumsy.setChecked(clumsy_mode)
+        self._clumsy_toggle_guard = False
+        self._refresh_clumsy_settings_widgets()
 
         self._apply_keybind_section_fonts()
         self.setStyleSheet(zubcut_dark_stylesheet())
@@ -314,12 +573,14 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.labelKeyKill,
             self.labelKeyLag,
             self.labelKeyDupe,
+            self.labelKeyPctCut,
             self.keySeqKill,
             self.keySeqLag,
             self.keySeqDupe,
+            self.keySeqPctCut,
         ):
             w.setFont(f)
-        for ks in (self.keySeqKill, self.keySeqLag, self.keySeqDupe):
+        for ks in (self.keySeqKill, self.keySeqLag, self.keySeqDupe, self.keySeqPctCut):
             for le in ks.findChildren(QLineEdit):
                 le.setFont(f)
     

@@ -1,8 +1,12 @@
 from PyQt5.QtWidgets import QMainWindow
 from PyQt5.QtGui import QPalette, QColor
-from networking.nicknames import Nicknames
+from networking.nicknames import Nicknames, record_nickname_last_ip
 from ui.ui_device import Ui_MainWindow
-from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
+from tools.frameless_chrome import (
+    FramelessResizableMixin,
+    setup_frameless_main_window,
+    TITLE_BAR_HEIGHT_PX,
+)
 from tools.utils_gui import register_window_surface_effects
 
 
@@ -29,9 +33,8 @@ class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.txtNickname.returnPressed.connect(self.changeName)
 
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
-        # setup_frameless_main_window inserts a 36px CustomTitleBar above the original
-        # central widget; keep the original usable content height by growing the fixed size.
-        self.setFixedSize(base_size.width(), base_size.height() + 36)
+        # CustomTitleBar sits above the original central widget; grow height by that strip.
+        self.setFixedSize(base_size.width(), base_size.height() + TITLE_BAR_HEIGHT_PX)
         register_window_surface_effects(self)
 
     def load(self, device, current_row):
@@ -55,6 +58,7 @@ class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             name = self.device['name']
             return self.instantApplyChanges(name)
         self.__nicknames.set_name(self.device['mac'], name)
+        record_nickname_last_ip(self.device['mac'], self.device['ip'])
         self.instantApplyChanges(name)
     
     def resetName(self):

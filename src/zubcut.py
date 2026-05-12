@@ -2,12 +2,14 @@ from sys import argv, exit
 import sys as _sys, os as _os
 _sys.path.append(_os.path.dirname(__file__))
 from PyQt5.QtWidgets import QApplication, QStyleFactory
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 
 from tools.utils import goto
 from tools.crash_feedback import install_crash_feedback
 from tools.utils_gui import npcap_exists, duplicate_zubcut, repair_settings, migrate_settings_file
-from tools.branding import load_application_qicon, qicon_is_empty
+from tools.license_offline import load_and_validate_installed_license
+from tools.license_remote_signin import effective_signin_url, validate_active_license_session
+from tools.branding import load_shell_window_icon, qicon_is_empty
 from tools.qtools import msg_box, Buttons, MsgIcon
 
 from gui.main import ElmoCut
@@ -25,18 +27,182 @@ _UI_LOG_RESTORE_FG = getattr(
 
 
 def _load_window_icon():
-    icon = load_application_qicon()
+    icon = load_shell_window_icon()
     if qicon_is_empty(icon):
         return ElmoCut.processIcon(app_icon, crop_margins=True)
     return icon
 
 
+def _license_gated_build() -> bool:
+    c = str(UPDATE_CHANNEL or '').strip().lower()
+    if c in ('stable', 'paid'):
+        c = 'main'
+    return c in ('main', 'experimental')
+
+
+def _validate_license_or_exit(icon) -> None:
+    """
+    Main and experimental builds are gated: no app access without a valid license.
+    If missing/invalid, user must sign in successfully before main UI launches.
+    """
+    if not _license_gated_build():
+        return
+    res = load_and_validate_installed_license()
+    if res.ok:
+        return
+
+    from gui.license_signin import get_last_signin_error, run_license_signin
+
+    if run_license_signin(None, icon):
+        res = load_and_validate_installed_license()
+        if res.ok:
+            return
+        reason = get_last_signin_error() or res.reason or 'Unknown sign-in failure'
+        msg_box(
+            APP_DISPLAY_NAME,
+            f'Incorrect sign in.\n\nReason: {reason}',
+            MsgIcon.CRITICAL,
+            icon,
+        )
+        exit(1)
+    reason = get_last_signin_error() or 'Unknown sign-in failure'
+    msg_box(
+        APP_DISPLAY_NAME,
+        f'Incorrect sign in.\n\nReason: {reason}',
+        MsgIcon.CRITICAL,
+        icon,
+    )
+    exit(1)
+
+
+def _start_license_runtime_validation(gui, icon) -> None:
+    """Re-check account validity against server every 10 minutes on license-gated builds."""
+    if not _license_gated_build():
+        return
+
+    def _force_lockout_and_exit(reason: str) -> None:
+        if bool(getattr(gui, '_license_lockout_in_progress', False)):
+            return
+        gui._license_lockout_in_progress = True
+        try:
+            gui.log('License expired or invalid. Stopping protection and closing app.', 'red')
+        except Exception:
+            pass
+
+        # Stop active attack loops first, then aggressively send unkill a few times.
+        try:
+            gui.stopLagSwitch()
+        except Exception:
+            pass
+        try:
+            gui.stopDupe(log=False)
+            gui._flush_pending_dupe_clear_sync()
+        except Exception:
+            pass
+
+        def _unkill_pass() -> None:
+            try:
+                from tools.pfctl import unblock_ip
+
+                for v in list(getattr(gui.killer, 'killed', {}).values()):
+                    _ip = v.get('ip') if isinstance(v, dict) else None
+                    if _ip:
+                        try:
+                            unblock_ip(_ip)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            try:
+                gui.killer.unkill_all()
+            except Exception:
+                pass
+            try:
+                gui._sync_killed_devices()
+            except Exception:
+                pass
+
+        _unkill_pass()
+        QTimer.singleShot(250, _unkill_pass)
+        QTimer.singleShot(800, _unkill_pass)
+        QTimer.singleShot(1800, _unkill_pass)
+        QTimer.singleShot(2200, gui.quit_all)
+
+        # Keep visible reason for operator while shutdown proceeds.
+        msg_box(
+            APP_DISPLAY_NAME,
+            f'License expired.\n\nReason: {reason}',
+            MsgIcon.CRITICAL,
+            icon,
+        )
+
+    gui._license_runtime_last_deferred_reason = ''
+
+    def _log_runtime_deferred(reason: str) -> None:
+        msg = str(reason or '').strip() or 'Unknown transient error.'
+        if msg == getattr(gui, '_license_runtime_last_deferred_reason', ''):
+            return
+        gui._license_runtime_last_deferred_reason = msg
+        gui.log(f'License check deferred: {msg}', UI_LOG_RESTORE_FG)
+
+    def _enforce_runtime_license() -> None:
+        res = load_and_validate_installed_license()
+        if not res.ok:
+            _force_lockout_and_exit(res.reason)
+            return
+        payload = res.payload or {}
+        account = str(payload.get('user_name') or '').strip()
+        license_id = str(payload.get('license_id') or '').strip()
+        url = effective_signin_url()
+        ok, reason = validate_active_license_session(url, account, license_id, timeout_sec=12.0)
+        if ok is True:
+            gui._license_runtime_last_deferred_reason = ''
+            return
+        if ok is None:
+            # Transient outage/network failure; retry on next interval.
+            _log_runtime_deferred(reason)
+            return
+        _force_lockout_and_exit(reason)
+
+    gui._license_runtime_validation_timer = QTimer(gui)
+    gui._license_runtime_validation_timer.setInterval(10 * 60 * 1000)
+    gui._license_runtime_validation_timer.timeout.connect(_enforce_runtime_license)
+    gui._license_runtime_validation_timer.start()
+    QTimer.singleShot(30 * 1000, _enforce_runtime_license)
+
+
 # import debug.test
 
 if __name__ == "__main__":
+    # Before QApplication: real per-monitor DPI so Win32 icon loads + GetDpiForWindow match the display.
+    if _sys.platform == 'win32':
+        try:
+            import ctypes
+
+            _user32 = ctypes.windll.user32
+            _ctx_v2 = ctypes.c_void_p(-4)  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+            if hasattr(_user32, 'SetProcessDpiAwarenessContext'):
+                _user32.SetProcessDpiAwarenessContext(_ctx_v2)
+            else:
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                import ctypes
+
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     QApplication.setAttribute(Qt.AA_UseStyleSheetPropagationInWidgetStyles, True)
     app = QApplication(argv)
+    if _sys.platform == 'win32':
+        try:
+            from PyQt5.QtWinExtras import QtWin
+
+            QtWin.setCurrentProcessExplicitAppUserModelID(f'zubcats.{APP_BUNDLE_NAME}.1.0')
+        except Exception:
+            pass
     # Windows native style often ignores or mis-paints QPushButton :hover under global QSS; Fusion is reliable.
     _fusion = QStyleFactory.create('Fusion')
     if _fusion is not None:
@@ -60,9 +226,12 @@ if __name__ == "__main__":
     # Run the GUI
     migrate_settings_file()
     repair_settings()
+    _validate_license_or_exit(icon)
     GUI = ElmoCut(window_icon=icon)
+    _start_license_runtime_validation(GUI, icon)
     GUI.show()
-    GUI.resizeEvent()
+    GUI._apply_scan_table_column_layout()
+    GUI._apply_status_strip_elide()
 
     # Initialize scanner and ensure interface is valid
     GUI.scanner.init()

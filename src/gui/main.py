@@ -1,4 +1,9 @@
-﻿import time
+﻿import os
+import re
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from pyperclip import copy
 
@@ -6,10 +11,10 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QMenu, QSystemTrayIcon, QAction, QPushButton, \
                             QDialog, QFormLayout, QDialogButtonBox, QSpinBox, \
                             QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QGroupBox, \
-                            QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, \
-                            QTextEdit, QPlainTextEdit, QWidget
-from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush
-from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent
+                            QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, QSlider, \
+                            QTextEdit, QPlainTextEdit, QWidget, QHeaderView
+from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush, QFontMetrics
+from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent, pyqtSlot, QMetaObject, QEventLoop
 try:
     from PyQt5.QtWinExtras import QWinTaskbarButton
 except Exception:
@@ -20,6 +25,7 @@ from ui.ui_main import Ui_MainWindow
 from gui.settings import Settings
 from gui.about import About
 from gui.device import Device
+from gui.advanced_lag_settings import AdvancedLagSettingsDialog
 from .traffic import Traffic
 
 from networking.scanner import Scanner
@@ -41,16 +47,39 @@ from tools.frameless_chrome import (
     setup_frameless_main_window,
     CustomTitleBar,
 )
+from tools.clumsy_inline import sync_clumsy_row
 from tools.keybinds import keyseq_from_setting
 from tools.branding import (
     load_application_qicon,
+    load_shell_window_icon,
+    install_windows_native_window_icons,
     qicon_is_empty,
     crop_logo_content,
     LOGO_UI_CONTENT_FRACTION,
 )
-from tools.utils import goto, is_connected, get_default_iface
+from tools.utils import (
+    goto,
+    is_connected,
+    get_default_iface,
+)
 from tools.tray_cleanup import hide_all_system_tray_icons
-from tools.pfctl import block_ip, unblock_ip
+from tools.pfctl import _is_valid_ip, block_ip, unblock_ip
+
+
+def _dupe_net_run_unblock(ip: str) -> None:
+    try:
+        unblock_ip(ip)
+    except Exception:
+        pass
+
+
+def _dupe_net_run_block(iface: str, ip: str, direction: str):
+    try:
+        block_ip(iface, ip, direction)
+        return None
+    except Exception as exc:
+        return exc
+
 
 from assets import *
 
@@ -351,13 +380,8 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         main = self._main
         if not main or not main.lag_active or not main.lag_device_mac:
             return
-        if not main.tableScan.selectedItems():
-            return
-        try:
-            dev = main.current_index()
-        except Exception:
-            return
-        if dev['mac'] != main.lag_device_mac:
+        dev = main._get_selected_device()
+        if not dev or dev.get('mac') != main.lag_device_mac:
             return
         lag_ms, normal_ms, direction = self.values()
         main.applyLagSwitchSettings(lag_ms, normal_ms, direction)
@@ -394,18 +418,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
             main.stopLagSwitch()
             return
 
-        device = None
-        if main.tableScan.selectedItems():
-            try:
-                device = main.current_index()
-            except Exception:
-                device = None
-        if device is None:
-            # Focus can move to this dialog and clear selectedItems() while currentRow still points
-            # at the intended victim. Use currentRow as a fallback so the Lag keybind still works.
-            row = main.tableScan.currentRow()
-            if 0 <= row < len(main.scanner.devices):
-                device = main.scanner.devices[row]
+        device = main._get_selected_device()
         if device is None:
             pinned_mac = getattr(main, '_lag_dialog_target_mac', None)
             if pinned_mac:
@@ -616,8 +629,9 @@ class DupeDialog(FramelessResizableMixin, QDialog):
             self.btnDupeRun.setText('Run')
             self.btnDupeRun.setStyleSheet(main.BUTTON_NORMAL_STYLE)
         self.btnDupeRun.blockSignals(False)
+        # Network may still be tearing down in the background; UI reads idle as soon as dupe_active is false.
         self._set_controls_enabled(not on)
-        if on and main and getattr(main, 'dupe_active', False):
+        if on and getattr(main, 'dupe_active', False):
             self.set_dupe_countdown(main.dupe_remaining_ms())
         else:
             self.set_dupe_countdown(None)
@@ -660,16 +674,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
             main.stopDupe()
             return
 
-        device = None
-        if main.tableScan.selectedItems():
-            try:
-                device = main.current_index()
-            except Exception:
-                device = None
-        if device is None:
-            row = main.tableScan.currentRow()
-            if 0 <= row < len(main.scanner.devices):
-                device = main.scanner.devices[row]
+        device = main._get_selected_device()
         if device is None:
             pinned_mac = getattr(main, '_dupe_dialog_target_mac', None)
             if pinned_mac:
@@ -698,14 +703,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         super().__init__()
         self.version = '1.29'
         if window_icon is not None:
-            self.icon = window_icon
+            self.shell_icon = window_icon
         else:
-            self.icon = load_application_qicon()
-            if qicon_is_empty(self.icon):
-                self.icon = self.processIcon(app_icon, crop_margins=True)
+            self.shell_icon = load_shell_window_icon()
+            if qicon_is_empty(self.shell_icon):
+                self.shell_icon = self.processIcon(app_icon, crop_margins=True)
+        # About toolbar: looser crop keeps the full gold outline; shell uses a tighter crop (larger on taskbar).
+        self.icon = load_application_qicon(LOGO_UI_CONTENT_FRACTION)
+        if qicon_is_empty(self.icon):
+            self.icon = self.processIcon(app_icon, crop_margins=True)
+        if qicon_is_empty(self.shell_icon):
+            self.shell_icon = self.icon
 
-        # Add window icon
-        self.setWindowIcon(self.icon)
+        self.setWindowIcon(self.shell_icon)
         self.setupUi(self)
         self.setWindowTitle(APP_DISPLAY_NAME)
         apply_app_global_dark_stylesheet()
@@ -713,8 +723,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Rebalance top toolbar row so right-side empty space is used more evenly.
         self.gridLayout.removeWidget(self.btnSettings)
         self.gridLayout.removeWidget(self.btnAbout)
-        self.gridLayout.addWidget(self.btnSettings, 0, 6, 2, 1)
-        self.gridLayout.addWidget(self.btnAbout, 0, 7, 2, 2)
+        # Flush Settings + About to columns 7–8; stretch 3–6 so the gap sits between scan cluster and right cluster.
+        self.gridLayout.addWidget(self.btnSettings, 0, 7, 2, 1)
+        self.gridLayout.addWidget(self.btnAbout, 0, 8, 2, 1)
+        # Pre-72px look: 50px row height, 46px icons; wide buttons (not fixed squares) via equal column stretch + Expanding.
+        for _tb in (self.btnScanEasy, self.btnScanHard, self.btnSettings, self.btnAbout):
+            _tb.setMinimumHeight(50)
+            _tb.setIconSize(QSize(46, 46))
+            _tb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.gridLayout.setColumnStretch(0, 0)
         for _col in range(1, 9):
             self.gridLayout.setColumnStretch(_col, 1)
@@ -724,6 +740,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lblDonate.hide()
         self.gridLayout.removeWidget(self.lblcenter)
         self.gridLayout.addWidget(self.lblcenter, 3, 3, 1, 4)
+
+        # Left status strip (lblleft): elide long lines to fit; full text in tooltip.
+        self._status_strip_plain = None
+        self._status_strip_color = 'white'
 
         # Space was bound in the .ui to ARP scan; only fire when the main window is foreground.
         self.btnScanEasy.setShortcut(QKeySequence())
@@ -744,6 +764,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._shortcut_dupe_global.setContext(Qt.ApplicationShortcut)
         self._shortcut_dupe_global.setAutoRepeat(False)
         self._shortcut_dupe_global.activated.connect(self._shortcut_global_dupe)
+        self._shortcut_pctcut_global = QShortcut(QKeySequence(Qt.Key_K), self)
+        self._shortcut_pctcut_global.setContext(Qt.ApplicationShortcut)
+        self._shortcut_pctcut_global.setAutoRepeat(False)
+        self._shortcut_pctcut_global.activated.connect(self._shortcut_global_pctcut)
 
         # Main Props
         self.scanner = Scanner()
@@ -754,9 +778,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._kill_intent_seq = {}
         # Per-flow OFF intent generation (lag/dupe/unkill-all).
         self._flow_off_intent_seq = {}
+        # Explicit Kill OFF in flight: ignore killer.killed fallback until _run_kill_command finishes.
+        self._kill_teardown_mac = None
         self.lag_active = False
-        self.lag_block_ms = 1500
-        self.lag_release_ms = 1500
+        self.lag_block_ms = 9000
+        self.lag_release_ms = 100
         self.lag_device_mac = None
         self.lag_direction = 'both'  # 'both', 'in', or 'out'
         self.lag_timer = QTimer(self)
@@ -767,11 +793,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_in_allow_phase = False
         # Last started lag target; used on stop if the device row is missing from the scan list.
         self._lag_device_snapshot = None
+        self._lag_restoring_after_stop = False
+        self._lag_restoring_mac = None
 
         self.dupe_active = False
         self.dupe_device_mac = None
         self.dupe_direction = 'both'
         self.dupe_duration_ms = 5000
+        self.percent_cut_active = False
+        self.percent_cut_device_mac = None
         self._lag_dialog_target_mac = None
         self._dupe_dialog_target_mac = None
         self.dupe_timer = QTimer(self)
@@ -780,8 +810,25 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_timer.timeout.connect(self._dupe_timer_fired)
         self._dupe_elapsed = QElapsedTimer()
         self._dupe_countdown_timer = QTimer(self)
-        self._dupe_countdown_timer.setInterval(100)
+        self._dupe_countdown_timer.setInterval(50)
+        self._dupe_countdown_timer.setTimerType(Qt.PreciseTimer)
         self._dupe_countdown_timer.timeout.connect(self._tick_dupe_countdown)
+        self._dupe_arm_timer = QTimer(self)
+        self._dupe_arm_timer.setSingleShot(True)
+        self._dupe_deferred_clear_timer = QTimer(self)
+        self._dupe_deferred_clear_timer.setSingleShot(True)
+        self._dupe_pending_clear = None  # (mac, device_snapshot|None) for deferred unblock/unkill
+        self._dupe_arm_device = None  # snapshot while deferred apply is pending
+        self._dupe_restoring_after_stop = False  # true until async/sync dupe OFF clears firewall+ARP
+        self._dupe_restoring_mac = None  # victim MAC during that window (pending clear may be cleared early)
+        self._dupe_dlg_refresh_mono = 0.0
+        self._dupe_net_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='dupe_net')
+        self._dupe_end_mono = None  # wall deadline for countdown (set when block_ip finishes)
+        self._dupe_clear_future = None
+        self._dupe_async_unblock_ctx = None  # (device, prev_mac) until post-unblock slot runs
+        self._dupe_block_future = None
+        self._dupe_block_apply_pending = False
+        self._dupe_block_ctx = None  # (device, direction) while block worker runs
 
         # Button active state styles
         self.BUTTON_ACTIVE_STYLE = "background-color: #c0392b; color: white; font-weight: bold;"
@@ -799,23 +846,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.scan_thread = ScanThread()
         self.scan_thread.thread_finished.connect(self.ScanThread_Reciever)
         self.scan_thread.progress.connect(self.pgbar.setValue)
+        self.pgbar.setAttribute(Qt.WA_StyledBackground, True)
 
         # Update thread disabled for fork
         # self.update_thread = UpdateThread()
         # self.update_thread.thread_finished.connect(self.UpdateThread_Reciever)
         
         # Initialize other sub-windows
-        self.settings_window = Settings(self, self.icon)
-        self.about_window = About(self, self.icon)
-        self.device_window = Device(self, self.icon)
-        self.traffic_window = Traffic(self, self.icon)
+        self.settings_window = Settings(self, self.shell_icon)
+        self.about_window = About(self, self.shell_icon)
+        self.device_window = Device(self, self.shell_icon)
+        self.traffic_window = Traffic(self, self.shell_icon)
 
         # Connect buttons with icons and tooltips
         self.buttons = [
             (self.btnScanEasy,   self.scanEasy,      scan_easy_icon,  'ARP Scan - Fast network scan using ARP requests (may miss some devices). Shortcut: Space (only while this main window is focused).'),
             (self.btnScanHard,   self.scanHard,      scan_hard_icon,  'Ping Scan - Thorough scan using ICMP ping (slower but finds all devices)'),
-            (self.btnKillAll,    self.killAll,       killall_icon,    'Kill All - Block internet access for ALL devices on the network'),
-            (self.btnUnkillAll,  self.unkillAll,     unkillall_icon,  'Unkill All - Restore internet access for all blocked devices'),
             (self.btnSettings,   self.openSettings,  settings_icon,   'Settings - Configure scan options and network interface'),
             (self.btnAbout,      self.openAbout,     None,            f'About {APP_DISPLAY_NAME} - View credits and version info')
         ] 
@@ -829,8 +875,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if btn_icon is not None:
                 btn.setIcon(self.processIcon(btn_icon))
         self.btnAbout.setIcon(self.icon)
-        # Match ui_main (40); larger icons clip in the top grid cell.
-        self.btnAbout.setIconSize(QSize(40, 40))
 
         self.btnKill = QPushButton(self.centralwidget)
         self.btnKill.setObjectName('btnKill')
@@ -859,42 +903,173 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnLagSwitch.setAttribute(Qt.WA_StyledBackground, True)
         self.btnLagSwitch.setAutoDefault(False)
         self.btnLagSwitch.setDefault(False)
-        self.btnLagSwitch.setMinimumHeight(88)
+        self.btnLagSwitch.setMinimumHeight(72)
         self.btnLagSwitch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnLagSwitch.setToolTip(
-            'Lag Switch — Opens a window where you set lag / allow times and toggle intermittent blocking on or off. '
-            'Shortcut: M starts/stops while the Lag Switch window is active (L is Kill on the main window).'
+            'Lag Switch — start/stop intermittent blocking for selected device. '
+            'Timing/direction controls are always visible below. Shortcut: M.'
         )
-        self.gridLayout.addWidget(self.btnLagSwitch, 5, 1, 1, 3)
-        self.btnLagSwitch.clicked.connect(self.openLagSwitchDialog)
+        self.btnLagSwitch.pressed.connect(lambda: self._shortcut_global_lag())
         lag_font = QFont(self.btnLagSwitch.font())
         lag_font.setPointSize(13)
         lag_font.setBold(True)
         self.btnLagSwitch.setFont(lag_font)
-
-        self.gridLayout.addWidget(self.btnKill, 5, 4, 1, 2)
 
         self.btnDupe = QPushButton('Dupe', self.centralwidget)
         self.btnDupe.setObjectName('btnDupe')
         self.btnDupe.setAttribute(Qt.WA_StyledBackground, True)
         self.btnDupe.setAutoDefault(False)
         self.btnDupe.setDefault(False)
-        self.btnDupe.setMinimumHeight(88)
+        self.btnDupe.setMinimumHeight(72)
         self.btnDupe.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         dupe_font = QFont(self.btnDupe.font())
-        dupe_font.setPointSize(14)
+        dupe_font.setPointSize(13)
         dupe_font.setBold(True)
         self.btnDupe.setFont(dupe_font)
         self.btnDupe.setToolTip(
-            'Dupe — One-shot lag for a set time (ms), then full stop. '
-            'Does not repeat; use Lag Switch for cycles. '
-            'Shortcut: P runs/stops while the Dupe window is active.'
+            'Dupe — one-shot lag for a set duration, then full stop. '
+            'Duration/direction controls are always visible below. Shortcut: P.'
         )
-        self.gridLayout.addWidget(self.btnDupe, 5, 6, 1, 3)
-        self.btnDupe.clicked.connect(self.openDupeDialog)
+        self.btnDupe.pressed.connect(lambda: self._shortcut_global_dupe())
+
+        # Row was grid columns 3+2+3; equal stretch on outer columns keeps Lag and Dupe the same width
+        # even when lblleft/lblright minimum widths skew shared column sizes.
+        self._flowActionsRow = QWidget(self.centralwidget)
+        self._flowActionsRow.setObjectName('flowActionsRow')
+        _flow_actions_layout = QHBoxLayout(self._flowActionsRow)
+        _flow_actions_layout.setContentsMargins(0, 0, 0, 0)
+        _flow_actions_layout.setSpacing(self.gridLayout.spacing())
+        _flow_actions_layout.addWidget(self.btnLagSwitch, 3)
+        _flow_actions_layout.addWidget(self.btnKill, 2)
+        _flow_actions_layout.addWidget(self.btnDupe, 3)
+        self.gridLayout.addWidget(self._flowActionsRow, 5, 1, 1, 8)
+
+        self.groupLagInline = QGroupBox('Lag Switch Controls', self.centralwidget)
+        self.groupLagInline.setObjectName('groupLagInline')
+        self.groupLagInline.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.groupLagInlineLayout = QVBoxLayout(self.groupLagInline)
+        self.groupLagInlineLayout.setContentsMargins(8, 8, 8, 8)
+        self.groupLagInlineLayout.setSpacing(4)
+        self.lagTimingRow = QHBoxLayout()
+        self.lagTimingRow.addWidget(QLabel('Lag', self.groupLagInline))
+        self.lagSpinMain = QSpinBox(self.groupLagInline)
+        self.lagSpinMain.setRange(1, 2147483647)
+        self.lagSpinMain.setSingleStep(100)
+        self.lagSpinMain.setValue(9000)
+        self.lagSpinMain.setSuffix(' ms')
+        self.lagTimingRow.addWidget(self.lagSpinMain)
+        self.lagTimingRow.addWidget(QLabel('Normal', self.groupLagInline))
+        self.normalSpinMain = QSpinBox(self.groupLagInline)
+        self.normalSpinMain.setRange(25, 2147483647)
+        self.normalSpinMain.setSingleStep(25)
+        self.normalSpinMain.setValue(100)
+        self.normalSpinMain.setSuffix(' ms')
+        self.lagTimingRow.addWidget(self.normalSpinMain)
+        self.groupLagInlineLayout.addLayout(self.lagTimingRow)
+        self.lagDirRow = QHBoxLayout()
+        self.lagDirBoth = QCheckBox('Both', self.groupLagInline)
+        self.lagDirBoth.setChecked(True)
+        self.lagDirIncoming = QCheckBox('In', self.groupLagInline)
+        self.lagDirOutgoing = QCheckBox('Out', self.groupLagInline)
+        self.lagDirBoth.toggled.connect(
+            lambda checked: checked and (self.lagDirIncoming.setChecked(False), self.lagDirOutgoing.setChecked(False))
+        )
+        self.lagDirRow.addWidget(QLabel('Block', self.groupLagInline))
+        self.lagDirRow.addWidget(self.lagDirBoth)
+        self.lagDirRow.addWidget(self.lagDirIncoming)
+        self.lagDirRow.addWidget(self.lagDirOutgoing)
+        self.groupLagInlineLayout.addLayout(self.lagDirRow)
+        self.gridLayout.addWidget(self.groupLagInline, 6, 1, 1, 4)
+
+        self.groupDupeInline = QGroupBox('Dupe Controls', self.centralwidget)
+        self.groupDupeInline.setObjectName('groupDupeInline')
+        self.groupDupeInline.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.groupDupeInlineLayout = QVBoxLayout(self.groupDupeInline)
+        self.groupDupeInlineLayout.setContentsMargins(8, 8, 8, 8)
+        self.groupDupeInlineLayout.setSpacing(4)
+        self.dupeTimingRow = QHBoxLayout()
+        self.dupeTimingRow.addWidget(QLabel('Duration', self.groupDupeInline))
+        self.dupeSpinMain = QSpinBox(self.groupDupeInline)
+        self.dupeSpinMain.setRange(1, 2147483647)
+        self.dupeSpinMain.setSingleStep(100)
+        self.dupeSpinMain.setValue(5000)
+        self.dupeSpinMain.setSuffix(' ms')
+        self.dupeTimingRow.addWidget(self.dupeSpinMain)
+        self.groupDupeInlineLayout.addLayout(self.dupeTimingRow)
+        self.dupeDirRow = QHBoxLayout()
+        self.dupeDirBoth = QCheckBox('Both', self.groupDupeInline)
+        self.dupeDirBoth.setChecked(True)
+        self.dupeDirIncoming = QCheckBox('In', self.groupDupeInline)
+        self.dupeDirOutgoing = QCheckBox('Out', self.groupDupeInline)
+        self.dupeDirBoth.toggled.connect(
+            lambda checked: checked and (self.dupeDirIncoming.setChecked(False), self.dupeDirOutgoing.setChecked(False))
+        )
+        self.dupeDirRow.addWidget(QLabel('Block', self.groupDupeInline))
+        self.dupeDirRow.addWidget(self.dupeDirBoth)
+        self.dupeDirRow.addWidget(self.dupeDirIncoming)
+        self.dupeDirRow.addWidget(self.dupeDirOutgoing)
+        self.groupDupeInlineLayout.addLayout(self.dupeDirRow)
+        self.lblDupeCountdownMain = QLabel('', self.groupDupeInline)
+        self.lblDupeCountdownMain.setObjectName('lblDupeCountdownMain')
+        self.lblDupeCountdownMain.setVisible(False)
+        self.groupDupeInlineLayout.addWidget(self.lblDupeCountdownMain)
+        self.gridLayout.addWidget(self.groupDupeInline, 6, 5, 1, 4)
+
+        self.lblPercentCut = QLabel('Cut %', self.centralwidget)
+        self.lblPercentCut.setObjectName('lblPercentCut')
+        self.lblPercentCut.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        self.gridLayout.addWidget(self.lblPercentCut, 7, 1, 1, 1)
+
+        self.sliderPercentCutMain = QSlider(Qt.Horizontal, self.centralwidget)
+        self.sliderPercentCutMain.setObjectName('sliderPercentCutMain')
+        self.sliderPercentCutMain.setRange(1, 100)
+        self.sliderPercentCutMain.setSingleStep(1)
+        self.gridLayout.addWidget(self.sliderPercentCutMain, 7, 2, 1, 3)
+
+        self.spinPercentCutMain = QSpinBox(self.centralwidget)
+        self.spinPercentCutMain.setObjectName('spinPercentCutMain')
+        self.spinPercentCutMain.setRange(1, 100)
+        self.spinPercentCutMain.setSuffix('%')
+        self.gridLayout.addWidget(self.spinPercentCutMain, 7, 5, 1, 1)
+
+        # Same minimum width for all inline timing / percent spinboxes (short "%" values shrink the Cut % box otherwise).
+        _inline_spin_min_w = 140
+        for _sb in (
+            self.lagSpinMain,
+            self.normalSpinMain,
+            self.dupeSpinMain,
+            self.spinPercentCutMain,
+        ):
+            _sb.setMinimumWidth(_inline_spin_min_w)
+
+        self.btnPercentCut = QPushButton('Percent Cut: OFF', self.centralwidget)
+        self.btnPercentCut.setObjectName('btnPercentCut')
+        self.btnPercentCut.setAttribute(Qt.WA_StyledBackground, True)
+        self.btnPercentCut.setAutoDefault(False)
+        self.btnPercentCut.setDefault(False)
+        self.btnPercentCut.setMinimumHeight(72)
+        self.btnPercentCut.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btnPercentCut.setToolTip(
+            'Percent Cut toggle — applies percentage-based traffic cut to selected device. '
+            'Shortcut: K (main app window in foreground).'
+        )
+        self.gridLayout.addWidget(self.btnPercentCut, 7, 6, 1, 3)
+        self.btnPercentCut.pressed.connect(lambda: self.togglePercentCut('mouse_pressed'))
+        for _flow_btn in (self.btnKill, self.btnLagSwitch, self.btnDupe, self.btnPercentCut):
+            _flow_btn.setContextMenuPolicy(Qt.CustomContextMenu)
+            _flow_btn.customContextMenuRequested.connect(self._on_main_flow_toggle_context_menu)
+
+        self.sliderPercentCutMain.valueChanged.connect(self.spinPercentCutMain.setValue)
+        self.spinPercentCutMain.valueChanged.connect(self.sliderPercentCutMain.setValue)
+        self.spinPercentCutMain.valueChanged.connect(self._on_percent_cut_value_changed)
+        self.sliderPercentCutMain.setValue(self._percent_cut_value())
 
         self.lag_switch_dialog = None
         self.dupe_switch_dialog = None
+        self.advanced_lag_settings_dialog = None
+        self.gridLayout.setSpacing(4)
+        self.gridLayout.setVerticalSpacing(4)
+        self.setMinimumSize(QSize(800, 560))
 
         self.refresh_keyboard_shortcuts_from_settings()
 
@@ -933,21 +1108,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         show_option = QAction('Show', self)
         hide_option = QAction('Hide', self)
         quit_option = QAction('Quit', self)
-        kill_option = QAction(self.processIcon(kill_icon), '&Kill All', self)
-        unkill_option = QAction(self.processIcon(unkillall_icon), '&Unkill All', self)
-        
         show_option.triggered.connect(self.trayShowClicked)
         hide_option.triggered.connect(self.hide_all)
         quit_option.triggered.connect(self.quit_all)
-        kill_option.triggered.connect(self.killAll)
-        unkill_option.triggered.connect(self.unkillAll)
-        
+
         tray_menu = QMenu()
         tray_menu.addAction(show_option)
         tray_menu.addAction(hide_option)
-        tray_menu.addSeparator()
-        tray_menu.addAction(kill_option)
-        tray_menu.addAction(unkill_option)
         tray_menu.addSeparator()
         self.traffic_option = QAction('Traffic for Selected', self)
         self.traffic_option.triggered.connect(self.openTraffic)
@@ -957,7 +1124,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Parent the tray to the QApplication, not the main window, so teardown order
         # does not drop the icon before hide() runs (reduces ghost icons on Windows).
         self.tray_icon = QSystemTrayIcon(QApplication.instance())
-        self.tray_icon.setIcon(self.icon)
+        self.tray_icon.setIcon(self.shell_icon)
         self.tray_icon.setToolTip(APP_DISPLAY_NAME)
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.show()
@@ -973,7 +1140,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         apply_app_global_dark_stylesheet()
         self._repolish_chrome_pushbuttons()
 
-        setup_frameless_main_window(self, APP_DISPLAY_NAME, self.icon, maximizable=True)
+        # Windows: caption uses shell_icon so title strip + DWM hover match the .exe/.ico (UI crop looks thin).
+        _caption_icon = self.shell_icon if sys.platform == 'win32' else self.icon
+        setup_frameless_main_window(self, APP_DISPLAY_NAME, _caption_icon, maximizable=True)
         _chrome_windows = [
             self,
             self.settings_window,
@@ -981,23 +1150,27 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.device_window,
             self.traffic_window,
         ]
+        if self.advanced_lag_settings_dialog is not None:
+            _chrome_windows.append(self.advanced_lag_settings_dialog)
         sync_translucent_chrome(_chrome_windows)
 
         self.applySettings()
         self._updateKillButtonState()
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
+        self._updatePercentCutButtonState()
+        self._apply_inline_panel_styles()
+        self._sync_inline_flow_controls_enabled()
 
         _chrome_btns = (
             self.btnScanEasy,
             self.btnScanHard,
-            self.btnKillAll,
-            self.btnUnkillAll,
             self.btnSettings,
             self.btnAbout,
             self.btnKill,
             self.btnLagSwitch,
             self.btnDupe,
+            self.btnPercentCut,
         )
         self._chrome_hover_filter = _ChromePushButtonHoverFilter(self, _chrome_btns)
         for _b in _chrome_btns:
@@ -1046,11 +1219,30 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             QMessageBox.critical(self, APP_DISPLAY_NAME, 'Connection Lost!')
         return False
 
+    def _apply_status_strip_elide(self):
+        """Re-render lblleft with ellipsis when text exceeds available width."""
+        text = self._status_strip_plain
+        if text is None:
+            return
+        color = self._status_strip_color
+        w = self.lblleft.width()
+        if w > 16:
+            fm = QFontMetrics(self.lblleft.font())
+            elided = fm.elidedText(text, Qt.ElideRight, max(w - 8, 16))
+        else:
+            max_chars = 48
+            elided = text if len(text) <= max_chars else (text[: max_chars - 1] + '\u2026')
+        self.lblleft.setText(f"<font color='{color}'>{elided}</font>")
+
     def log(self, text, color='white'):
         """
-        Print log info at left label
+        Print log info at left label (elided if long; hover shows full text).
         """
-        self.lblleft.setText(f"<font color='{color}'>{text}</font>")
+        self._status_strip_plain = text
+        self._status_strip_color = color
+        self.lblleft.setToolTip(text)
+        self._apply_status_strip_elide()
+        QTimer.singleShot(0, self._apply_status_strip_elide)
     
     def openSettings(self):
         """
@@ -1084,6 +1276,40 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.traffic_window.hide()
         self.traffic_window.show()
         self.traffic_window.setWindowState(Qt.WindowNoState)
+
+    def _on_main_flow_toggle_context_menu(self, pos):
+        w = self.sender()
+        if w is None:
+            return
+        menu = QMenu(self)
+        act_adv = QAction('Advanced Lag Settings…', self)
+        act_adv.triggered.connect(self._open_advanced_lag_settings)
+        menu.addAction(act_adv)
+        menu.exec_(w.mapToGlobal(pos))
+
+    def _open_advanced_lag_settings(self):
+        if self.advanced_lag_settings_dialog is None:
+            self.advanced_lag_settings_dialog = AdvancedLagSettingsDialog(self)
+            self.advanced_lag_settings_dialog.setStyleSheet('')
+            _chrome = [
+                self,
+                self.settings_window,
+                self.about_window,
+                self.device_window,
+                self.traffic_window,
+                self.advanced_lag_settings_dialog,
+            ]
+            for d in (
+                getattr(self, 'lag_switch_dialog', None),
+                getattr(self, 'dupe_switch_dialog', None),
+            ):
+                if d is not None:
+                    _chrome.append(d)
+            sync_translucent_chrome(_chrome)
+        dlg = self.advanced_lag_settings_dialog
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def table_context_menu(self, pos):
         menu = QMenu(self)
@@ -1126,7 +1352,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.tableScan.setColumnHidden(col, not visible)
         key = 'show_scan_mac_column' if col == SCAN_TABLE_COLUMN_MAC else 'show_scan_vendor_column'
         set_settings(key, bool(visible))
-        self.resizeEvent()
+        self._apply_scan_table_column_layout()
 
     def _sync_scan_table_column_settings(self):
         try:
@@ -1136,7 +1362,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             mac, ven = False, False
         self.tableScan.setColumnHidden(SCAN_TABLE_COLUMN_MAC, not mac)
         self.tableScan.setColumnHidden(SCAN_TABLE_COLUMN_VENDOR, not ven)
-        self.resizeEvent()
+        self._apply_scan_table_column_layout()
 
     def probe_ip(self):
         from PyQt5.QtWidgets import QInputDialog
@@ -1149,7 +1375,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log(f'Discovered {hit[0]} {hit[1]}', UI_LOG_RESTORE_FG)
             self.showDevices()
         else:
-            self.log('No response', 'red')
+            self.log(
+                'No response — no MAC in ARP for that IP yet (wrong interface, offline host, '
+                'or need Admin/Npcap for direct probe). Try a normal scan or pick the LAN adapter in Settings.',
+                'red',
+            )
 
     def applySettings(self):
         """
@@ -1182,9 +1412,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Unkill any killed device on exit from tray icon
         """
+        _q_ips = [v.get('ip') for v in self.killer.killed.values() if v.get('ip')]
         self.killer.unkill_all()
+        for _ip in _q_ips:
+            try:
+                unblock_ip(_ip)
+            except Exception:
+                pass
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
+        self.stopPercentCut(log=False)
         self.settings_window.close()
         self.about_window.close()
         hide_all_system_tray_icons()
@@ -1196,20 +1434,45 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         https://stackoverflow.com/a/60123914/5305953
         Connect TaskBar icon to progressbar
         """
+        super().showEvent(event)
+        if sys.platform == 'win32':
+            # Qt may (re)apply small window icons after first show; push Win32 icons several times.
+            def _push_hwnd_icons():
+                install_windows_native_window_icons(self)
+
+            _push_hwnd_icons()
+            QTimer.singleShot(50, _push_hwnd_icons)
+            QTimer.singleShot(300, _push_hwnd_icons)
+            QTimer.singleShot(1200, _push_hwnd_icons)
+
         if QWinTaskbarButton is None:
             return
+        if getattr(self, '_taskbar_progress_linked', False):
+            return
+        self._taskbar_progress_linked = True
         self.taskbar_button = QWinTaskbarButton()
         self.taskbar_progress = self.taskbar_button.progress()
         self.taskbar_button.setWindow(self.windowHandle())
         self.pgbar.valueChanged.connect(self.taskbar_progress.setValue)
 
-    def resizeEvent(self, event=True):
+    def _apply_scan_table_column_layout(self):
         """
-        Auto resize table widget columns dynamically
+        Split table width evenly across visible columns. Hidden MAC/Vendor columns
+        do not consume space (Stretch only on visible sections).
         """
-        label_count = len(TABLE_HEADER_LABELS)
-        for i in range(label_count):
-            self.tableScan.setColumnWidth(i, self.tableScan.width() // label_count)
+        hh = self.tableScan.horizontalHeader()
+        hh.setStretchLastSection(False)
+        hh.setMinimumSectionSize(56)
+        for c in range(self.tableScan.columnCount()):
+            if self.tableScan.isColumnHidden(c):
+                hh.setSectionResizeMode(c, QHeaderView.Fixed)
+            else:
+                hh.setSectionResizeMode(c, QHeaderView.Stretch)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_scan_table_column_layout()
+        self._apply_status_strip_elide()
 
     def _repolish_chrome_pushbuttons(self):
         """Re-resolve app QSS on toolbar + bottom chrome (Fusion hover on icon QPushButtons)."""
@@ -1220,8 +1483,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for w in (
             self.btnScanEasy,
             self.btnScanHard,
-            self.btnKillAll,
-            self.btnUnkillAll,
             self.btnSettings,
             self.btnAbout,
             self.btnKill,
@@ -1254,6 +1515,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
+        try:
+            self._dupe_net_executor.shutdown(wait=False, cancel_futures=False)
+        except TypeError:
+            self._dupe_net_executor.shutdown(wait=False)
+        except Exception:
+            pass
         # If event recieved from tray icon
         if self.from_tray:
             hide_all_system_tray_icons()
@@ -1261,7 +1529,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         # Close button path: unkill all and shutdown.
+        _x_ips = [v.get('ip') for v in self.killer.killed.values() if v.get('ip')]
         self.killer.unkill_all()
+        for _ip in _x_ips:
+            try:
+                unblock_ip(_ip)
+            except Exception:
+                pass
         self._sync_killed_devices()
         self.settings_window.close()
         self.about_window.close()
@@ -1281,9 +1555,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Get current row
         device = self.current_index()
 
-        # Get cell text using dict.values instead of .itemAt()
-        cell = list(device.values())[column]
-        
+        keys_order = ['ip', 'mac', 'vendor', 'type', 'name']
+        if column < 0 or column >= len(keys_order):
+            return
+        cell = str(device.get(keys_order[column], ''))
+
         if len(cell) > 20:
             cell = cell[:20] + '...'
         
@@ -1299,14 +1575,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnKill.setEnabled(not_enabled)
         self.btnLagSwitch.setEnabled(not_enabled)
         self.btnDupe.setEnabled(not_enabled)
+        # Keep inline panels usable while lag/dupe runs on a victim row even if user selects admin/Me
+        # (otherwise the whole group disables and the countdown looks frozen or "off").
+        self.groupLagInline.setEnabled(not_enabled or bool(self.lag_active and self.lag_device_mac))
+        self.groupDupeInline.setEnabled(not_enabled or bool(self.dupe_active and self.dupe_device_mac))
         
         self._updateKillButtonState()
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
-        if getattr(self, 'lag_switch_dialog', None) and self.lag_switch_dialog.isVisible():
-            self.lag_switch_dialog.refresh_toggle_state()
-        if getattr(self, 'dupe_switch_dialog', None) and self.dupe_switch_dialog.isVisible():
-            self.dupe_switch_dialog.refresh_toggle_state()
+        self._sync_inline_flow_controls_enabled()
         self._repaint_all_table_rows_for_hover()
         self._schedule_table_selection_repaint()
 
@@ -1319,6 +1596,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             self.btnLagSwitch.setText('Lag Switch')
             self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        self._sync_inline_flow_controls_enabled()
     
     def deviceDoubleClicked(self):
         """
@@ -1382,19 +1660,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _device_row_blocked_chrome(self, device):
         """
-        True when this row should use kill-row styling: explicit kill, or lag/dupe victim
-        (lag allow-phase temporarily removes the MAC from killer.killed — still show red).
+        Kill-row styling: active lag/dupe victim, or explicit Kill ON for a MAC still held
+        in killer. Do not key off killer alone — lag/dupe teardown can lag behind unkill(),
+        which made rows (and perceived state) stick red after timers/buttons went OFF.
         """
         if not device or device.get('admin'):
             return False
         mac = device['mac']
-        if mac in self.killer.killed:
-            return True
         if getattr(self, 'lag_active', False) and self.lag_device_mac == mac:
             return True
         if getattr(self, 'dupe_active', False) and self.dupe_device_mac == mac:
             return True
-        return False
+        if mac not in self.killer.killed:
+            return False
+        return bool(self.killed_devices.get(mac, False))
 
     def _table_hover_cell_palette(self, row, device):
         """
@@ -1458,11 +1737,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._repaint_all_table_rows_for_hover()
 
     def fillTableRow(self, row, device):
-        for column, text in enumerate(device.values()):
-            # Skip 'admin' key
-            if type(text) == bool:
-                continue
-            
+        texts = [
+            str(device.get('ip', '')),
+            str(device.get('mac', '')),
+            str(device.get('vendor', '')),
+            str(device.get('type', '')),
+            str(device.get('name', '')),
+        ]
+        for column, text in enumerate(texts):
             if device['admin']:
                 admin_colors = [ADMIN_DEVICE_TABLE_ROW_BG, ADMIN_DEVICE_TABLE_ROW_FG]
                 self.fillTableCell(row, column, text, admin_colors, selectable=False)
@@ -1492,7 +1774,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.scanner.add_router()
             except Exception:
                 pass
-        
+        try:
+            sync_clumsy_row(self.scanner)
+        except Exception:
+            pass
+        try:
+            self.scanner.inject_nicknamed_favorites()
+        except Exception:
+            pass
         current_row = self.tableScan.currentRow()
         selected_mac = None
         selected = self._get_selected_device()
@@ -1509,16 +1798,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.fillTableRow(row, device)
 
         self._table_hover_row = -1
-        
-        status = f'{len(self.scanner.devices) - 2} devices' \
-                 f' ({len(self.killer.killed)} killed)'
-        
-        status_tray = f'Devices Found: {len(self.scanner.devices) - 2}\n' \
-                      f'Devices Killed: {len(self.killer.killed)}\n' \
-                      f'Interface: {self.scanner.iface.name}'
-        
-        self.lblright.setText(status)
-        self.tray_icon.setToolTip(status_tray)
+
+        self._update_scan_count_status()
 
         # Restore selection by MAC identity first (row index can move after rescans),
         # then fall back to the first non-admin row.
@@ -1572,8 +1853,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # clear old database
         self.killer.release()
 
+        n_clients = len([d for d in self.scanner.devices if not d.get('admin')])
         self.log(
-            f'Found {len(self.scanner.devices) - 2} devices.',
+            f'Found {n_clients} devices.',
             UI_LOG_RESTORE_FG,
         )
 
@@ -1592,13 +1874,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         device = self.current_index()
-        
+        if not _is_valid_ip(device.get('ip') or ''):
+            self.log('Target has no IP yet — enable Internet sharing and rescan.', 'red')
+            return
+
         if device['mac'] in self.killer.killed:
             self.log('Device is already killed', 'red')
             return
         
         # Killing process
+        self._ensure_network_context_for_victim(device)
         self.killer.kill(device)
+        try:
+            iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+            block_ip(iface, device['ip'], 'both')
+        except Exception:
+            pass
         self.killed_devices[device['mac']] = True
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
@@ -1615,6 +1906,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
         if not self.connected():
             return
         
@@ -1629,6 +1921,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         victim = self._victim_record_for_mac(device['mac']) or device
+        self._ensure_network_context_for_victim(victim)
+        try:
+            unblock_ip(victim.get('ip') or '')
+        except Exception:
+            pass
         self.killer.unkill(victim)
         self.killed_devices[device['mac']] = False
         self._sync_killed_devices()
@@ -1645,10 +1942,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
+        self.stopPercentCut(log=False)
         if not self.connected():
             return
         
         self.killer.kill_all(self.scanner.devices)
+        for v in list(self.killer.killed.values()):
+            try:
+                self._ensure_network_context_for_victim(v)
+                iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+                block_ip(iface, v['ip'], 'both')
+            except Exception:
+                pass
         for mac in self.killer.killed:
             self.killed_devices[mac] = True
         self._sync_killed_devices()
@@ -1665,10 +1971,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
+        self.stopPercentCut(log=False)
         if not self.connected():
             return
         
         victims_before = [dict(v) for v in self.killer.killed.values()]
+        for v in victims_before:
+            try:
+                unblock_ip(v.get('ip') or '')
+            except Exception:
+                pass
         self.killer.unkill_all()
         for victim in victims_before:
             mac = victim.get('mac')
@@ -1706,6 +2019,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         self.stopLagSwitch()
         self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
+        self.stopPercentCut(log=False)
         if not self.connected(show_msg_box=True):
             return
 
@@ -1714,7 +2029,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Save copy of killed devices
         self.killer.store()
         
+        _pre_scan_ips = [v.get('ip') for v in self.killer.killed.values() if v.get('ip')]
         self.killer.unkill_all()
+        for _ip in _pre_scan_ips:
+            try:
+                unblock_ip(_ip)
+            except Exception:
+                pass
         
         self.log(
             ['Arping', 'Pinging'][scan_type] + ' your network...',
@@ -1749,12 +2070,51 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Installing builds is only from Settings → Install Latest Build.
         """
         self._start_periodic_update_availability_poll()
+        self._start_clumsy_inline_refresh_timer()
 
     def UpdateThread_Reciever(self):
         """
         Legacy hook from upstream; unused.
         """
         pass
+
+    def _start_clumsy_inline_refresh_timer(self):
+        """While Clumsy mode is on, periodically re-resolve ICS console IP (ARP + rate-limited ping)."""
+        import sys
+
+        if not sys.platform.startswith('win'):
+            return
+        if getattr(self, '_clumsy_inline_refresh_timer', None) is None:
+            self._clumsy_inline_refresh_timer = QTimer(self)
+            self._clumsy_inline_refresh_timer.setInterval(7000)
+            self._clumsy_inline_refresh_timer.timeout.connect(self._refresh_clumsy_inline_row_if_needed)
+        self._clumsy_inline_refresh_timer.start()
+
+    def _refresh_clumsy_inline_row_if_needed(self):
+        """While Clumsy mode is on, periodically re-sync ICS dedupe / detection (ARP + rate-limited ping)."""
+        try:
+            from tools.clumsy_inline import (
+                clumsy_mode_enabled,
+                clumsy_runtime_ready,
+                detect_inline_ip,
+                sync_clumsy_row,
+            )
+
+            if not clumsy_mode_enabled() or not clumsy_runtime_ready():
+                t = getattr(self, '_clumsy_inline_refresh_timer', None)
+                if t is not None and t.isActive():
+                    t.stop()
+                return
+
+            ip_before = detect_inline_ip(self.scanner, allow_subnet_ping=False)
+            n_before = len(self.scanner.devices)
+            sync_clumsy_row(self.scanner, allow_subnet_ping=True)
+            n_after = len(self.scanner.devices)
+            ip_after = detect_inline_ip(self.scanner, allow_subnet_ping=False)
+            if ip_before != ip_after or n_before != n_after:
+                self.showDevices()
+        except Exception:
+            pass
 
     def _should_poll_update_availability(self):
         import sys
@@ -1884,19 +2244,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return aw is not None and aw is self
 
     def _app_window_is_foreground(self):
-        aw = QApplication.activeWindow()
-        if aw is None:
-            return False
         app_windows = [
             self,
             getattr(self, 'settings_window', None),
             getattr(self, 'about_window', None),
             getattr(self, 'device_window', None),
             getattr(self, 'traffic_window', None),
-            getattr(self, 'lag_switch_dialog', None),
-            getattr(self, 'dupe_switch_dialog', None),
         ]
-        return any(w is not None and aw is w for w in app_windows)
+        aw = QApplication.activeWindow()
+        if any(w is not None and aw is w for w in app_windows):
+            return True
+        # Frameless/top-level dialog focus on Windows can sometimes report no activeWindow
+        # (or not the expected top-level). Fall back to focused widget ownership.
+        fw = QApplication.focusWidget()
+        if fw is None:
+            return False
+        top = fw.window()
+        return any(w is not None and top is w for w in app_windows)
 
     def _shortcut_scan_easy(self):
         if not self._main_window_is_foreground():
@@ -1905,61 +2269,50 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.scanEasy()
 
     def refresh_keyboard_shortcuts_from_settings(self):
-        """Apply key_kill / key_lag / key_dupe from settings to shortcuts and tooltips."""
+        """Apply keybind settings to global shortcuts and tooltips."""
         s = import_settings()
         k_kill = keyseq_from_setting(s.get('key_kill'), Qt.Key_L)
         k_lag = keyseq_from_setting(s.get('key_lag'), Qt.Key_M)
         k_dupe = keyseq_from_setting(s.get('key_dupe'), Qt.Key_P)
+        k_pct = keyseq_from_setting(s.get('key_pctcut'), Qt.Key_K)
         self._shortcut_kill_l.setKey(k_kill)
         self._shortcut_kill_l.setAutoRepeat(False)
         self._shortcut_lag_global.setKey(k_lag)
         self._shortcut_lag_global.setAutoRepeat(False)
         self._shortcut_dupe_global.setKey(k_dupe)
         self._shortcut_dupe_global.setAutoRepeat(False)
+        self._shortcut_pctcut_global.setKey(k_pct)
+        self._shortcut_pctcut_global.setAutoRepeat(False)
         nk = k_kill.toString(QKeySequence.NativeText)
         nl = k_lag.toString(QKeySequence.NativeText)
         np = k_dupe.toString(QKeySequence.NativeText)
+        nk_pct = k_pct.toString(QKeySequence.NativeText)
         self._shortcut_label_kill = nk or 'L'
         self._shortcut_label_lag = nl or 'M'
         self._shortcut_label_dupe = np or 'P'
+        self._shortcut_label_pctcut = nk_pct or 'K'
         self._btn_kill_tooltip_static = (
             'Kill toggle — Turn blocking on or off for the selected device. '
             'Shortcut: %s (only while the main ZubCut window is the active window).' % nk
         )
         self.btnKill.setToolTip(self._btn_kill_tooltip_static)
         self.btnLagSwitch.setToolTip(
-            'Lag Switch — Opens a window where you set lag / allow times and toggle intermittent blocking on or off. '
-            'Shortcut: %s starts/stops while the Lag Switch window is active (%s is Kill on the main window).'
-            % (nl, nk)
+            'Lag Switch — start/stop intermittent blocking for selected device. '
+            'Controls below set timing and direction. Shortcut: %s.'
+            % nl
         )
         self.btnDupe.setToolTip(
-            'Dupe — One-shot lag for a set time (ms), then full stop. '
-            'Does not repeat; use Lag Switch for cycles. '
-            'Shortcut: %s runs/stops while the Dupe window is active.' % np
+            'Dupe — one-shot lag for selected duration, then full stop. '
+            'Controls below set duration and direction. Shortcut: %s.' % np
         )
-        lag = self.lag_switch_dialog
-        if lag:
-            # Keep Lag on one path (global ApplicationShortcut) to avoid dialog-focus routing
-            # inconsistencies in the frameless Lag window.
-            lag._shortcut_m.setKey(k_lag)
-            lag._shortcut_m.setAutoRepeat(False)
-            lag._shortcut_m.setEnabled(False)
-            lag.btnLagStartStop.setToolTip(
-                'Start or stop intermittent lag for the device selected in the main list. '
-                'Shortcut: %s when this window is active (not in ms fields).' % nl
-            )
-        dupe = self.dupe_switch_dialog
-        if dupe:
-            dupe._shortcut_p.setKey(k_dupe)
-            dupe._shortcut_p.setAutoRepeat(False)
-            dupe._shortcut_p.setEnabled(False)
-            dupe.btnDupeRun.setToolTip(
-                'Run a single lag burst for the device selected in the main list, then stop completely. '
-                'Shortcut: %s when this window is active (not in ms fields).' % np
-            )
+        self.btnPercentCut.setToolTip(
+            'Percent Cut toggle — percentage-based cut on selected device. '
+            'Shortcut: %s (main app window in foreground).' % nk_pct
+        )
         self._updateKillButtonState()
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
+        self._updatePercentCutButtonState()
 
     def _shortcut_main_l(self):
         """Kill toggle when any app window is foreground, using configured shortcut."""
@@ -1977,21 +2330,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
             return
-        # Lag dialog uses this global handler too (single key path across main + lag window).
-        lag_dlg = getattr(self, 'lag_switch_dialog', None)
-        if lag_dlg is not None and lag_dlg.isVisible() and lag_dlg.isActiveWindow():
-            lag_dlg._on_lag_start_stop_clicked()
-            return
         if self.lag_active and self.lag_device_mac:
             lag_edge = 'stop'
             if self._ignore_duplicate_toggle_edge('lag', self.lag_device_mac, lag_edge):
                 return
             self.stopLagSwitch()
             return
-        if not self.tableScan.selectedItems():
+        device = self._get_selected_device()
+        if device is None:
             self.log('No device selected', 'red')
             return
-        device = self.current_index()
         if device['admin']:
             self.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
@@ -2000,9 +2348,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         lag_edge = 'start'
         if self._ignore_duplicate_toggle_edge('lag', device['mac'], lag_edge):
             return
-        if self.lag_switch_dialog is not None:
-            lag_ms, normal_ms, direction = self.lag_switch_dialog.values()
-            self.applyLagSwitchSettings(lag_ms, normal_ms, direction)
+        lag_ms, normal_ms, direction = self._lag_inline_values()
+        self.applyLagSwitchSettings(lag_ms, normal_ms, direction)
         self.startLagSwitch(device)
 
     def _shortcut_global_dupe(self):
@@ -2011,21 +2358,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
             return
-        # Dupe dialog uses this global handler too (single key path across main + dupe window).
-        dupe_dlg = getattr(self, 'dupe_switch_dialog', None)
-        if dupe_dlg is not None and dupe_dlg.isVisible() and dupe_dlg.isActiveWindow():
-            dupe_dlg._on_run_clicked()
-            return
         if self.dupe_active and self.dupe_device_mac:
             dupe_edge = 'stop'
             if self._ignore_duplicate_toggle_edge('dupe', self.dupe_device_mac, dupe_edge):
                 return
             self.stopDupe()
             return
-        if not self.tableScan.selectedItems():
+        device = self._get_selected_device()
+        if device is None:
             self.log('No device selected', 'red')
             return
-        device = self.current_index()
         if device['admin']:
             self.log('Cannot dupe admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
@@ -2034,47 +2376,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         dupe_edge = 'start'
         if self._ignore_duplicate_toggle_edge('dupe', device['mac'], dupe_edge):
             return
-        if self.dupe_switch_dialog is not None:
-            ms, direction = self.dupe_switch_dialog.values()
-            self.dupe_duration_ms = ms
-            self.dupe_direction = direction
+        ms, direction = self._dupe_inline_values()
+        self.dupe_duration_ms = ms
+        self.dupe_direction = direction
         self.startDupe(device, self.dupe_duration_ms, self.dupe_direction)
 
-    def openLagSwitchDialog(self):
-        if not self.connected():
+    def _shortcut_global_pctcut(self):
+        if not self._app_window_is_foreground():
             return
-        if not self.tableScan.selectedItems():
-            self.log('No device selected', 'red')
+        if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
             return
-        device = self.current_index()
-        if device['admin']:
-            self.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
-            return
-        self._lag_dialog_target_mac = device.get('mac')
-        if self.lag_switch_dialog is None:
-            self.lag_switch_dialog = LagSwitchDialog(self)
-            self.refresh_keyboard_shortcuts_from_settings()
-        self.lag_switch_dialog.show()
-        self.lag_switch_dialog.raise_()
-        self.lag_switch_dialog.activateWindow()
-
-    def openDupeDialog(self):
-        if not self.connected():
-            return
-        if not self.tableScan.selectedItems():
-            self.log('No device selected', 'red')
-            return
-        device = self.current_index()
-        if device['admin']:
-            self.log('Cannot dupe admin device', UI_LOG_VICTIM_BLOCK_FG)
-            return
-        self._dupe_dialog_target_mac = device.get('mac')
-        if self.dupe_switch_dialog is None:
-            self.dupe_switch_dialog = DupeDialog(self)
-            self.refresh_keyboard_shortcuts_from_settings()
-        self.dupe_switch_dialog.show()
-        self.dupe_switch_dialog.raise_()
-        self.dupe_switch_dialog.activateWindow()
+        self.togglePercentCut('shortcut_key')
 
     def applyLagSwitchSettings(self, block_ms, release_ms, direction):
         self.lag_block_ms = block_ms
@@ -2082,20 +2394,121 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_direction = direction
 
     def _refresh_lag_timing_from_dialog(self):
-        """Keep lag_block_ms / lag_release_ms in sync with the panel (each phase and while editing)."""
-        d = getattr(self, 'lag_switch_dialog', None)
-        if d is None or not d.isVisible():
-            return
+        """Keep lag settings in sync with always-visible inline controls."""
         try:
-            lag_ms, normal_ms, direction = d.values()
+            lag_ms, normal_ms, direction = self._lag_inline_values()
             self.applyLagSwitchSettings(lag_ms, normal_ms, direction)
         except Exception:
             pass
 
+    def _direction_from_checks(self, both_cb, in_cb, out_cb):
+        if in_cb.isChecked() and not out_cb.isChecked():
+            return 'in'
+        if out_cb.isChecked() and not in_cb.isChecked():
+            return 'out'
+        return 'both'
+
+    def _lag_inline_values(self):
+        return self.lagSpinMain.value(), self.normalSpinMain.value(), self._direction_from_checks(
+            self.lagDirBoth, self.lagDirIncoming, self.lagDirOutgoing
+        )
+
+    def _dupe_inline_values(self):
+        return self.dupeSpinMain.value(), self._direction_from_checks(
+            self.dupeDirBoth, self.dupeDirIncoming, self.dupeDirOutgoing
+        )
+
+    def _sync_inline_flow_controls_enabled(self):
+        lag_locked = bool(self.lag_active and self.lag_device_mac)
+        self.lagDirBoth.setEnabled(not lag_locked)
+        self.lagDirIncoming.setEnabled(not lag_locked)
+        self.lagDirOutgoing.setEnabled(not lag_locked)
+        dupe_locked = bool(self.dupe_active and self.dupe_device_mac)
+        self.dupeDirBoth.setEnabled(not dupe_locked)
+        self.dupeDirIncoming.setEnabled(not dupe_locked)
+        self.dupeDirOutgoing.setEnabled(not dupe_locked)
+
+    def _apply_inline_panel_styles(self):
+        sel_bg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_BG', '#316E69')
+        admin_bg = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
+        sel_fg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_FG', '#f2f2f2')
+        panel_bg = '#141414'
+        field_bg = '#141414'
+        panel_style = (
+            'QGroupBox#groupLagInline, QGroupBox#groupDupeInline {'
+            f' border: 1px solid {sel_bg}; border-radius: 6px; margin-top: 8px;'
+            f' padding-top: 8px; background-color: {panel_bg}; }}'
+            'QGroupBox#groupLagInline::title, QGroupBox#groupDupeInline::title {'
+            f' subcontrol-origin: margin; left: 8px; padding: 0 4px; color: {admin_bg}; font-weight: bold; }}'
+            'QGroupBox#groupLagInline QWidget, QGroupBox#groupDupeInline QWidget { background-color: transparent; }'
+            f'QGroupBox#groupLagInline QLabel, QGroupBox#groupDupeInline QLabel {{ color: {admin_bg}; background-color: transparent; }}'
+            f'QGroupBox#groupLagInline QCheckBox, QGroupBox#groupDupeInline QCheckBox {{ color: {admin_bg}; background-color: transparent; }}'
+            f'QGroupBox#groupLagInline QCheckBox:hover, QGroupBox#groupDupeInline QCheckBox:hover {{ color: {sel_bg}; background-color: transparent; }}'
+            f'QGroupBox#groupLagInline QCheckBox::indicator, QGroupBox#groupDupeInline QCheckBox::indicator {{'
+            f' image: none; width: 14px; height: 14px; border: 1px solid {admin_bg}; background-color: transparent; margin: 0px; }}'
+            f'QGroupBox#groupLagInline QCheckBox::indicator:unchecked, QGroupBox#groupDupeInline QCheckBox::indicator:unchecked {{'
+            f' image: none; border: 1px solid {admin_bg}; background-color: transparent; }}'
+            f'QGroupBox#groupLagInline QCheckBox::indicator:hover, QGroupBox#groupDupeInline QCheckBox::indicator:hover {{'
+            f' image: none; border: 1px solid {sel_bg}; background-color: transparent; }}'
+            f'QGroupBox#groupLagInline QCheckBox::indicator:unchecked:hover, QGroupBox#groupDupeInline QCheckBox::indicator:unchecked:hover {{'
+            f' image: none; border: 1px solid {sel_bg}; background-color: transparent; }}'
+            f'QGroupBox#groupLagInline QCheckBox::indicator:checked, QGroupBox#groupDupeInline QCheckBox::indicator:checked {{'
+            f' image: none; background-color: {sel_bg}; border: 1px solid {admin_bg}; }}'
+            'QGroupBox#groupLagInline QSpinBox, QGroupBox#groupDupeInline QSpinBox {'
+            f' min-height: 24px; border: 1px solid {admin_bg}; border-radius: 4px;'
+            f' padding: 2px 6px; background-color: {field_bg}; color: {admin_bg}; }}'
+            'QGroupBox#groupLagInline QSpinBox::up-button, QGroupBox#groupLagInline QSpinBox::down-button,'
+            'QGroupBox#groupDupeInline QSpinBox::up-button, QGroupBox#groupDupeInline QSpinBox::down-button {'
+            f' background-color: {panel_bg}; border: 1px solid {admin_bg}; width: 16px; }}'
+            'QGroupBox#groupLagInline QSpinBox::up-button:hover, QGroupBox#groupLagInline QSpinBox::down-button:hover,'
+            'QGroupBox#groupDupeInline QSpinBox::up-button:hover, QGroupBox#groupDupeInline QSpinBox::down-button:hover {'
+            f' background-color: {sel_bg}; border: 1px solid {sel_bg}; }}'
+            'QGroupBox#groupLagInline QSpinBox::up-arrow, QGroupBox#groupDupeInline QSpinBox::up-arrow {'
+            ' image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDYgTDQuNSAwIEw5IDYgWiIvPjwvc3ZnPg==);'
+            ' border: none; width: 9px; height: 6px; margin: 0 1px 1px 1px; }'
+            'QGroupBox#groupLagInline QSpinBox::down-arrow, QGroupBox#groupDupeInline QSpinBox::down-arrow {'
+            ' image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDAgTDQuNSA2IEw5IDAgWiIvPjwvc3ZnPg==);'
+            ' border: none; width: 9px; height: 6px; margin: 1px 1px 0 1px; }'
+            f'QLabel#lblDupeCountdownMain {{ color: {sel_bg}; font-weight: bold; }}'
+        )
+        self.groupLagInline.setStyleSheet(panel_style)
+        self.groupDupeInline.setStyleSheet(panel_style)
+        percent_style = (
+            f'QLabel#lblPercentCut {{ color: {admin_bg}; background-color: transparent; }}'
+            f'QSpinBox#spinPercentCutMain {{'
+            f' min-height: 24px; border: 1px solid {admin_bg}; border-radius: 4px;'
+            f' padding: 2px 6px; background-color: {field_bg}; color: {admin_bg}; }}'
+            f'QSpinBox#spinPercentCutMain::up-button, QSpinBox#spinPercentCutMain::down-button {{'
+            f' background-color: {panel_bg}; border: 1px solid {admin_bg}; width: 16px; }}'
+            f'QSpinBox#spinPercentCutMain::up-button:hover, QSpinBox#spinPercentCutMain::down-button:hover {{'
+            f' background-color: {sel_bg}; border: 1px solid {sel_bg}; }}'
+            'QSpinBox#spinPercentCutMain::up-arrow {'
+            ' image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDYgTDQuNSAwIEw5IDYgWiIvPjwvc3ZnPg==);'
+            ' border: none; width: 9px; height: 6px; margin: 0 1px 1px 1px; }'
+            'QSpinBox#spinPercentCutMain::down-arrow {'
+            ' image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDAgTDQuNSA2IEw5IDAgWiIvPjwvc3ZnPg==);'
+            ' border: none; width: 9px; height: 6px; margin: 1px 1px 0 1px; }'
+            'QSlider#sliderPercentCutMain { background-color: transparent; }'
+            f'QSlider#sliderPercentCutMain::groove:horizontal {{'
+            f' background-color: {field_bg}; height: 4px; border-radius: 2px; }}'
+            f'QSlider#sliderPercentCutMain::sub-page:horizontal {{'
+            f' background-color: {sel_bg}; height: 4px; border-radius: 2px; }}'
+            f'QSlider#sliderPercentCutMain::add-page:horizontal {{'
+            f' background-color: {panel_bg}; height: 4px; border-radius: 2px; }}'
+        )
+        self.lblPercentCut.setStyleSheet(percent_style)
+        self.sliderPercentCutMain.setStyleSheet(percent_style)
+        self.spinPercentCutMain.setStyleSheet(percent_style)
+
     def startLagSwitch(self, device):
+        if not _is_valid_ip(device.get('ip') or ''):
+            self.log('Target has no IP yet — cannot start lag.', 'red')
+            return
         if self._toggle_start_blocked('lag'):
             return
         self.stopDupe(refresh_dialog=True, log=False)
+        self._flush_pending_dupe_clear_sync()
+        self._drop_dupe_restoring_banner()
         if self.lag_active:
             self.stopLagSwitch(refresh_dialog=False)
         self.lag_device_mac = device['mac']
@@ -2109,11 +2522,62 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             f'Lag switch ON: {self.lag_block_ms}ms lag ({dir_text}) / {self.lag_release_ms}ms normal',
             UI_LOG_VICTIM_BLOCK_FG,
         )
-        self._lag_apply_block(device)
-        self._lag_in_allow_phase = False
-        self.lag_timer.start(max(1, int(self.lag_block_ms)))
+        dev = dict(device)
+        mac = device['mac']
+
+        def _arm_lag_start():
+            if not self.lag_active or self.lag_device_mac != mac:
+                return
+            cur = self._lag_resolved_victim() or dev
+            block_ms_arm = max(1, int(self.lag_block_ms))
+            deadline = time.monotonic() + block_ms_arm / 1000.0
+            try:
+                self._lag_apply_block(cur)
+            except Exception:
+                pass
+            self._schedule_lag_start_reassert(mac)
+            self._lag_in_allow_phase = False
+            rem_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            if rem_ms <= 0:
+                QTimer.singleShot(0, self._lag_phase_tick)
+            else:
+                self.lag_timer.start(rem_ms)
+            self._refresh_flow_toggle_ui()
+            self._repaint_all_table_rows_for_hover()
+
+        QTimer.singleShot(0, _arm_lag_start)
         self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
+
+    def _schedule_lag_start_reassert(self, mac):
+        """Quick ON reasserts so lag takes effect immediately despite ARP/firewall race timing."""
+        def _reassert():
+            if not self.lag_active or self.lag_device_mac != mac or self._lag_in_allow_phase:
+                return
+            dev = self._lag_resolved_victim()
+            if not dev:
+                return
+            try:
+                self._lag_apply_block(dev)
+            except Exception:
+                pass
+
+        QTimer.singleShot(120, _reassert)
+        QTimer.singleShot(320, _reassert)
+
+    def _update_scan_count_status(self):
+        """Update device/kill counts in lblright + tray without rebuilding the scan table."""
+        try:
+            n = max(0, len(self.scanner.devices) - 2)
+            self.lblright.setText(f'{n} devices ({len(self.killer.killed)} killed)')
+            if getattr(self, 'tray_icon', None) and getattr(self.scanner, 'iface', None):
+                self.tray_icon.setToolTip(
+                    f'Devices Found: {n}\n'
+                    f'Devices Killed: {len(self.killer.killed)}\n'
+                    f'Interface: {self.scanner.iface.name}'
+                )
+        except Exception:
+            pass
 
     def _refresh_table_row_for_mac(self, mac):
         """Update table row colors for one MAC without rebuilding the whole table."""
@@ -2125,7 +2589,43 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._repaint_table_row_for_hover(row)
                 break
 
+    def _ensure_network_context_for_victim(self, device) -> bool:
+        """
+        Bind scanner + killer to the NIC that routes to the victim (e.g. hotspot vs Ethernet).
+        Runtime only — does not write ``iface`` to settings (so Clumsy/victim auto-pick
+        does not replace your chosen adapter in zubcut.json).
+        """
+        if not device or not device.get('ip'):
+            return False
+        try:
+            changed = self.scanner.sync_iface_for_victim_ip(device['ip'])
+        except Exception:
+            return False
+        if not changed:
+            return False
+        self.killer.iface = self.scanner.iface
+        self.killer.router = self.scanner.router
+        self.killer._close_socket()
+        try:
+            from scapy.all import conf as scapy_conf
+
+            guid = self.scanner.iface.guid if self.scanner.iface else None
+            if guid:
+                scapy_conf.iface = guid
+        except Exception:
+            pass
+        label = (getattr(self.scanner.iface, 'name', None) or '').strip() or getattr(
+            self.scanner.iface, 'guid', ''
+        )
+        self.log(
+            f'Using network adapter for {device["ip"]}: {label}',
+            UI_LOG_RESTORE_FG,
+        )
+        return True
+
     def _apply_victim_block(self, device, direction):
+        self._ensure_network_context_for_victim(device)
+        self.killer.disable_percent_cut(device['mac'])
         if device['mac'] not in self.killer.killed:
             self.killer.kill(device)
         iface = self.scanner.iface.name if self.scanner.iface else 'en0'
@@ -2135,6 +2635,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateKillButtonState()
 
     def _clear_victim_block(self, device):
+        self._ensure_network_context_for_victim(device)
         try:
             unblock_ip(device['ip'])
         except Exception:
@@ -2148,6 +2649,300 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
+
+    def _drain_dupe_async_network(self):
+        """Wait for in-flight async unblock_ip; Queued unkill slot must run on the GUI thread."""
+        fut = getattr(self, '_dupe_clear_future', None)
+        if fut is not None:
+            try:
+                fut.result(timeout=120)
+            except Exception:
+                pass
+            self._dupe_clear_future = None
+        app = QApplication.instance()
+        for _ in range(2000):
+            if getattr(self, '_dupe_async_unblock_ctx', None) is None:
+                return
+            if app:
+                app.processEvents()
+            time.sleep(0.0005)
+        ctx = getattr(self, '_dupe_async_unblock_ctx', None)
+        if ctx:
+            device, prev_mac = ctx
+            self._dupe_async_unblock_ctx = None
+            try:
+                if device and device.get('mac') == prev_mac and device['mac'] in self.killer.killed:
+                    victim = self._victim_record_for_mac(device['mac']) or device
+                    self.killer.unkill(victim)
+                dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+            except Exception:
+                pass
+            self._sync_killed_devices()
+            self._drop_dupe_restoring_banner()
+
+    def _drain_dupe_block_if_needed(self):
+        """Wait for in-flight async block_ip and its main-thread completion slot."""
+        fut = getattr(self, '_dupe_block_future', None)
+        if fut is None and not getattr(self, '_dupe_block_apply_pending', False):
+            return
+        if fut is not None:
+            try:
+                fut.result(timeout=120)
+            except Exception:
+                pass
+            self._dupe_block_future = None
+        app = QApplication.instance()
+        for _ in range(2000):
+            if not getattr(self, '_dupe_block_apply_pending', False):
+                return
+            if app:
+                app.processEvents()
+            time.sleep(0.0005)
+        self._dupe_block_apply_pending = False
+        self._dupe_block_ctx = None
+
+    def _drop_dupe_restoring_banner(self):
+        """Clear 'Restoring network…' after dupe firewall/unkill teardown completes."""
+        self._dupe_restoring_after_stop = False
+        self._dupe_restoring_mac = None
+        self.lblDupeCountdownMain.setVisible(False)
+        self.lblDupeCountdownMain.setText('')
+        dlg = getattr(self, 'dupe_switch_dialog', None)
+        if dlg is not None and dlg.isVisible():
+            try:
+                dlg.refresh_toggle_state()
+            except Exception:
+                pass
+
+    def _drop_lag_restoring_banner(self):
+        """Clear lag stop restoring flags after teardown (Kill UI / dialog)."""
+        self._lag_restoring_after_stop = False
+        self._lag_restoring_mac = None
+        dlg = getattr(self, 'lag_switch_dialog', None)
+        if dlg is not None and dlg.isVisible():
+            try:
+                dlg.refresh_toggle_state()
+            except Exception:
+                pass
+
+    def _flush_pending_dupe_clear_sync(self):
+        """Run any scheduled dupe OFF firewall/ARP work immediately (before starting a new dupe)."""
+        self._dupe_deferred_clear_timer.stop()
+        try:
+            self._dupe_deferred_clear_timer.timeout.disconnect()
+        except TypeError:
+            pass
+        self._drain_dupe_async_network()
+        self._drain_dupe_block_if_needed()
+        pending = self._dupe_pending_clear
+        self._dupe_pending_clear = None
+        if not pending:
+            return
+        prev_mac, snap = pending[0], pending[1]
+        device = self._get_device_by_mac(prev_mac) or snap
+        if not device or device.get('mac') != prev_mac:
+            self._sync_killed_devices()
+            self._drop_dupe_restoring_banner()
+            return
+        try:
+            self._clear_victim_block(device)
+            dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
+            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
+            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+        except Exception:
+            pass
+        self._sync_killed_devices()
+        self._drop_dupe_restoring_banner()
+
+    def _do_deferred_dupe_clear(self):
+        """Teardown unblock_ip off the GUI thread; unkill/reinforce on the main thread."""
+        self._dupe_deferred_clear_timer.stop()
+        try:
+            self._dupe_deferred_clear_timer.timeout.disconnect()
+        except TypeError:
+            pass
+        pending = self._dupe_pending_clear
+        self._dupe_pending_clear = None
+        if not pending:
+            return
+        prev_mac, snap = pending[0], pending[1]
+        device = self._get_device_by_mac(prev_mac) or snap
+        if not device or device.get('mac') != prev_mac:
+            self._sync_killed_devices()
+            self._drop_dupe_restoring_banner()
+            return
+        ip = device.get('ip') or ''
+        ex = getattr(self, '_dupe_net_executor', None)
+        if ex is None:
+            try:
+                self._clear_victim_block(device)
+                dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+            except Exception:
+                pass
+            self._sync_killed_devices()
+            self._drop_dupe_restoring_banner()
+            return
+        self._dupe_async_unblock_ctx = (device, prev_mac)
+        fut = ex.submit(_dupe_net_run_unblock, ip)
+        self._dupe_clear_future = fut
+
+        def _done(_f):
+            QMetaObject.invokeMethod(self, '_slot_finish_async_dupe_unblock', Qt.QueuedConnection)
+
+        fut.add_done_callback(_done)
+
+    @pyqtSlot()
+    def _slot_finish_async_dupe_unblock(self):
+        ctx = getattr(self, '_dupe_async_unblock_ctx', None)
+        self._dupe_async_unblock_ctx = None
+        self._dupe_clear_future = None
+        if not ctx:
+            self._drop_dupe_restoring_banner()
+            return
+        device, prev_mac = ctx
+        if not device or device.get('mac') != prev_mac:
+            self._sync_killed_devices()
+            self._drop_dupe_restoring_banner()
+            return
+        try:
+            if device['mac'] in self.killer.killed:
+                victim = self._victim_record_for_mac(device['mac']) or device
+                self.killer.unkill(victim)
+            dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
+            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
+            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+        except Exception:
+            pass
+        self._sync_killed_devices()
+        self._refresh_table_row_for_mac(prev_mac)
+        self._updateKillButtonState()
+        self._drop_dupe_restoring_banner()
+
+    def _arm_dupe_burst_wall_clock(self):
+        """Wall-clock deadline + countdown from apply start so UI stays in sync while block_ip lags."""
+        dur = max(1, int(self.dupe_duration_ms))
+        self._dupe_end_mono = time.monotonic() + dur / 1000.0
+        self._dupe_elapsed.start()
+        self._dupe_countdown_timer.start()
+        self._tick_dupe_countdown()
+
+    def _abort_dupe_apply_failed(self):
+        """Stop timers after failed dupe apply (after arm may have run)."""
+        self._dupe_countdown_timer.stop()
+        self.dupe_timer.stop()
+        self._dupe_end_mono = None
+        self.lblDupeCountdownMain.setVisible(False)
+        self.lblDupeCountdownMain.setText('')
+
+    def _apply_dupe_deferred(self):
+        """Kill on main thread; block_ip in worker; stopDupe scheduled for remaining time after block."""
+        dev = self._dupe_arm_device
+        self._dupe_arm_device = None
+        if not dev or not self.dupe_active or self.dupe_device_mac != dev.get('mac'):
+            return
+        direction = getattr(self, '_dupe_arm_direction', 'both')
+        ex = getattr(self, '_dupe_net_executor', None)
+        try:
+            self._arm_dupe_burst_wall_clock()
+            self._ensure_network_context_for_victim(dev)
+            self.killer.disable_percent_cut(dev['mac'])
+            if dev['mac'] not in self.killer.killed:
+                self.killer.kill(dev)
+            iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+            if ex is None:
+                exc = _dupe_net_run_block(iface, dev['ip'], direction)
+                if exc is not None:
+                    raise exc
+                self._sync_killed_devices()
+                self._refresh_table_row_for_mac(dev['mac'])
+                self._updateKillButtonState()
+                self._start_dupe_timers_after_network_ready()
+                return
+            self._dupe_block_ctx = (dev, direction)
+            self._dupe_block_apply_pending = True
+            fut = ex.submit(_dupe_net_run_block, iface, dev['ip'], direction)
+            self._dupe_block_future = fut
+
+            def _done(_f):
+                QMetaObject.invokeMethod(self, '_slot_finish_dupe_block', Qt.QueuedConnection)
+
+            fut.add_done_callback(_done)
+        except Exception as exc:
+            self.dupe_active = False
+            self.dupe_device_mac = None
+            self._dupe_block_apply_pending = False
+            self._dupe_block_ctx = None
+            self._dupe_block_future = None
+            self._abort_dupe_apply_failed()
+            self.btnDupe.setText('Dupe')
+            self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+            try:
+                self._clear_victim_block(dev)
+            except Exception:
+                pass
+            self.log(f'Dupe failed to start: {exc}', 'red')
+            self._refresh_flow_toggle_ui()
+            self._repaint_all_table_rows_for_hover()
+
+    @pyqtSlot()
+    def _slot_finish_dupe_block(self):
+        fut = getattr(self, '_dupe_block_future', None)
+        self._dupe_block_future = None
+        self._dupe_block_apply_pending = False
+        ctx = getattr(self, '_dupe_block_ctx', None)
+        self._dupe_block_ctx = None
+        exc = None
+        if fut is not None:
+            try:
+                exc = fut.result(timeout=0)
+            except Exception as e:
+                exc = e
+        if not ctx:
+            return
+        dev, direction = ctx
+        if exc is not None:
+            self.dupe_active = False
+            self.dupe_device_mac = None
+            self._abort_dupe_apply_failed()
+            self.btnDupe.setText('Dupe')
+            self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+            try:
+                self._clear_victim_block(dev)
+            except Exception:
+                pass
+            self.log(f'Dupe failed to start: {exc}', 'red')
+            self._refresh_flow_toggle_ui()
+            self._repaint_all_table_rows_for_hover()
+            return
+        if not self.dupe_active or self.dupe_device_mac != dev.get('mac'):
+            return
+        try:
+            self._sync_killed_devices()
+            self._refresh_table_row_for_mac(dev['mac'])
+            self._updateKillButtonState()
+        except Exception:
+            pass
+        self._start_dupe_timers_after_network_ready()
+
+    def _start_dupe_timers_after_network_ready(self):
+        """
+        Arm single-shot stop at remaining wall time. Countdown + _dupe_end_mono are already
+        started in _arm_dupe_burst_wall_clock at apply begin so the timer matches ARP/block latency.
+        """
+        if getattr(self, '_dupe_end_mono', None) is None:
+            self._arm_dupe_burst_wall_clock()
+        rem_ms = max(0, int((self._dupe_end_mono - time.monotonic()) * 1000))
+        if rem_ms <= 0:
+            QTimer.singleShot(0, partial(self.stopDupe, True, True, 'Dupe finished'))
+            return
+        self.dupe_timer.start(rem_ms)
+        self._tick_dupe_countdown()
+        self._refresh_flow_toggle_ui()
+        self._repaint_all_table_rows_for_hover()
 
     def _lag_enter_allow_phase(self, device):
         """
@@ -2163,36 +2958,90 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _lag_apply_block(self, device):
         self._apply_victim_block(device, self.lag_direction)
 
+    def _lag_resolved_victim(self):
+        """
+        Merge live table row with the lag snapshot. Clumsy rows can briefly disappear during
+        rescan/sync, and the ICS IP can update while lag runs — a frozen dict breaks block/unblock.
+        """
+        mac = getattr(self, 'lag_device_mac', None)
+        if not mac:
+            return None
+        live = self._get_device_by_mac(mac)
+        snap = getattr(self, '_lag_device_snapshot', None)
+        if snap is not None and snap.get('mac') != mac:
+            snap = None
+        if not live and not snap:
+            return None
+        if not live:
+            return dict(snap) if snap else None
+        if not snap:
+            return dict(live)
+        merged = dict(live)
+        lip = (live.get('ip') or '').strip()
+        sip = (snap.get('ip') or '').strip()
+        if (not lip) and sip:
+            merged['ip'] = sip
+        return merged
+
     def _lag_phase_tick(self):
         if not self.lag_active:
             return
         self._refresh_lag_timing_from_dialog()
-        device = self._get_device_by_mac(self.lag_device_mac)
+        device = self._lag_resolved_victim()
         if not device:
             self.stopLagSwitch()
             return
-        block_ms = max(1, int(self.lag_block_ms))
-        allow_ms = max(25, int(self.lag_release_ms))
+        mac = self.lag_device_mac
+        self._lag_device_snapshot = dict(device)
 
         if not self._lag_in_allow_phase:
             # Block interval (top spin) just finished -> allow traffic for bottom spin duration.
+            def _go_allow():
+                if not self.lag_active or self.lag_device_mac != mac:
+                    return
+                cur = self._lag_resolved_victim()
+                if not cur:
+                    self.stopLagSwitch()
+                    return
+                allow_arm = max(25, int(self.lag_release_ms))
+                deadline = time.monotonic() + allow_arm / 1000.0
+                try:
+                    self._lag_enter_allow_phase(cur)
+                except Exception:
+                    pass
+                self._lag_in_allow_phase = True
+                if self.lag_active and self.lag_device_mac == mac:
+                    rem_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                    if rem_ms <= 0:
+                        QTimer.singleShot(0, self._lag_phase_tick)
+                    else:
+                        self.lag_timer.start(rem_ms)
+
+            QTimer.singleShot(0, _go_allow)
+            return
+
+        def _go_block():
+            if not self.lag_active or self.lag_device_mac != mac:
+                return
+            cur = self._lag_resolved_victim()
+            if not cur:
+                self.stopLagSwitch()
+                return
+            block_arm = max(1, int(self.lag_block_ms))
+            deadline = time.monotonic() + block_arm / 1000.0
             try:
-                self._lag_enter_allow_phase(device)
-            except Exception:
-                pass
-            self._lag_in_allow_phase = True
-            next_ms = allow_ms
-        else:
-            # Allow interval (bottom spin) just finished -> block again for top spin duration.
-            try:
-                self._lag_apply_block(device)
+                self._lag_apply_block(cur)
             except Exception:
                 pass
             self._lag_in_allow_phase = False
-            next_ms = block_ms
+            if self.lag_active and self.lag_device_mac == mac:
+                rem_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                if rem_ms <= 0:
+                    QTimer.singleShot(0, self._lag_phase_tick)
+                else:
+                    self.lag_timer.start(rem_ms)
 
-        if self.lag_active:
-            self.lag_timer.start(next_ms)
+        QTimer.singleShot(0, _go_block)
 
     def stopLagSwitch(self, refresh_dialog=True):
         if not self.lag_active:
@@ -2205,27 +3054,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_timer.stop()
         snap = getattr(self, '_lag_device_snapshot', None)
         self._lag_device_snapshot = None
-        device = self._get_device_by_mac(prev_mac)
-        if not device and snap and snap.get('mac') == prev_mac:
-            device = snap
-        if device and device.get('mac') == prev_mac:
-            # During the "normal" phase the victim is already unkill()'d; we still must enforce
-            # teardown here so MITM/ARP cannot stick after the UI shows OFF (same idea as Kill OFF).
-            try:
-                unblock_ip(device['ip'])
-            except Exception:
-                pass
-            victim = self._victim_record_for_mac(prev_mac) or device
-            if victim:
-                try:
-                    self.killer.unkill(victim)
-                    self.killer.reinforce_restore(victim)
-                    lag_off_seq = self._bump_flow_off_intent('lag', prev_mac)
-                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 60, victim)
-                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 180, victim)
-                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 350, victim)
-                except Exception:
-                    pass
+        self._lag_restoring_after_stop = True
+        self._lag_restoring_mac = prev_mac
         self._sync_killed_devices()
         self.btnLagSwitch.setText('Lag Switch')
         self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
@@ -2236,75 +3066,171 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._updateLagSwitchButtonState()
             self._updateKillButtonState()
         self._repaint_all_table_rows_for_hover()
+        dlg_lag = getattr(self, 'lag_switch_dialog', None)
+        if dlg_lag is not None and dlg_lag.isVisible():
+            try:
+                dlg_lag.refresh_toggle_state()
+            except Exception:
+                pass
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.AllEvents)
+        except Exception:
+            pass
+        live = self._get_device_by_mac(prev_mac) if prev_mac else None
+        snap_ok = snap if (isinstance(snap, dict) and snap.get('mac') == prev_mac) else None
+        if not live and snap_ok:
+            device = dict(snap_ok)
+        elif live and snap_ok:
+            device = dict(live)
+            lip = (live.get('ip') or '').strip()
+            sip = (snap_ok.get('ip') or '').strip()
+            if (not lip) and sip:
+                device['ip'] = sip
+        elif live:
+            device = dict(live)
+        else:
+            device = None
+        if device and device.get('mac') == prev_mac:
+            # Full teardown after OFF: firewall unblock always; ARP unkill only for MITM victims.
+            victim = self._victim_record_for_mac(prev_mac) or device
+            if victim:
+                try:
+                    self._ensure_network_context_for_victim(victim)
+                except Exception:
+                    pass
+            ips = []
+            for cand in (device, snap_ok):
+                if isinstance(cand, dict):
+                    ip = (cand.get('ip') or '').strip()
+                    if ip and _is_valid_ip(ip):
+                        ips.append(ip)
+            seen_ip = set()
+            for ip in ips:
+                if ip in seen_ip:
+                    continue
+                seen_ip.add(ip)
+                try:
+                    unblock_ip(ip)
+                except Exception:
+                    pass
+            if victim:
+                try:
+                    self.killer.unkill(victim)
+                    self.killer.reinforce_restore(victim)
+                    lag_off_seq = self._bump_flow_off_intent('lag', prev_mac)
+                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 60, victim)
+                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 180, victim)
+                except Exception:
+                    pass
+        self._sync_killed_devices()
+        self._drop_lag_restoring_banner()
 
     def startDupe(self, device, duration_ms, direction):
+        if not _is_valid_ip(device.get('ip') or ''):
+            self.log('Target has no IP yet — cannot start dupe.', 'red')
+            return
         if self._toggle_start_blocked('dupe'):
             return
         self.stopLagSwitch(refresh_dialog=True)
         self.stopDupe(refresh_dialog=False, log=False)
+        self._flush_pending_dupe_clear_sync()
+        self._drop_dupe_restoring_banner()
+        self._dupe_arm_timer.stop()
+        try:
+            self._dupe_arm_timer.timeout.disconnect()
+        except TypeError:
+            pass
         self.dupe_device_mac = device['mac']
-        self.dupe_active = True
         self.dupe_direction = direction
         self.dupe_duration_ms = duration_ms
-        self._apply_victim_block(device, direction)
+        self._dupe_end_mono = None
+        self.dupe_active = True
         self.btnDupe.setText('■ DUPE')
         self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         dir_text = {'both': 'all', 'in': 'incoming', 'out': 'outgoing'}[direction]
         self.log(f'Dupe: {duration_ms}ms ({dir_text}), then full stop', UI_LOG_VICTIM_BLOCK_FG)
-        self._dupe_elapsed.start()
-        self.dupe_timer.start(max(1, int(duration_ms)))
-        self._dupe_countdown_timer.start()
-        self._tick_dupe_countdown()
+        self._dupe_arm_device = dict(device)
+        self._dupe_arm_direction = direction
         self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
+        self._dupe_arm_timer.timeout.connect(self._apply_dupe_deferred, Qt.UniqueConnection)
+        self._dupe_arm_timer.start(0)
 
     def dupe_remaining_ms(self):
         if not self.dupe_active:
             return None
-        return max(0, int(self.dupe_duration_ms - self._dupe_elapsed.elapsed()))
+        end = getattr(self, '_dupe_end_mono', None)
+        if end is None:
+            return int(self.dupe_duration_ms)
+        return max(0, int((end - time.monotonic()) * 1000))
 
     def _tick_dupe_countdown(self):
         if not self.dupe_active:
             self._dupe_countdown_timer.stop()
-            dlg = getattr(self, 'dupe_switch_dialog', None)
-            if dlg:
-                dlg.set_dupe_countdown(None)
+            self.lblDupeCountdownMain.setVisible(False)
+            self.lblDupeCountdownMain.setText('')
             return
         rem = self.dupe_remaining_ms()
         # Finish as soon as elapsed time says so; avoids showing "0.0 s" until the
         # coarse single-shot dupe_timer fires (can lag tens–100+ ms behind).
         if rem is not None and rem <= 0:
             self._dupe_countdown_timer.stop()
-            self.stopDupe(log_message='Dupe finished')
+            QTimer.singleShot(0, partial(self.stopDupe, True, True, 'Dupe finished'))
             return
+        if rem is None or rem <= 0:
+            self.lblDupeCountdownMain.setVisible(False)
+            self.lblDupeCountdownMain.setText('')
+        else:
+            sec = rem / 1000.0
+            self.lblDupeCountdownMain.setVisible(True)
+            if sec >= 60:
+                whole = int(sec)
+                m, s = divmod(whole, 60)
+                self.lblDupeCountdownMain.setText(f'Time left: {m}:{s:02d}')
+            else:
+                self.lblDupeCountdownMain.setText(f'Time left: {sec:.1f} s')
         dlg = getattr(self, 'dupe_switch_dialog', None)
-        if dlg and dlg.isVisible():
-            dlg.set_dupe_countdown(rem)
+        if dlg is not None and dlg.isVisible():
+            now = time.monotonic()
+            if now - getattr(self, '_dupe_dlg_refresh_mono', 0.0) >= 0.15:
+                self._dupe_dlg_refresh_mono = now
+                try:
+                    dlg.refresh_toggle_state()
+                except Exception:
+                    pass
 
     def _dupe_timer_fired(self):
-        self.stopDupe(log_message='Dupe finished')
+        QTimer.singleShot(0, partial(self.stopDupe, True, True, 'Dupe finished'))
 
     def stopDupe(self, refresh_dialog=True, log=True, log_message='Dupe stopped'):
-        if not self.dupe_active:
-            return
+        arm_snap = None
+        if isinstance(getattr(self, '_dupe_arm_device', None), dict):
+            arm_snap = dict(self._dupe_arm_device)
+        self._dupe_arm_timer.stop()
+        try:
+            self._dupe_arm_timer.timeout.disconnect()
+        except TypeError:
+            pass
+        self._dupe_arm_device = None
+        was_active = self.dupe_active
         prev_mac = self.dupe_device_mac
-        # Mark inactive first to prevent re-entrant timer paths from reapplying state.
-        self.dupe_active = False
-        self.dupe_device_mac = None
         self._dupe_countdown_timer.stop()
         self.dupe_timer.stop()
-        dlg = getattr(self, 'dupe_switch_dialog', None)
-        if dlg:
-            dlg.set_dupe_countdown(None)
-        device = self._get_device_by_mac(prev_mac)
-        if device:
-            try:
-                self._clear_victim_block(device)
-                dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
-            except Exception:
-                pass
+        self._dupe_end_mono = None
+        if not was_active:
+            self.lblDupeCountdownMain.setVisible(False)
+            self.lblDupeCountdownMain.setText('')
+            return
+        self._dupe_restoring_after_stop = True
+        self._dupe_restoring_mac = prev_mac
+        # Idle chrome immediately; firewall/ARP finish asynchronously (_do_deferred_dupe_clear).
+        self.lblDupeCountdownMain.setVisible(False)
+        self.lblDupeCountdownMain.setText('')
+        # Mark inactive after timers are stopped so _tick cannot race with teardown.
+        self.dupe_active = False
+        self.dupe_device_mac = None
         self.btnDupe.setText('Dupe')
         self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         if log:
@@ -2315,6 +3241,40 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._updateDupeButtonState()
             self._updateKillButtonState()
         self._repaint_all_table_rows_for_hover()
+        dlg_dupe = getattr(self, 'dupe_switch_dialog', None)
+        if dlg_dupe is not None and dlg_dupe.isVisible():
+            try:
+                dlg_dupe.refresh_toggle_state()
+            except Exception:
+                pass
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.AllEvents)
+        except Exception:
+            pass
+        self._drain_dupe_block_if_needed()
+        live = self._get_device_by_mac(prev_mac) if prev_mac else None
+        arm_ok = arm_snap if (isinstance(arm_snap, dict) and arm_snap.get('mac') == prev_mac) else None
+        if live and arm_ok:
+            snap = dict(live)
+            lip = (live.get('ip') or '').strip()
+            sip = (arm_ok.get('ip') or '').strip()
+            if (not lip) and sip:
+                snap['ip'] = sip
+        elif live:
+            snap = dict(live)
+        elif arm_ok:
+            snap = dict(arm_ok)
+        else:
+            snap = None
+        self._dupe_pending_clear = (prev_mac, snap)
+        try:
+            self._dupe_deferred_clear_timer.timeout.disconnect()
+        except TypeError:
+            pass
+        self._dupe_deferred_clear_timer.timeout.connect(self._do_deferred_dupe_clear, Qt.UniqueConnection)
+        self._dupe_deferred_clear_timer.start(0)
 
     def _updateDupeButtonState(self):
         if self.dupe_active and self.dupe_device_mac:
@@ -2324,18 +3284,55 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        self._sync_inline_flow_controls_enabled()
+
+    def _updatePercentCutButtonState(self):
+        pct = self._clamp_percent(self.spinPercentCutMain.value())
+        key = getattr(self, '_shortcut_label_pctcut', 'K')
+        if self.percent_cut_active and self.percent_cut_device_mac:
+            self.btnPercentCut.setText(f'■ CUT {pct}% (Press {key} to turn off)')
+            self.btnPercentCut.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
+        else:
+            self.btnPercentCut.setText(f'Percent Cut: {pct}%')
+            self.btnPercentCut.setStyleSheet(self.BUTTON_NORMAL_STYLE)
 
     def _refresh_flow_toggle_ui(self):
         """Synchronize Lag/Dupe/Kill button text after cross-flow toggles."""
         self._updateLagSwitchButtonState()
         self._updateDupeButtonState()
         self._updateKillButtonState()
-        lag_dlg = getattr(self, 'lag_switch_dialog', None)
-        if lag_dlg and lag_dlg.isVisible():
-            lag_dlg.refresh_toggle_state()
-        dupe_dlg = getattr(self, 'dupe_switch_dialog', None)
-        if dupe_dlg and dupe_dlg.isVisible():
-            dupe_dlg.refresh_toggle_state()
+        self._updatePercentCutButtonState()
+        self._sync_inline_flow_controls_enabled()
+
+    @staticmethod
+    def _clamp_percent(value):
+        try:
+            return max(1, min(100, int(value)))
+        except Exception:
+            return 100
+
+    def _percent_cut_value(self):
+        try:
+            return self._clamp_percent(get_settings('traffic_percent'))
+        except Exception:
+            return 50
+
+    def _on_percent_cut_value_changed(self, value):
+        pct = self._clamp_percent(value)
+        try:
+            set_settings('traffic_percent', int(pct))
+        except Exception:
+            pass
+        if self.percent_cut_active and self.percent_cut_device_mac:
+            dev = self._get_device_by_mac(self.percent_cut_device_mac) or self._victim_record_for_mac(self.percent_cut_device_mac)
+            if dev:
+                allow_pct = max(0, 100 - pct)
+                try:
+                    self._ensure_network_context_for_victim(dev)
+                    self.killer.apply_percent_cut(dev, pass_percent=allow_pct)
+                except Exception:
+                    pass
+        self._updatePercentCutButtonState()
 
     def _ignore_duplicate_toggle_edge(self, kind: str, mac: str | None, edge: str) -> bool:
         """
@@ -2365,13 +3362,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     @staticmethod
     def _toggle_kind_label(kind):
-        return {'kill': 'Kill', 'lag': 'Lag Switch', 'dupe': 'Dupe'}.get(kind, kind)
+        return {'kill': 'Kill', 'lag': 'Lag Switch', 'dupe': 'Dupe', 'pctcut': 'Percent Cut'}.get(kind, kind)
 
     def _active_toggle_kind(self):
         if self.lag_active and self.lag_device_mac:
             return 'lag'
         if self.dupe_active and self.dupe_device_mac:
             return 'dupe'
+        if self.percent_cut_active and self.percent_cut_device_mac:
+            return 'pctcut'
         if self._has_explicit_kill_active():
             return 'kill'
         return None
@@ -2403,64 +3402,174 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         mac = device['mac']
-        current_ui_on = bool(self.killed_devices.get(mac, mac in self.killer.killed))
+        current_ui_on = self._kill_ui_shows_on(mac)
         if not current_ui_on and len(active_explicit) == 1 and active_explicit[0] != mac:
             # Selection drifted to a different row while one kill victim is active.
             mac = active_explicit[0]
             victim = self._get_device_by_mac(mac) or self._victim_record_for_mac(mac)
             if victim:
                 device = victim
-            current_ui_on = bool(self.killed_devices.get(mac, mac in self.killer.killed))
+            current_ui_on = self._kill_ui_shows_on(mac)
         next_state = not current_ui_on
         if next_state and self._toggle_start_blocked('kill'):
             return
         self.killed_devices[mac] = next_state
         self._updateKillButtonState()
-        self._run_kill_command(mac, device, turn_on=next_state, source=source)
+        self._repaint_all_table_rows_for_hover()
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.AllEvents)
+        except Exception:
+            pass
+        dev = dict(device)
+        on = next_state
+        src = source
+        QTimer.singleShot(0, lambda m=mac, d=dev, o=on, s=src: self._run_kill_command(m, d, turn_on=o, source=s))
 
-    def _run_kill_command(self, mac, device, turn_on, source='unknown'):
-        """Immediate explicit command path: one click => one kill/unkill command."""
-        snapshot_map = getattr(self, '_kill_device_snapshot', None)
-        if snapshot_map is None:
-            snapshot_map = {}
-            self._kill_device_snapshot = snapshot_map
-        snapshot_map[mac] = dict(device)
-        actual_on = mac in self.killer.killed
-        next_seq = int(self._kill_intent_seq.get(mac, 0)) + 1
-        self._kill_intent_seq[mac] = next_seq
-        if turn_on:
+    def togglePercentCut(self, source='unknown'):
+        if not self.connected():
+            return
+        device = self._get_selected_device()
+        if not device:
+            self.log('No device selected', 'red')
+            return
+        if device['admin']:
+            self.log('Cannot cut admin device', UI_LOG_VICTIM_BLOCK_FG)
+            return
+
+        mac = device['mac']
+        turning_on = not (self.percent_cut_active and self.percent_cut_device_mac == mac)
+        if turning_on and self._toggle_start_blocked('pctcut'):
+            return
+
+        if turning_on:
+            if self.percent_cut_active and self.percent_cut_device_mac and self.percent_cut_device_mac != mac:
+                self.stopPercentCut(log=False)
             if self.lag_active and self.lag_device_mac == mac:
                 self.stopLagSwitch(refresh_dialog=True)
             if self.dupe_active and self.dupe_device_mac == mac:
                 self.stopDupe(log=False)
-            if not actual_on and device:
-                self.killer.kill(device)
-                self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
-        else:
-            victim = self._victim_record_for_mac(mac) or device
-            if victim:
-                # Also clear any leftover directional firewall block for this IP.
-                # Kill toggle is ARP-only, but stale lag/dupe rules can survive edge cases.
-                try:
-                    unblock_ip(victim['ip'])
-                except Exception:
-                    pass
+                self._flush_pending_dupe_clear_sync()
+            if self._kill_ui_shows_on(mac):
+                dev = dict(device)
+                QTimer.singleShot(
+                    0,
+                    lambda m=mac, d=dev: self._run_kill_command(m, d, turn_on=False, source='pctcut_auto_off_kill'),
+                )
+            pct = self._clamp_percent(self.spinPercentCutMain.value())
+            allow_pct = max(0, 100 - pct)
+            self._ensure_network_context_for_victim(device)
+            self.killer.apply_percent_cut(device, pass_percent=allow_pct)
+            self.percent_cut_active = True
+            self.percent_cut_device_mac = mac
+            self.log(
+                f'Percent Cut ON for {device["ip"]}: {pct}% cut ({allow_pct}% allowed)',
+                UI_LOG_VICTIM_BLOCK_FG,
+            )
+            self._refresh_flow_toggle_ui()
+            self.showDevices()
+            return
+
+        self.stopPercentCut(log=True)
+
+    def stopPercentCut(self, log=True):
+        if not self.percent_cut_active:
+            return
+        prev_mac = self.percent_cut_device_mac
+        self.percent_cut_active = False
+        self.percent_cut_device_mac = None
+        victim = self._victim_record_for_mac(prev_mac) or self._get_device_by_mac(prev_mac)
+        if victim:
+            try:
+                self._ensure_network_context_for_victim(victim)
+                self.killer.disable_percent_cut(prev_mac)
                 self.killer.unkill(victim)
                 self.killer.reinforce_restore(victim)
-                if actual_on:
-                    self.killer.reinforce_restore(victim)
-                self.log('Kill OFF for ' + victim['ip'], UI_LOG_RESTORE_FG)
-                # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
-                self._schedule_kill_off_reinforce(mac, next_seq, 60)
-                self._schedule_kill_off_reinforce(mac, next_seq, 180)
-                self._schedule_kill_off_reinforce(mac, next_seq, 650)
-                self._schedule_kill_off_reinforce(mac, next_seq, 1400)
-
-        self.killed_devices[mac] = bool(turn_on)
-        self._sync_killed_devices()
-        set_settings('killed', list(self.killer.killed) * self.remember)
-        self._updateKillButtonState()
+                pct_off_seq = self._bump_flow_off_intent('pctcut', prev_mac)
+                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 60, victim)
+                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 180, victim)
+                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 350, victim)
+            except Exception:
+                pass
+        if log and victim:
+            self.log('Percent Cut OFF for ' + victim['ip'], UI_LOG_RESTORE_FG)
+        self._refresh_flow_toggle_ui()
         self.showDevices()
+
+    def _run_kill_command(self, mac, device, turn_on, source='unknown'):
+        """Immediate explicit command path: one click => one kill/unkill command."""
+        if turn_on:
+            if getattr(self, '_kill_teardown_mac', None) == mac:
+                self._kill_teardown_mac = None
+        else:
+            self._kill_teardown_mac = mac
+        teardown_off = not turn_on
+        try:
+            snapshot_map = getattr(self, '_kill_device_snapshot', None)
+            if snapshot_map is None:
+                snapshot_map = {}
+                self._kill_device_snapshot = snapshot_map
+            snapshot_map[mac] = dict(device)
+            actual_on = mac in self.killer.killed
+            next_seq = int(self._kill_intent_seq.get(mac, 0)) + 1
+            self._kill_intent_seq[mac] = next_seq
+            if device:
+                self._ensure_network_context_for_victim(device)
+            kill_applied = False
+            if turn_on:
+                if self.lag_active and self.lag_device_mac == mac:
+                    self.stopLagSwitch(refresh_dialog=True)
+                if self.dupe_active and self.dupe_device_mac == mac:
+                    self.stopDupe(log=False)
+                    self._flush_pending_dupe_clear_sync()
+                if self.percent_cut_active and self.percent_cut_device_mac == mac:
+                    self.stopPercentCut(log=False)
+                if not actual_on and device:
+                    self.killer.disable_percent_cut(mac)
+                    if not _is_valid_ip(device.get('ip') or ''):
+                        self.log('Target has no IP yet — enable sharing and rescan.', 'red')
+                    else:
+                        self.killer.kill(device)
+                        try:
+                            iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+                            block_ip(iface, device['ip'], 'both')
+                        except Exception:
+                            pass
+                        self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                        kill_applied = True
+            else:
+                victim = self._victim_record_for_mac(mac) or device
+                if victim:
+                    try:
+                        unblock_ip(victim.get('ip') or '')
+                    except Exception:
+                        pass
+                    self.killer.unkill(victim)
+                    self.killer.reinforce_restore(victim)
+                    if actual_on:
+                        self.killer.reinforce_restore(victim)
+                    self.log('Kill OFF for ' + str(victim.get('ip', '')), UI_LOG_RESTORE_FG)
+                    # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
+                    self._schedule_kill_off_reinforce(mac, next_seq, 60)
+                    self._schedule_kill_off_reinforce(mac, next_seq, 180)
+
+            self.killed_devices[mac] = bool(kill_applied) if turn_on else False
+            self._sync_killed_devices()
+            set_settings('killed', list(self.killer.killed) * self.remember)
+            self._updateKillButtonState()
+            self._update_scan_count_status()
+            self._refresh_table_row_for_mac(mac)
+            self._repaint_all_table_rows_for_hover()
+            try:
+                app = QApplication.instance()
+                if app is not None:
+                    app.processEvents(QEventLoop.AllEvents)
+            except Exception:
+                pass
+        finally:
+            if teardown_off and getattr(self, '_kill_teardown_mac', None) == mac:
+                self._kill_teardown_mac = None
 
     def _schedule_kill_off_reinforce(self, mac, intent_seq, delay_ms):
         """Delayed OFF reinforcement that self-cancels if intent changed."""
@@ -2474,6 +3583,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if not victim:
                 return
             try:
+                self._ensure_network_context_for_victim(victim)
                 self.killer.unkill(victim)
                 self.killer.reinforce_restore(victim)
             except Exception:
@@ -2498,10 +3608,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             if kind == 'dupe' and self.dupe_active and self.dupe_device_mac == mac:
                 return
+            if kind == 'pctcut' and self.percent_cut_active and self.percent_cut_device_mac == mac:
+                return
             victim = self._victim_record_for_mac(mac) or device_snapshot
             if not victim:
                 return
             try:
+                self._ensure_network_context_for_victim(victim)
                 self.killer.unkill(victim)
                 self.killer.reinforce_restore(victim)
             except Exception:
@@ -2511,11 +3624,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _kill_ui_shows_on(self, mac):
         """Kill button / bookkeeping: visual state is authoritative for toggle UX."""
+        if (
+            getattr(self, '_dupe_restoring_after_stop', False)
+            and getattr(self, '_dupe_restoring_mac', None) == mac
+        ):
+            # Dupe uses killer.killed for ARP without setting killed_devices; unkill lags briefly.
+            return bool(self.killed_devices.get(mac, False))
+        if (
+            getattr(self, '_lag_restoring_after_stop', False)
+            and getattr(self, '_lag_restoring_mac', None) == mac
+        ):
+            return bool(self.killed_devices.get(mac, False))
+        if getattr(self, '_kill_teardown_mac', None) == mac:
+            return bool(self.killed_devices.get(mac, False))
         return bool(self.killed_devices.get(mac, mac in self.killer.killed))
 
     def _get_selected_device(self):
-        if not self.tableScan.selectedItems():
-            return None
+        """Current table row device (toolbar clicks clear selection; currentRow still identifies victim)."""
         row = self.tableScan.currentRow()
         if row < 0 or row >= len(self.scanner.devices):
             return None
@@ -2603,17 +3728,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Victim dict for unkill: same MAC as when killed, but IP refreshed from the current scan
         so ARP restore matches the real host after DHCP / rescan.
         """
-        if mac not in self.killer.killed:
-            return None
-        victim = dict(self.killer.killed[mac])
-        fresh = self._get_device_by_mac(mac)
-        if fresh:
-            victim['ip'] = fresh['ip']
-        return victim
+        if mac in self.killer.killed:
+            victim = dict(self.killer.killed[mac])
+            fresh = self._get_device_by_mac(mac)
+            if fresh:
+                victim['ip'] = fresh['ip']
+            return victim
+        return None
 
     def _enqueue_kill_off_only(self, mac, device):
         """After lag/dupe stop: execute an explicit OFF command immediately."""
         self.killed_devices[mac] = False
         self._updateKillButtonState()
-        self._run_kill_command(mac, device, turn_on=False, source='enqueue_off_only')
+        dev = dict(device)
+        QTimer.singleShot(0, lambda m=mac, d=dev: self._run_kill_command(m, d, turn_on=False, source='enqueue_off_only'))
 

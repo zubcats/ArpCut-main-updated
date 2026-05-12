@@ -17,7 +17,7 @@ from constants import (
     APP_BUILD_TIME_ISO,
     UPDATE_CHANNEL,
     UPDATE_DOWNLOAD_URL_EXPERIMENTAL,
-    UPDATE_DOWNLOAD_URL_STABLE,
+    UPDATE_DOWNLOAD_URL_MAIN,
 )
 
 # GitHub's Last-Modified on the installer is usually later than APP_BUILD_TIME_ISO
@@ -38,12 +38,19 @@ def _parse_build_time_iso(raw):
         return None
 
 
+def _normalized_update_channel():
+    c = str(UPDATE_CHANNEL or 'experimental').strip().lower()
+    if c in ('stable', 'paid'):
+        c = 'main'
+    if c not in ('main', 'experimental'):
+        c = 'experimental'
+    return c
+
+
 def selected_update_url():
-    channel = str(UPDATE_CHANNEL or 'experimental').strip().lower()
-    if channel not in ('stable', 'experimental'):
-        channel = 'experimental'
-    if channel == 'stable':
-        return (UPDATE_DOWNLOAD_URL_STABLE or '').strip()
+    channel = _normalized_update_channel()
+    if channel == 'main':
+        return (UPDATE_DOWNLOAD_URL_MAIN or '').strip()
     return (UPDATE_DOWNLOAD_URL_EXPERIMENTAL or '').strip()
 
 

@@ -1,4 +1,5 @@
 from os import path, makedirs, rename
+import os
 import shutil
 from json import dump, load, JSONDecodeError
 import ctypes
@@ -70,39 +71,130 @@ QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox, QComboBox {
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QAbstractSpinBox:focus, QComboBox:focus {
     border: 1px solid #3a3a3a;
 }
+QProgressBar {
+    background-color: #141414;
+    border: 1px solid #316E69;
+    border-radius: 4px;
+    text-align: center;
+}
 QProgressBar::chunk {
-    background-color: #000000;
+    background-color: #316E69;
+    border-radius: 3px;
+}
+QProgressBar::chunk:disabled {
+    background-color: #264d4a;
+    border-radius: 3px;
+}
+/* Main scan bar: extra specificity + object name so Win style engine does not override chunk color. */
+QProgressBar#pgbar {
+    background-color: #141414;
+    border: 1px solid #316E69;
+    border-radius: 4px;
+}
+QProgressBar#pgbar::chunk {
+    background-color: #316E69;
+    border-radius: 3px;
 }
 QMenu::item:selected, QMenuBar::item:selected {
     background-color: #000000;
 }
 /* QTabBar: see _chrome_status_strip_and_tabs_qss() (transparent, matches window chrome). */
-QCheckBox::indicator:checked, QRadioButton::indicator:checked {
-    background-color: #000000;
-    border: 1px solid #3a3a3a;
+QCheckBox::indicator, QRadioButton::indicator {
+    image: none;
+    width: 14px;
+    height: 14px;
+    border: 1px solid #5D706E;
+    background-color: transparent;
+    margin: 0px;
 }
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-    background-color: #000000;
-    min-height: 24px;
-    min-width: 24px;
+QCheckBox::indicator:unchecked, QRadioButton::indicator:unchecked {
+    image: none;
+    background-color: transparent;
+    border: 1px solid #5D706E;
+}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover,
+QCheckBox::indicator:unchecked:hover, QRadioButton::indicator:unchecked:hover {
+    image: none;
+    border: 1px solid #316E69;
+    background-color: transparent;
+}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    image: none;
+    background-color: #316E69;
+    border: 1px solid #5D706E;
+}
+QCheckBox:hover, QRadioButton:hover {
+    color: #316E69;
+}
+/* Scroll bars: idle thumb = medium grey; hover = selection teal (same as UI_TABLE_SELECTION_BG). */
+QScrollBar:vertical {
+    background-color: #141414;
+    width: 10px;
+    margin: 0;
+    border: none;
     border-radius: 4px;
 }
+QScrollBar:horizontal {
+    background-color: #141414;
+    height: 10px;
+    margin: 0;
+    border: none;
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical {
+    background-color: #4a4a4a;
+    min-height: 24px;
+    border-radius: 4px;
+    margin: 2px;
+}
+QScrollBar::handle:horizontal {
+    background-color: #4a4a4a;
+    min-width: 24px;
+    border-radius: 4px;
+    margin: 2px;
+}
 QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
-    background-color: #1a1a1a;
+    background-color: #316E69;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    height: 0;
+    width: 0;
+    border: none;
+    background: transparent;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background-color: #141414;
+}
+/* qdarkstyle paints spin arrows blue; SVG triangles (CSS borders render as boxes on some Qt/Windows). */
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDYgTDQuNSAwIEw5IDYgWiIvPjwvc3ZnPg==);
+    border: none;
+    width: 9px;
+    height: 6px;
+    margin: 0 1px 1px 1px;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDAgTDQuNSA2IEw5IDAgWiIvPjwvc3ZnPg==);
+    border: none;
+    width: 9px;
+    height: 6px;
+    margin: 1px 1px 0 1px;
 }
 QSlider::groove:horizontal {
     background-color: #1a1a1a;
 }
 QSlider::handle:horizontal {
-    background-color: #000000;
-    border: 1px solid #3a3a3a;
+    background-color: #316E69;
+    border: 1px solid #5D706E;
 }
 QSlider::handle:horizontal:hover {
-    background-color: #1a1a1a;
+    background-color: #5D706E;
 }
 /* qdark paints the filled groove segment blue; keep it on the same charcoal as the window. */
 QSlider::sub-page:horizontal {
-    background-color: #141414;
+    background-color: #316E69;
     border-radius: 2px;
     height: 4px;
 }
@@ -118,8 +210,30 @@ QToolButton:pressed {
     background-color: #0d0d0d;
 }
 QComboBox QAbstractItemView {
-    selection-background-color: #000000;
+    selection-background-color: #5D706E;
     selection-color: #f2f2f2;
+}
+QComboBox QAbstractItemView::item:selected {
+    background-color: #5D706E;
+    color: #f2f2f2;
+}
+QComboBox QAbstractItemView::item:selected:active,
+QComboBox QAbstractItemView::item:selected:!active {
+    background-color: #5D706E;
+    color: #f2f2f2;
+}
+QComboBox QAbstractItemView::item:hover {
+    background-color: #5D706E;
+    color: #f2f2f2;
+}
+QComboBox QAbstractItemView::item:hover:!selected {
+    background-color: #5D706E;
+    color: #f2f2f2;
+}
+QListView::item:hover, QListView::item:selected,
+QListView::item:selected:active, QListView::item:selected:!active {
+    background-color: #5D706E;
+    color: #f2f2f2;
 }
 /* Main device table: row chrome from item BackgroundRole; reset inherited QAbstractItemView selection tint. */
 QTableWidget#tableScan {
@@ -150,13 +264,12 @@ def _main_chrome_action_buttons_qss() -> str:
     _ids = (
         '#btnScanEasy',
         '#btnScanHard',
-        '#btnKillAll',
-        '#btnUnkillAll',
         '#btnSettings',
         '#btnAbout',
         '#btnKill',
         '#btnLagSwitch',
         '#btnDupe',
+        '#btnPercentCut',
     )
     sel = ', '.join(f'QPushButton{i}' for i in _ids)
     out = f"""
@@ -165,6 +278,11 @@ def _main_chrome_action_buttons_qss() -> str:
     color: {tx};
     border: 1px solid {bd};
     border-radius: 4px;
+    outline: none;
+}}
+{sel}:focus {{
+    outline: none;
+    border: 1px solid {bd};
 }}
 {sel}:hover {{
     background-color: {bh};
@@ -181,8 +299,10 @@ def _main_chrome_action_buttons_qss() -> str:
     border: 1px solid {bd};
     color: {tp};
 }}
-QPushButton#btnAbout {{
-    padding: 8px;
+/* Lag/Kill/Dupe row: plain QWidget can pick up qdark blue-grey behind child buttons; keep transparent. */
+QWidget#flowActionsRow {{
+    background: transparent;
+    border: none;
 }}
 """
     return out
@@ -302,19 +422,22 @@ def _auxiliary_windows_qss() -> str:
     (Lag Switch, Dupe, message boxes): same charcoal buttons / panels as the main window.
     """
     toggle_acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#316E69')
+    sel_bg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_BG', '#316E69')
+    admin_bg = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
+    sel_fg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_FG', '#f2f2f2')
     if _experimental_charcoal_ui():
         bg, bd, bh, bp = '#2b2b2b', '#3d3d3d', '#383838', '#323232'
         tx, th, tp, mute = '#e8eaed', '#d0d0d0', '#9a9a9a', '#9a9a9a'
         panel = '#141414'
         tbl_alt = '#0a0a0a'
-        sel_bg, sel_fg = '#2b2b2b', '#f2f2f2'
-        field_bd = toggle_acc
+        _aux_sel_bg, _aux_sel_fg = '#2b2b2b', '#f2f2f2'
+        field_bd = admin_bg
     else:
         bg, bd, bh, bp = '#2d323c', '#3d4a5c', '#3a3f49', '#353942'
         tx, th, tp, mute = '#e8eaed', '#aeb4bf', '#8b909a', '#8b909a'
         panel = '#000000'
         tbl_alt = '#1e2228'
-        sel_bg, sel_fg = '#324e7a', '#ffffff'
+        _aux_sel_bg, _aux_sel_fg = '#324e7a', '#ffffff'
         field_bd = bd
     return f"""
 QDialog {{
@@ -359,7 +482,7 @@ QDialog QPushButton:disabled {{
 QMainWindow#zubcutAuxiliaryWindow QGroupBox,
 QDialog QGroupBox {{
     font-weight: normal;
-    color: {tx};
+    color: {admin_bg};
     border: 1px solid {bd};
     border-radius: 4px;
     margin-top: 12px;
@@ -383,19 +506,53 @@ QDialog QGroupBox QWidget {{
 QDialog QGroupBox QLabel,
 QDialog QGroupBox QCheckBox {{
     font-weight: normal;
-    color: {tx};
+    color: {admin_bg};
     background-color: transparent;
 }}
 QMainWindow#zubcutAuxiliaryWindow QLabel,
 QDialog QLabel {{
-    color: {tx};
+    color: {admin_bg};
     background-color: transparent;
 }}
 QMainWindow#zubcutAuxiliaryWindow QCheckBox,
 QDialog QCheckBox {{
     font-weight: normal;
-    color: {tx};
+    color: {admin_bg};
     background-color: transparent;
+}}
+QMainWindow#zubcutAuxiliaryWindow QCheckBox:hover,
+QDialog QCheckBox:hover {{
+    color: {sel_bg};
+    background-color: transparent;
+}}
+QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator,
+QDialog QCheckBox::indicator {{
+    image: none;
+    width: 14px;
+    height: 14px;
+    border: 1px solid {admin_bg};
+    background-color: transparent;
+    margin: 0px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:unchecked,
+QDialog QCheckBox::indicator:unchecked {{
+    image: none;
+    border: 1px solid {admin_bg};
+    background-color: transparent;
+}}
+QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:hover,
+QDialog QCheckBox::indicator:hover,
+QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:unchecked:hover,
+QDialog QCheckBox::indicator:unchecked:hover {{
+    image: none;
+    border: 1px solid {sel_bg};
+    background-color: transparent;
+}}
+QMainWindow#zubcutAuxiliaryWindow QCheckBox::indicator:checked,
+QDialog QCheckBox::indicator:checked {{
+    image: none;
+    background-color: {sel_bg};
+    border: 1px solid {admin_bg};
 }}
 QMainWindow#zubcutAuxiliaryWindow QSlider::groove:horizontal,
 QDialog QSlider::groove:horizontal {{
@@ -405,7 +562,7 @@ QDialog QSlider::groove:horizontal {{
 }}
 QMainWindow#zubcutAuxiliaryWindow QSlider::sub-page:horizontal,
 QDialog QSlider::sub-page:horizontal {{
-    background-color: {panel};
+    background-color: {sel_bg};
     border-radius: 2px;
     height: 4px;
 }}
@@ -457,7 +614,27 @@ QMainWindow#zubcutAuxiliaryWindow QSpinBox::up-button:hover,
 QMainWindow#zubcutAuxiliaryWindow QSpinBox::down-button:hover,
 QDialog QSpinBox::up-button:hover,
 QDialog QSpinBox::down-button:hover {{
-    background-color: {bh};
+    background-color: {admin_bg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QSpinBox::up-arrow,
+QMainWindow#zubcutAuxiliaryWindow QDoubleSpinBox::up-arrow,
+QDialog QSpinBox::up-arrow,
+QDialog QDoubleSpinBox::up-arrow {{
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDYgTDQuNSAwIEw5IDYgWiIvPjwvc3ZnPg==);
+    border: none;
+    width: 9px;
+    height: 6px;
+    margin: 0 1px 1px 1px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QSpinBox::down-arrow,
+QMainWindow#zubcutAuxiliaryWindow QDoubleSpinBox::down-arrow,
+QDialog QSpinBox::down-arrow,
+QDialog QDoubleSpinBox::down-arrow {{
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDAgTDQuNSA2IEw5IDAgWiIvPjwvc3ZnPg==);
+    border: none;
+    width: 9px;
+    height: 6px;
+    margin: 1px 1px 0 1px;
 }}
 QMainWindow#zubcutAuxiliaryWindow QComboBox::drop-down,
 QDialog QComboBox::drop-down {{
@@ -471,8 +648,41 @@ QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView,
 QDialog QComboBox QAbstractItemView {{
     border: 1px solid {field_bd};
     background-color: #000000;
-    selection-background-color: #000000;
-    selection-color: #f2f2f2;
+    selection-background-color: {admin_bg};
+    selection-color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:selected,
+QDialog QComboBox QAbstractItemView::item:selected {{
+    background-color: {admin_bg};
+    color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:selected:active,
+QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:selected:!active,
+QDialog QComboBox QAbstractItemView::item:selected:active,
+QDialog QComboBox QAbstractItemView::item:selected:!active {{
+    background-color: {admin_bg};
+    color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:hover,
+QDialog QComboBox QAbstractItemView::item:hover {{
+    background-color: {admin_bg};
+    color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView::item:hover:!selected,
+QDialog QComboBox QAbstractItemView::item:hover:!selected {{
+    background-color: {admin_bg};
+    color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QListView::item:hover,
+QMainWindow#zubcutAuxiliaryWindow QListView::item:selected,
+QMainWindow#zubcutAuxiliaryWindow QListView::item:selected:active,
+QMainWindow#zubcutAuxiliaryWindow QListView::item:selected:!active,
+QDialog QListView::item:hover,
+QDialog QListView::item:selected,
+QDialog QListView::item:selected:active,
+QDialog QListView::item:selected:!active {{
+    background-color: {admin_bg};
+    color: {sel_fg};
 }}
 QMainWindow#zubcutAuxiliaryWindow QTableWidget,
 QDialog QTableWidget {{
@@ -485,8 +695,8 @@ QDialog QTableWidget {{
 QMainWindow#zubcutAuxiliaryWindow QTableWidget::item:selected,
 QDialog QTableWidget::item:selected {{
     font-weight: normal;
-    background-color: {sel_bg};
-    color: {sel_fg};
+    background-color: {_aux_sel_bg};
+    color: {_aux_sel_fg};
 }}
 QMainWindow#zubcutAuxiliaryWindow QHeaderView::section,
 QDialog QHeaderView::section {{
@@ -585,6 +795,22 @@ QDialog#zubcutLagDupeDialog QSpinBox::down-button {{
 QDialog#zubcutLagDupeDialog QSpinBox::up-button:hover,
 QDialog#zubcutLagDupeDialog QSpinBox::down-button:hover {{
     background-color: {h_fill};
+}}
+QDialog#zubcutLagDupeDialog QSpinBox::up-arrow,
+QDialog#zubcutLagDupeDialog QDoubleSpinBox::up-arrow {{
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiNhZWI0YmYiIGQ9Ik0wIDYgTDQuNSAwIEw5IDYgWiIvPjwvc3ZnPg==);
+    border: none;
+    width: 9px;
+    height: 6px;
+    margin: 0 1px 1px 1px;
+}}
+QDialog#zubcutLagDupeDialog QSpinBox::down-arrow,
+QDialog#zubcutLagDupeDialog QDoubleSpinBox::down-arrow {{
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiNhZWI0YmYiIGQ9Ik0wIDAgTDQuNSA2IEw5IDAgWiIvPjwvc3ZnPg==);
+    border: none;
+    width: 9px;
+    height: 6px;
+    margin: 1px 1px 0 1px;
 }}
 QDialog#zubcutLagDupeDialog QSlider::groove:horizontal {{
     background-color: #1a1a1a;
@@ -844,6 +1070,46 @@ def get_settings(key):
     Get certain setting item by key
     """
     return import_settings()[key]
+
+def restart_zubcut(main_window=None):
+    """
+    Start a new ZubCut process and quit this one (Windows-friendly detach).
+    Used when Clumsy mode (or similar) must fully reset runtime state.
+    """
+    import subprocess
+
+    app = None
+    try:
+        from PyQt5.QtWidgets import QApplication
+
+        app = QApplication.instance()
+    except Exception:
+        pass
+
+    exe = sys.executable
+    cwd = os.path.dirname(exe) if getattr(sys, 'frozen', False) else os.getcwd()
+    try:
+        if sys.platform.startswith('win'):
+            cf = getattr(subprocess, 'DETACHED_PROCESS', 0)
+            subprocess.Popen(
+                [exe],
+                cwd=cwd,
+                close_fds=True,
+                creationflags=cf,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.Popen([exe], cwd=cwd, close_fds=True)
+    except Exception as e:
+        print(f'restart_zubcut: failed to spawn process: {e}')
+        return
+    if main_window is not None and hasattr(main_window, 'quit_all'):
+        main_window.quit_all()
+    elif app is not None:
+        app.quit()
+
 
 def repair_settings():
     """

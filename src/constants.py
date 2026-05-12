@@ -7,12 +7,12 @@ APP_DISPLAY_NAME = 'ZubCut'
 AUTOSTART_REG_VALUE = 'ZubCut'
 APP_USER_DATA_DIR = 'ZubCut'
 # Update channel / feed settings (in-app updater + Settings button labels).
-# Branch convention:  main  -> regular releases (UPDATE_CHANNEL 'stable' in code = production URL)
+# Branch convention:  main  -> ZubCut release builds (UPDATE_CHANNEL 'main')
 #                     experimental -> tester builds (UPDATE_CHANNEL 'experimental')
 # CI overwrites UPDATE_CHANNEL and APP_BUILD_TIME_ISO per branch; match your branch when developing.
 UPDATE_CHANNEL = 'experimental'
 # Direct download URL for the latest installer package per channel (.exe).
-UPDATE_DOWNLOAD_URL_STABLE = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/stable-latest/ZubCut-Setup.exe'
+UPDATE_DOWNLOAD_URL_MAIN = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/main-latest/ZubCut-Setup.exe'
 UPDATE_DOWNLOAD_URL_EXPERIMENTAL = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/experimental-latest/ZubCut-Setup-experimental.exe'
 # UTC ISO timestamp when this binary was built (CI overwrites). Used to detect newer installers online.
 APP_BUILD_TIME_ISO = ''
@@ -31,6 +31,11 @@ else:
 
 OLD_SETTINGS_PATH = path.join(OLD_DOCUMENTS_PATH, 'elmocut.json')
 SETTINGS_PATH = path.join(DOCUMENTS_PATH, 'zubcut.json')
+LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'zubcut-license.json')
+# CI injects from secret LICENSE_PUBLIC_KEY_B64 (Ed25519 verify key, base64).
+LICENSE_PUBLIC_KEY_B64 = ''
+# License sign-in HTTPS URL. Override at runtime with ZUBCUT_LICENSE_SIGNIN_URL.
+LICENSE_SIGNIN_URL = ''
 
 # Extra legacy settings to migrate if zubcut.json is missing (Windows)
 LEGACY_SETTINGS_CANDIDATES = []
@@ -55,6 +60,12 @@ UI_TOGGLE_BORDER_ACCENT = '#316E69'
 # Scan table: selected data row (item brushes); device-count label — same teal grey-green swatch.
 UI_TABLE_SELECTION_BG = '#316E69'
 UI_TABLE_SELECTION_FG = '#f2f2f2'
+# Clumsy mode (inline Ethernet) row — tan / golden selection, dark text (user reference swatch).
+CLUMSY_INLINE_MAC = '02:00:00:00:CB:01'
+CLUMSY_TABLE_ROW_BG = '#F5E6C8'
+CLUMSY_TABLE_ROW_SEL_BG = '#E8A838'
+CLUMSY_TABLE_ROW_HOVER_BG = '#EDD4A0'
+CLUMSY_TABLE_ROW_FG = '#1a1a1a'
 # Unkill, lag off, dupe finished, kill OFF — same sage as Me/Router row background.
 UI_LOG_RESTORE_FG = ADMIN_DEVICE_TABLE_ROW_BG
 # When a newer build is available: reuse the prior Me/Router strip green for Settings / main gear.
@@ -91,11 +102,17 @@ DUMMY_IFACE = {'name': 'NULL', 'mac': GLOBAL_MAC, 'guid': 'NULL', 'ips': ['0.0.0
 HKEY_AUTOSTART_PATH = 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run'
 
 SETTINGS_KEYS = [
-    'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'nicknames',
-    'key_kill', 'key_lag', 'key_dupe',
+    'count', 'autostart', 'minimized', 'remember', 'killed', 'autoupdate', 'threads', 'iface', 'iface_before_clumsy', 'nicknames',
+    'nickname_last_ip',
+    'key_kill', 'key_lag', 'key_dupe', 'key_pctcut',
     'show_scan_mac_column', 'show_scan_vendor_column',
+    'traffic_percent',
+    'clumsy_mode',
 ]
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
-SETTINGS_VALS = [255, False, True, False, [], True, 12, '', {}, 'L', 'M', 'P', False, False]
+# clumsy_mode default False: must be enabled in Settings (requires restart).
+# iface_before_clumsy: last Settings iface before enabling Clumsy; restored when Clumsy is turned off.
+# nickname_last_ip: MAC -> last known IPv4 for nicknamed devices (fills table when host is missing from scan).
+SETTINGS_VALS = [25, False, True, False, [], True, 12, '', '', {}, {}, 'L', 'M', 'P', 'K', False, False, 50, False]
