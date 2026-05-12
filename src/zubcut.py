@@ -223,7 +223,8 @@ if __name__ == "__main__":
     GUI = ElmoCut(window_icon=icon)
     _start_paid_runtime_validation(GUI, icon)
     GUI.show()
-    GUI.resizeEvent()
+    GUI._apply_scan_table_column_layout()
+    GUI._apply_status_strip_elide()
 
     # Initialize scanner and ensure interface is valid
     GUI.scanner.init()

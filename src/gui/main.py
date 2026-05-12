@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QDialog, QFormLayout, QDialogButtonBox, QSpinBox, \
                             QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QGroupBox, \
                             QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, QSlider, \
-                            QTextEdit, QPlainTextEdit, QWidget
+                            QTextEdit, QPlainTextEdit, QWidget, QHeaderView
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush, QFontMetrics
 from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent, pyqtSlot, QMetaObject, QEventLoop
 try:
@@ -1310,7 +1310,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.tableScan.setColumnHidden(col, not visible)
         key = 'show_scan_mac_column' if col == SCAN_TABLE_COLUMN_MAC else 'show_scan_vendor_column'
         set_settings(key, bool(visible))
-        self.resizeEvent()
+        self._apply_scan_table_column_layout()
 
     def _sync_scan_table_column_settings(self):
         try:
@@ -1320,7 +1320,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             mac, ven = False, False
         self.tableScan.setColumnHidden(SCAN_TABLE_COLUMN_MAC, not mac)
         self.tableScan.setColumnHidden(SCAN_TABLE_COLUMN_VENDOR, not ven)
-        self.resizeEvent()
+        self._apply_scan_table_column_layout()
 
     def probe_ip(self):
         from PyQt5.QtWidgets import QInputDialog
@@ -1409,13 +1409,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.taskbar_button.setWindow(self.windowHandle())
         self.pgbar.valueChanged.connect(self.taskbar_progress.setValue)
 
-    def resizeEvent(self, event=True):
+    def _apply_scan_table_column_layout(self):
         """
-        Auto resize table widget columns dynamically
+        Split table width evenly across visible columns. Hidden MAC/Vendor columns
+        do not consume space (Stretch only on visible sections).
         """
-        label_count = len(TABLE_HEADER_LABELS)
-        for i in range(label_count):
-            self.tableScan.setColumnWidth(i, self.tableScan.width() // label_count)
+        hh = self.tableScan.horizontalHeader()
+        hh.setStretchLastSection(False)
+        hh.setMinimumSectionSize(56)
+        for c in range(self.tableScan.columnCount()):
+            if self.tableScan.isColumnHidden(c):
+                hh.setSectionResizeMode(c, QHeaderView.Fixed)
+            else:
+                hh.setSectionResizeMode(c, QHeaderView.Stretch)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_scan_table_column_layout()
         self._apply_status_strip_elide()
 
     def _repolish_chrome_pushbuttons(self):
