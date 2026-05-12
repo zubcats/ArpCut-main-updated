@@ -500,7 +500,6 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         btn_stop.setAutoDefault(False)
         btn_stop.setDefault(False)
-        self._tog_victim_all.setAutoDefault(False)
 
         return box
 
