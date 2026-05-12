@@ -379,13 +379,8 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         main = self._main
         if not main or not main.lag_active or not main.lag_device_mac:
             return
-        if not main.tableScan.selectedItems():
-            return
-        try:
-            dev = main._resolve_clumsy_flow_dict(main.current_index())
-        except Exception:
-            return
-        if dev['mac'] != main.lag_device_mac:
+        dev = main._get_flow_target_device()
+        if not dev or dev.get('mac') != main.lag_device_mac:
             return
         lag_ms, normal_ms, direction = self.values()
         main.applyLagSwitchSettings(lag_ms, normal_ms, direction)
@@ -422,18 +417,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
             main.stopLagSwitch()
             return
 
-        device = None
-        if main.tableScan.selectedItems():
-            try:
-                device = main._resolve_clumsy_flow_dict(main.current_index())
-            except Exception:
-                device = None
-        if device is None:
-            # Focus can move to this dialog and clear selectedItems() while currentRow still points
-            # at the intended victim. Use currentRow as a fallback so the Lag keybind still works.
-            row = main.tableScan.currentRow()
-            if 0 <= row < len(main.scanner.devices):
-                device = main._resolve_clumsy_flow_dict(main.scanner.devices[row])
+        device = main._get_flow_target_device()
         if device is None:
             pinned_mac = getattr(main, '_lag_dialog_target_mac', None)
             if pinned_mac:
@@ -689,16 +673,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
             main.stopDupe()
             return
 
-        device = None
-        if main.tableScan.selectedItems():
-            try:
-                device = main._resolve_clumsy_flow_dict(main.current_index())
-            except Exception:
-                device = None
-        if device is None:
-            row = main.tableScan.currentRow()
-            if 0 <= row < len(main.scanner.devices):
-                device = main._resolve_clumsy_flow_dict(main.scanner.devices[row])
+        device = main._get_flow_target_device()
         if device is None:
             pinned_mac = getattr(main, '_dupe_dialog_target_mac', None)
             if pinned_mac:
@@ -2172,9 +2147,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return row_dev
 
     def _get_flow_target_device(self):
-        """Selected device for Kill / Percent Cut toolbar; uses Clumsy pin when that row is selected."""
-        if not self.tableScan.selectedItems():
-            return None
+        """
+        Victim dict for Kill / Percent Cut toolbar.
+
+        Do not require selectedItems(): clicking a flow toolbar button moves focus off the
+        table and Qt often clears the selection model while currentRow still points at the
+        intended row — selectedItems-only gating made toggles appear to do nothing.
+        """
         row = self.tableScan.currentRow()
         if row < 0 or row >= len(self.scanner.devices):
             return None
@@ -2400,12 +2379,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             self.stopLagSwitch()
             return
-        if not self.tableScan.selectedItems():
-            self.log('No device selected', 'red')
-            return
-        try:
-            device = self._resolve_clumsy_flow_dict(self.current_index())
-        except Exception:
+        device = self._get_flow_target_device()
+        if device is None:
             self.log('No device selected', 'red')
             return
         if device['admin']:
@@ -2432,12 +2407,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             self.stopDupe()
             return
-        if not self.tableScan.selectedItems():
-            self.log('No device selected', 'red')
-            return
-        try:
-            device = self._resolve_clumsy_flow_dict(self.current_index())
-        except Exception:
+        device = self._get_flow_target_device()
+        if device is None:
             self.log('No device selected', 'red')
             return
         if device['admin']:
