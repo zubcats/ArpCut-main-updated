@@ -157,11 +157,13 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         layout.setSpacing(8)
 
         scroll = QScrollArea(body)
+        scroll.setObjectName('zubcutAdvLagScroll')
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         scroll_inner = QWidget(scroll)
+        scroll_inner.setObjectName('zubcutAdvLagScrollInner')
         scroll_layout = QVBoxLayout(scroll_inner)
         scroll_layout.setContentsMargins(0, 0, 4, 0)
         scroll_layout.setSpacing(10)
@@ -512,6 +514,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             c.setChecked(_bool_setting(key, default))
             c.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             c.setFixedWidth(22)
+            c.setAttribute(Qt.WA_StyledBackground, True)
             c.stateChanged.connect(self._on_mitm_field_changed)
             return c
 

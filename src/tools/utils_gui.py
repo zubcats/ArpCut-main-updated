@@ -727,6 +727,25 @@ QDialog#zubcutLagDupeDialog {{
 QDialog#zubcutLagDupeDialog QWidget#zubcutDialogBody {{
     background-color: #000000;
 }}
+/* qdark scroll viewport defaults to blue-grey; force charcoal/black like the rest of this dialog. */
+QDialog#zubcutLagDupeDialog QScrollArea,
+QDialog#zubcutLagDupeDialog QScrollArea#zubcutAdvLagScroll {{
+    background-color: #000000;
+    border: none;
+}}
+QDialog#zubcutLagDupeDialog QScrollArea > QWidget > QWidget {{
+    background-color: #000000;
+}}
+QDialog#zubcutLagDupeDialog QAbstractScrollArea#qt_scrollarea_viewport {{
+    background-color: #000000;
+    border: none;
+}}
+QDialog#zubcutLagDupeDialog QWidget#zubcutAdvLagScrollInner {{
+    background-color: #000000;
+}}
+QDialog#zubcutLagDupeDialog QDialogButtonBox {{
+    background-color: #000000;
+}}
 QDialog#zubcutLagDupeDialog QPushButton {{
     background-color: {fill};
     color: #e8eaed;
