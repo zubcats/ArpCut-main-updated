@@ -9,12 +9,12 @@ APP_DISPLAY_NAME = 'ZubCut'
 AUTOSTART_REG_VALUE = 'ZubCut'
 APP_USER_DATA_DIR = 'ZubCut'
 # Update channel / feed settings (in-app updater + Settings button labels).
-# Branch convention:  main  -> ZubCut release builds (UPDATE_CHANNEL 'main')
-#                     experimental -> tester builds (UPDATE_CHANNEL 'experimental')
+# Branch convention:  git `main`  -> stable / production builds (UPDATE_CHANNEL `main` in code)
+#                     experimental -> tester builds (UPDATE_CHANNEL `experimental`)
 # CI overwrites UPDATE_CHANNEL and APP_BUILD_TIME_ISO per branch; match your branch when developing.
 UPDATE_CHANNEL = 'experimental'
 # Direct download URL for the latest installer package per channel (.exe).
-UPDATE_DOWNLOAD_URL_MAIN = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/main-latest/ZubCut-Setup.exe'
+UPDATE_DOWNLOAD_URL_MAIN = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/stable-latest/ZubCut-Setup.exe'
 UPDATE_DOWNLOAD_URL_EXPERIMENTAL = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/experimental-latest/ZubCut-Setup-experimental.exe'
 # UTC ISO timestamp when this binary was built (CI overwrites). Used to detect newer installers online.
 APP_BUILD_TIME_ISO = ''

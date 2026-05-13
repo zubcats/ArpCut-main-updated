@@ -13,9 +13,9 @@ Cross-platform network control tool for ARP spoofing. Works on Windows and macOS
 
 Pre-built binaries are available from the **Releases** tab on this repository.
 
-**CI builds:** Push the repo to GitHub, open the **Actions** tab, run workflow **Build Release** (or **Build Windows installer only**). Pushes to **`main`** build the regular ZubCut installer; pushes to **`experimental`** build the tester installer. Manual runs can set `release_channel` (`main` / `experimental` / `auto` — `auto` follows branch rules).
+**CI builds:** Push the repo to GitHub, open the **Actions** tab, run workflow **Build Release** (or **Build Windows installer only**). Pushes to **`main`** build the stable / production installer; pushes to **`experimental`** build the tester installer. Manual runs can set `release_channel` (`stable` / `main` / `experimental` / `auto` — `stable` and `main` are equivalent; `auto` follows branch rules).
 
-**Repository settings (maintainers):** Use GitHub Actions variable **`UPDATE_DOWNLOAD_URL_MAIN`** (installer URL for `main` builds; replaces the old `UPDATE_DOWNLOAD_URL_STABLE`). Use secret **`LICENSE_PUBLIC_KEY_B64`** (replaces `PAID_LICENSE_PUBLIC_KEY_B64`). Rolling release tag for `main` is **`main-latest`** (replaces `stable-latest`).
+**Repository settings (maintainers):** Use GitHub Actions variable **`UPDATE_DOWNLOAD_URL_MAIN`** (installer URL for stable `main` builds). Use secrets **`LICENSE_PUBLIC_KEY_B64`** and **`LICENSE_SIGNIN_URL`** (Worker HTTPS URL for account sign-in). Rolling release tag for stable builds is **`stable-latest`**.
 
 From artifacts:
 - Regular (main) installer: `ZubCut-Windows-Installer`

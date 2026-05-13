@@ -1,6 +1,6 @@
 # Windows installer only — does not run macOS/Linux (faster, fewer failure points).
 #
-# Push to `main` → ZubCut release build: rolling tag `main-latest`, artifact ZubCut-Setup.exe.
+# Push to `main` (stable production) → rolling tag `stable-latest`, artifact ZubCut-Setup.exe.
 # Push to `experimental` → tester build: tag `experimental-latest`, ZubCut-Setup-experimental.exe.
 # Manual `workflow_dispatch` is still available when you want a build without a push.
 
@@ -20,6 +20,7 @@ on:
         type: choice
         options:
           - auto
+          - stable
           - main
           - experimental
 
@@ -57,43 +58,8 @@ jobs:
           UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
           # Prefer LICENSE_PUBLIC_KEY_B64; fall back during migration from PAID_LICENSE_PUBLIC_KEY_B64.
           LICENSE_PUBLIC_KEY_B64: ${{ secrets.LICENSE_PUBLIC_KEY_B64 || secrets.PAID_LICENSE_PUBLIC_KEY_B64 }}
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import os
-          import re
-          from datetime import datetime, timezone
-
-          p = Path("src/constants.py")
-          txt = p.read_text(encoding="utf-8")
-
-          ref_name = os.getenv("REF_NAME", "").lower()
-          ref_type = os.getenv("REF_TYPE", "").lower()
-          requested = os.getenv("REQUESTED_CHANNEL", "").strip().lower()
-          if requested in ("main", "experimental"):
-              channel = requested
-          else:
-              channel = "main" if (ref_name == "main" or ref_type == "tag") else "experimental"
-          main_url = os.getenv("UPDATE_URL_MAIN", "")
-          experimental_url = os.getenv("UPDATE_URL_EXPERIMENTAL", "")
-          lic_pubkey = os.getenv("LICENSE_PUBLIC_KEY_B64", "").strip()
-
-          txt = re.sub(r"^UPDATE_CHANNEL\s*=.*$", f"UPDATE_CHANNEL = '{channel}'", txt, flags=re.M)
-          if main_url:
-              txt = re.sub(r"^UPDATE_DOWNLOAD_URL_MAIN\s*=.*$", f"UPDATE_DOWNLOAD_URL_MAIN = {main_url!r}", txt, flags=re.M)
-          if experimental_url:
-              txt = re.sub(r"^UPDATE_DOWNLOAD_URL_EXPERIMENTAL\s*=.*$", f"UPDATE_DOWNLOAD_URL_EXPERIMENTAL = {experimental_url!r}", txt, flags=re.M)
-          if channel in ("main", "experimental") and not lic_pubkey:
-              raise SystemExit("Missing required secret LICENSE_PUBLIC_KEY_B64 for main/experimental builds.")
-          if channel in ("main", "experimental") and lic_pubkey:
-              if "LICENSE_PUBLIC_KEY_B64" not in txt:
-                  raise SystemExit("constants.py is missing LICENSE_PUBLIC_KEY_B64; cannot inject signing key.")
-              txt = re.sub(r"^LICENSE_PUBLIC_KEY_B64\s*=.*$", f"LICENSE_PUBLIC_KEY_B64 = {lic_pubkey!r}", txt, flags=re.M)
-          build_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-          txt = re.sub(r"^APP_BUILD_TIME_ISO\s*=.*$", f"APP_BUILD_TIME_ISO = {build_iso!r}", txt, flags=re.M)
-          p.write_text(txt, encoding="utf-8")
-          print(f"Applied UPDATE_CHANNEL={channel} for ref={os.getenv('REF_NAME')}")
-          PY
+          LICENSE_SIGNIN_URL: ${{ secrets.LICENSE_SIGNIN_URL }}
+        run: python tools/ci_apply_build_constants.py
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -154,8 +120,8 @@ jobs:
           REQUESTED_CHANNEL: ${{ github.event.inputs.release_channel || '' }}
         run: |
           $requested = "$env:REQUESTED_CHANNEL".ToLower().Trim()
-          if ($requested -eq "main" -or $requested -eq "experimental") {
-            $channel = $requested
+          if ($requested -eq "main" -or $requested -eq "stable" -or $requested -eq "experimental") {
+            if ($requested -eq "experimental") { $channel = "experimental" } else { $channel = "main" }
           } elseif ("${{ github.ref_name }}" -eq "main" -or "${{ github.ref_type }}" -eq "tag") {
             $channel = "main"
           } else {
@@ -167,24 +133,24 @@ jobs:
           Copy-Item $latest.FullName ("output/" + $aliasName) -Force
 
       - name: Upload installer EXE
-        if: ${{ github.event.inputs.release_channel == 'main' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}
+        if: ${{ github.event.inputs.release_channel == 'main' || github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}
         uses: actions/upload-artifact@v4
         with:
           name: ZubCut-Windows-Installer
           path: output/ZubCut-Setup.exe
 
       - name: Upload installer EXE (Experimental)
-        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.ref_name != 'main' && github.ref_type != 'tag') }}
+        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
         uses: actions/upload-artifact@v4
         with:
           name: ZubCut-Windows-Installer-Experimental
           path: output/ZubCut-Setup-experimental.exe
 
-      - name: Publish rolling main release
-        if: ${{ github.event.inputs.release_channel == 'main' || (github.event.inputs.release_channel != 'experimental' && github.ref_name == 'main') }}
+      - name: Publish rolling stable release
+        if: ${{ github.event.inputs.release_channel == 'main' || github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && github.ref_name == 'main') }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: main-latest
+          tag_name: stable-latest
           name: ZubCut
           prerelease: false
           make_latest: false
@@ -193,7 +159,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish rolling experimental release
-        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.ref_name != 'main' && github.ref_type != 'tag') }}
+        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: experimental-latest

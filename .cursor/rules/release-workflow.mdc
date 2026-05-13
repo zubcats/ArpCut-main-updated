@@ -1,6 +1,6 @@
 # Release Workflow
 
-- Maintain separate update paths for `experimental` (testing) and `main` (ZubCut release builds).
+- Maintain separate update paths for `experimental` (testing) and `main` (stable / production ZubCut releases).
 - Track one active working branch at a time, and default all routine commits/pushes to that active branch.
 - Before each push, resolve the target branch using branch memory:
  1) If the user explicitly requests a branch switch in this chat, use that branch and set it as active.

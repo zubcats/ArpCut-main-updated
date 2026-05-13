@@ -6,8 +6,8 @@ Release channels (GitHub)
   - Branch `experimental`: all new work lands here first. CI publishes the rolling
     tag `experimental-latest` (installer: ZubCut-Setup-experimental.exe). The app
     checks that URL for updates on experimental builds only.
-  - Branch `main`: ZubCut release builds. When testing is done, merge `experimental`
-    into `main` and push. CI publishes tag `main-latest` (installer: ZubCut-Setup.exe).
+  - Branch `main`: stable / production ZubCut builds. When testing is done, merge `experimental`
+    into `main` and push. CI publishes tag `stable-latest` (installer: ZubCut-Setup.exe).
     The app checks that URL for updates on main-channel builds (separate from experimental).
 
   CI overwrites `UPDATE_CHANNEL` and installer URLs when it runs; local `src/constants.py`
