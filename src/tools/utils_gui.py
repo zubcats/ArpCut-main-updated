@@ -790,26 +790,27 @@ QDialog#zubcutLagDupeDialog QCheckBox {{
     outline: none;
 }}
 QDialog#zubcutLagDupeDialog QGroupBox QCheckBox {{
-    color: #aeb4bf;
+    color: #5D706E;
     background-color: transparent;
 }}
 QDialog#zubcutLagDupeDialog QGroupBox QCheckBox:hover {{
     color: {sel_bg};
     background-color: transparent;
 }}
+/* Match main-window experimental checkboxes: muted teal border, not near-white. */
 QDialog#zubcutLagDupeDialog QCheckBox::indicator,
 QDialog#zubcutLagDupeDialog QGroupBox QCheckBox::indicator {{
     image: none;
     width: 14px;
     height: 14px;
-    border: 1px solid #aeb4bf;
+    border: 1px solid #5D706E;
     background-color: transparent;
     margin: 0px;
 }}
 QDialog#zubcutLagDupeDialog QCheckBox::indicator:unchecked,
 QDialog#zubcutLagDupeDialog QGroupBox QCheckBox::indicator:unchecked {{
     image: none;
-    border: 1px solid #aeb4bf;
+    border: 1px solid #5D706E;
     background-color: transparent;
 }}
 QDialog#zubcutLagDupeDialog QCheckBox::indicator:hover,
@@ -824,6 +825,47 @@ QDialog#zubcutLagDupeDialog QCheckBox::indicator:checked,
 QDialog#zubcutLagDupeDialog QGroupBox QCheckBox::indicator:checked {{
     image: none;
     background-color: {sel_bg};
+    border: 1px solid #5D706E;
+}}
+/* Advanced lag: row enable vs direction — larger / accent-framed “On”, compact “In/Out”. */
+QWidget#zubcutAdvLagDirStrip {{
+    background-color: #0a1010;
+    border: 1px solid #2a4542;
+    border-radius: 5px;
+}}
+QDialog#zubcutLagDupeDialog QCheckBox#zubcutAdvLagChkOn::indicator {{
+    image: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1px solid {acc};
+    background-color: #101818;
+}}
+QDialog#zubcutLagDupeDialog QCheckBox#zubcutAdvLagChkOn::indicator:unchecked {{
+    background-color: transparent;
+}}
+QDialog#zubcutLagDupeDialog QCheckBox#zubcutAdvLagChkOn::indicator:checked {{
+    background-color: {sel_bg};
+    border: 1px solid {acc};
+}}
+QDialog#zubcutLagDupeDialog QCheckBox#zubcutAdvLagChkOn::indicator:hover,
+QDialog#zubcutLagDupeDialog QCheckBox#zubcutAdvLagChkOn::indicator:unchecked:hover {{
+    border: 1px solid {sel_bg};
+}}
+QDialog#zubcutLagDupeDialog QCheckBox#zubcutAdvLagChkDir::indicator {{
+    image: none;
+    width: 13px;
+    height: 13px;
+    border-radius: 2px;
+    border: 1px solid #5D706E;
+    background-color: transparent;
+}}
+QDialog#zubcutLagDupeDialog QCheckBox#zubcutAdvLagChkDir::indicator:checked {{
+    background-color: {sel_bg};
+    border: 1px solid #5D706E;
+}}
+QDialog#zubcutLagDupeDialog QCheckBox#zubcutAdvLagChkDir::indicator:hover,
+QDialog#zubcutLagDupeDialog QCheckBox#zubcutAdvLagChkDir::indicator:unchecked:hover {{
     border: 1px solid {sel_bg};
 }}
 QDialog#zubcutLagDupeDialog QLabel {{

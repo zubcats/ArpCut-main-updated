@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from tools.clumsy_inline import sync_clumsy_row
+from tools.clumsy_inline import sync_clumsy_row, use_windivert_for_advanced_ics_shaping
 
 
 class _FakeScanner:
@@ -53,3 +53,31 @@ def test_sync_clumsy_row_single_client_row_unchanged():
     ):
         sync_clumsy_row(s)
     assert len(s.devices) == 2
+
+
+def test_use_windivert_for_advanced_ics_shaping_requires_inline_ip_match():
+    s = _FakeScanner([])
+    dev = {'mac': '11:11:11:11:11:01', 'ip': '192.168.137.50', 'admin': False}
+    with (
+        patch('tools.clumsy_inline.clumsy_mode_enabled', return_value=True),
+        patch('tools.clumsy_inline.clumsy_runtime_ready', return_value=True),
+        patch('tools.clumsy_inline.detect_inline_ip', return_value='192.168.137.50'),
+    ):
+        assert use_windivert_for_advanced_ics_shaping(s, dev) is True
+    with (
+        patch('tools.clumsy_inline.clumsy_mode_enabled', return_value=True),
+        patch('tools.clumsy_inline.clumsy_runtime_ready', return_value=True),
+        patch('tools.clumsy_inline.detect_inline_ip', return_value='192.168.137.51'),
+    ):
+        assert use_windivert_for_advanced_ics_shaping(s, dev) is False
+
+
+def test_use_windivert_for_advanced_ics_shaping_false_when_clumsy_off():
+    s = _FakeScanner([])
+    dev = {'mac': '11:11:11:11:11:01', 'ip': '192.168.137.50', 'admin': False}
+    with (
+        patch('tools.clumsy_inline.clumsy_mode_enabled', return_value=False),
+        patch('tools.clumsy_inline.clumsy_runtime_ready', return_value=True),
+        patch('tools.clumsy_inline.detect_inline_ip', return_value='192.168.137.50'),
+    ):
+        assert use_windivert_for_advanced_ics_shaping(s, dev) is False

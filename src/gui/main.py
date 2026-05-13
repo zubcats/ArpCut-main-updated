@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QDialog, QFormLayout, QDialogButtonBox, QSpinBox, \
                             QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QGroupBox, \
                             QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, QSlider, \
-                            QTextEdit, QPlainTextEdit, QWidget, QHeaderView
+                            QTextEdit, QPlainTextEdit, QWidget, QHeaderView, QFrame
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush, QFontMetrics
 from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent, pyqtSlot, QMetaObject, QEventLoop
 try:
@@ -47,7 +47,7 @@ from tools.frameless_chrome import (
     setup_frameless_main_window,
     CustomTitleBar,
 )
-from tools.clumsy_inline import sync_clumsy_row
+from tools.clumsy_inline import sync_clumsy_row, use_windivert_for_advanced_ics_shaping
 from tools.keybinds import keyseq_from_setting
 from tools.branding import (
     load_application_qicon,
@@ -199,7 +199,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self.setWindowTitle('Lag Switch')
         self.setModal(False)
-        self.setMinimumWidth(350)
+        self.setMinimumWidth(400)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -257,6 +257,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         dir_layout.addWidget(self.dirIncoming)
         dir_layout.addWidget(self.dirOutgoing)
         for _cb in (self.dirBoth, self.dirIncoming, self.dirOutgoing):
+            _cb.setAttribute(Qt.WA_StyledBackground, True)
             _cb.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         layout.addWidget(self.dir_group)
 
@@ -471,7 +472,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self.setWindowTitle('Dupe')
         self.setModal(False)
-        self.setMinimumWidth(350)
+        self.setMinimumWidth(400)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -531,6 +532,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         dir_layout.addWidget(self.dirIncoming)
         dir_layout.addWidget(self.dirOutgoing)
         for _cb in (self.dirBoth, self.dirIncoming, self.dirOutgoing):
+            _cb.setAttribute(Qt.WA_StyledBackground, True)
             _cb.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         layout.addWidget(self.dir_group)
 
@@ -804,6 +806,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.percent_cut_device_mac = None
         self.mitm_shaping_active = False
         self.mitm_shaping_mac = None
+        self._mitm_shaping_backend = None  # None | 'forwarder' | 'windivert'
+        self._ics_windivert_shaper = None
         self._lag_dialog_target_mac = None
         self._dupe_dialog_target_mac = None
         self.dupe_timer = QTimer(self)
@@ -953,6 +957,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.groupLagInlineLayout.setContentsMargins(8, 8, 8, 8)
         self.groupLagInlineLayout.setSpacing(4)
         self.lagTimingRow = QHBoxLayout()
+        self.lagTimingRow.setSpacing(8)
         self.lagTimingRow.addWidget(QLabel('Lag', self.groupLagInline))
         self.lagSpinMain = QSpinBox(self.groupLagInline)
         self.lagSpinMain.setRange(1, 2147483647)
@@ -960,6 +965,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lagSpinMain.setValue(9000)
         self.lagSpinMain.setSuffix(' ms')
         self.lagTimingRow.addWidget(self.lagSpinMain)
+        self.lagTimingRow.addSpacing(20)
         self.lagTimingRow.addWidget(QLabel('Normal', self.groupLagInline))
         self.normalSpinMain = QSpinBox(self.groupLagInline)
         self.normalSpinMain.setRange(25, 2147483647)
@@ -970,14 +976,25 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.groupLagInlineLayout.addLayout(self.lagTimingRow)
         self.lagDirRow = QHBoxLayout()
         self.lagDirBoth = QCheckBox('Both', self.groupLagInline)
+        self.lagDirBoth.setObjectName('zubcutFlowChkOn')
         self.lagDirBoth.setChecked(True)
         self.lagDirIncoming = QCheckBox('In', self.groupLagInline)
+        self.lagDirIncoming.setObjectName('zubcutFlowChkDir')
         self.lagDirOutgoing = QCheckBox('Out', self.groupLagInline)
+        self.lagDirOutgoing.setObjectName('zubcutFlowChkDir')
+        for _cb in (self.lagDirBoth, self.lagDirIncoming, self.lagDirOutgoing):
+            _cb.setAttribute(Qt.WA_StyledBackground, True)
         self.lagDirBoth.toggled.connect(
             lambda checked: checked and (self.lagDirIncoming.setChecked(False), self.lagDirOutgoing.setChecked(False))
         )
+        self.lagDirRow.setSpacing(6)
         self.lagDirRow.addWidget(QLabel('Block', self.groupLagInline))
         self.lagDirRow.addWidget(self.lagDirBoth)
+        _lag_dir_sep = QFrame(self.groupLagInline)
+        _lag_dir_sep.setFrameShape(QFrame.NoFrame)
+        _lag_dir_sep.setFixedSize(1, 18)
+        _lag_dir_sep.setStyleSheet('background-color: #316E69; border-radius: 1px; margin-left: 10px; margin-right: 8px;')
+        self.lagDirRow.addWidget(_lag_dir_sep)
         self.lagDirRow.addWidget(self.lagDirIncoming)
         self.lagDirRow.addWidget(self.lagDirOutgoing)
         self.groupLagInlineLayout.addLayout(self.lagDirRow)
@@ -1000,14 +1017,25 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.groupDupeInlineLayout.addLayout(self.dupeTimingRow)
         self.dupeDirRow = QHBoxLayout()
         self.dupeDirBoth = QCheckBox('Both', self.groupDupeInline)
+        self.dupeDirBoth.setObjectName('zubcutFlowChkOn')
         self.dupeDirBoth.setChecked(True)
         self.dupeDirIncoming = QCheckBox('In', self.groupDupeInline)
+        self.dupeDirIncoming.setObjectName('zubcutFlowChkDir')
         self.dupeDirOutgoing = QCheckBox('Out', self.groupDupeInline)
+        self.dupeDirOutgoing.setObjectName('zubcutFlowChkDir')
+        for _cb in (self.dupeDirBoth, self.dupeDirIncoming, self.dupeDirOutgoing):
+            _cb.setAttribute(Qt.WA_StyledBackground, True)
         self.dupeDirBoth.toggled.connect(
             lambda checked: checked and (self.dupeDirIncoming.setChecked(False), self.dupeDirOutgoing.setChecked(False))
         )
+        self.dupeDirRow.setSpacing(6)
         self.dupeDirRow.addWidget(QLabel('Block', self.groupDupeInline))
         self.dupeDirRow.addWidget(self.dupeDirBoth)
+        _dupe_dir_sep = QFrame(self.groupDupeInline)
+        _dupe_dir_sep.setFrameShape(QFrame.NoFrame)
+        _dupe_dir_sep.setFixedSize(1, 18)
+        _dupe_dir_sep.setStyleSheet('background-color: #316E69; border-radius: 1px; margin-left: 10px; margin-right: 8px;')
+        self.dupeDirRow.addWidget(_dupe_dir_sep)
         self.dupeDirRow.addWidget(self.dupeDirIncoming)
         self.dupeDirRow.addWidget(self.dupeDirOutgoing)
         self.groupDupeInlineLayout.addLayout(self.dupeDirRow)
@@ -2459,6 +2487,24 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             f' image: none; border: 1px solid {sel_bg}; background-color: transparent; }}'
             f'QGroupBox#groupLagInline QCheckBox::indicator:checked, QGroupBox#groupDupeInline QCheckBox::indicator:checked {{'
             f' image: none; background-color: {sel_bg}; border: 1px solid {admin_bg}; }}'
+            f'QGroupBox#groupLagInline QCheckBox#zubcutFlowChkOn::indicator, QGroupBox#groupDupeInline QCheckBox#zubcutFlowChkOn::indicator {{'
+            f' image: none; width: 16px; height: 16px; border-radius: 3px; border: 1px solid {sel_bg};'
+            f' background-color: transparent; margin: 0px; }}'
+            f'QGroupBox#groupLagInline QCheckBox#zubcutFlowChkOn::indicator:checked, QGroupBox#groupDupeInline QCheckBox#zubcutFlowChkOn::indicator:checked {{'
+            f' background-color: {sel_bg}; border: 1px solid {sel_bg}; }}'
+            f'QGroupBox#groupLagInline QCheckBox#zubcutFlowChkOn::indicator:hover, QGroupBox#groupDupeInline QCheckBox#zubcutFlowChkOn::indicator:hover,'
+            f'QGroupBox#groupLagInline QCheckBox#zubcutFlowChkOn::indicator:unchecked:hover, QGroupBox#groupDupeInline QCheckBox#zubcutFlowChkOn::indicator:unchecked:hover {{'
+            f' border: 1px solid {sel_bg}; }}'
+            f'QGroupBox#groupLagInline QCheckBox#zubcutFlowChkDir::indicator, QGroupBox#groupDupeInline QCheckBox#zubcutFlowChkDir::indicator {{'
+            f' image: none; width: 13px; height: 13px; border-radius: 2px; border: 1px solid #5D706E;'
+            f' background-color: transparent; margin: 0px; }}'
+            f'QGroupBox#groupLagInline QCheckBox#zubcutFlowChkDir::indicator:unchecked, QGroupBox#groupDupeInline QCheckBox#zubcutFlowChkDir::indicator:unchecked {{'
+            f' border: 1px solid #5D706E; }}'
+            f'QGroupBox#groupLagInline QCheckBox#zubcutFlowChkDir::indicator:checked, QGroupBox#groupDupeInline QCheckBox#zubcutFlowChkDir::indicator:checked {{'
+            f' background-color: {sel_bg}; border: 1px solid #5D706E; }}'
+            f'QGroupBox#groupLagInline QCheckBox#zubcutFlowChkDir::indicator:hover, QGroupBox#groupDupeInline QCheckBox#zubcutFlowChkDir::indicator:hover,'
+            f'QGroupBox#groupLagInline QCheckBox#zubcutFlowChkDir::indicator:unchecked:hover, QGroupBox#groupDupeInline QCheckBox#zubcutFlowChkDir::indicator:unchecked:hover {{'
+            f' border: 1px solid {sel_bg}; }}'
             'QGroupBox#groupLagInline QSpinBox, QGroupBox#groupDupeInline QSpinBox {'
             f' min-height: 24px; border: 1px solid {admin_bg}; border-radius: 4px;'
             f' padding: 2px 6px; background-color: {field_bg}; color: {admin_bg}; }}'
@@ -3596,28 +3642,78 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._refresh_advanced_lag_mitm_if_visible()
             return
 
+        use_wd = use_windivert_for_advanced_ics_shaping(self.scanner, device)
+        if (
+            shaping_mac
+            and shaping_mac == mac
+            and self.mitm_shaping_active
+            and getattr(self, '_mitm_shaping_backend', None) == 'windivert'
+            and self._ics_windivert_shaper is not None
+        ):
+            if use_wd:
+                self._ics_windivert_shaper.apply_params(du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps)
+                self._refresh_advanced_lag_mitm_if_visible()
+                return
+            try:
+                self._ics_windivert_shaper.stop()
+            except Exception:
+                pass
+            self._ics_windivert_shaper = None
+            self._mitm_shaping_backend = None
+
         self.stopLagSwitch(refresh_dialog=True)
         self.stopDupe(refresh_dialog=False, log=False)
         self._flush_pending_dupe_clear_sync()
         self.stopPercentCut(log=False)
 
-        try:
-            self._ensure_network_context_for_victim(device)
-            self.killer.apply_link_shaping(
-                device,
-                delay_ms_out=du,
-                delay_ms_in=dd,
-                jitter_ms_out=ju,
-                jitter_ms_in=jd,
-                loss_pct_out=lu,
-                loss_pct_in=ld,
-                max_kbps_out=cu_mbps * 1000.0,
-                max_kbps_in=cd_mbps * 1000.0,
-            )
-        except Exception as exc:
-            self.log(f'MITM shaping failed: {exc}', 'red')
-            self._refresh_advanced_lag_mitm_if_visible()
-            return
+        use_forwarder = True
+        self._mitm_shaping_backend = None
+        from tools.ics_windivert_shaper import IcsWinDivertShaper, _windivert_dll_path as _wd_dll_path
+
+        if use_wd and _wd_dll_path():
+            if mac in self.killer.killed:
+                try:
+                    v0 = self._victim_record_for_mac(mac) or device
+                    self.killer.unkill(v0)
+                except Exception:
+                    pass
+            try:
+                self.killer.disable_percent_cut(mac)
+            except Exception:
+                pass
+            shaper = IcsWinDivertShaper(device.get('ip') or '')
+            try:
+                shaper.start(du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps)
+                self._ics_windivert_shaper = shaper
+                self._mitm_shaping_backend = 'windivert'
+                use_forwarder = False
+            except Exception as exc:
+                self.log(
+                    f'WinDivert ICS shaping failed ({exc}); using MITM forwarder instead.',
+                    'red',
+                )
+                self._ics_windivert_shaper = None
+
+        if use_forwarder:
+            try:
+                self._ensure_network_context_for_victim(device)
+                self.killer.apply_link_shaping(
+                    device,
+                    delay_ms_out=du,
+                    delay_ms_in=dd,
+                    jitter_ms_out=ju,
+                    jitter_ms_in=jd,
+                    loss_pct_out=lu,
+                    loss_pct_in=ld,
+                    max_kbps_out=cu_mbps * 1000.0,
+                    max_kbps_in=cd_mbps * 1000.0,
+                )
+            except Exception as exc:
+                self.log(f'MITM shaping failed: {exc}', 'red')
+                self._refresh_advanced_lag_mitm_if_visible()
+                return
+            self._ics_windivert_shaper = None
+            self._mitm_shaping_backend = 'forwarder'
 
         self.mitm_shaping_active = True
         self.mitm_shaping_mac = mac
@@ -3641,8 +3737,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             parts.append(f'out loss {lu}%')
         if ld > 0:
             parts.append(f'in loss {ld}%')
+        path_note = 'WinDivert ICS' if self._mitm_shaping_backend == 'windivert' else 'MITM'
         self.log(
-            'Advanced lag ON (' + ', '.join(parts) + ') for ' + str(device.get('ip', '')),
+            f'Advanced lag ON ({path_note}) — ' + ', '.join(parts) + ' — for ' + str(device.get('ip', '')),
             UI_LOG_VICTIM_BLOCK_FG,
         )
         self._refresh_flow_toggle_ui()
@@ -3652,8 +3749,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self.mitm_shaping_active:
             return
         prev_mac = self.mitm_shaping_mac
+        backend = getattr(self, '_mitm_shaping_backend', None)
+        shaper = getattr(self, '_ics_windivert_shaper', None)
         self.mitm_shaping_active = False
         self.mitm_shaping_mac = None
+        self._mitm_shaping_backend = None
+        self._ics_windivert_shaper = None
+
         victim = self._victim_record_for_mac(prev_mac) or self._get_device_by_mac(prev_mac)
         if victim is None and prev_mac:
             victim = (getattr(self.killer, 'killed', None) or {}).get(prev_mac)
@@ -3662,7 +3764,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.killer.disable_percent_cut(prev_mac)
             except Exception:
                 pass
-        if victim:
+        if backend == 'windivert' and shaper is not None:
+            try:
+                shaper.stop()
+            except Exception:
+                pass
+            if log:
+                lip = (victim or {}).get('ip') if isinstance(victim, dict) else None
+                if lip:
+                    self.log(f'MITM shaping OFF for {lip} (WinDivert ICS)', UI_LOG_RESTORE_FG)
+                elif prev_mac:
+                    self.log('Advanced lag shaping stopped (WinDivert ICS).', UI_LOG_RESTORE_FG)
+        elif victim:
             try:
                 self._ensure_network_context_for_victim(victim)
                 try:
@@ -3850,8 +3963,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Do not set True for every killer victim — lag/dupe also use killer.killed for ARP.
         """
         active_macs = set(self.killer.killed.keys())
+        preserve = set()
+        if (
+            getattr(self, '_mitm_shaping_backend', None) == 'windivert'
+            and self.mitm_shaping_active
+            and self.mitm_shaping_mac
+        ):
+            preserve.add(self.mitm_shaping_mac)
         for mac in list(self.killed_devices.keys()):
-            if mac not in active_macs:
+            if mac not in active_macs and mac not in preserve:
                 self.killed_devices[mac] = False
 
     def _set_kill_button_idle_look(self):

@@ -130,9 +130,9 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setWindowTitle('Advanced Lag Settings')
         self.setModal(False)
-        self.setMinimumWidth(580)
+        self.setMinimumWidth(720)
         self.setMinimumHeight(520)
-        self.resize(620, 620)
+        self.resize(780, 640)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -457,24 +457,31 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         chk_out: QCheckBox,
         tail_widgets: list,
     ) -> None:
-        """Columns: impairment name | row On | In | Out | values (matches header row)."""
+        """Columns: impairment | row On | In/Out strip | values (matches header row)."""
         lbl = QLabel(title)
         lbl.setStyleSheet('color: #e8eaed;')
         lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         grid.addWidget(lbl, row, 0)
         ca = Qt.AlignCenter
         grid.addWidget(chk_on, row, 1, ca)
-        grid.addWidget(chk_in, row, 2, ca)
-        grid.addWidget(chk_out, row, 3, ca)
+        par = chk_on.parent()
+        dir_strip = QWidget(par)
+        dir_strip.setObjectName('zubcutAdvLagDirStrip')
+        dlay = QHBoxLayout(dir_strip)
+        dlay.setContentsMargins(10, 4, 10, 4)
+        dlay.setSpacing(18)
+        dlay.addWidget(chk_in, 0, ca)
+        dlay.addWidget(chk_out, 0, ca)
+        grid.addWidget(dir_strip, row, 2)
         tail = QHBoxLayout()
         tail.setSpacing(8)
         tail.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         for w in tail_widgets:
             tail.addWidget(w)
         tail.addStretch()
-        wrap = QWidget()
+        wrap = QWidget(par)
         wrap.setLayout(tail)
-        grid.addWidget(wrap, row, 4)
+        grid.addWidget(wrap, row, 3)
 
     def _mitm_impairments_section(self, parent: QWidget) -> QGroupBox:
         box = QGroupBox('Impairments (clumsy-style)', parent)
@@ -484,32 +491,43 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         inner.setSpacing(6)
 
         hdr = QGridLayout()
-        hdr.setHorizontalSpacing(12)
+        hdr.setHorizontalSpacing(14)
         hdr.setVerticalSpacing(4)
-        hdr.setColumnStretch(4, 1)
+        hdr.setColumnStretch(3, 1)
         h0 = QLabel('Impairment')
         h1 = QLabel('On')
-        h2 = QLabel('In')
-        h3 = QLabel('Out')
+        h_dir = QLabel('In / Out')
         h4 = QLabel('Values')
-        for h, c in ((h0, 0), (h1, 1), (h2, 2), (h3, 3), (h4, 4)):
+        for h, c in ((h0, 0), (h1, 1), (h_dir, 2), (h4, 3)):
             h.setStyleSheet('color: #9a9a9a; font-size: 11px;')
             hdr.addWidget(h, 0, c)
-        hdr.setColumnMinimumWidth(0, 118)
-        for col in (1, 2, 3):
-            hdr.setColumnMinimumWidth(col, 30)
+        hdr.setColumnMinimumWidth(0, 140)
+        hdr.setColumnMinimumWidth(1, 38)
+        hdr.setColumnMinimumWidth(2, 104)
         inner.addLayout(hdr)
 
         grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
+        grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(10)
-        grid.setColumnStretch(4, 1)
-        grid.setColumnMinimumWidth(0, 118)
-        for col in (1, 2, 3):
-            grid.setColumnMinimumWidth(col, 30)
+        grid.setColumnStretch(3, 1)
+        grid.setColumnMinimumWidth(0, 140)
+        grid.setColumnMinimumWidth(1, 38)
+        grid.setColumnMinimumWidth(2, 104)
 
-        def _mk_chk(key: str, default: bool) -> QCheckBox:
+        def _mk_chk_on(key: str, default: bool) -> QCheckBox:
             c = QCheckBox('', box)
+            c.setObjectName('zubcutAdvLagChkOn')
+            c.setTristate(False)
+            c.setChecked(_bool_setting(key, default))
+            c.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            c.setFixedWidth(24)
+            c.setAttribute(Qt.WA_StyledBackground, True)
+            c.stateChanged.connect(self._on_mitm_field_changed)
+            return c
+
+        def _mk_chk_dir(key: str, default: bool) -> QCheckBox:
+            c = QCheckBox('', box)
+            c.setObjectName('zubcutAdvLagChkDir')
             c.setTristate(False)
             c.setChecked(_bool_setting(key, default))
             c.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -519,9 +537,9 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             return c
 
         r = 0
-        self._chk_adv_delay_on = _mk_chk('mitm_adv_delay_on', False)
-        self._chk_adv_delay_in = _mk_chk('mitm_adv_delay_in', True)
-        self._chk_adv_delay_out = _mk_chk('mitm_adv_delay_out', True)
+        self._chk_adv_delay_on = _mk_chk_on('mitm_adv_delay_on', False)
+        self._chk_adv_delay_in = _mk_chk_dir('mitm_adv_delay_in', True)
+        self._chk_adv_delay_out = _mk_chk_dir('mitm_adv_delay_out', True)
         self._spin_adv_delay_ms = QSpinBox(box)
         self._spin_adv_delay_ms.setRange(0, 800)
         self._spin_adv_delay_ms.setSuffix(' ms')
@@ -539,9 +557,9 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         )
         r += 1
 
-        self._chk_adv_jitter_on = _mk_chk('mitm_adv_jitter_on', False)
-        self._chk_adv_jitter_in = _mk_chk('mitm_adv_jitter_in', True)
-        self._chk_adv_jitter_out = _mk_chk('mitm_adv_jitter_out', True)
+        self._chk_adv_jitter_on = _mk_chk_on('mitm_adv_jitter_on', False)
+        self._chk_adv_jitter_in = _mk_chk_dir('mitm_adv_jitter_in', True)
+        self._chk_adv_jitter_out = _mk_chk_dir('mitm_adv_jitter_out', True)
         self._spin_adv_jitter_ms = QSpinBox(box)
         self._spin_adv_jitter_ms.setRange(0, 800)
         self._spin_adv_jitter_ms.setSuffix(' ms')
@@ -561,15 +579,16 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         )
         r += 1
 
-        self._chk_adv_cap_on = _mk_chk('mitm_adv_cap_on', False)
-        self._chk_adv_cap_in = _mk_chk('mitm_adv_cap_in', True)
-        self._chk_adv_cap_out = _mk_chk('mitm_adv_cap_out', True)
+        self._chk_adv_cap_on = _mk_chk_on('mitm_adv_cap_on', False)
+        self._chk_adv_cap_in = _mk_chk_dir('mitm_adv_cap_in', True)
+        self._chk_adv_cap_out = _mk_chk_dir('mitm_adv_cap_out', True)
         lbl_cap_in = QLabel('In:')
         self._spin_adv_cap_in_mbps = QDoubleSpinBox(box)
         self._spin_adv_cap_in_mbps.setRange(0.0, 10_000.0)
         self._spin_adv_cap_in_mbps.setDecimals(2)
         self._spin_adv_cap_in_mbps.setSingleStep(0.5)
         self._spin_adv_cap_in_mbps.setSuffix(' Mbps')
+        self._spin_adv_cap_in_mbps.setMinimumWidth(108)
         self._spin_adv_cap_in_mbps.setValue(_float_setting('mitm_adv_cap_in_mbps', 0.0))
         self._spin_adv_cap_in_mbps.valueChanged.connect(self._on_mitm_field_changed)
         lbl_cap_out = QLabel('Out:')
@@ -578,6 +597,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._spin_adv_cap_out_mbps.setDecimals(2)
         self._spin_adv_cap_out_mbps.setSingleStep(0.5)
         self._spin_adv_cap_out_mbps.setSuffix(' Mbps')
+        self._spin_adv_cap_out_mbps.setMinimumWidth(108)
         self._spin_adv_cap_out_mbps.setValue(_float_setting('mitm_adv_cap_out_mbps', 0.0))
         self._spin_adv_cap_out_mbps.valueChanged.connect(self._on_mitm_field_changed)
         self._add_impairment_row(
@@ -591,9 +611,9 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         )
         r += 1
 
-        self._chk_adv_loss_on = _mk_chk('mitm_adv_loss_on', False)
-        self._chk_adv_loss_in = _mk_chk('mitm_adv_loss_in', True)
-        self._chk_adv_loss_out = _mk_chk('mitm_adv_loss_out', True)
+        self._chk_adv_loss_on = _mk_chk_on('mitm_adv_loss_on', False)
+        self._chk_adv_loss_in = _mk_chk_dir('mitm_adv_loss_in', True)
+        self._chk_adv_loss_out = _mk_chk_dir('mitm_adv_loss_out', True)
         self._spin_adv_loss_pct = QSpinBox(box)
         self._spin_adv_loss_pct.setRange(0, 100)
         self._spin_adv_loss_pct.setSuffix(' %')
@@ -679,8 +699,10 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         if _mitm_sections_enabled():
             ics_note = QLabel(
-                'On ICS shared clients, if the built-in delay and cap tools misbehave, use external '
-                'clumsy + WinDivert for predictable delay and rate limits.',
+                'On ICS shared clients, advanced shaping uses WinDivert in the driver when Clumsy mode '
+                'is on, WinDivert is available next to the app, and the selected row matches the detected '
+                'ICS client IP; otherwise it uses the in-app MITM forwarder path. You can still tune delay, '
+                'loss, and caps with the spin boxes above.',
                 box,
             )
         else:
@@ -697,7 +719,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         inner.addWidget(self._lbl_clumsy_status)
 
         stub = QLabel(
-            'WinDivert impairment presets (delay, loss, cap, etc.) will be added here.',
+            'No separate WinDivert presets here: the same spin values drive shaping on whichever path is active.',
             box,
         )
         stub.setWordWrap(True)
