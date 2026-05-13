@@ -1991,11 +1991,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             mac = victim.get('mac')
             if not mac:
                 continue
-            # OFF-only reinforcement for bulk unkill uses same timings as kill toggle OFF.
+            # OFF-only reinforcement for bulk unkill (same cadence as per-device kill OFF).
             self.killer.reinforce_restore(victim)
             off_seq = self._bump_flow_off_intent('all', mac)
-            self._schedule_flow_off_reinforce('all', mac, off_seq, 60, victim)
-            self._schedule_flow_off_reinforce('all', mac, off_seq, 180, victim)
+            self._schedule_flow_off_reinforce('all', mac, off_seq, 25, victim)
+            self._schedule_flow_off_reinforce('all', mac, off_seq, 100, victim)
         self.killed_devices.clear()
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
@@ -2550,9 +2550,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._refresh_flow_toggle_ui()
             self._repaint_all_table_rows_for_hover()
 
-        QTimer.singleShot(0, _arm_lag_start)
         self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
+        _arm_lag_start()
 
     def _schedule_lag_start_reassert(self, mac):
         """Quick ON reasserts so lag takes effect immediately despite ARP/firewall race timing."""
@@ -2567,8 +2567,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
 
-        QTimer.singleShot(120, _reassert)
-        QTimer.singleShot(320, _reassert)
+        QTimer.singleShot(0, _reassert)
+        QTimer.singleShot(40, _reassert)
+        QTimer.singleShot(110, _reassert)
 
     def _update_scan_count_status(self):
         """Update device/kill counts in lblright + tray without rebuilding the scan table."""
@@ -2680,8 +2681,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     victim = self._victim_record_for_mac(device['mac']) or device
                     self.killer.unkill(victim)
                 dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 100, device)
             except Exception:
                 pass
             self._sync_killed_devices()
@@ -2754,8 +2755,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         try:
             self._clear_victim_block(device)
             dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
-            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
-            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
+            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 100, device)
         except Exception:
             pass
         self._sync_killed_devices()
@@ -2784,8 +2785,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             try:
                 self._clear_victim_block(device)
                 dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
+                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 100, device)
             except Exception:
                 pass
             self._sync_killed_devices()
@@ -2818,8 +2819,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 victim = self._victim_record_for_mac(device['mac']) or device
                 self.killer.unkill(victim)
             dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
-            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 60, device)
-            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 180, device)
+            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
+            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 100, device)
         except Exception:
             pass
         self._sync_killed_devices()
@@ -3008,7 +3009,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 if not cur:
                     self.stopLagSwitch()
                     return
-                allow_arm = max(25, int(self.lag_release_ms))
+                allow_arm = max(1, int(self.lag_release_ms))
                 deadline = time.monotonic() + allow_arm / 1000.0
                 try:
                     self._lag_enter_allow_phase(cur)
@@ -3022,7 +3023,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     else:
                         self.lag_timer.start(rem_ms)
 
-            QTimer.singleShot(0, _go_allow)
+            _go_allow()
             return
 
         def _go_block():
@@ -3046,7 +3047,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 else:
                     self.lag_timer.start(rem_ms)
 
-        QTimer.singleShot(0, _go_block)
+        _go_block()
 
     def stopLagSwitch(self, refresh_dialog=True):
         if not self.lag_active:
@@ -3077,12 +3078,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 dlg_lag.refresh_toggle_state()
             except Exception:
                 pass
-        try:
-            app = QApplication.instance()
-            if app is not None:
-                app.processEvents(QEventLoop.AllEvents)
-        except Exception:
-            pass
         live = self._get_device_by_mac(prev_mac) if prev_mac else None
         snap_ok = snap if (isinstance(snap, dict) and snap.get('mac') == prev_mac) else None
         if not live and snap_ok:
@@ -3125,10 +3120,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self.killer.unkill(victim)
                     self.killer.reinforce_restore(victim)
                     lag_off_seq = self._bump_flow_off_intent('lag', prev_mac)
-                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 60, victim)
-                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 180, victim)
+                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 25, victim)
+                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 100, victim)
                 except Exception:
                     pass
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        except Exception:
+            pass
         self._sync_killed_devices()
         self._drop_lag_restoring_banner()
 
@@ -3255,7 +3256,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         try:
             app = QApplication.instance()
             if app is not None:
-                app.processEvents(QEventLoop.AllEvents)
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
         except Exception:
             pass
         self._drain_dupe_block_if_needed()
@@ -3432,13 +3433,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         try:
             app = QApplication.instance()
             if app is not None:
-                app.processEvents(QEventLoop.AllEvents)
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
         except Exception:
             pass
         dev = dict(device)
         on = next_state
         src = source
-        QTimer.singleShot(0, lambda m=mac, d=dev, o=on, s=src: self._run_kill_command(m, d, turn_on=o, source=s))
+        self._run_kill_command(mac, dev, turn_on=on, source=src)
 
     def togglePercentCut(self, source='unknown'):
         if not self.connected():
@@ -3466,10 +3467,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._flush_pending_dupe_clear_sync()
             if self._kill_ui_shows_on(mac):
                 dev = dict(device)
-                QTimer.singleShot(
-                    0,
-                    lambda m=mac, d=dev: self._run_kill_command(m, d, turn_on=False, source='pctcut_auto_off_kill'),
-                )
+                self._run_kill_command(mac, dev, turn_on=False, source='pctcut_auto_off_kill')
             pct = self._clamp_percent(self.spinPercentCutMain.value())
             allow_pct = max(0, 100 - pct)
             self._ensure_network_context_for_victim(device)
@@ -3500,9 +3498,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.killer.unkill(victim)
                 self.killer.reinforce_restore(victim)
                 pct_off_seq = self._bump_flow_off_intent('pctcut', prev_mac)
-                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 60, victim)
-                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 180, victim)
-                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 350, victim)
+                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 25, victim)
+                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 90, victim)
+                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 200, victim)
             except Exception:
                 pass
         if log and victim:
@@ -3674,9 +3672,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.killer.unkill(victim)
                 self.killer.reinforce_restore(victim)
                 mseq = self._bump_flow_off_intent('mitmshape', prev_mac)
-                self._schedule_flow_off_reinforce('mitmshape', prev_mac, mseq, 60, victim)
-                self._schedule_flow_off_reinforce('mitmshape', prev_mac, mseq, 180, victim)
-                self._schedule_flow_off_reinforce('mitmshape', prev_mac, mseq, 350, victim)
+                self._schedule_flow_off_reinforce('mitmshape', prev_mac, mseq, 25, victim)
+                self._schedule_flow_off_reinforce('mitmshape', prev_mac, mseq, 90, victim)
+                self._schedule_flow_off_reinforce('mitmshape', prev_mac, mseq, 200, victim)
             except Exception:
                 pass
             if log:
@@ -3749,8 +3747,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         self.killer.reinforce_restore(victim)
                     self.log('Kill OFF for ' + str(victim.get('ip', '')), UI_LOG_RESTORE_FG)
                     # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
-                    self._schedule_kill_off_reinforce(mac, next_seq, 60)
-                    self._schedule_kill_off_reinforce(mac, next_seq, 180)
+                    self._schedule_kill_off_reinforce(mac, next_seq, 25)
+                    self._schedule_kill_off_reinforce(mac, next_seq, 100)
 
             self.killed_devices[mac] = bool(kill_applied) if turn_on else False
             self._sync_killed_devices()
@@ -3762,7 +3760,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             try:
                 app = QApplication.instance()
                 if app is not None:
-                    app.processEvents(QEventLoop.AllEvents)
+                    app.processEvents(QEventLoop.ExcludeUserInputEvents)
             except Exception:
                 pass
         finally:
@@ -3941,5 +3939,5 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killed_devices[mac] = False
         self._updateKillButtonState()
         dev = dict(device)
-        QTimer.singleShot(0, lambda m=mac, d=dev: self._run_kill_command(m, d, turn_on=False, source='enqueue_off_only'))
+        self._run_kill_command(mac, dev, turn_on=False, source='enqueue_off_only')
 
