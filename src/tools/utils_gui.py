@@ -1195,6 +1195,20 @@ def set_settings(key, value):
     merged[key] = value
     export_settings([merged[k] for k in SETTINGS_KEYS])
 
+
+def set_settings_many(updates: dict) -> None:
+    """Apply multiple keys with one settings read and one write (avoids UI stalls)."""
+    if not updates:
+        return
+    defaults = dict(zip(SETTINGS_KEYS, SETTINGS_VALS))
+    try:
+        s = import_settings()
+    except (JSONDecodeError, OSError):
+        s = {}
+    merged = {**defaults, **{k: s[k] for k in SETTINGS_KEYS if k in s}}
+    merged.update(updates)
+    export_settings([merged[k] for k in SETTINGS_KEYS])
+
 def get_settings(key):
     """
     Get certain setting item by key

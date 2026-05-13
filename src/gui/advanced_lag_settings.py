@@ -29,7 +29,7 @@ from PyQt5.QtCore import Qt
 
 from constants import ADMIN_DEVICE_TABLE_ROW_BG
 from tools.frameless_chrome import FramelessResizableMixin, CustomTitleBar
-from tools.utils_gui import register_window_surface_effects, get_settings, set_settings
+from tools.utils_gui import register_window_surface_effects, get_settings, set_settings, set_settings_many
 
 
 def _mitm_sections_enabled() -> bool:
@@ -255,35 +255,33 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         if self._chk_adv_delay_on is None:
             return
         try:
-            set_settings('mitm_adv_delay_on', self._chk_adv_delay_on.isChecked())
-            set_settings('mitm_adv_delay_in', self._chk_adv_delay_in.isChecked())
-            set_settings('mitm_adv_delay_out', self._chk_adv_delay_out.isChecked())
-            set_settings('mitm_adv_delay_ms', int(self._spin_adv_delay_ms.value()))
-            set_settings('mitm_adv_jitter_on', self._chk_adv_jitter_on.isChecked())
-            set_settings('mitm_adv_jitter_in', self._chk_adv_jitter_in.isChecked())
-            set_settings('mitm_adv_jitter_out', self._chk_adv_jitter_out.isChecked())
-            set_settings('mitm_adv_jitter_ms', int(self._spin_adv_jitter_ms.value()))
-            set_settings('mitm_adv_cap_on', self._chk_adv_cap_on.isChecked())
-            set_settings('mitm_adv_cap_in', self._chk_adv_cap_in.isChecked())
-            set_settings('mitm_adv_cap_out', self._chk_adv_cap_out.isChecked())
-            set_settings('mitm_adv_cap_out_mbps', float(self._spin_adv_cap_out_mbps.value()))
-            set_settings('mitm_adv_cap_in_mbps', float(self._spin_adv_cap_in_mbps.value()))
-            set_settings('mitm_adv_loss_on', self._chk_adv_loss_on.isChecked())
-            set_settings('mitm_adv_loss_in', self._chk_adv_loss_in.isChecked())
-            set_settings('mitm_adv_loss_out', self._chk_adv_loss_out.isChecked())
-            set_settings('mitm_adv_loss_pct', int(self._spin_adv_loss_pct.value()))
             du, dd, ju, jd, cu, cd, lu, ld = self._mitm_effective_params()
-            set_settings('mitm_delay_up_ms', du)
-            set_settings('mitm_delay_down_ms', dd)
-            set_settings('mitm_cap_up_mbps', cu)
-            set_settings('mitm_cap_down_mbps', cd)
-            set_settings(
-                'mitm_delay_enabled',
-                self._chk_adv_delay_on.isChecked() and (du > 0 or dd > 0),
-            )
-            set_settings(
-                'mitm_cap_enabled',
-                self._chk_adv_cap_on.isChecked() and (cu > 0.0 or cd > 0.0),
+            set_settings_many(
+                {
+                    'mitm_adv_delay_on': self._chk_adv_delay_on.isChecked(),
+                    'mitm_adv_delay_in': self._chk_adv_delay_in.isChecked(),
+                    'mitm_adv_delay_out': self._chk_adv_delay_out.isChecked(),
+                    'mitm_adv_delay_ms': int(self._spin_adv_delay_ms.value()),
+                    'mitm_adv_jitter_on': self._chk_adv_jitter_on.isChecked(),
+                    'mitm_adv_jitter_in': self._chk_adv_jitter_in.isChecked(),
+                    'mitm_adv_jitter_out': self._chk_adv_jitter_out.isChecked(),
+                    'mitm_adv_jitter_ms': int(self._spin_adv_jitter_ms.value()),
+                    'mitm_adv_cap_on': self._chk_adv_cap_on.isChecked(),
+                    'mitm_adv_cap_in': self._chk_adv_cap_in.isChecked(),
+                    'mitm_adv_cap_out': self._chk_adv_cap_out.isChecked(),
+                    'mitm_adv_cap_out_mbps': float(self._spin_adv_cap_out_mbps.value()),
+                    'mitm_adv_cap_in_mbps': float(self._spin_adv_cap_in_mbps.value()),
+                    'mitm_adv_loss_on': self._chk_adv_loss_on.isChecked(),
+                    'mitm_adv_loss_in': self._chk_adv_loss_in.isChecked(),
+                    'mitm_adv_loss_out': self._chk_adv_loss_out.isChecked(),
+                    'mitm_adv_loss_pct': int(self._spin_adv_loss_pct.value()),
+                    'mitm_delay_up_ms': du,
+                    'mitm_delay_down_ms': dd,
+                    'mitm_cap_up_mbps': cu,
+                    'mitm_cap_down_mbps': cd,
+                    'mitm_delay_enabled': self._chk_adv_delay_on.isChecked() and (du > 0 or dd > 0),
+                    'mitm_cap_enabled': self._chk_adv_cap_on.isChecked() and (cu > 0.0 or cd > 0.0),
+                }
             )
         except Exception:
             pass
@@ -385,8 +383,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         main = self.elmocut
         if main is None or self._mitm_sync_guard:
             return
-        self._persist_mitm_ui()
         if checked:
+            self._persist_mitm_ui()
             if not self._has_valid_mitm_config():
                 self._log(
                     'Enable at least one row, tick In or Out, and set non-zero values, then turn the victim toggle on.',
@@ -399,6 +397,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             main.start_mitm_shaping_from_advanced(du, dd, ju, jd, cu, cd, lu, ld)
         else:
             main.stop_mitm_shaping(log=True)
+            self._persist_mitm_ui()
         self._refresh_mitm_status()
 
     def _on_mitm_stop(self) -> None:
