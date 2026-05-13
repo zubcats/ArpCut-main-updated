@@ -195,9 +195,17 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
     def _top_info_banner(self, parent: QWidget) -> QWidget:
         wrap = QWidget(parent)
+        wrap.setObjectName('zubcutAdvLagInfoBanner')
         lay = QVBoxLayout(wrap)
-        lay.setContentsMargins(0, 0, 0, 2)
+        lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(6)
+        wrap.setStyleSheet(
+            '#zubcutAdvLagInfoBanner {'
+            '  background-color: #0c1820;'
+            '  border: 1px solid #1e4550;'
+            '  border-radius: 6px;'
+            '}'
+        )
 
         main = QLabel(
             'These controls work without Clumsy mode, but delay, loss, and bandwidth caps are '
@@ -206,22 +214,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             wrap,
         )
         main.setWordWrap(True)
-        main.setStyleSheet('color: #c5c5c5; font-size: 11px;')
+        main.setStyleSheet('color: #c8d4dc; font-size: 11px; background-color: transparent;')
         lay.addWidget(main)
-
-        if _mitm_sections_enabled():
-            path = QLabel(
-                'On ICS shared clients, shaping uses WinDivert at the driver when Clumsy mode is on, '
-                'WinDivert is available next to the app, and the selected row matches the detected '
-                'ICS client IP; otherwise the in-app MITM forwarder applies the same spin values.',
-                wrap,
-            )
-            path.setWordWrap(True)
-            path.setStyleSheet('color: #9a9a9a; font-size: 11px;')
-            lay.addWidget(path)
 
         self._lbl_clumsy_status = QLabel(wrap)
         self._lbl_clumsy_status.setWordWrap(True)
+        self._lbl_clumsy_status.setStyleSheet('background-color: transparent;')
         lay.addWidget(self._lbl_clumsy_status)
         return wrap
 
@@ -677,7 +675,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             return
         if not sys.platform.startswith('win'):
             self._lbl_clumsy_status.setText('Clumsy mode is only available on Windows.')
-            self._lbl_clumsy_status.setStyleSheet('color: #9a9a9a; font-size: 11px;')
+            self._lbl_clumsy_status.setStyleSheet('color: #9a9a9a; font-size: 11px; background-color: transparent;')
             return
         try:
             from tools.clumsy_inline import (
@@ -688,7 +686,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             )
         except Exception:
             self._lbl_clumsy_status.setText('Could not read Clumsy status.')
-            self._lbl_clumsy_status.setStyleSheet('color: #c9a227; font-size: 11px;')
+            self._lbl_clumsy_status.setStyleSheet('color: #c9a227; font-size: 11px; background-color: transparent;')
             return
         mode = clumsy_mode_enabled()
         bundle = clumsy_bundle_offered()
@@ -703,8 +701,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         lines.append(f'Ready for inline ICS row: {"yes" if ready and mode else "no"}')
         self._lbl_clumsy_status.setText('\n'.join(lines))
         if mode and ready:
-            self._lbl_clumsy_status.setStyleSheet('color: #8fbcbb; font-size: 11px;')
+            self._lbl_clumsy_status.setStyleSheet('color: #8fbcbb; font-size: 11px; background-color: transparent;')
         elif mode and not ready:
-            self._lbl_clumsy_status.setStyleSheet('color: #c9a227; font-size: 11px;')
+            self._lbl_clumsy_status.setStyleSheet('color: #c9a227; font-size: 11px; background-color: transparent;')
         else:
-            self._lbl_clumsy_status.setStyleSheet('color: #9a9a9a; font-size: 11px;')
+            self._lbl_clumsy_status.setStyleSheet('color: #9a9a9a; font-size: 11px; background-color: transparent;')
