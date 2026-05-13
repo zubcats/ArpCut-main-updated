@@ -561,14 +561,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._chk_adv_cap_on = _mk_chk('mitm_adv_cap_on', False)
         self._chk_adv_cap_in = _mk_chk('mitm_adv_cap_in', True)
         self._chk_adv_cap_out = _mk_chk('mitm_adv_cap_out', True)
-        self._spin_adv_cap_out_mbps = QDoubleSpinBox(box)
-        self._spin_adv_cap_out_mbps.setRange(0.0, 10_000.0)
-        self._spin_adv_cap_out_mbps.setDecimals(2)
-        self._spin_adv_cap_out_mbps.setSingleStep(0.5)
-        self._spin_adv_cap_out_mbps.setSuffix(' Mbps')
-        self._spin_adv_cap_out_mbps.setValue(_float_setting('mitm_adv_cap_out_mbps', 0.0))
-        self._spin_adv_cap_out_mbps.valueChanged.connect(self._on_mitm_field_changed)
-        lo = QLabel('Out:')
+        lbl_cap_in = QLabel('In:')
         self._spin_adv_cap_in_mbps = QDoubleSpinBox(box)
         self._spin_adv_cap_in_mbps.setRange(0.0, 10_000.0)
         self._spin_adv_cap_in_mbps.setDecimals(2)
@@ -576,7 +569,14 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._spin_adv_cap_in_mbps.setSuffix(' Mbps')
         self._spin_adv_cap_in_mbps.setValue(_float_setting('mitm_adv_cap_in_mbps', 0.0))
         self._spin_adv_cap_in_mbps.valueChanged.connect(self._on_mitm_field_changed)
-        li = QLabel('In:')
+        lbl_cap_out = QLabel('Out:')
+        self._spin_adv_cap_out_mbps = QDoubleSpinBox(box)
+        self._spin_adv_cap_out_mbps.setRange(0.0, 10_000.0)
+        self._spin_adv_cap_out_mbps.setDecimals(2)
+        self._spin_adv_cap_out_mbps.setSingleStep(0.5)
+        self._spin_adv_cap_out_mbps.setSuffix(' Mbps')
+        self._spin_adv_cap_out_mbps.setValue(_float_setting('mitm_adv_cap_out_mbps', 0.0))
+        self._spin_adv_cap_out_mbps.valueChanged.connect(self._on_mitm_field_changed)
         self._add_impairment_row(
             grid,
             r,
@@ -584,7 +584,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             chk_on=self._chk_adv_cap_on,
             chk_in=self._chk_adv_cap_in,
             chk_out=self._chk_adv_cap_out,
-            tail_widgets=[lo, self._spin_adv_cap_out_mbps, li, self._spin_adv_cap_in_mbps],
+            tail_widgets=[lbl_cap_in, self._spin_adv_cap_in_mbps, lbl_cap_out, self._spin_adv_cap_out_mbps],
         )
         r += 1
 
