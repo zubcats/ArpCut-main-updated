@@ -1,7 +1,7 @@
 """Advanced Lag Settings — clumsy-style rows + master victim toggle (experimental MITM path).
 
 Each row: enable, In/Out, and values. Turning the victim toggle on applies every enabled row
-to the selected device; off stops. ``Clumsy only`` covers ICS / WinDivert notes + status.
+to the selected device; off stops. A top banner explains Clumsy-mode benefits and shows status.
 """
 
 from __future__ import annotations
@@ -95,8 +95,6 @@ def _stub_section(title: str, parent: QWidget) -> QGroupBox:
 class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
     """Non-modal panel opened from the main flow toggles (right-click → Advanced Lag Settings)."""
 
-    _CLUMSY_ONLY_TITLE = 'Clumsy only'
-
     def __init__(self, parent=None):
         super().__init__(None)
         self.setObjectName('zubcutLagDupeDialog')
@@ -168,12 +166,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         scroll_layout.setContentsMargins(0, 0, 4, 0)
         scroll_layout.setSpacing(10)
 
+        scroll_layout.addWidget(self._top_info_banner(scroll_inner))
         if _mitm_sections_enabled():
             scroll_layout.addWidget(self._mitm_impairments_section(scroll_inner))
             scroll_layout.addWidget(self._mitm_victim_section(scroll_inner))
         else:
             scroll_layout.addWidget(_stub_section('More options', scroll_inner))
-        scroll_layout.addWidget(self._clumsy_only_section(scroll_inner))
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_inner)
@@ -194,6 +192,38 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         super().showEvent(event)
         self._refresh_clumsy_status()
         self._refresh_mitm_status()
+
+    def _top_info_banner(self, parent: QWidget) -> QWidget:
+        wrap = QWidget(parent)
+        lay = QVBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 2)
+        lay.setSpacing(6)
+
+        main = QLabel(
+            'These controls work without Clumsy mode, but delay, loss, and bandwidth caps are '
+            'usually more precise and behave more predictably when Clumsy mode is enabled in '
+            'Settings—especially on Windows ICS and other shared-client links.',
+            wrap,
+        )
+        main.setWordWrap(True)
+        main.setStyleSheet('color: #c5c5c5; font-size: 11px;')
+        lay.addWidget(main)
+
+        if _mitm_sections_enabled():
+            path = QLabel(
+                'On ICS shared clients, shaping uses WinDivert at the driver when Clumsy mode is on, '
+                'WinDivert is available next to the app, and the selected row matches the detected '
+                'ICS client IP; otherwise the in-app MITM forwarder applies the same spin values.',
+                wrap,
+            )
+            path.setWordWrap(True)
+            path.setStyleSheet('color: #9a9a9a; font-size: 11px;')
+            lay.addWidget(path)
+
+        self._lbl_clumsy_status = QLabel(wrap)
+        self._lbl_clumsy_status.setWordWrap(True)
+        lay.addWidget(self._lbl_clumsy_status)
+        return wrap
 
     def _mitm_toggle(self, parent: QWidget, tooltip: str = '') -> QPushButton:
         btn = QPushButton(parent)
@@ -679,50 +709,3 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             self._lbl_clumsy_status.setStyleSheet('color: #c9a227; font-size: 11px;')
         else:
             self._lbl_clumsy_status.setStyleSheet('color: #9a9a9a; font-size: 11px;')
-
-    def _clumsy_only_section(self, parent: QWidget) -> QGroupBox:
-        box = QGroupBox(self._CLUMSY_ONLY_TITLE, parent)
-        _section_font(box)
-        inner = QVBoxLayout(box)
-        inner.setContentsMargins(12, 10, 12, 12)
-        inner.setSpacing(8)
-
-        intro = QLabel(
-            'These controls apply only when Clumsy mode is enabled in Settings (Windows ICS / '
-            'shared clients and the inline device row). They do not change the standard '
-            'Lag Switch on the normal adapter path.',
-            box,
-        )
-        intro.setWordWrap(True)
-        intro.setStyleSheet('color: #c5c5c5; font-size: 11px;')
-        inner.addWidget(intro)
-
-        if _mitm_sections_enabled():
-            ics_note = QLabel(
-                'On ICS shared clients, advanced shaping uses WinDivert in the driver when Clumsy mode '
-                'is on, WinDivert is available next to the app, and the selected row matches the detected '
-                'ICS client IP; otherwise it uses the in-app MITM forwarder path. You can still tune delay, '
-                'loss, and caps with the spin boxes above.',
-                box,
-            )
-        else:
-            ics_note = QLabel(
-                'On ICS shared clients, use external clumsy + WinDivert for predictable delay and rate limits.',
-                box,
-            )
-        ics_note.setWordWrap(True)
-        ics_note.setStyleSheet('color: #9a9a9a; font-size: 11px;')
-        inner.addWidget(ics_note)
-
-        self._lbl_clumsy_status = QLabel(box)
-        self._lbl_clumsy_status.setWordWrap(True)
-        inner.addWidget(self._lbl_clumsy_status)
-
-        stub = QLabel(
-            'No separate WinDivert presets here: the same spin values drive shaping on whichever path is active.',
-            box,
-        )
-        stub.setWordWrap(True)
-        stub.setStyleSheet('color: #9a9a9a; font-size: 11px;')
-        inner.addWidget(stub)
-        return box

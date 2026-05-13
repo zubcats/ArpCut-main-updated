@@ -2,6 +2,7 @@
 import re
 import sys
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -701,6 +702,8 @@ class DupeDialog(FramelessResizableMixin, QDialog):
 
 
 class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
+    mitm_teardown_finished = pyqtSignal(str, bool, str, bool, object)
+
     def __init__(self, window_icon=None):
         super().__init__()
         self.version = '1.29'
@@ -808,6 +811,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.mitm_shaping_mac = None
         self._mitm_shaping_backend = None  # None | 'forwarder' | 'windivert'
         self._ics_windivert_shaper = None
+        self._mitm_teardown_thread = None
+        self.mitm_teardown_finished.connect(self._on_mitm_teardown_finished)
         self._lag_dialog_target_mac = None
         self._dupe_dialog_target_mac = None
         self.dupe_timer = QTimer(self)
@@ -1453,6 +1458,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._flush_pending_dupe_clear_sync()
         self.stopPercentCut(log=False)
         self.stop_mitm_shaping(log=False)
+        self._await_mitm_teardown_thread()
         self.settings_window.close()
         self.about_window.close()
         hide_all_system_tray_icons()
@@ -1975,6 +1981,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._flush_pending_dupe_clear_sync()
         self.stopPercentCut(log=False)
         self.stop_mitm_shaping(log=False)
+        self._await_mitm_teardown_thread()
         if not self.connected():
             return
         
@@ -2005,6 +2012,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._flush_pending_dupe_clear_sync()
         self.stopPercentCut(log=False)
         self.stop_mitm_shaping(log=False)
+        self._await_mitm_teardown_thread()
         if not self.connected():
             return
         
@@ -2054,6 +2062,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._flush_pending_dupe_clear_sync()
         self.stopPercentCut(log=False)
         self.stop_mitm_shaping(log=False)
+        self._await_mitm_teardown_thread()
         if not self.connected(show_msg_box=True):
             return
 
@@ -3580,6 +3589,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log('Latency and bandwidth shaping is not available in this build.', 'red')
             self._refresh_advanced_lag_mitm_if_visible()
             return
+        self._await_mitm_teardown_thread()
         if not self.connected():
             self._refresh_advanced_lag_mitm_if_visible()
             return
@@ -3745,62 +3755,112 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._refresh_flow_toggle_ui()
         self._refresh_advanced_lag_mitm_if_visible()
 
+    def _await_mitm_teardown_thread(self, timeout_s=8.0):
+        """Advanced lag OFF runs sniffer teardown off-thread; wait before starting shaping again."""
+        t = getattr(self, '_mitm_teardown_thread', None)
+        if t is not None and t.is_alive():
+            t.join(timeout=float(timeout_s))
+
+    def _on_mitm_teardown_finished(self, prev_mac: str, log: bool, log_ip: str, was_windivert: bool, victim_snap):
+        self._mitm_teardown_thread = None
+        mac = prev_mac or None
+        if mac:
+            self.killed_devices[mac] = False
+        self._sync_killed_devices()
+        set_settings('killed', list(self.killer.killed) * self.remember)
+        if (
+            mac
+            and isinstance(victim_snap, dict)
+            and not was_windivert
+        ):
+            try:
+                mseq = self._bump_flow_off_intent('mitmshape', mac)
+                self._schedule_flow_off_reinforce('mitmshape', mac, mseq, 25, victim_snap)
+                self._schedule_flow_off_reinforce('mitmshape', mac, mseq, 90, victim_snap)
+                self._schedule_flow_off_reinforce('mitmshape', mac, mseq, 200, victim_snap)
+            except Exception:
+                pass
+        self._updateKillButtonState()
+        self._refresh_flow_toggle_ui()
+        self._refresh_advanced_lag_mitm_if_visible()
+        if not log:
+            return
+        if was_windivert:
+            if log_ip:
+                self.log(f'MITM shaping OFF for {log_ip} (WinDivert ICS)', UI_LOG_RESTORE_FG)
+            elif mac:
+                self.log('Advanced lag shaping stopped (WinDivert ICS).', UI_LOG_RESTORE_FG)
+        elif log_ip:
+            self.log('MITM shaping OFF for ' + str(log_ip), UI_LOG_RESTORE_FG)
+        elif mac:
+            self.log('Advanced lag shaping stopped (device no longer in list).', UI_LOG_RESTORE_FG)
+
     def stop_mitm_shaping(self, log=True):
         if not self.mitm_shaping_active:
             return
         prev_mac = self.mitm_shaping_mac
         backend = getattr(self, '_mitm_shaping_backend', None)
         shaper = getattr(self, '_ics_windivert_shaper', None)
+
+        victim = self._victim_record_for_mac(prev_mac) or self._get_device_by_mac(prev_mac)
+        if victim is None and prev_mac:
+            victim = (getattr(self.killer, 'killed', None) or {}).get(prev_mac)
+        victim_snap = dict(victim) if isinstance(victim, dict) else None
+
         self.mitm_shaping_active = False
         self.mitm_shaping_mac = None
         self._mitm_shaping_backend = None
         self._ics_windivert_shaper = None
 
-        victim = self._victim_record_for_mac(prev_mac) or self._get_device_by_mac(prev_mac)
-        if victim is None and prev_mac:
-            victim = (getattr(self.killer, 'killed', None) or {}).get(prev_mac)
-        if prev_mac:
+        self._refresh_advanced_lag_mitm_if_visible()
+
+        was_wd = backend == 'windivert' and shaper is not None
+
+        def _teardown_worker():
+            log_ip = ''
             try:
-                self.killer.disable_percent_cut(prev_mac)
-            except Exception:
-                pass
-        if backend == 'windivert' and shaper is not None:
-            try:
-                shaper.stop()
-            except Exception:
-                pass
-            if log:
-                lip = (victim or {}).get('ip') if isinstance(victim, dict) else None
-                if lip:
-                    self.log(f'MITM shaping OFF for {lip} (WinDivert ICS)', UI_LOG_RESTORE_FG)
-                elif prev_mac:
-                    self.log('Advanced lag shaping stopped (WinDivert ICS).', UI_LOG_RESTORE_FG)
-        elif victim:
-            try:
-                self._ensure_network_context_for_victim(victim)
+                if prev_mac:
+                    try:
+                        self.killer.disable_percent_cut(prev_mac)
+                    except Exception:
+                        pass
+                if was_wd:
+                    try:
+                        shaper.stop()
+                    except Exception:
+                        pass
+                    if isinstance(victim_snap, dict):
+                        log_ip = str(victim_snap.get('ip') or '')
+                elif isinstance(victim_snap, dict):
+                    try:
+                        self._ensure_network_context_for_victim(victim_snap)
+                    except Exception:
+                        pass
+                    try:
+                        unblock_ip(victim_snap.get('ip') or '')
+                    except Exception:
+                        pass
+                    try:
+                        self.killer.unkill(victim_snap)
+                        self.killer.reinforce_restore(victim_snap)
+                    except Exception:
+                        pass
+                    log_ip = str(victim_snap.get('ip') or '')
+            finally:
                 try:
-                    unblock_ip(victim.get('ip') or '')
+                    self.mitm_teardown_finished.emit(
+                        str(prev_mac or ''),
+                        bool(log),
+                        log_ip,
+                        bool(was_wd),
+                        victim_snap,
+                    )
                 except Exception:
                     pass
-                self.killer.unkill(victim)
-                self.killer.reinforce_restore(victim)
-                mseq = self._bump_flow_off_intent('mitmshape', prev_mac)
-                self._schedule_flow_off_reinforce('mitmshape', prev_mac, mseq, 25, victim)
-                self._schedule_flow_off_reinforce('mitmshape', prev_mac, mseq, 90, victim)
-                self._schedule_flow_off_reinforce('mitmshape', prev_mac, mseq, 200, victim)
-            except Exception:
-                pass
-            if log:
-                self.log('MITM shaping OFF for ' + str(victim.get('ip', '')), UI_LOG_RESTORE_FG)
-        elif log and prev_mac:
-            self.log('Advanced lag shaping stopped (device no longer in list).', UI_LOG_RESTORE_FG)
-        if prev_mac:
-            self.killed_devices[prev_mac] = False
-        self._sync_killed_devices()
-        set_settings('killed', list(self.killer.killed) * self.remember)
-        self._updateKillButtonState()
-        self._refresh_flow_toggle_ui()
-        self._refresh_advanced_lag_mitm_if_visible()
+
+        t = threading.Thread(target=_teardown_worker, daemon=True, name='mitm-stop-teardown')
+        self._mitm_teardown_thread = t
+        t.start()
 
     def _run_kill_command(self, mac, device, turn_on, source='unknown'):
         """Immediate explicit command path: one click => one kill/unkill command."""
@@ -3832,6 +3892,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self.stopPercentCut(log=False)
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
                     self.stop_mitm_shaping(log=False)
+                    self._await_mitm_teardown_thread()
                 if not actual_on and device:
                     self.killer.disable_percent_cut(mac)
                     if not _is_valid_ip(device.get('ip') or ''):
@@ -3848,6 +3909,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             else:
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
                     self.stop_mitm_shaping(log=False)
+                    self._await_mitm_teardown_thread()
                 victim = self._victim_record_for_mac(mac) or device
                 if victim:
                     try:
