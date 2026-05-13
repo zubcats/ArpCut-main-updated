@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QHBoxLayout,
     QGridLayout,
+    QSizePolicy,
 )
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt
@@ -454,20 +455,24 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         chk_out: QCheckBox,
         tail_widgets: list,
     ) -> None:
-        grid.addWidget(chk_on, row, 0)
+        """Columns: impairment name | row On | In | Out | values (matches header row)."""
         lbl = QLabel(title)
         lbl.setStyleSheet('color: #e8eaed;')
-        grid.addWidget(lbl, row, 1)
-        grid.addWidget(chk_in, row, 2)
-        grid.addWidget(chk_out, row, 3)
+        lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        grid.addWidget(lbl, row, 0)
+        ca = Qt.AlignCenter
+        grid.addWidget(chk_on, row, 1, ca)
+        grid.addWidget(chk_in, row, 2, ca)
+        grid.addWidget(chk_out, row, 3, ca)
         tail = QHBoxLayout()
         tail.setSpacing(8)
+        tail.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         for w in tail_widgets:
             tail.addWidget(w)
         tail.addStretch()
-        w = QWidget()
-        w.setLayout(tail)
-        grid.addWidget(w, row, 4)
+        wrap = QWidget()
+        wrap.setLayout(tail)
+        grid.addWidget(wrap, row, 4)
 
     def _mitm_impairments_section(self, parent: QWidget) -> QGroupBox:
         box = QGroupBox('Impairments (clumsy-style)', parent)
@@ -477,26 +482,36 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         inner.setSpacing(6)
 
         hdr = QGridLayout()
-        hdr.setHorizontalSpacing(10)
+        hdr.setHorizontalSpacing(12)
+        hdr.setVerticalSpacing(4)
         hdr.setColumnStretch(4, 1)
-        h0 = QLabel('')
-        h1 = QLabel('Function')
+        h0 = QLabel('Impairment')
+        h1 = QLabel('On')
         h2 = QLabel('In')
         h3 = QLabel('Out')
         h4 = QLabel('Values')
         for h, c in ((h0, 0), (h1, 1), (h2, 2), (h3, 3), (h4, 4)):
             h.setStyleSheet('color: #9a9a9a; font-size: 11px;')
             hdr.addWidget(h, 0, c)
+        hdr.setColumnMinimumWidth(0, 118)
+        for col in (1, 2, 3):
+            hdr.setColumnMinimumWidth(col, 30)
         inner.addLayout(hdr)
 
         grid = QGridLayout()
-        grid.setHorizontalSpacing(10)
+        grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(10)
         grid.setColumnStretch(4, 1)
+        grid.setColumnMinimumWidth(0, 118)
+        for col in (1, 2, 3):
+            grid.setColumnMinimumWidth(col, 30)
 
         def _mk_chk(key: str, default: bool) -> QCheckBox:
             c = QCheckBox('', box)
+            c.setTristate(False)
             c.setChecked(_bool_setting(key, default))
+            c.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            c.setFixedWidth(22)
             c.stateChanged.connect(self._on_mitm_field_changed)
             return c
 

@@ -1292,7 +1292,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _open_advanced_lag_settings(self):
         if self.advanced_lag_settings_dialog is None:
             self.advanced_lag_settings_dialog = AdvancedLagSettingsDialog(self)
-            self.advanced_lag_settings_dialog.setStyleSheet('')
             _chrome = [
                 self,
                 self.settings_window,

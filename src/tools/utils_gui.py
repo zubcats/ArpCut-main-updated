@@ -716,6 +716,7 @@ def _lag_dupe_dialog_chrome_qss() -> str:
     (UI_TOGGLE_BORDER_ACCENT), stable 1px borders to avoid hover text shift.
     """
     acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#316E69')
+    sel_bg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_BG', '#316E69')
     fill, h_fill, p_fill = '#1a1a1a', '#3d524f', '#354846'
     panel = '#0d0d0d'
     return f"""
@@ -764,16 +765,54 @@ QDialog#zubcutLagDupeDialog QGroupBox::title {{
     padding: 0 4px;
 }}
 QDialog#zubcutLagDupeDialog QCheckBox {{
-    spacing: 6px;
-    padding: 2px 0;
+    spacing: 0px;
+    padding: 0px;
     margin: 0;
     outline: none;
+}}
+QDialog#zubcutLagDupeDialog QGroupBox QCheckBox {{
+    color: #aeb4bf;
+    background-color: transparent;
+}}
+QDialog#zubcutLagDupeDialog QGroupBox QCheckBox:hover {{
+    color: {sel_bg};
+    background-color: transparent;
+}}
+QDialog#zubcutLagDupeDialog QCheckBox::indicator,
+QDialog#zubcutLagDupeDialog QGroupBox QCheckBox::indicator {{
+    image: none;
+    width: 14px;
+    height: 14px;
+    border: 1px solid #aeb4bf;
+    background-color: transparent;
+    margin: 0px;
+}}
+QDialog#zubcutLagDupeDialog QCheckBox::indicator:unchecked,
+QDialog#zubcutLagDupeDialog QGroupBox QCheckBox::indicator:unchecked {{
+    image: none;
+    border: 1px solid #aeb4bf;
+    background-color: transparent;
+}}
+QDialog#zubcutLagDupeDialog QCheckBox::indicator:hover,
+QDialog#zubcutLagDupeDialog QGroupBox QCheckBox::indicator:hover,
+QDialog#zubcutLagDupeDialog QCheckBox::indicator:unchecked:hover,
+QDialog#zubcutLagDupeDialog QGroupBox QCheckBox::indicator:unchecked:hover {{
+    image: none;
+    border: 1px solid {sel_bg};
+    background-color: transparent;
+}}
+QDialog#zubcutLagDupeDialog QCheckBox::indicator:checked,
+QDialog#zubcutLagDupeDialog QGroupBox QCheckBox::indicator:checked {{
+    image: none;
+    background-color: {sel_bg};
+    border: 1px solid {sel_bg};
 }}
 QDialog#zubcutLagDupeDialog QLabel {{
     padding: 1px 0;
     margin: 0;
 }}
 QDialog#zubcutLagDupeDialog QSpinBox,
+QDialog#zubcutLagDupeDialog QDoubleSpinBox,
 QDialog#zubcutLagDupeDialog QKeySequenceEdit {{
     background-color: {fill};
     color: #e8eaed;
@@ -783,17 +822,22 @@ QDialog#zubcutLagDupeDialog QKeySequenceEdit {{
     outline: none;
 }}
 QDialog#zubcutLagDupeDialog QSpinBox:focus,
+QDialog#zubcutLagDupeDialog QDoubleSpinBox:focus,
 QDialog#zubcutLagDupeDialog QKeySequenceEdit:focus {{
     border: 1px solid {acc};
 }}
 QDialog#zubcutLagDupeDialog QSpinBox::up-button,
-QDialog#zubcutLagDupeDialog QSpinBox::down-button {{
+QDialog#zubcutLagDupeDialog QSpinBox::down-button,
+QDialog#zubcutLagDupeDialog QDoubleSpinBox::up-button,
+QDialog#zubcutLagDupeDialog QDoubleSpinBox::down-button {{
     background-color: {fill};
     border: 1px solid {acc};
     width: 16px;
 }}
 QDialog#zubcutLagDupeDialog QSpinBox::up-button:hover,
-QDialog#zubcutLagDupeDialog QSpinBox::down-button:hover {{
+QDialog#zubcutLagDupeDialog QSpinBox::down-button:hover,
+QDialog#zubcutLagDupeDialog QDoubleSpinBox::up-button:hover,
+QDialog#zubcutLagDupeDialog QDoubleSpinBox::down-button:hover {{
     background-color: {h_fill};
 }}
 QDialog#zubcutLagDupeDialog QSpinBox::up-arrow,
