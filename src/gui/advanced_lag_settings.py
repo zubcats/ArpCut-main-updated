@@ -195,17 +195,9 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
     def _top_info_banner(self, parent: QWidget) -> QWidget:
         wrap = QWidget(parent)
-        wrap.setObjectName('zubcutAdvLagInfoBanner')
         lay = QVBoxLayout(wrap)
-        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setContentsMargins(0, 0, 0, 8)
         lay.setSpacing(6)
-        wrap.setStyleSheet(
-            '#zubcutAdvLagInfoBanner {'
-            '  background-color: #0c1820;'
-            '  border: 1px solid #1e4550;'
-            '  border-radius: 6px;'
-            '}'
-        )
 
         main = QLabel(
             'These controls work without Clumsy mode, but delay, loss, and bandwidth caps are '
@@ -214,12 +206,11 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             wrap,
         )
         main.setWordWrap(True)
-        main.setStyleSheet('color: #c8d4dc; font-size: 11px; background-color: transparent;')
+        main.setStyleSheet('color: #c5c5c5; font-size: 11px;')
         lay.addWidget(main)
 
         self._lbl_clumsy_status = QLabel(wrap)
         self._lbl_clumsy_status.setWordWrap(True)
-        self._lbl_clumsy_status.setStyleSheet('background-color: transparent;')
         lay.addWidget(self._lbl_clumsy_status)
         return wrap
 
