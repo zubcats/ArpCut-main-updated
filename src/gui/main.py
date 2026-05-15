@@ -3866,8 +3866,25 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _await_mitm_teardown_thread(self, timeout_s=8.0):
         """Advanced lag OFF runs sniffer teardown off-thread; wait before starting shaping again."""
         t = getattr(self, '_mitm_teardown_thread', None)
-        if t is not None and t.is_alive():
-            t.join(timeout=float(timeout_s))
+        if t is None or not t.is_alive():
+            return
+        # Avoid threading.Thread.join on the GUI thread — it freezes Qt for up to timeout_s.
+        deadline_ms = int(float(timeout_s) * 1000)
+        timer = QTimer(self)
+        timer.setInterval(25)
+        loop = QEventLoop(self)
+        el = QElapsedTimer()
+        el.start()
+
+        def tick():
+            if not t.is_alive() or el.elapsed() >= deadline_ms:
+                timer.stop()
+                loop.quit()
+
+        timer.timeout.connect(tick)
+        timer.start()
+        tick()
+        loop.exec_()
 
     def _on_mitm_teardown_finished(self, prev_mac: str, log: bool, log_ip: str, was_windivert: bool, victim_snap):
         self._mitm_teardown_thread = None

@@ -2,13 +2,13 @@ from sys import argv, exit
 import sys as _sys, os as _os
 _sys.path.append(_os.path.dirname(__file__))
 from PyQt5.QtWidgets import QApplication, QStyleFactory
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 
 from tools.utils import goto
 from tools.crash_feedback import install_crash_feedback
 from tools.utils_gui import npcap_exists, duplicate_zubcut, repair_settings, migrate_settings_file
 from tools.license_offline import load_and_validate_installed_license
-from tools.license_remote_signin import effective_signin_url, validate_active_license_session
+from tools.license_remote_signin import effective_signin_url
 from tools.branding import load_shell_window_icon, qicon_is_empty
 from tools.qtools import msg_box, Buttons, MsgIcon
 
@@ -31,6 +31,30 @@ def _load_window_icon():
     if qicon_is_empty(icon):
         return ElmoCut.processIcon(app_icon, crop_margins=True)
     return icon
+
+
+class _LicenseRuntimeSessionThread(QThread):
+    """POST /validate off the UI thread so slow TLS/DNS does not freeze Qt."""
+
+    done = pyqtSignal(object, str)
+
+    def __init__(self, url: str, account: str, license_id: str, *, timeout_sec: float = 12.0):
+        super().__init__()
+        self._url = url
+        self._account = account
+        self._license_id = license_id
+        self._timeout = timeout_sec
+
+    def run(self) -> None:
+        from tools.license_remote_signin import validate_active_license_session
+
+        ok, reason = validate_active_license_session(
+            self._url,
+            self._account,
+            self._license_id,
+            timeout_sec=self._timeout,
+        )
+        self.done.emit(ok, reason)
 
 
 def _license_gated_build() -> bool:
@@ -145,7 +169,19 @@ def _start_license_runtime_validation(gui, icon) -> None:
         gui._license_runtime_last_deferred_reason = msg
         gui.log(f'License check deferred: {msg}', UI_LOG_RESTORE_FG)
 
+    def _on_session_validated(ok, reason: str) -> None:
+        if ok is True:
+            gui._license_runtime_last_deferred_reason = ''
+            return
+        if ok is None:
+            _log_runtime_deferred(reason)
+            return
+        _force_lockout_and_exit(reason)
+
     def _enforce_runtime_license() -> None:
+        prev = getattr(gui, '_license_runtime_validate_thread', None)
+        if prev is not None and prev.isRunning():
+            return
         res = load_and_validate_installed_license()
         if not res.ok:
             _force_lockout_and_exit(res.reason)
@@ -154,15 +190,17 @@ def _start_license_runtime_validation(gui, icon) -> None:
         account = str(payload.get('user_name') or '').strip()
         license_id = str(payload.get('license_id') or '').strip()
         url = effective_signin_url()
-        ok, reason = validate_active_license_session(url, account, license_id, timeout_sec=12.0)
-        if ok is True:
-            gui._license_runtime_last_deferred_reason = ''
-            return
-        if ok is None:
-            # Transient outage/network failure; retry on next interval.
-            _log_runtime_deferred(reason)
-            return
-        _force_lockout_and_exit(reason)
+        th = _LicenseRuntimeSessionThread(url, account, license_id, timeout_sec=12.0)
+        gui._license_runtime_validate_thread = th
+        th.done.connect(_on_session_validated, Qt.QueuedConnection)
+
+        def _clear_thread_ref() -> None:
+            if getattr(gui, '_license_runtime_validate_thread', None) is th:
+                gui._license_runtime_validate_thread = None
+
+        th.finished.connect(_clear_thread_ref)
+        th.finished.connect(th.deleteLater)
+        th.start()
 
     gui._license_runtime_validation_timer = QTimer(gui)
     gui._license_runtime_validation_timer.setInterval(10 * 60 * 1000)
