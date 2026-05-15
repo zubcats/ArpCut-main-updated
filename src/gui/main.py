@@ -812,6 +812,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._mitm_shaping_backend = None  # None | 'forwarder' | 'windivert'
         self._ics_windivert_shaper = None
         self._mitm_teardown_thread = None
+        self._mitm_adv_sched_timer = QTimer(self)
+        self._mitm_adv_sched_timer.setInterval(100)
+        self._mitm_adv_sched_timer.timeout.connect(self._mitm_adv_schedule_tick)
+        self._mitm_adv_sched_t0 = 0.0
+        self._mitm_adv_last_sched = None
         self.mitm_teardown_finished.connect(self._on_mitm_teardown_finished)
         self._lag_dialog_target_mac = None
         self._dupe_dialog_target_mac = None
@@ -3571,6 +3576,57 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
 
+    def _mitm_adv_sched_record(self, du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld):
+        self._mitm_adv_last_sched = (
+            int(du),
+            int(dd),
+            int(ju),
+            int(jd),
+            round(float(cu_mbps), 3),
+            round(float(cd_mbps), 3),
+            int(lu),
+            int(ld),
+        )
+
+    def _start_mitm_adv_schedule(self):
+        t = getattr(self, '_mitm_adv_sched_timer', None)
+        if t is not None and getattr(self, 'mitm_shaping_active', False) and not t.isActive():
+            t.start()
+
+    def _stop_mitm_adv_schedule(self):
+        t = getattr(self, '_mitm_adv_sched_timer', None)
+        if t is not None:
+            t.stop()
+        self._mitm_adv_last_sched = None
+
+    def _mitm_adv_schedule_tick(self):
+        if not getattr(self, 'mitm_shaping_active', False):
+            self._stop_mitm_adv_schedule()
+            return
+        from tools import mitm_adv_sched
+
+        now = mitm_adv_sched.monotonic_now()
+        t0 = float(getattr(self, '_mitm_adv_sched_t0', 0.0) or 0.0)
+        du, dd, ju, jd, cu, cd, lu, ld, _gates = mitm_adv_sched.gated_mitm_params(
+            now, t0, get_settings
+        )
+        prev = getattr(self, '_mitm_adv_last_sched', None)
+        cur_tuple = (
+            int(du),
+            int(dd),
+            int(ju),
+            int(jd),
+            round(float(cu), 3),
+            round(float(cd), 3),
+            int(lu),
+            int(ld),
+        )
+        if prev == cur_tuple:
+            return
+        self.start_mitm_shaping_from_advanced(
+            du, dd, ju, jd, cu, cd, lu, ld, sched_tick=True
+        )
+
     def start_mitm_shaping_from_advanced(
         self,
         delay_up,
@@ -3581,6 +3637,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         cap_down=0.0,
         loss_up=0,
         loss_down=0,
+        *,
+        sched_tick=False,
     ):
         """Forwarder shaping from Advanced Lag (delay, jitter, caps, loss)."""
         from tools.updater_core import is_experimental_build
@@ -3589,30 +3647,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log('Latency and bandwidth shaping is not available in this build.', 'red')
             self._refresh_advanced_lag_mitm_if_visible()
             return
-        self._await_mitm_teardown_thread()
+        if not sched_tick:
+            self._await_mitm_teardown_thread()
         if not self.connected():
-            self._refresh_advanced_lag_mitm_if_visible()
-            return
-        du = max(0, int(delay_up))
-        dd = max(0, int(delay_down))
-        ju = max(0, int(jitter_up))
-        jd = max(0, int(jitter_down))
-        # Bandwidth caps from Advanced Lag Settings are Mbps; forwarder uses kbps (1 Mbps = 1000 kbps).
-        cu_mbps = max(0.0, float(cap_up))
-        cd_mbps = max(0.0, float(cap_down))
-        lu = max(0, min(100, int(loss_up)))
-        ld = max(0, min(100, int(loss_down)))
-        if (
-            du <= 0
-            and dd <= 0
-            and ju <= 0
-            and jd <= 0
-            and cu_mbps <= 0
-            and cd_mbps <= 0
-            and lu <= 0
-            and ld <= 0
-        ):
-            self.log('Enable at least one effect with non-zero values (delay, jitter, cap, or loss).', 'red')
             self._refresh_advanced_lag_mitm_if_visible()
             return
         if self._toggle_start_blocked('mitmshape'):
@@ -3652,6 +3689,43 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._refresh_advanced_lag_mitm_if_visible()
             return
 
+        from tools import mitm_adv_sched
+
+        prev_active = self.mitm_shaping_active
+        prev_sm = self.mitm_shaping_mac
+        if not prev_active or prev_sm != mac:
+            self._mitm_adv_sched_t0 = mitm_adv_sched.monotonic_now()
+        du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, _gates = mitm_adv_sched.gated_mitm_params(
+            mitm_adv_sched.monotonic_now(), self._mitm_adv_sched_t0, get_settings
+        )
+        du = max(0, int(du))
+        dd = max(0, int(dd))
+        ju = max(0, int(ju))
+        jd = max(0, int(jd))
+        cu_mbps = max(0.0, float(cu_mbps))
+        cd_mbps = max(0.0, float(cd_mbps))
+        lu = max(0, min(100, int(lu)))
+        ld = max(0, min(100, int(ld)))
+        allow_zero = bool(sched_tick or (prev_active and prev_sm == mac))
+        all_zero = (
+            du <= 0
+            and dd <= 0
+            and ju <= 0
+            and jd <= 0
+            and cu_mbps <= 0
+            and cd_mbps <= 0
+            and lu <= 0
+            and ld <= 0
+        )
+        if all_zero and not allow_zero:
+            if not sched_tick:
+                self.log(
+                    'Enable at least one effect with non-zero values (delay, jitter, cap, or loss).',
+                    'red',
+                )
+            self._refresh_advanced_lag_mitm_if_visible()
+            return
+
         use_wd = use_windivert_for_advanced_ics_shaping(self.scanner, device)
         if (
             shaping_mac
@@ -3662,6 +3736,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         ):
             if use_wd:
                 self._ics_windivert_shaper.apply_params(du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps)
+                self._mitm_adv_sched_record(du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld)
+                self._start_mitm_adv_schedule()
                 self._refresh_advanced_lag_mitm_if_visible()
                 return
             try:
@@ -3670,6 +3746,34 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
             self._ics_windivert_shaper = None
             self._mitm_shaping_backend = None
+
+        if (
+            sched_tick
+            and self.mitm_shaping_active
+            and prev_sm == mac
+            and getattr(self, '_mitm_shaping_backend', None) == 'forwarder'
+        ):
+            try:
+                self._ensure_network_context_for_victim(device)
+                self.killer.apply_link_shaping(
+                    device,
+                    delay_ms_out=du,
+                    delay_ms_in=dd,
+                    jitter_ms_out=ju,
+                    jitter_ms_in=jd,
+                    loss_pct_out=lu,
+                    loss_pct_in=ld,
+                    max_kbps_out=cu_mbps * 1000.0,
+                    max_kbps_in=cd_mbps * 1000.0,
+                )
+            except Exception as exc:
+                self.log(f'MITM shaping update failed: {exc}', 'red')
+                self._refresh_advanced_lag_mitm_if_visible()
+                return
+            self._mitm_adv_sched_record(du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld)
+            self._start_mitm_adv_schedule()
+            self._refresh_advanced_lag_mitm_if_visible()
+            return
 
         self.stopLagSwitch(refresh_dialog=True)
         self.stopDupe(refresh_dialog=False, log=False)
@@ -3748,10 +3852,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if ld > 0:
             parts.append(f'in loss {ld}%')
         path_note = 'WinDivert ICS' if self._mitm_shaping_backend == 'windivert' else 'MITM'
-        self.log(
-            f'Advanced lag ON ({path_note}) — ' + ', '.join(parts) + ' — for ' + str(device.get('ip', '')),
-            UI_LOG_VICTIM_BLOCK_FG,
-        )
+        if not sched_tick:
+            detail = ', '.join(parts) if parts else 'timers / gates (may be off this moment)'
+            self.log(
+                f'Advanced lag ON ({path_note}) — {detail} — for ' + str(device.get('ip', '')),
+                UI_LOG_VICTIM_BLOCK_FG,
+            )
+        self._mitm_adv_sched_record(du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld)
+        self._start_mitm_adv_schedule()
         self._refresh_flow_toggle_ui()
         self._refresh_advanced_lag_mitm_if_visible()
 
@@ -3798,6 +3906,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def stop_mitm_shaping(self, log=True):
         if not self.mitm_shaping_active:
             return
+        self._stop_mitm_adv_schedule()
         prev_mac = self.mitm_shaping_mac
         backend = getattr(self, '_mitm_shaping_backend', None)
         shaper = getattr(self, '_ics_windivert_shaper', None)
