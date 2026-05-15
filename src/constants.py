@@ -132,7 +132,7 @@ SETTINGS_KEYS = [
     'mitm_adv_loss_in',
     'mitm_adv_loss_out',
     'mitm_adv_loss_pct',
-    # Per-impairment schedule: timer on, lag ms (impairment on), pause ms (off), repeat forever, runs (cycles if not forever).
+    # Per-impairment schedule: timer on, lag ms, pause ms, repeat (lag+pause cycles), runs (−1 = ∞ cycles).
     'mitm_adv_delay_timer_on',
     'mitm_adv_delay_timer_lag_ms',
     'mitm_adv_delay_timer_pause_ms',
@@ -153,6 +153,8 @@ SETTINGS_KEYS = [
     'mitm_adv_loss_timer_pause_ms',
     'mitm_adv_loss_timer_repeat_forever',
     'mitm_adv_loss_timer_runs',
+    # One-shot migration: old "repeat forever" checkbox meant infinite cycles; runs=-1 now.
+    'mitm_adv_timer_schema_v2',
 ]
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
@@ -209,20 +211,21 @@ SETTINGS_VALS = [
     1000,
     1000,
     True,
-    3,
+    -1,
     False,
     1000,
     1000,
     True,
-    3,
+    -1,
     False,
     1000,
     1000,
     True,
-    3,
+    -1,
     False,
     1000,
     1000,
     True,
-    3,
+    -1,
+    False,
 ]

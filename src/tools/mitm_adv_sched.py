@@ -1,10 +1,19 @@
 """
 Advanced Lag (MITM) per-impairment timer gates.
 
-Each row can gate its contribution on a repeating schedule: impairment **on** for
-``timer_lag_ms``, then **off** for ``timer_pause_ms``. When ``timer_repeat_forever`` is true,
-that cycle repeats for the whole shaping session. When false, ``timer_runs`` is how many full
-lag→pause cycles run before that row stays off (gate 0).
+Each row can gate its contribution on a schedule controlled only for that impairment:
+
+- ``{prefix}_timer_on``: when off, gate is always 1.0 (row follows master On / values only).
+- ``timer_lag_ms`` / ``timer_pause_ms``: on-phase and off-phase lengths when cycling.
+
+``mitm_adv_*_timer_repeat_forever`` (legacy key name) means **Repeat**: when True, use the
+pause duration and repeat lag→pause cycles. When False, a single lag phase applies, then this
+row's gate stays at 0 (other impairments keep their own gates).
+
+``timer_runs``: how many full lag→pause cycles while Repeat is on. **-1** means unlimited
+(infinite). Values >= 1 cap cycles; 0 means this row's timer contributes nothing (gate 0).
+
+Only the row whose timer expires drops to gate 0; other rows continue independently.
 """
 
 from __future__ import annotations
@@ -56,17 +65,26 @@ def gate_for_row(t_mono: float, t0: float, get: Get, prefix: str) -> float:
     lag_sec = lag_ms / 1000.0
     pause_sec = max(0.0, pause_ms / 1000.0)
     period_sec = lag_sec + pause_sec
-    if period_sec <= 0:
-        return 1.0
 
     elapsed = t_mono - t0
     if elapsed < 0:
         return 1.0
 
-    repeat_forever = _bool(get(f'{prefix}_timer_repeat_forever'), True)
-    if not repeat_forever:
-        runs = max(1, min(999, _int(get(f'{prefix}_timer_runs'), 1)))
-        total_sec = runs * period_sec
+    use_repeat_cycle = _bool(get(f'{prefix}_timer_repeat_forever'), True)
+    if not use_repeat_cycle:
+        if elapsed >= lag_sec:
+            return 0.0
+        return 1.0
+
+    if period_sec <= 0:
+        return 1.0 if elapsed < lag_sec else 0.0
+
+    runs = _int(get(f'{prefix}_timer_runs'), -1)
+    if runs == 0:
+        return 0.0
+    if runs > 0:
+        n_cyc = max(1, min(99_999, runs))
+        total_sec = n_cyc * period_sec
         if elapsed >= total_sec:
             return 0.0
 

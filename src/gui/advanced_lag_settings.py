@@ -1,8 +1,10 @@
 """Advanced Lag Settings — clumsy-style rows + master victim toggle (experimental MITM path).
 
-Each row: enable, In/Out, values, and optional timer (Lag ms, Pause ms, Repeat forever, Runs).
-Turning the victim toggle on applies enabled rows to the selected device using current timer gates;
-off stops. Edits persist and can apply live while shaping is active.
+Each row: enable, In/Out, values, and optional timer (Lag ms, Pause ms, Repeat, Runs).
+Repeat: use pause and repeat lag→pause cycles; off = one lag phase then that row's timer
+stays off (other rows unaffected). Runs = −1 shows ∞ and means unlimited cycles when Repeat
+is on; otherwise Runs is how many full lag→pause cycles that row runs before stopping only
+that impairment. Turning the victim toggle on applies enabled rows; off stops all.
 """
 
 from __future__ import annotations
@@ -95,6 +97,18 @@ def _stub_section(title: str, parent: QWidget) -> QGroupBox:
 
 class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
     """Non-modal panel opened from the main flow toggles (right-click → Advanced Lag Settings)."""
+
+    @staticmethod
+    def _center_cell(parent: QWidget, inner: QWidget) -> QWidget:
+        """Keep spinboxes aligned under column headers."""
+        w = QWidget(parent)
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addStretch(1)
+        lay.addWidget(inner, 0, Qt.AlignHCenter)
+        lay.addStretch(1)
+        return w
 
     def __init__(self, parent=None):
         super().__init__(None)
@@ -471,7 +485,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             t_on = row_on and chk_t.isChecked()
             for w in (sp_lag, sp_pause, chk_forever):
                 w.setEnabled(t_on)
-            sp_runs.setEnabled(t_on and not chk_forever.isChecked())
+            sp_runs.setEnabled(t_on and chk_forever.isChecked())
 
         _row_timer_enables(
             d_on,
@@ -529,8 +543,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         hint = QLabel(
             'Turn on after configuring the rows above. Edits apply live while this is on. '
-            'Per-row Timer runs that row on its own lag/pause schedule while the master is on. '
-            'Select the target device in the main list before starting.',
+            'Per-row Timer gates only that row: when a row’s Runs finish, that impairment stops cycling; '
+            'other enabled rows keep their own Lag / Pause / Repeat / Runs. Select the target device in the main list before starting.',
             box,
         )
         hint.setWordWrap(True)
@@ -567,10 +581,10 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         chk_timer_on: QCheckBox,
         spin_timer_lag_ms: QSpinBox,
         spin_timer_pause_ms: QSpinBox,
-        chk_timer_repeat_forever: QCheckBox,
+        chk_timer_repeat: QCheckBox,
         spin_timer_runs: QSpinBox,
     ) -> None:
-        """Columns: impairment | row On | In/Out | values | Timer | Lag | Pause | Forever | Runs."""
+        """Columns: impairment | row On | In/Out | values | Timer | Lag | Pause | Repeat | Runs."""
         lbl = QLabel(title)
         lbl.setStyleSheet('color: #e8eaed;')
         lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -596,10 +610,10 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         wrap.setLayout(tail)
         grid.addWidget(wrap, row, 3)
         grid.addWidget(chk_timer_on, row, 4, ca)
-        grid.addWidget(spin_timer_lag_ms, row, 5)
-        grid.addWidget(spin_timer_pause_ms, row, 6)
-        grid.addWidget(chk_timer_repeat_forever, row, 7, ca)
-        grid.addWidget(spin_timer_runs, row, 8)
+        grid.addWidget(self._center_cell(par, spin_timer_lag_ms), row, 5)
+        grid.addWidget(self._center_cell(par, spin_timer_pause_ms), row, 6)
+        grid.addWidget(chk_timer_repeat, row, 7, ca)
+        grid.addWidget(self._center_cell(par, spin_timer_runs), row, 8)
 
     def _mitm_impairments_section(self, parent: QWidget) -> QGroupBox:
         box = QGroupBox('Impairments (clumsy-style)', parent)
@@ -622,9 +636,13 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             return h
 
         h0 = QLabel('Impairment')
+        h0.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         h1 = QLabel('On')
+        h1.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         h_dir = QLabel('In / Out')
+        h_dir.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         h4 = QLabel('Values')
+        h4.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         h_tm = _sched_hdr(
             'Timer',
             'Turns the schedule on for this row. Off: this row is always applied whenever the row On box is set.',
@@ -638,12 +656,14 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             'How long this row is off (no extra lag/cap/loss from this row) before the next lag.',
         )
         h_rep = _sched_hdr(
-            'Repeat\nforever',
-            'When checked, lag and pause repeat for the whole session. When unchecked, use Runs.',
+            'Repeat',
+            'When checked: use Pause (ms), then repeat Lag→Pause cycles. When unchecked: one Lag phase only, '
+            'then this row’s timer stops for that impairment only (others keep their own schedules).',
         )
         h_runs = _sched_hdr(
             'Runs',
-            'How many full lag→pause cycles to do when Repeat forever is unchecked. Then this row stays off.',
+            'How many full Lag→Pause cycles while Repeat is on. Minimum value −1 shows as ∞ = unlimited. '
+            'Only that row stops when its cycles finish.',
         )
         for h, c in (
             (h0, 0),
@@ -659,28 +679,28 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             if not h.toolTip():
                 h.setStyleSheet('color: #9a9a9a; font-size: 11px;')
             hdr.addWidget(h, 0, c)
-        hdr.setColumnMinimumWidth(0, 108)
-        hdr.setColumnMinimumWidth(1, 36)
-        hdr.setColumnMinimumWidth(2, 100)
-        hdr.setColumnMinimumWidth(4, 40)
-        hdr.setColumnMinimumWidth(5, 84)
-        hdr.setColumnMinimumWidth(6, 84)
-        hdr.setColumnMinimumWidth(7, 52)
-        hdr.setColumnMinimumWidth(8, 52)
+        hdr.setColumnMinimumWidth(0, 112)
+        hdr.setColumnMinimumWidth(1, 40)
+        hdr.setColumnMinimumWidth(2, 104)
+        hdr.setColumnMinimumWidth(4, 44)
+        hdr.setColumnMinimumWidth(5, 92)
+        hdr.setColumnMinimumWidth(6, 92)
+        hdr.setColumnMinimumWidth(7, 76)
+        hdr.setColumnMinimumWidth(8, 88)
         inner.addLayout(hdr)
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(10)
         grid.setColumnStretch(3, 1)
-        grid.setColumnMinimumWidth(0, 108)
-        grid.setColumnMinimumWidth(1, 36)
-        grid.setColumnMinimumWidth(2, 100)
-        grid.setColumnMinimumWidth(4, 40)
-        grid.setColumnMinimumWidth(5, 84)
-        grid.setColumnMinimumWidth(6, 84)
-        grid.setColumnMinimumWidth(7, 52)
-        grid.setColumnMinimumWidth(8, 52)
+        grid.setColumnMinimumWidth(0, 112)
+        grid.setColumnMinimumWidth(1, 40)
+        grid.setColumnMinimumWidth(2, 104)
+        grid.setColumnMinimumWidth(4, 44)
+        grid.setColumnMinimumWidth(5, 92)
+        grid.setColumnMinimumWidth(6, 92)
+        grid.setColumnMinimumWidth(7, 76)
+        grid.setColumnMinimumWidth(8, 88)
 
         def _mk_chk_on(key: str, default: bool) -> QCheckBox:
             c = QCheckBox('', box)
@@ -716,14 +736,14 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             c.stateChanged.connect(self._on_mitm_field_changed)
             return c
 
-        def _mk_timer_forever_chk(key: str, default: bool, tip: str) -> QCheckBox:
-            c = QCheckBox('', box)
+        def _mk_timer_repeat_chk(key: str, default: bool, tip: str) -> QCheckBox:
+            c = QCheckBox('Repeat', box)
             c.setObjectName('zubcutAdvLagChkDir')
             c.setTristate(False)
             c.setChecked(_bool_setting(key, default))
             c.setToolTip(tip)
             c.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-            c.setFixedWidth(22)
+            c.setMinimumWidth(72)
             c.setAttribute(Qt.WA_StyledBackground, True)
             c.stateChanged.connect(self._on_mitm_field_changed)
             return c
@@ -753,9 +773,16 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         def _mk_timer_runs_spin(key: str, default: int) -> QSpinBox:
             s = QSpinBox(box)
-            s.setRange(1, 999)
-            s.setToolTip('Full lag→pause cycles when Repeat forever is unchecked.')
-            s.setValue(_int_setting(key, default))
+            s.setRange(-1, 999_999)
+            s.setSpecialValueText('∞')
+            s.setToolTip(
+                'Full Lag→Pause cycles while Repeat is checked. −1 (∞) = unlimited for this row only. '
+                'A positive count stops only this impairment when done; other rows keep running.'
+            )
+            v = _int_setting(key, default)
+            if v == 0:
+                v = 1
+            s.setValue(v)
             s.valueChanged.connect(self._on_mitm_field_changed)
             return s
 
@@ -776,12 +803,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         )
         self._spin_adv_delay_timer_lag_ms = _mk_timer_lag_spin('mitm_adv_delay_timer_lag_ms', 1000)
         self._spin_adv_delay_timer_pause_ms = _mk_timer_pause_spin('mitm_adv_delay_timer_pause_ms', 1000)
-        self._chk_adv_delay_timer_repeat_forever = _mk_timer_forever_chk(
+        self._chk_adv_delay_timer_repeat_forever = _mk_timer_repeat_chk(
             'mitm_adv_delay_timer_repeat_forever',
             True,
-            'Repeat lag→pause until you stop shaping. Off: stop after Runs cycles.',
+            'Lag→Pause cycles for this row only. Off = one Lag window then this row’s effect stops cycling.',
         )
-        self._spin_adv_delay_timer_runs = _mk_timer_runs_spin('mitm_adv_delay_timer_runs', 3)
+        self._spin_adv_delay_timer_runs = _mk_timer_runs_spin('mitm_adv_delay_timer_runs', -1)
         self._add_impairment_row(
             grid,
             r,
@@ -793,7 +820,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             chk_timer_on=self._chk_adv_delay_timer_on,
             spin_timer_lag_ms=self._spin_adv_delay_timer_lag_ms,
             spin_timer_pause_ms=self._spin_adv_delay_timer_pause_ms,
-            chk_timer_repeat_forever=self._chk_adv_delay_timer_repeat_forever,
+            chk_timer_repeat=self._chk_adv_delay_timer_repeat_forever,
             spin_timer_runs=self._spin_adv_delay_timer_runs,
         )
         r += 1
@@ -812,10 +839,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._chk_adv_jitter_timer_on = _mk_timer_on_chk('mitm_adv_jitter_timer_on', False, 'Schedule this jitter row.')
         self._spin_adv_jitter_timer_lag_ms = _mk_timer_lag_spin('mitm_adv_jitter_timer_lag_ms', 1000)
         self._spin_adv_jitter_timer_pause_ms = _mk_timer_pause_spin('mitm_adv_jitter_timer_pause_ms', 1000)
-        self._chk_adv_jitter_timer_repeat_forever = _mk_timer_forever_chk(
-            'mitm_adv_jitter_timer_repeat_forever', True, 'Repeat lag→pause until you stop shaping.'
+        self._chk_adv_jitter_timer_repeat_forever = _mk_timer_repeat_chk(
+            'mitm_adv_jitter_timer_repeat_forever',
+            True,
+            'Lag→Pause cycles for this row only. Off = one Lag window then this row’s effect stops cycling.',
         )
-        self._spin_adv_jitter_timer_runs = _mk_timer_runs_spin('mitm_adv_jitter_timer_runs', 3)
+        self._spin_adv_jitter_timer_runs = _mk_timer_runs_spin('mitm_adv_jitter_timer_runs', -1)
         self._add_impairment_row(
             grid,
             r,
@@ -827,7 +856,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             chk_timer_on=self._chk_adv_jitter_timer_on,
             spin_timer_lag_ms=self._spin_adv_jitter_timer_lag_ms,
             spin_timer_pause_ms=self._spin_adv_jitter_timer_pause_ms,
-            chk_timer_repeat_forever=self._chk_adv_jitter_timer_repeat_forever,
+            chk_timer_repeat=self._chk_adv_jitter_timer_repeat_forever,
             spin_timer_runs=self._spin_adv_jitter_timer_runs,
         )
         r += 1
@@ -856,10 +885,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._chk_adv_cap_timer_on = _mk_timer_on_chk('mitm_adv_cap_timer_on', False, 'Schedule this cap row.')
         self._spin_adv_cap_timer_lag_ms = _mk_timer_lag_spin('mitm_adv_cap_timer_lag_ms', 1000)
         self._spin_adv_cap_timer_pause_ms = _mk_timer_pause_spin('mitm_adv_cap_timer_pause_ms', 1000)
-        self._chk_adv_cap_timer_repeat_forever = _mk_timer_forever_chk(
-            'mitm_adv_cap_timer_repeat_forever', True, 'Repeat lag→pause until you stop shaping.'
+        self._chk_adv_cap_timer_repeat_forever = _mk_timer_repeat_chk(
+            'mitm_adv_cap_timer_repeat_forever',
+            True,
+            'Lag→Pause cycles for this row only. Off = one Lag window then this row’s effect stops cycling.',
         )
-        self._spin_adv_cap_timer_runs = _mk_timer_runs_spin('mitm_adv_cap_timer_runs', 3)
+        self._spin_adv_cap_timer_runs = _mk_timer_runs_spin('mitm_adv_cap_timer_runs', -1)
         self._add_impairment_row(
             grid,
             r,
@@ -871,7 +902,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             chk_timer_on=self._chk_adv_cap_timer_on,
             spin_timer_lag_ms=self._spin_adv_cap_timer_lag_ms,
             spin_timer_pause_ms=self._spin_adv_cap_timer_pause_ms,
-            chk_timer_repeat_forever=self._chk_adv_cap_timer_repeat_forever,
+            chk_timer_repeat=self._chk_adv_cap_timer_repeat_forever,
             spin_timer_runs=self._spin_adv_cap_timer_runs,
         )
         r += 1
@@ -889,10 +920,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._chk_adv_loss_timer_on = _mk_timer_on_chk('mitm_adv_loss_timer_on', False, 'Schedule this loss row.')
         self._spin_adv_loss_timer_lag_ms = _mk_timer_lag_spin('mitm_adv_loss_timer_lag_ms', 1000)
         self._spin_adv_loss_timer_pause_ms = _mk_timer_pause_spin('mitm_adv_loss_timer_pause_ms', 1000)
-        self._chk_adv_loss_timer_repeat_forever = _mk_timer_forever_chk(
-            'mitm_adv_loss_timer_repeat_forever', True, 'Repeat lag→pause until you stop shaping.'
+        self._chk_adv_loss_timer_repeat_forever = _mk_timer_repeat_chk(
+            'mitm_adv_loss_timer_repeat_forever',
+            True,
+            'Lag→Pause cycles for this row only. Off = one Lag window then this row’s effect stops cycling.',
         )
-        self._spin_adv_loss_timer_runs = _mk_timer_runs_spin('mitm_adv_loss_timer_runs', 3)
+        self._spin_adv_loss_timer_runs = _mk_timer_runs_spin('mitm_adv_loss_timer_runs', -1)
         self._add_impairment_row(
             grid,
             r,
@@ -904,15 +937,15 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             chk_timer_on=self._chk_adv_loss_timer_on,
             spin_timer_lag_ms=self._spin_adv_loss_timer_lag_ms,
             spin_timer_pause_ms=self._spin_adv_loss_timer_pause_ms,
-            chk_timer_repeat_forever=self._chk_adv_loss_timer_repeat_forever,
+            chk_timer_repeat=self._chk_adv_loss_timer_repeat_forever,
             spin_timer_runs=self._spin_adv_loss_timer_runs,
         )
 
         inner.addLayout(grid)
         intro = QLabel(
-            'Enable a row, tick In and/or Out, set values. Timer uses Lag (ms) and Pause (ms) for that row only: '
-            'lag applies the row, pause clears that row’s effect for a break, then repeats if Repeat forever is on '
-            'or for Runs cycles if it is off. Nothing is applied until the victim toggle is on.',
+            'Enable a row, tick In and/or Out, set values. Timer: Lag (ms) applies that row, Pause (ms) clears that row’s '
+            'effect, then Repeat controls whether the cycle continues. Runs = −1 (∞) repeats until you stop; a positive Runs '
+            'counts Lag→Pause cycles for that row only—when one row finishes, the others continue. Nothing applies until the victim toggle is on.',
             box,
         )
         intro.setWordWrap(True)

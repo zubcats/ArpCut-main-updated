@@ -1216,9 +1216,22 @@ def set_settings_many(updates: dict) -> None:
 
 def get_settings(key):
     """
-    Get certain setting item by key
+    Get certain setting item by key.
+
+    Values missing from the on-disk JSON are filled from SETTINGS_VALS so new keys
+    never raise KeyError (Advanced Lag / MITM scheduler reads many keys on each tick).
     """
-    return import_settings()[key]
+    defaults = dict(zip(SETTINGS_KEYS, SETTINGS_VALS))
+    try:
+        check_documents_dir()
+        with open(SETTINGS_PATH, encoding='utf-8') as fp:
+            raw = load(fp)
+        if not isinstance(raw, dict):
+            raw = {}
+    except (JSONDecodeError, OSError):
+        raw = {}
+    merged = {**defaults, **{k: raw[k] for k in SETTINGS_KEYS if k in raw}}
+    return merged[key]
 
 def restart_zubcut(main_window=None):
     """
@@ -1315,6 +1328,18 @@ def repair_settings():
             original['mitm_adv_loss_in'] = True
             original['mitm_adv_loss_out'] = True
             original['mitm_adv_loss_pct'] = 0
+        # Advanced Lag timer: old "repeat forever" meant infinite lag+pause; runs=-1 encodes that now.
+        if not s.get('mitm_adv_timer_schema_v2'):
+            original['mitm_adv_timer_schema_v2'] = True
+            for _pre in (
+                'mitm_adv_delay',
+                'mitm_adv_jitter',
+                'mitm_adv_cap',
+                'mitm_adv_loss',
+            ):
+                fk = f'{_pre}_timer_repeat_forever'
+                if fk in s and bool(s.get(fk)):
+                    original[f'{_pre}_timer_runs'] = -1
     except (JSONDecodeError, OSError):
         pass
     export_settings([original[k] for k in SETTINGS_KEYS])
