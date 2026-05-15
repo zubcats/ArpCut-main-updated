@@ -1,8 +1,10 @@
 """
 Advanced Lag (MITM) per-impairment timer gates.
 
-Each row can pulse its contribution: ON for ``timer_ms``, OFF for ``timer_ms``, optionally
-limited to ``timer_count`` ON pulses or forever when ``timer_loop`` is true.
+Each row can gate its contribution on a repeating schedule: impairment **on** for
+``timer_lag_ms``, then **off** for ``timer_pause_ms``. When ``timer_repeat_forever`` is true,
+that cycle repeats for the whole shaping session. When false, ``timer_runs`` is how many full
+lag→pause cycles run before that row stays off (gate 0).
 """
 
 from __future__ import annotations
@@ -43,24 +45,33 @@ def _float(v: Any, default: float = 0.0) -> float:
 def gate_for_row(t_mono: float, t0: float, get: Get, prefix: str) -> float:
     """
     Return 1.0 when this impairment's timer allows full effect, 0.0 when gated off.
-    If timer is disabled for the row, always 1.0.
+    If the row timer is disabled, always 1.0.
     """
     if not _bool(get(f'{prefix}_timer_on'), False):
         return 1.0
-    t_ms = max(0, _int(get(f'{prefix}_timer_ms'), 0))
-    if t_ms <= 0:
+    lag_ms = max(0, _int(get(f'{prefix}_timer_lag_ms'), 0))
+    pause_ms = max(0, _int(get(f'{prefix}_timer_pause_ms'), 0))
+    if lag_ms <= 0:
         return 1.0
-    t_sec = t_ms / 1000.0
+    lag_sec = lag_ms / 1000.0
+    pause_sec = max(0.0, pause_ms / 1000.0)
+    period_sec = lag_sec + pause_sec
+    if period_sec <= 0:
+        return 1.0
+
     elapsed = t_mono - t0
     if elapsed < 0:
         return 1.0
-    half = int(elapsed // t_sec)
-    loop = _bool(get(f'{prefix}_timer_loop'), False)
-    if not loop:
-        n = max(1, min(999, _int(get(f'{prefix}_timer_count'), 1)))
-        if half >= 2 * n:
+
+    repeat_forever = _bool(get(f'{prefix}_timer_repeat_forever'), True)
+    if not repeat_forever:
+        runs = max(1, min(999, _int(get(f'{prefix}_timer_runs'), 1)))
+        total_sec = runs * period_sec
+        if elapsed >= total_sec:
             return 0.0
-    if half % 2 == 0:
+
+    pos = elapsed % period_sec
+    if pos < lag_sec:
         return 1.0
     return 0.0
 
