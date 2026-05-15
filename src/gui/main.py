@@ -2716,22 +2716,56 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
 
+    def _pump_gui_until(self, pred, timeout_ms: int) -> bool:
+        """
+        Wait for pred() while processing Qt events. Used instead of concurrent.futures.wait
+        / Future.result on the GUI thread — those block the event loop so QueuedConnection
+        completion slots never run until the wait ends (minutes of apparent freeze).
+        """
+        try:
+            if pred():
+                return True
+        except Exception:
+            return False
+        timer = QTimer(self)
+        timer.setInterval(15)
+        loop = QEventLoop(self)
+        el = QElapsedTimer()
+        el.start()
+
+        def tick():
+            try:
+                done = pred()
+            except Exception:
+                done = True
+            if done or el.elapsed() >= timeout_ms:
+                timer.stop()
+                loop.quit()
+
+        timer.timeout.connect(tick)
+        timer.start()
+        tick()
+        loop.exec_()
+        try:
+            return bool(pred())
+        except Exception:
+            return False
+
     def _drain_dupe_async_network(self):
         """Wait for in-flight async unblock_ip; Queued unkill slot must run on the GUI thread."""
         fut = getattr(self, '_dupe_clear_future', None)
         if fut is not None:
+            self._pump_gui_until(lambda: fut.done(), 120_000)
             try:
-                fut.result(timeout=120)
+                if fut.done():
+                    fut.result(timeout=0)
             except Exception:
                 pass
             self._dupe_clear_future = None
-        app = QApplication.instance()
-        for _ in range(2000):
-            if getattr(self, '_dupe_async_unblock_ctx', None) is None:
-                return
-            if app:
-                app.processEvents()
-            time.sleep(0.0005)
+        self._pump_gui_until(
+            lambda: getattr(self, '_dupe_async_unblock_ctx', None) is None,
+            2500,
+        )
         ctx = getattr(self, '_dupe_async_unblock_ctx', None)
         if ctx:
             device, prev_mac = ctx
@@ -2754,18 +2788,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if fut is None and not getattr(self, '_dupe_block_apply_pending', False):
             return
         if fut is not None:
+            self._pump_gui_until(lambda: fut.done(), 120_000)
             try:
-                fut.result(timeout=120)
+                if fut.done():
+                    fut.result(timeout=0)
             except Exception:
                 pass
             self._dupe_block_future = None
-        app = QApplication.instance()
-        for _ in range(2000):
-            if not getattr(self, '_dupe_block_apply_pending', False):
-                return
-            if app:
-                app.processEvents()
-            time.sleep(0.0005)
+        self._pump_gui_until(
+            lambda: not getattr(self, '_dupe_block_apply_pending', False),
+            2500,
+        )
         self._dupe_block_apply_pending = False
         self._dupe_block_ctx = None
 

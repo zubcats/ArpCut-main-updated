@@ -92,7 +92,8 @@ class TrafficSniffer:
     def stop(self):
         if self._thread and self._thread.is_alive():
             self._stop.set()
-            self._thread.join(timeout=1.0)
+            # Short join: full second on the GUI thread made Traffic feel frozen on close/reopen.
+            self._thread.join(timeout=0.2)
         self._thread = None
 
     def _run(self):
