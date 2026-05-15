@@ -206,6 +206,14 @@ class Killer:
         loss_pct_in = max(0, min(100, int(loss_pct_in)))
         max_kbps_out = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_out)))
         max_kbps_in = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_in)))
+        try:
+            from tools.utils_gui import get_settings
+
+            compound_loss = bool(get_settings('mitm_adv_compound_loss'))
+            cap_overflow_loss_pct = int(get_settings('mitm_adv_cap_overflow_loss_pct'))
+        except Exception:
+            compound_loss = True
+            cap_overflow_loss_pct = 100
 
         if victim['mac'] in self.forwarders:
             self.forwarders[victim['mac']].stop()
@@ -232,6 +240,8 @@ class Killer:
             loss_pct_to_victim=loss_pct_in,
             max_kbps_from_victim=max_kbps_out,
             max_kbps_to_victim=max_kbps_in,
+            compound_loss=compound_loss,
+            cap_overflow_loss_pct=cap_overflow_loss_pct,
         )
         self.forwarders[victim['mac']] = fw
 

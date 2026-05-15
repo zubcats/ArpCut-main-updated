@@ -82,6 +82,56 @@ def _float_setting(key: str, default: float = 0.0) -> float:
         return default
 
 
+def _configure_infinity_at_minimum(
+    spin: QSpinBox | QDoubleSpinBox,
+    *,
+    suffix: str = '',
+    tooltip: str = '',
+) -> None:
+    """Display ∞ at the spin minimum (usually 0 = unlimited / no effect); hide suffix at minimum."""
+    spin.setSpecialValueText('∞')
+    if tooltip:
+        spin.setToolTip(tooltip)
+
+    def _sync_suffix(_v=None) -> None:
+        try:
+            at_min = float(spin.value()) <= float(spin.minimum()) + 1e-9
+        except (TypeError, ValueError):
+            at_min = False
+        spin.setSuffix('' if at_min else suffix)
+
+    spin.valueChanged.connect(_sync_suffix)
+    _sync_suffix()
+
+
+def _mk_cap_mbps_spin(parent: QWidget, key: str, default: float) -> QDoubleSpinBox:
+    s = QDoubleSpinBox(parent)
+    s.setRange(0.0, 10_000.0)
+    s.setDecimals(2)
+    s.setSingleStep(0.5)
+    s.setMinimumWidth(108)
+    s.setValue(max(0.0, _float_setting(key, default)))
+    _configure_infinity_at_minimum(
+        s,
+        suffix=' Mbps',
+        tooltip='0 (∞) = no bandwidth cap for this direction. Raise the value to limit speed in Mbps.',
+    )
+    return s
+
+
+def _mk_effect_ms_spin(parent: QWidget, key: str, default: int, *, effect_name: str) -> QSpinBox:
+    s = QSpinBox(parent)
+    s.setRange(0, 800)
+    s.setSingleStep(10)
+    s.setValue(max(0, _int_setting(key, default)))
+    _configure_infinity_at_minimum(
+        s,
+        suffix=' ms',
+        tooltip=f'0 (∞) = no added {effect_name} for this direction. Set milliseconds to apply the effect.',
+    )
+    return s
+
+
 def _stub_section(title: str, parent: QWidget) -> QGroupBox:
     box = QGroupBox(title, parent)
     _section_font(box)
@@ -134,6 +184,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._chk_adv_cap_out: QCheckBox | None = None
         self._spin_adv_cap_out_mbps: QDoubleSpinBox | None = None
         self._spin_adv_cap_in_mbps: QDoubleSpinBox | None = None
+        self._chk_compound_loss: QCheckBox | None = None
+        self._spin_cap_overflow_loss_pct: QSpinBox | None = None
 
         self._chk_adv_loss_on: QCheckBox | None = None
         self._chk_adv_loss_in: QCheckBox | None = None
@@ -246,6 +298,16 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         main.setStyleSheet('color: #c5c5c5; font-size: 11px; background-color: #000000;')
         lay.addWidget(main)
 
+        self._chk_compound_loss = QCheckBox('Compound loss (% loss × cap overflow)', wrap)
+        self._chk_compound_loss.setChecked(_bool_setting('mitm_adv_compound_loss', True))
+        self._chk_compound_loss.setToolTip(
+            'One survival roll: P(forward) = (1 − loss%) × (1 − overflow% when over bandwidth cap). '
+            'Example: 50% loss and 50% overflow ≈ 25% packets delivered. '
+            'Turn off for the older sequential loss-then-cap behavior.'
+        )
+        self._chk_compound_loss.stateChanged.connect(self._on_mitm_field_changed)
+        lay.addWidget(self._chk_compound_loss)
+
         self._lbl_clumsy_status = QLabel(wrap)
         self._lbl_clumsy_status.setWordWrap(True)
         lay.addWidget(self._lbl_clumsy_status)
@@ -301,6 +363,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
                     'mitm_adv_loss_in': self._chk_adv_loss_in.isChecked(),
                     'mitm_adv_loss_out': self._chk_adv_loss_out.isChecked(),
                     'mitm_adv_loss_pct': int(self._spin_adv_loss_pct.value()),
+                    'mitm_adv_compound_loss': self._chk_compound_loss.isChecked(),
+                    'mitm_adv_cap_overflow_loss_pct': int(self._spin_cap_overflow_loss_pct.value()),
                     'mitm_adv_delay_timer_on': self._chk_adv_delay_timer_on.isChecked(),
                     'mitm_adv_delay_timer_lag_ms': int(self._spin_adv_delay_timer_lag_ms.value()),
                     'mitm_adv_delay_timer_pause_ms': int(self._spin_adv_delay_timer_pause_ms.value()),
@@ -472,6 +536,9 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         l_on = self._chk_adv_loss_on.isChecked()
         for w in (self._chk_adv_loss_in, self._chk_adv_loss_out, self._spin_adv_loss_pct):
             w.setEnabled(l_on)
+        compound_on = self._chk_compound_loss.isChecked() if self._chk_compound_loss else True
+        if self._spin_cap_overflow_loss_pct is not None:
+            self._spin_cap_overflow_loss_pct.setEnabled(compound_on and c_on)
 
         def _row_timer_enables(
             row_on: bool,
@@ -783,6 +850,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             if v == 0:
                 v = 1
             s.setValue(v)
+
+            def _sync_runs_suffix(_v=None) -> None:
+                s.setSuffix('' if int(s.value()) < 0 else ' cycles')
+
+            s.valueChanged.connect(_sync_runs_suffix)
+            _sync_runs_suffix()
             s.valueChanged.connect(self._on_mitm_field_changed)
             return s
 
@@ -790,11 +863,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._chk_adv_delay_on = _mk_chk_on('mitm_adv_delay_on', False)
         self._chk_adv_delay_in = _mk_chk_dir('mitm_adv_delay_in', True)
         self._chk_adv_delay_out = _mk_chk_dir('mitm_adv_delay_out', True)
-        self._spin_adv_delay_ms = QSpinBox(box)
-        self._spin_adv_delay_ms.setRange(0, 800)
-        self._spin_adv_delay_ms.setSuffix(' ms')
-        self._spin_adv_delay_ms.setValue(_int_setting('mitm_adv_delay_ms', 0))
-        self._spin_adv_delay_ms.setToolTip('Fixed extra delay before forwarding.')
+        self._spin_adv_delay_ms = _mk_effect_ms_spin(box, 'mitm_adv_delay_ms', 0, effect_name='delay')
         self._spin_adv_delay_ms.valueChanged.connect(self._on_mitm_field_changed)
         self._chk_adv_delay_timer_on = _mk_timer_on_chk(
             'mitm_adv_delay_timer_on',
@@ -828,12 +897,9 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._chk_adv_jitter_on = _mk_chk_on('mitm_adv_jitter_on', False)
         self._chk_adv_jitter_in = _mk_chk_dir('mitm_adv_jitter_in', True)
         self._chk_adv_jitter_out = _mk_chk_dir('mitm_adv_jitter_out', True)
-        self._spin_adv_jitter_ms = QSpinBox(box)
-        self._spin_adv_jitter_ms.setRange(0, 800)
-        self._spin_adv_jitter_ms.setSuffix(' ms')
-        self._spin_adv_jitter_ms.setValue(_int_setting('mitm_adv_jitter_ms', 0))
+        self._spin_adv_jitter_ms = _mk_effect_ms_spin(box, 'mitm_adv_jitter_ms', 0, effect_name='jitter')
         self._spin_adv_jitter_ms.setToolTip(
-            'Random extra delay 0…N ms added on top of fixed delay (uniform per packet).'
+            '0 (∞) = no added jitter. Otherwise random extra delay 0…N ms on top of fixed delay (per packet).'
         )
         self._spin_adv_jitter_ms.valueChanged.connect(self._on_mitm_field_changed)
         self._chk_adv_jitter_timer_on = _mk_timer_on_chk('mitm_adv_jitter_timer_on', False, 'Schedule this jitter row.')
@@ -865,23 +931,21 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._chk_adv_cap_in = _mk_chk_dir('mitm_adv_cap_in', True)
         self._chk_adv_cap_out = _mk_chk_dir('mitm_adv_cap_out', True)
         lbl_cap_in = QLabel('In:')
-        self._spin_adv_cap_in_mbps = QDoubleSpinBox(box)
-        self._spin_adv_cap_in_mbps.setRange(0.0, 10_000.0)
-        self._spin_adv_cap_in_mbps.setDecimals(2)
-        self._spin_adv_cap_in_mbps.setSingleStep(0.5)
-        self._spin_adv_cap_in_mbps.setSuffix(' Mbps')
-        self._spin_adv_cap_in_mbps.setMinimumWidth(108)
-        self._spin_adv_cap_in_mbps.setValue(_float_setting('mitm_adv_cap_in_mbps', 0.0))
+        self._spin_adv_cap_in_mbps = _mk_cap_mbps_spin(box, 'mitm_adv_cap_in_mbps', 0.0)
         self._spin_adv_cap_in_mbps.valueChanged.connect(self._on_mitm_field_changed)
         lbl_cap_out = QLabel('Out:')
-        self._spin_adv_cap_out_mbps = QDoubleSpinBox(box)
-        self._spin_adv_cap_out_mbps.setRange(0.0, 10_000.0)
-        self._spin_adv_cap_out_mbps.setDecimals(2)
-        self._spin_adv_cap_out_mbps.setSingleStep(0.5)
-        self._spin_adv_cap_out_mbps.setSuffix(' Mbps')
-        self._spin_adv_cap_out_mbps.setMinimumWidth(108)
-        self._spin_adv_cap_out_mbps.setValue(_float_setting('mitm_adv_cap_out_mbps', 0.0))
+        self._spin_adv_cap_out_mbps = _mk_cap_mbps_spin(box, 'mitm_adv_cap_out_mbps', 0.0)
         self._spin_adv_cap_out_mbps.valueChanged.connect(self._on_mitm_field_changed)
+        lbl_overflow = QLabel('Overflow %')
+        lbl_overflow.setToolTip(
+            'When traffic exceeds the Mbps cap, drop this % of over-cap packets. '
+            '100 = always drop (legacy). 50 with 50% loss compounds to ~25% delivery.'
+        )
+        self._spin_cap_overflow_loss_pct = QSpinBox(box)
+        self._spin_cap_overflow_loss_pct.setRange(0, 100)
+        self._spin_cap_overflow_loss_pct.setSuffix(' %')
+        self._spin_cap_overflow_loss_pct.setValue(_int_setting('mitm_adv_cap_overflow_loss_pct', 100))
+        self._spin_cap_overflow_loss_pct.valueChanged.connect(self._on_mitm_field_changed)
         self._chk_adv_cap_timer_on = _mk_timer_on_chk('mitm_adv_cap_timer_on', False, 'Schedule this cap row.')
         self._spin_adv_cap_timer_lag_ms = _mk_timer_lag_spin('mitm_adv_cap_timer_lag_ms', 1000)
         self._spin_adv_cap_timer_pause_ms = _mk_timer_pause_spin('mitm_adv_cap_timer_pause_ms', 1000)
@@ -898,7 +962,14 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             chk_on=self._chk_adv_cap_on,
             chk_in=self._chk_adv_cap_in,
             chk_out=self._chk_adv_cap_out,
-            tail_widgets=[lbl_cap_in, self._spin_adv_cap_in_mbps, lbl_cap_out, self._spin_adv_cap_out_mbps],
+            tail_widgets=[
+                lbl_cap_in,
+                self._spin_adv_cap_in_mbps,
+                lbl_cap_out,
+                self._spin_adv_cap_out_mbps,
+                lbl_overflow,
+                self._spin_cap_overflow_loss_pct,
+            ],
             chk_timer_on=self._chk_adv_cap_timer_on,
             spin_timer_lag_ms=self._spin_adv_cap_timer_lag_ms,
             spin_timer_pause_ms=self._spin_adv_cap_timer_pause_ms,
@@ -943,9 +1014,10 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         inner.addLayout(grid)
         intro = QLabel(
-            'Enable a row, tick In and/or Out, set values. Timer: Lag (ms) applies that row, Pause (ms) clears that row’s '
-            'effect, then Repeat controls whether the cycle continues. Runs = −1 (∞) repeats until you stop; a positive Runs '
-            'counts Lag→Pause cycles for that row only—when one row finishes, the others continue. Nothing applies until the victim toggle is on.',
+            'Enable a row, tick In and/or Out, set values. 0 or −1 where shown as ∞ means unlimited (no cap, no added delay/jitter, '
+            'or infinite timer cycles). Timer: Lag (ms) applies that row, Pause (ms) clears that row’s effect, then Repeat '
+            'controls whether the cycle continues. A positive Runs counts Lag→Pause cycles for that row only—when one row '
+            'finishes, the others continue. Nothing applies until the victim toggle is on.',
             box,
         )
         intro.setWordWrap(True)

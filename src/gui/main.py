@@ -3608,6 +3608,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._refresh_flow_toggle_ui()
         self.showDevices()
 
+    @staticmethod
+    def _mitm_compound_loss_settings() -> tuple[bool, int]:
+        try:
+            return (
+                bool(get_settings('mitm_adv_compound_loss')),
+                max(0, min(100, int(get_settings('mitm_adv_cap_overflow_loss_pct')))),
+            )
+        except Exception:
+            return True, 100
+
     def _refresh_advanced_lag_mitm_if_visible(self) -> None:
         dlg = getattr(self, 'advanced_lag_settings_dialog', None)
         if dlg is not None and dlg.isVisible():
@@ -3775,7 +3785,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             and self._ics_windivert_shaper is not None
         ):
             if use_wd:
-                self._ics_windivert_shaper.apply_params(du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps)
+                _cl, _ov = self._mitm_compound_loss_settings()
+                self._ics_windivert_shaper.apply_params(
+                    du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps, _cl, _ov
+                )
                 self._mitm_adv_sched_record(du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld)
                 self._start_mitm_adv_schedule()
                 self._refresh_advanced_lag_mitm_if_visible()
@@ -3837,7 +3850,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
             shaper = IcsWinDivertShaper(device.get('ip') or '')
             try:
-                shaper.start(du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps)
+                _cl, _ov = self._mitm_compound_loss_settings()
+                shaper.start(du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps, _cl, _ov)
                 self._ics_windivert_shaper = shaper
                 self._mitm_shaping_backend = 'windivert'
                 use_forwarder = False
@@ -3885,8 +3899,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             parts.append(f'in jitter +0–{jd}ms')
         if cu_mbps > 0:
             parts.append(f'out cap {cu_mbps:g}Mbps')
+        elif bool(get_settings('mitm_adv_cap_on')) and bool(get_settings('mitm_adv_cap_out')):
+            parts.append('out cap ∞')
         if cd_mbps > 0:
             parts.append(f'in cap {cd_mbps:g}Mbps')
+        elif bool(get_settings('mitm_adv_cap_on')) and bool(get_settings('mitm_adv_cap_in')):
+            parts.append('in cap ∞')
         if lu > 0:
             parts.append(f'out loss {lu}%')
         if ld > 0:

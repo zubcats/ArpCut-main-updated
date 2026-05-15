@@ -132,6 +132,9 @@ SETTINGS_KEYS = [
     'mitm_adv_loss_in',
     'mitm_adv_loss_out',
     'mitm_adv_loss_pct',
+    # Compound (1-L/100)×(1-overflow/100 when over cap); overflow 100 = drop all over-cap packets.
+    'mitm_adv_compound_loss',
+    'mitm_adv_cap_overflow_loss_pct',
     # Per-impairment schedule: timer on, lag ms, pause ms, repeat (lag+pause cycles), runs (−1 = ∞ cycles).
     'mitm_adv_delay_timer_on',
     'mitm_adv_delay_timer_lag_ms',
@@ -207,6 +210,8 @@ SETTINGS_VALS = [
     True,
     True,
     0,
+    True,
+    100,
     False,
     1000,
     1000,
