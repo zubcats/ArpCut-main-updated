@@ -2138,7 +2138,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._clumsy_inline_refresh_timer.start()
 
     def _refresh_clumsy_inline_row_if_needed(self):
-        """While Clumsy mode is on, periodically re-sync ICS dedupe / detection (ARP + rate-limited ping)."""
+        """While Clumsy mode is on, periodically re-sync ICS dedupe from ARP only.
+
+        Do not pass allow_subnet_ping here: that path runs many sequential pings on
+        whatever thread calls it; on the GUI thread it froze the app for seconds
+        (especially when the console is no longer on the ICS subnet, e.g. plugged
+        straight into the router while Clumsy stays enabled in settings).
+        ICS subnet ping discovery runs from the scan thread in devices_appender.
+        """
         try:
             from tools.clumsy_inline import (
                 clumsy_mode_enabled,
@@ -2155,7 +2162,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
             ip_before = detect_inline_ip(self.scanner, allow_subnet_ping=False)
             n_before = len(self.scanner.devices)
-            sync_clumsy_row(self.scanner, allow_subnet_ping=True)
+            sync_clumsy_row(self.scanner, allow_subnet_ping=False)
             n_after = len(self.scanner.devices)
             ip_after = detect_inline_ip(self.scanner, allow_subnet_ping=False)
             if ip_before != ip_after or n_before != n_after:

@@ -303,7 +303,8 @@ class Scanner():
         self.add_router()
         self.inject_nicknamed_favorites()
         self.old_ips = {d['mac']: d['ip'] for d in self.devices if not d.get('admin')}
-        sync_clumsy_row(self)
+        # Ping sweep can take seconds; this runs on the scan QThread, not the GUI thread.
+        sync_clumsy_row(self, allow_subnet_ping=True)
 
     def _windows_arp_raw_text(self):
         """Merge interface-scoped and full ARP output (``-N`` often returns nothing on some builds)."""

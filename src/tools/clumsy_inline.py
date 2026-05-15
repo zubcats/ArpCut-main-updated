@@ -201,6 +201,9 @@ def sync_clumsy_row(scanner: Scanner, *, allow_subnet_ping: bool = False) -> Non
     """
     Remove legacy synthetic rows; when clumsy mode is on, dedupe duplicate non-admin
     devices that share the detected ICS client IPv4 (keep first list occurrence).
+
+    When allow_subnet_ping is True, may run many sequential pings on the ICS subnet
+    to populate ARP — call only from a worker thread (e.g. scan thread), not the Qt GUI thread.
     """
     scanner.devices = [d for d in scanner.devices if not d.get('clumsy_inline')]
     if not clumsy_mode_enabled() or not clumsy_runtime_ready():

@@ -154,7 +154,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _install_clumsy_controls(self):
         self.chkClumsy = QCheckBox('Clumsy Mode', self.gridLayoutWidget_2)
-        self.chkClumsy.setToolTip('')
+        self.chkClumsy.setToolTip(
+            'For when your console uses this PC as an Ethernet bridge (Internet Connection Sharing / inline). '
+            'If you move the console to plug directly into the router, turn Clumsy off and restart — '
+            'otherwise ZubCut keeps treating the setup as ICS and refreshes the wrong path.'
+        )
         self.btnClumsyInstall = QPushButton('Install Clumsy mode…', self.gridLayoutWidget_2)
         self.btnClumsyInstall.setToolTip(
             'Downloads the latest experimental installer (includes optional WinDivert setup).'
