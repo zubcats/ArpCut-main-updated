@@ -743,6 +743,15 @@ QDialog#zubcutLagDupeDialog QAbstractScrollArea#qt_scrollarea_viewport {{
 QDialog#zubcutLagDupeDialog QWidget#zubcutAdvLagScrollInner {{
     background-color: #000000;
 }}
+/* qdarkstyle paints QLabel with a blue-grey base; force neutral so intro / rows match this dialog. */
+QDialog#zubcutLagDupeDialog QWidget#zubcutAdvLagIntroWrap {{
+    background-color: #000000;
+}}
+QDialog#zubcutLagDupeDialog QLabel {{
+    background-color: #000000;
+    padding: 1px 0;
+    margin: 0;
+}}
 QDialog#zubcutLagDupeDialog QDialogButtonBox {{
     background-color: #000000;
 }}
@@ -867,10 +876,6 @@ QDialog#zubcutLagDupeDialog QCheckBox#zubcutAdvLagChkDir::indicator:checked {{
 QDialog#zubcutLagDupeDialog QCheckBox#zubcutAdvLagChkDir::indicator:hover,
 QDialog#zubcutLagDupeDialog QCheckBox#zubcutAdvLagChkDir::indicator:unchecked:hover {{
     border: 1px solid {sel_bg};
-}}
-QDialog#zubcutLagDupeDialog QLabel {{
-    padding: 1px 0;
-    margin: 0;
 }}
 QDialog#zubcutLagDupeDialog QSpinBox,
 QDialog#zubcutLagDupeDialog QDoubleSpinBox,

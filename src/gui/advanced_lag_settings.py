@@ -195,6 +195,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
     def _top_info_banner(self, parent: QWidget) -> QWidget:
         wrap = QWidget(parent)
+        wrap.setObjectName('zubcutAdvLagIntroWrap')
         lay = QVBoxLayout(wrap)
         lay.setContentsMargins(0, 0, 0, 8)
         lay.setSpacing(6)
@@ -206,7 +207,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             wrap,
         )
         main.setWordWrap(True)
-        main.setStyleSheet('color: #c5c5c5; font-size: 11px;')
+        main.setStyleSheet('color: #c5c5c5; font-size: 11px; background-color: #000000;')
         lay.addWidget(main)
 
         self._lbl_clumsy_status = QLabel(wrap)
@@ -666,7 +667,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             return
         if not sys.platform.startswith('win'):
             self._lbl_clumsy_status.setText('Clumsy mode is only available on Windows.')
-            self._lbl_clumsy_status.setStyleSheet('color: #9a9a9a; font-size: 11px; background-color: transparent;')
+            self._lbl_clumsy_status.setStyleSheet('color: #9a9a9a; font-size: 11px; background-color: #000000;')
             return
         try:
             from tools.clumsy_inline import (
@@ -677,7 +678,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             )
         except Exception:
             self._lbl_clumsy_status.setText('Could not read Clumsy status.')
-            self._lbl_clumsy_status.setStyleSheet('color: #c9a227; font-size: 11px; background-color: transparent;')
+            self._lbl_clumsy_status.setStyleSheet('color: #c9a227; font-size: 11px; background-color: #000000;')
             return
         mode = clumsy_mode_enabled()
         bundle = clumsy_bundle_offered()
@@ -692,8 +693,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         lines.append(f'Ready for inline ICS row: {"yes" if ready and mode else "no"}')
         self._lbl_clumsy_status.setText('\n'.join(lines))
         if mode and ready:
-            self._lbl_clumsy_status.setStyleSheet('color: #8fbcbb; font-size: 11px; background-color: transparent;')
+            self._lbl_clumsy_status.setStyleSheet('color: #8fbcbb; font-size: 11px; background-color: #000000;')
         elif mode and not ready:
-            self._lbl_clumsy_status.setStyleSheet('color: #c9a227; font-size: 11px; background-color: transparent;')
+            self._lbl_clumsy_status.setStyleSheet('color: #c9a227; font-size: 11px; background-color: #000000;')
         else:
-            self._lbl_clumsy_status.setStyleSheet('color: #9a9a9a; font-size: 11px; background-color: transparent;')
+            self._lbl_clumsy_status.setStyleSheet('color: #9a9a9a; font-size: 11px; background-color: #000000;')
