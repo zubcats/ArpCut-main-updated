@@ -3681,12 +3681,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         sched_tick=False,
     ):
         """Forwarder shaping from Advanced Lag (delay, jitter, caps, loss)."""
-        from tools.updater_core import is_experimental_build
-
-        if not is_experimental_build():
-            self.log('Latency and bandwidth shaping is not available in this build.', 'red')
-            self._refresh_advanced_lag_mitm_if_visible()
-            return
         if not sched_tick:
             self._await_mitm_teardown_thread()
         if not self.connected():

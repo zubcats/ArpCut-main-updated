@@ -1,4 +1,4 @@
-"""Advanced Lag Settings — clumsy-style rows + master victim toggle (experimental MITM path).
+"""Advanced Lag Settings — clumsy-style rows + master victim toggle (MITM shaping path).
 
 Each row: enable, In/Out, values, and optional timer (Lag ms, Pause ms, Repeat, Cycles).
 Repeat: use pause and repeat lag→pause cycles; off = one lag phase then that row's timer
@@ -33,12 +33,6 @@ from PyQt5.QtCore import Qt
 from constants import ADMIN_DEVICE_TABLE_ROW_BG
 from tools.frameless_chrome import FramelessResizableMixin, CustomTitleBar
 from tools.utils_gui import register_window_surface_effects, get_settings, set_settings, set_settings_many
-
-
-def _mitm_sections_enabled() -> bool:
-    from tools.updater_core import is_experimental_build
-
-    return is_experimental_build()
 
 
 def _section_font(box: QGroupBox) -> None:
@@ -130,19 +124,6 @@ def _mk_effect_ms_spin(parent: QWidget, key: str, default: int, *, effect_name: 
         tooltip=f'0 (∞) = no added {effect_name} for this direction. Set milliseconds to apply the effect.',
     )
     return s
-
-
-def _stub_section(title: str, parent: QWidget) -> QGroupBox:
-    box = QGroupBox(title, parent)
-    _section_font(box)
-    inner = QVBoxLayout(box)
-    inner.setContentsMargins(12, 10, 12, 12)
-    inner.setSpacing(6)
-    stub = QLabel('Controls for this section will be added here.', box)
-    stub.setWordWrap(True)
-    stub.setStyleSheet('color: #9a9a9a; font-size: 11px;')
-    inner.addWidget(stub)
-    return box
 
 
 class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
@@ -253,11 +234,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         scroll_layout.setSpacing(10)
 
         scroll_layout.addWidget(self._top_info_banner(scroll_inner))
-        if _mitm_sections_enabled():
-            scroll_layout.addWidget(self._mitm_impairments_section(scroll_inner))
-            scroll_layout.addWidget(self._mitm_victim_section(scroll_inner))
-        else:
-            scroll_layout.addWidget(_stub_section('More options', scroll_inner))
+        scroll_layout.addWidget(self._mitm_impairments_section(scroll_inner))
+        scroll_layout.addWidget(self._mitm_victim_section(scroll_inner))
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_inner)
