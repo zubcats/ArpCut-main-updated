@@ -592,15 +592,23 @@ catch {{
     return False, msg
 
 
-def rollback_clumsy_ics() -> Tuple[bool, str]:
+def repair_clumsy_network_sharing() -> Tuple[bool, str]:
+    """
+    Undo Clumsy ICS changes and restart Wi‑Fi / sharing services.
+
+    Use when Mobile Hotspot stopped working after an older Clumsy enable attempt
+    (those builds ran ``netsh wlan stop hostednetwork`` and reset ICS).
+    """
     if os.name != 'nt':
-        return True, 'Non-Windows platform; skipping rollback.'
-    state = read_clumsy_ics_state()
-    if not state:
-        return True, 'No previous ICS state to restore.'
+        return True, 'Non-Windows platform; skipping repair.'
+    if not _windows_is_admin():
+        return (
+            False,
+            'Run ZubCut as Administrator to repair network sharing / Mobile Hotspot.',
+        )
     state_path = _STATE_PATH.replace('\\', '\\\\')
     script = f"""
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 function NormGuid([object]$g) {{
   if ($null -eq $g) {{ return '' }}
   return ($g.ToString().Trim('{{','}}').ToLowerInvariant())
@@ -623,8 +631,15 @@ function SharingEnabledSafe($cfg) {{
     return $false
   }}
 }}
+function DisableSharingSafe([object]$cfg) {{
+  if ($null -eq $cfg) {{ return }}
+  if (-not (SharingEnabledSafe $cfg)) {{ return }}
+  for ($i = 0; $i -lt 3; $i++) {{
+    try {{ $cfg.DisableSharing(); return }} catch {{ Start-Sleep -Milliseconds 500 }}
+  }}
+}}
 function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
-  if ($null -eq $cfg) {{ throw 'EnableSharingSafe: null configuration object.' }}
+  if ($null -eq $cfg) {{ return }}
   try {{
     $mi = $cfg.GetType().GetMethod('EnableSharing')
     if ($null -ne $mi) {{
@@ -639,20 +654,26 @@ function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
       }}
     }}
   }} catch {{ }}
-  $lastErr = $null
-  try {{ $cfg.EnableSharing([int32]$sharingKind); return }} catch {{ $lastErr = $_ }}
-  try {{ $cfg.EnableSharing([uint32]$sharingKind); return }} catch {{ $lastErr = $_ }}
-  try {{ $cfg.EnableSharing([int16]$sharingKind); return }} catch {{ $lastErr = $_ }}
-  try {{ $cfg.EnableSharing($sharingKind); return }} catch {{ $lastErr = $_ }}
-  if ($null -ne $lastErr) {{ throw $lastErr.Exception }}
-  throw 'EnableSharing failed (no matching invocation).'
+  try {{ $cfg.EnableSharing([int32]$sharingKind); return }} catch {{ }}
+  try {{ $cfg.EnableSharing([uint32]$sharingKind); return }} catch {{ }}
+  try {{ $cfg.EnableSharing($sharingKind); return }} catch {{ }}
 }}
 try {{
-  if (-not (Test-Path "{state_path}")) {{
-    JsonOut @{{ ok=$true; message='No rollback state file.' }}
-    exit 0
+  $snapshot = @()
+  if (Test-Path "{state_path}") {{
+    try {{
+      $saved = Get-Content -Raw -Path "{state_path}" | ConvertFrom-Json
+      if ($saved.snapshot) {{ $snapshot = @($saved.snapshot) }}
+    }} catch {{}}
   }}
-  $state = Get-Content -Raw -Path "{state_path}" | ConvertFrom-Json
+
+  foreach ($svc in @('SharedAccess', 'WlanSvc', 'RemoteAccess', 'NlaSvc')) {{
+    try {{ Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue }} catch {{}}
+    try {{ Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue }} catch {{}}
+    try {{ Start-Service -Name $svc -ErrorAction SilentlyContinue }} catch {{}}
+  }}
+  Start-Sleep -Seconds 2
+
   $share = New-Object -ComObject HNetCfg.HNetShare
   $connMap = @{{}}
   foreach ($conn in @($share.EnumEveryConnection())) {{
@@ -660,22 +681,38 @@ try {{
       $props = $share.NetConnectionProps($conn)
       $guid = NormGuid($props.Guid)
       $cfg = $share.INetSharingConfigurationForINetConnection($conn)
-      $connMap[$guid] = @{{ conn=$conn; cfg=$cfg; name=$props.Name }}
+      $connMap[$guid] = $cfg
     }} catch {{ continue }}
   }}
-  foreach ($k in $connMap.Keys) {{
-    $cfg = $connMap[$k].cfg
-    if (SharingEnabledSafe $cfg) {{ try {{ $cfg.DisableSharing() }} catch {{ }} }}
-  }}
-  foreach ($row in @($state.snapshot)) {{
+  foreach ($cfg in $connMap.Values) {{ DisableSharingSafe $cfg }}
+  Start-Sleep -Milliseconds 800
+  foreach ($row in @($snapshot)) {{
     $g = NormGuid($row.guid)
     if (-not $connMap.ContainsKey($g)) {{ continue }}
     $kind = SnapshotTypeInt $row
     if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
-    EnableSharingSafe $connMap[$g].cfg $kind
+    EnableSharingSafe $connMap[$g] $kind
   }}
+
+  Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {{
+    $d = ($_.Name + ' ' + $_.InterfaceDescription)
+    if ($_.Status -eq 'Disabled' -and ($d -match 'Wi-Fi|Wireless|Wi-Fi Direct|Hosted')) {{
+      try {{ Enable-NetAdapter -Name $_.Name -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
+    }}
+  }}
+  Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {{
+    try {{
+      Set-NetConnectionProfile -InterfaceIndex $_.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue
+    }} catch {{}}
+  }}
+
   Remove-Item -Path "{state_path}" -Force -ErrorAction SilentlyContinue
-  JsonOut @{{ ok=$true; message='Restored previous ICS sharing state.' }}
+  $msg = @(
+    'Reset Internet Connection Sharing and restarted Wi-Fi / hotspot services.'
+    'In Windows Settings: turn Mobile hotspot OFF, wait 10 seconds, turn it ON again.'
+    'Then reconnect the PS5 to the PC hotspot Wi-Fi.'
+  ) -join ' '
+  JsonOut @{{ ok=$true; message=$msg }}
   exit 0
 }}
 catch {{
@@ -686,6 +723,10 @@ catch {{
 """
     ok, payload, raw = _run_powershell(script)
     if ok:
-        return True, str(payload.get('message') or 'Rollback completed.')
-    msg = str(payload.get('error') or '').strip() or raw.strip() or 'Rollback failed.'
+        return True, str(payload.get('message') or 'Network sharing repair completed.')
+    msg = str(payload.get('error') or '').strip() or raw.strip() or 'Repair failed.'
     return False, msg
+
+
+def rollback_clumsy_ics() -> Tuple[bool, str]:
+    return repair_clumsy_network_sharing()

@@ -52,7 +52,12 @@ from constants import *
 import constants as _zcut_constants
 
 from tools.clumsy_inline import clumsy_bundle_offered, windivert_driver_installed
-from tools.clumsy_ics import ensure_clumsy_ics_enabled, format_clumsy_ics_error, rollback_clumsy_ics
+from tools.clumsy_ics import (
+    ensure_clumsy_ics_enabled,
+    format_clumsy_ics_error,
+    repair_clumsy_network_sharing,
+    rollback_clumsy_ics,
+)
 from tools.utils_gui import restart_zubcut
 
 _UPDATE_BTN_QSS_FALLBACK = (
@@ -185,11 +190,17 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnClumsyInstall.setToolTip(
             'Downloads the latest experimental installer (includes optional WinDivert setup).'
         )
+        self.btnClumsyRepair = QPushButton('Repair hotspot / sharing…', self.gridLayoutWidget_2)
+        self.btnClumsyRepair.setToolTip(
+            'Fix Mobile Hotspot after a broken Clumsy setup: resets ICS, restarts Wi‑Fi services, '
+            'then turn hotspot off and on in Windows Settings.'
+        )
         self.gridLayout_3.addWidget(self.chkClumsy, 2, 0, 1, 2)
         self.gridLayout_3.addWidget(self.btnClumsyInstall, 2, 2, 1, 2)
         self.gridLayout_3.addWidget(self.lblClumsyTopology, 3, 0, 1, 1)
         self.gridLayout_3.addWidget(self.cmbClumsyTopology, 3, 1, 1, 3)
-        self.groupBox_3.setMinimumHeight(175)
+        self.gridLayout_3.addWidget(self.btnClumsyRepair, 4, 0, 1, 4)
+        self.groupBox_3.setMinimumHeight(200)
         self.gridLayoutWidget_2.setMinimumHeight(100)
         # Clumsy row adds vertical pressure; increase keybind group height to keep labels readable.
         self.groupBox_keys.setMinimumHeight(140)
@@ -197,6 +208,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.chkClumsy.stateChanged.connect(self._on_clumsy_checkbox_changed)
         self.cmbClumsyTopology.currentIndexChanged.connect(self._on_clumsy_topology_changed)
         self.btnClumsyInstall.clicked.connect(self._on_clumsy_install_clicked)
+        self.btnClumsyRepair.clicked.connect(self._on_clumsy_repair_clicked)
 
     def _refresh_clumsy_settings_widgets(self):
         if not sys.platform.startswith('win'):
@@ -204,7 +216,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnClumsyInstall.hide()
             self.lblClumsyTopology.hide()
             self.cmbClumsyTopology.hide()
+            self.btnClumsyRepair.hide()
             return
+        self.btnClumsyRepair.show()
         bundle = clumsy_bundle_offered()
         driver_ok = windivert_driver_installed()
         if bundle and driver_ok:
@@ -217,6 +231,36 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnClumsyInstall.show()
             self.lblClumsyTopology.hide()
             self.cmbClumsyTopology.hide()
+
+    def _on_clumsy_repair_clicked(self):
+        if MsgType.WARN(
+            self,
+            'Repair hotspot / sharing',
+            'This resets Internet Connection Sharing and restarts Wi‑Fi / hotspot services.\n'
+            'You will still need to turn Mobile hotspot OFF then ON in Windows Settings.\n\n'
+            'Continue?',
+            Buttons.YES | Buttons.NO,
+        ) == Buttons.NO:
+            return
+        ok, detail = repair_clumsy_network_sharing()
+        if ok:
+            MsgType.INFO(
+                self,
+                'Repair complete',
+                (detail or 'Repair finished.')
+                + '\n\nIf hotspot still fails: Settings → Network → Mobile hotspot → OFF, '
+                'wait 10 seconds, ON. Reboot the PC if needed.',
+                Buttons.OK,
+            )
+        else:
+            MsgType.ERROR(
+                self,
+                'Repair failed',
+                (detail or 'Unknown error.')
+                + '\n\nRun ZubCut as Administrator, or use tools\\Repair-Clumsy-Hotspot.cmd '
+                'from the install folder (right-click → Run as administrator).',
+                Buttons.OK,
+            )
 
     def _selected_clumsy_topology(self) -> str:
         data = self.cmbClumsyTopology.currentData()
@@ -285,17 +329,35 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             ok, detail = rollback_clumsy_ics()
             if not ok:
-                MsgType.ERROR(
-                    self,
-                    'Clumsy Mode',
-                    'Could not restore your previous sharing setup.\n\n'
-                    + (detail or 'Unknown error.'),
-                    Buttons.OK,
-                )
-                self._clumsy_toggle_guard = True
-                self.chkClumsy.setChecked(old_v)
-                self._clumsy_toggle_guard = False
-                return
+                if (
+                    MsgType.WARN(
+                        self,
+                        'Clumsy Mode',
+                        'Could not restore sharing automatically.\n\n'
+                        + (detail or 'Unknown error.')
+                        + '\n\nRun hotspot / sharing repair now?',
+                        Buttons.YES | Buttons.NO,
+                    )
+                    == Buttons.YES
+                ):
+                    rok, rdetail = repair_clumsy_network_sharing()
+                    if not rok:
+                        MsgType.ERROR(
+                            self,
+                            'Repair failed',
+                            rdetail or detail or 'Unknown error.',
+                            Buttons.OK,
+                        )
+                        self._clumsy_toggle_guard = True
+                        self.chkClumsy.setChecked(old_v)
+                        self._clumsy_toggle_guard = False
+                        return
+                    detail = rdetail
+                else:
+                    self._clumsy_toggle_guard = True
+                    self.chkClumsy.setChecked(old_v)
+                    self._clumsy_toggle_guard = False
+                    return
             try:
                 prev = (get_settings('iface_before_clumsy') or '').strip()
             except Exception:
