@@ -137,6 +137,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._update_published_label = ''
         self._update_available = False
         self.btnUpdate.setText(self._update_button_text())
+        self._sync_update_button_tooltip()
         # Defer first HEAD check so it does not run synchronously during main window construction.
         QTimer.singleShot(0, self._deferred_initial_update_check)
         QTimer.singleShot(0, self._refresh_clumsy_settings_widgets)
@@ -665,6 +666,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 if self.isVisible():
                     self.btnUpdate.setEnabled(True)
                     self.btnUpdate.setText(self._update_button_text())
+                    self._sync_update_button_tooltip()
                     self._apply_update_button_style()
             except RuntimeError:
                 pass
@@ -676,6 +678,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         try:
             self._refresh_update_availability()
             self.btnUpdate.setText(self._update_button_text())
+            self._sync_update_button_tooltip()
             self._apply_update_button_style()
             el = getattr(self, 'elmocut', None)
             if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
@@ -692,6 +695,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         try:
             self._refresh_update_availability()
             self.btnUpdate.setText(self._update_button_text())
+            self._sync_update_button_tooltip()
             self._apply_update_button_style()
         except Exception:
             pass
@@ -702,21 +706,29 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._update_available = bool(available)
             self._update_published_label = (published_label or '').strip()
             self.btnUpdate.setText(self._update_button_text())
+            self._sync_update_button_tooltip()
             self._apply_update_button_style()
         except Exception:
             pass
 
     def _update_button_text(self):
+        if self._update_available:
+            return (
+                'New build available — Install (Experimental)'
+                if self._update_channel == 'experimental'
+                else 'New build available — Install'
+            )
         if self._update_channel == 'experimental':
-            base = 'Install Latest Build (Experimental)'
-        else:
-            base = 'Install Latest Build'
+            return 'Install Latest (Experimental)'
+        return 'Install Latest Build'
+
+    def _sync_update_button_tooltip(self) -> None:
+        lines = []
         detail = (self._update_published_label or '').strip()
         if detail:
-            return f'{base} — {detail}'
-        if self._update_available:
-            return f'New version available — {base}'
-        return base
+            lines.append(detail)
+        lines.append('Download and install the latest build for this update channel.')
+        self.btnUpdate.setToolTip('\n'.join(lines))
 
     def _apply_update_button_style(self):
         if self._update_available:
