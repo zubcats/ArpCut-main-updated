@@ -36,6 +36,10 @@ HIDDEN_IMPORTS = [
     'pyperclip',
     'requests',
     'six',
+    'nacl',
+    'nacl.signing',
+    'nacl.bindings',
+    'nacl.bindings.crypto_sign',
 ]
 
 COLLECT_ALL = [

@@ -78,14 +78,27 @@ class LicenseValidationResult:
     payload: dict[str, Any] | None = None
 
 
+def _nacl_import_error() -> str | None:
+    try:
+        from nacl.signing import VerifyKey  # noqa: F401
+    except ImportError:
+        return (
+            'License verification is unavailable in this build (PyNaCl missing). '
+            'Reinstall from the latest ZubCut installer.'
+        )
+    except Exception as e:
+        return f'License verification failed to load ({e}).'
+    return None
+
+
 def _verify_signature(payload: dict[str, Any], signature_b64: str, key_b64: str) -> bool:
     if not key_b64:
         return False
-    try:
-        from nacl.signing import VerifyKey
-    except Exception:
+    if _nacl_import_error():
         return False
     try:
+        from nacl.signing import VerifyKey
+
         verify_key = VerifyKey(base64.b64decode(key_b64))
         verify_key.verify(_canonical_payload_bytes(payload), base64.b64decode(signature_b64))
         return True
@@ -137,9 +150,19 @@ def validate_license_document(
         return LicenseValidationResult(False, 'License payload/signature missing')
     key_b64 = _effective_public_key_b64()
     if not key_b64:
-        return LicenseValidationResult(False, 'License verify key missing')
+        return LicenseValidationResult(
+            False,
+            'This build has no license verify key. Install the official ZubCut build from GitHub.',
+        )
+    nacl_err = _nacl_import_error()
+    if nacl_err:
+        return LicenseValidationResult(False, nacl_err)
     if not _verify_signature(payload, signature, key_b64):
-        return LicenseValidationResult(False, 'License signature invalid')
+        return LicenseValidationResult(
+            False,
+            'License signature invalid. Ask your admin to re-push your account in License Manager, '
+            'or install the latest official ZubCut build.',
+        )
     if str(payload.get('status', 'active')).strip().lower() != 'active':
         return LicenseValidationResult(False, 'License not active', payload=payload)
 
