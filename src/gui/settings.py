@@ -38,6 +38,8 @@ from tools.updater_core import (
     get_update_status,
     launch_installer,
     remote_installer_info,
+    format_updater_error_message,
+    installer_download_candidates,
     resolve_installer_download_url,
     selected_update_url,
 )
@@ -718,7 +720,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def checkUpdate(self):
         begin_updater_debug_session('settings.checkUpdate')
         updater_log('checkUpdate: entered')
-        url = resolve_installer_download_url(force_refresh=True) or selected_update_url()
+        candidates = installer_download_candidates(force_refresh=True)
+        url = candidates[0] if candidates else (selected_update_url() or '')
+        fallback_urls = candidates[1:] if len(candidates) > 1 else None
         remote_info = remote_installer_info(force_refresh=True)
         expected_size = int(remote_info.size) if remote_info and remote_info.size > 0 else 0
         if not url:
@@ -767,7 +771,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         try:
             updater_log('checkUpdate: calling download_update_with_progress_dialog')
             path = download_update_with_progress_dialog(
-                self, url, expected_size=expected_size
+                self,
+                url,
+                expected_size=expected_size,
+                fallback_urls=fallback_urls,
             )
             updater_log('checkUpdate: download returned path=%r', path)
             if path is None:
@@ -783,7 +790,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 None,
                 'Update Failed',
                 (
-                    f'Could not download/install update.\n{e}\n\n'
+                    f'{format_updater_error_message(e)}\n\n'
                     f'Details were appended to:\n{updater_log_paths_hint()}'
                 ),
                 Buttons.OK,

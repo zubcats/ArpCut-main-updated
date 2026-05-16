@@ -13,6 +13,7 @@ import os
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -265,11 +266,101 @@ def resolve_installer_download_url(*, force_refresh: bool = False) -> str:
     URL to pass to download_installer. Prefer GitHub asset API (fresh object) over
     the static releases/download/<tag>/… link baked into constants.
     """
+    candidates = installer_download_candidates(force_refresh=force_refresh)
+    return candidates[0] if candidates else ''
+
+
+def installer_download_candidates(*, force_refresh: bool = False) -> list[str]:
+    """Ordered URLs to try (API asset first, then static release link)."""
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def add(raw: str) -> None:
+        u = (raw or '').strip()
+        if not u or not u.lower().startswith(('http://', 'https://')):
+            return
+        if u in seen:
+            return
+        seen.add(u)
+        out.append(u)
+
     channel = _normalized_update_channel()
     info = _cached_remote_installer_info(channel, force=force_refresh)
     if info and info.download_url:
-        return info.download_url
-    return selected_update_url()
+        add(info.download_url)
+    add(selected_update_url())
+    return out
+
+
+def release_page_url() -> str:
+    channel = _normalized_update_channel()
+    return f'https://github.com/{_github_repo()}/releases/tag/{_release_tag_for_channel(channel)}'
+
+
+_NETWORK_WINERRORS = frozenset({10051, 10060, 10061, 10065, 11001})
+
+
+def _network_error_reason(exc: BaseException) -> BaseException | None:
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        return reason if isinstance(reason, BaseException) else None
+    return exc if isinstance(exc, OSError) else None
+
+
+def is_retryable_network_error(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, urllib.error.URLError):
+        return True
+    reason = _network_error_reason(exc)
+    if isinstance(reason, OSError):
+        if getattr(reason, 'winerror', None) in _NETWORK_WINERRORS:
+            return True
+        if reason.errno in (101, 113):
+            return True
+    low = str(exc).lower()
+    return 'unreachable' in low or 'nicht erreichbar' in low or 'timed out' in low
+
+
+def format_updater_error_message(exc: BaseException) -> str:
+    """User-facing updater failure text (network / Clumsy hotspot hints)."""
+    base = str(exc).strip() or repr(exc)
+    lines = [base]
+    reason = _network_error_reason(exc)
+    winerr = getattr(reason, 'winerror', None) if reason else None
+    low = base.lower()
+    host_unreachable = (
+        winerr == 10065
+        or '10065' in base
+        or 'unreachable' in low
+        or 'nicht erreichbar' in low
+        or 'no route to host' in low
+    )
+    if host_unreachable:
+        lines.extend(
+            [
+                '',
+                'Your PC could not reach the update server (network unreachable).',
+                'This often happens after Clumsy mode or Mobile Hotspot / sharing changes.',
+                '',
+                'Fix your connection first:',
+                '• Run ZubCut as Administrator → Settings → Repair hotspot / sharing…',
+                '• Or run tools\\Repair-Clumsy-Hotspot.cmd from the install folder',
+                '• Windows Settings → Mobile hotspot OFF, wait 10 seconds, ON again',
+                '• Open https://github.com in a browser to confirm internet works',
+                '',
+                f'Then retry Install Latest Build, or download manually:\n{release_page_url()}',
+            ]
+        )
+    elif is_retryable_network_error(exc):
+        lines.extend(
+            [
+                '',
+                'Check your internet connection and try again.',
+                f'Manual download: {release_page_url()}',
+            ]
+        )
+    return '\n'.join(lines)
 
 
 def _fetch_remote_head_dt(url: str) -> datetime | None:
@@ -425,12 +516,70 @@ def download_installer(
     should_cancel=None,
     *,
     expected_size: int = 0,
+    fallback_urls=None,
 ):
     """
     Download the installer to a temp path. Optional progress_callback(received, total)
     where total is None if Content-Length was not sent. should_cancel() returns True to abort.
     Raises RuntimeError on failure or cancel.
     """
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str) -> None:
+        u = (raw or '').strip()
+        if u and u not in seen and u.lower().startswith(('http://', 'https://')):
+            seen.add(u)
+            candidates.append(u)
+
+    if isinstance(url, (list, tuple)):
+        for item in url:
+            add(str(item))
+    else:
+        add(str(url or ''))
+    for item in fallback_urls or ():
+        add(str(item))
+
+    if not candidates:
+        raise RuntimeError('Update URL is not configured.')
+
+    errors: list[tuple[str, BaseException]] = []
+    for idx, candidate in enumerate(candidates):
+        try:
+            return _download_installer_once(
+                candidate,
+                progress_callback=progress_callback,
+                should_cancel=should_cancel,
+                expected_size=expected_size,
+            )
+        except RuntimeError as e:
+            if 'cancel' in str(e).lower():
+                raise
+            errors.append((candidate, e))
+            if not is_retryable_network_error(e) or idx >= len(candidates) - 1:
+                break
+        except Exception as e:
+            errors.append((candidate, e))
+            if not is_retryable_network_error(e) or idx >= len(candidates) - 1:
+                break
+
+    if len(errors) == 1:
+        raise RuntimeError(format_updater_error_message(errors[0][1])) from errors[0][1]
+    parts = ['All download URLs failed.']
+    for u, err in errors:
+        parts.append(f'• {u}: {err}')
+    parts.append('')
+    parts.append(format_updater_error_message(errors[-1][1]).split('\n', 1)[-1])
+    raise RuntimeError('\n'.join(parts))
+
+
+def _download_installer_once(
+    url: str,
+    progress_callback=None,
+    should_cancel=None,
+    *,
+    expected_size: int = 0,
+) -> str:
     try:
         from tools.updater_debug import begin_updater_debug_session, updater_log
 
@@ -470,14 +619,14 @@ def download_installer(
         from tools.updater_debug import updater_log
 
         resp_cm = urllib.request.urlopen(req, timeout=300)
-    except Exception:
+    except Exception as e:
         try:
             from tools.updater_debug import updater_log
 
             updater_log('download_installer: urlopen failed', exc_info=True)
         except Exception:
             pass
-        raise
+        raise RuntimeError(format_updater_error_message(e)) from e
     with resp_cm as resp:
         cl = resp.headers.get('Content-Length')
         if cl:

@@ -10,7 +10,13 @@ _ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
 if _ROOT not in sys.path:
     sys.path.insert(0, os.path.join(_ROOT, 'src'))
 
-from tools.updater_core import RemoteInstallerInfo, get_update_status, resolve_installer_download_url
+from tools.updater_core import (
+    RemoteInstallerInfo,
+    format_updater_error_message,
+    get_update_status,
+    installer_download_candidates,
+    resolve_installer_download_url,
+)
 
 
 class UpdaterCoreTest(unittest.TestCase):
@@ -79,6 +85,39 @@ class UpdaterCoreTest(unittest.TestCase):
         with patch.object(uc, '_cached_remote_installer_info', return_value=info):
             url = uc.resolve_installer_download_url()
         self.assertIn('/releases/assets/42', url)
+
+    def test_installer_download_candidates_includes_static_fallback(self):
+        import tools.updater_core as uc
+
+        info = RemoteInstallerInfo(
+            updated_at=None,
+            download_url='https://api.github.com/repos/zubcats/ArpCut-main-updated/releases/assets/7',
+            asset_id=7,
+            size=1,
+            remote_commit='',
+            remote_built_at='',
+        )
+        static = (
+            'https://github.com/zubcats/ArpCut-main-updated/releases/download/'
+            'stable-latest/ZubCut-Setup.exe'
+        )
+        with patch.object(uc, '_cached_remote_installer_info', return_value=info), patch.object(
+            uc, 'UPDATE_CHANNEL', 'main'
+        ), patch.object(uc, 'UPDATE_DOWNLOAD_URL_MAIN', static), patch.object(
+            uc, 'UPDATE_DOWNLOAD_URL_EXPERIMENTAL', ''
+        ):
+            urls = uc.installer_download_candidates()
+        self.assertEqual(len(urls), 2)
+        self.assertIn('/releases/assets/7', urls[0])
+        self.assertEqual(urls[1], static)
+
+    def test_format_updater_error_10065_mentions_hotspot_repair(self):
+        import tools.updater_core as uc
+
+        err = OSError(None, 'host unreachable', None, 10065)
+        msg = uc.format_updater_error_message(err)
+        self.assertIn('Repair hotspot', msg)
+        self.assertIn('github.com', msg)
 
 
 if __name__ == '__main__':
