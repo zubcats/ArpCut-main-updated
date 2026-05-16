@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QKeySequenceEdit,
     QCheckBox,
+    QComboBox,
 )
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer
@@ -162,9 +163,23 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _install_clumsy_controls(self):
         self.chkClumsy = QCheckBox('Clumsy Mode', self.gridLayoutWidget_2)
         self.chkClumsy.setToolTip(
-            'For when your console uses this PC as an Ethernet bridge (Internet Connection Sharing / inline). '
-            'If you move the console to plug directly into the router, turn Clumsy off and restart — '
-            'otherwise ZubCut keeps treating the setup as ICS and refreshes the wrong path.'
+            'Shapes traffic for a console on this PC\'s network path. '
+            'Hotspot: PS5 joins the PC\'s Mobile Hotspot; PC uses Wi‑Fi/Ethernet to the router. '
+            'Ethernet: console plugs into the PC LAN port (ICS). Turn off and restart if you change wiring.'
+        )
+        self.lblClumsyTopology = QLabel('Console connects via:', self.gridLayoutWidget_2)
+        self.cmbClumsyTopology = QComboBox(self.gridLayoutWidget_2)
+        self.cmbClumsyTopology.addItem(
+            'PC Mobile Hotspot (PS5 → PC Wi‑Fi → router)',
+            'hotspot',
+        )
+        self.cmbClumsyTopology.addItem(
+            'Ethernet cable (PS5 → PC LAN port)',
+            'ethernet',
+        )
+        self.cmbClumsyTopology.setToolTip(
+            'Match how the console reaches this PC. Hotspot: turn on Windows Mobile Hotspot first, '
+            'then connect the PS5 to that Wi‑Fi name (not the router Wi‑Fi).'
         )
         self.btnClumsyInstall = QPushButton('Install Clumsy mode…', self.gridLayoutWidget_2)
         self.btnClumsyInstall.setToolTip(
@@ -172,27 +187,46 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
         self.gridLayout_3.addWidget(self.chkClumsy, 2, 0, 1, 2)
         self.gridLayout_3.addWidget(self.btnClumsyInstall, 2, 2, 1, 2)
-        self.groupBox_3.setMinimumHeight(150)
+        self.gridLayout_3.addWidget(self.lblClumsyTopology, 3, 0, 1, 1)
+        self.gridLayout_3.addWidget(self.cmbClumsyTopology, 3, 1, 1, 3)
+        self.groupBox_3.setMinimumHeight(175)
         self.gridLayoutWidget_2.setMinimumHeight(100)
         # Clumsy row adds vertical pressure; increase keybind group height to keep labels readable.
         self.groupBox_keys.setMinimumHeight(140)
         self._clumsy_toggle_guard = False
         self.chkClumsy.stateChanged.connect(self._on_clumsy_checkbox_changed)
+        self.cmbClumsyTopology.currentIndexChanged.connect(self._on_clumsy_topology_changed)
         self.btnClumsyInstall.clicked.connect(self._on_clumsy_install_clicked)
 
     def _refresh_clumsy_settings_widgets(self):
         if not sys.platform.startswith('win'):
             self.chkClumsy.hide()
             self.btnClumsyInstall.hide()
+            self.lblClumsyTopology.hide()
+            self.cmbClumsyTopology.hide()
             return
         bundle = clumsy_bundle_offered()
         driver_ok = windivert_driver_installed()
         if bundle and driver_ok:
             self.btnClumsyInstall.hide()
             self.chkClumsy.show()
+            self.lblClumsyTopology.show()
+            self.cmbClumsyTopology.show()
         else:
             self.chkClumsy.hide()
             self.btnClumsyInstall.show()
+            self.lblClumsyTopology.hide()
+            self.cmbClumsyTopology.hide()
+
+    def _selected_clumsy_topology(self) -> str:
+        data = self.cmbClumsyTopology.currentData()
+        return str(data or 'hotspot').strip().lower()
+
+    def _on_clumsy_topology_changed(self, _index: int = 0) -> None:
+        try:
+            set_settings('clumsy_topology', self._selected_clumsy_topology())
+        except Exception:
+            pass
 
     def _on_clumsy_checkbox_changed(self, _state):
         if self._clumsy_toggle_guard:
@@ -217,18 +251,24 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._clumsy_toggle_guard = False
             return
         if new_v:
-            ok, detail = ensure_clumsy_ics_enabled()
+            topo = self._selected_clumsy_topology()
+            set_settings('clumsy_topology', topo)
+            ok, detail = ensure_clumsy_ics_enabled(topo)
             if not ok:
-                detail = format_clumsy_ics_error(detail or 'Unknown error.')
+                detail = format_clumsy_ics_error(detail or 'Unknown error.', topology=topo)
+                manual_hint = (
+                    'Turn on Mobile Hotspot, connect the PS5 to that Wi‑Fi, then restart ZubCut.'
+                    if topo == 'hotspot'
+                    else 'Turn on ICS manually: Network connections → internet adapter → '
+                    'Properties → Sharing → Allow other network users…'
+                )
                 if (
                     MsgType.WARN(
                         self,
                         'Clumsy Mode',
                         'Could not enable console sharing automatically.\n\n'
                         + detail
-                        + '\n\nEnable Clumsy mode anyway? '
-                        '(Turn on ICS manually: Network connections → internet adapter → '
-                        'Properties → Sharing → Allow other network users…)',
+                        + '\n\nEnable Clumsy mode anyway? (' + manual_hint + ')',
                         Buttons.YES | Buttons.NO,
                     )
                     == Buttons.NO
@@ -581,6 +621,15 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._clumsy_toggle_guard = True
         self.chkClumsy.setChecked(clumsy_mode)
         self._clumsy_toggle_guard = False
+        try:
+            topo = str(s.get('clumsy_topology') or 'hotspot').strip().lower()
+        except Exception:
+            topo = 'hotspot'
+        idx_topo = self.cmbClumsyTopology.findData(topo)
+        if idx_topo < 0:
+            idx_topo = self.cmbClumsyTopology.findData('hotspot')
+        if idx_topo >= 0:
+            self.cmbClumsyTopology.setCurrentIndex(idx_topo)
         self._refresh_clumsy_settings_widgets()
 
         self._apply_keybind_section_fonts()

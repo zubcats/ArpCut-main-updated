@@ -66,22 +66,51 @@ def read_clumsy_ics_state() -> Dict[str, Any]:
     return {}
 
 
-def format_clumsy_ics_error(detail: str) -> str:
+def normalize_clumsy_topology(topology: str | None) -> str:
+    t = (topology or '').strip().lower()
+    if t in ('hotspot', 'wifi', 'wi-fi', 'wlan', 'mobile'):
+        return 'hotspot'
+    return 'ethernet'
+
+
+def read_clumsy_topology() -> str:
+    try:
+        from tools.utils_gui import get_settings
+
+        return normalize_clumsy_topology(str(get_settings('clumsy_topology') or 'hotspot'))
+    except Exception:
+        return 'hotspot'
+
+
+def format_clumsy_ics_error(detail: str, *, topology: str | None = None) -> str:
     """User-facing hints for common ICS / HNetCfg failures (incl. HRESULT 0x80040201)."""
+    topo = normalize_clumsy_topology(topology) if topology else read_clumsy_topology()
     d = (detail or '').strip()
     lines = [d] if d else []
     low = d.lower()
-    if '0x80040201' in low or 'abonnenten' in low or 'subscribers' in low:
+    if topo == 'hotspot':
         lines.extend(
             [
                 '',
-                'This Windows sharing error is often fixed by:',
-                '• Turn off Mobile hotspot (Settings → Network → Mobile hotspot)',
-                '• Network connections → your internet adapter → Properties → Sharing: '
-                'uncheck sharing, Apply, then try Clumsy mode again',
-                '• Set both Ethernet adapters to Private network, then retry',
+                'For PS5 → PC Mobile Hotspot → router:',
+                '• Turn ON Mobile hotspot (Settings → Network → Mobile hotspot)',
+                '• Connect the PS5 to your PC hotspot Wi‑Fi (not the router Wi‑Fi)',
+                '• In ZubCut Settings, set Console connects via → PC Mobile Hotspot',
+                '• Run ZubCut as Administrator, then enable Clumsy mode again',
             ]
         )
+    if '0x80040201' in low or 'abonnenten' in low or 'subscribers' in low:
+        if topo == 'ethernet':
+            lines.extend(
+                [
+                    '',
+                    'This Windows sharing error is often fixed by:',
+                    '• Turn off Mobile hotspot (Settings → Network → Mobile hotspot)',
+                    '• Network connections → your internet adapter → Properties → Sharing: '
+                    'uncheck sharing, Apply, then try Clumsy mode again',
+                    '• Set both Ethernet adapters to Private network, then retry',
+                ]
+            )
     if 'administrator' not in low and 'admin' not in low:
         lines.extend(['', '• Run ZubCut as Administrator (right-click → Run as administrator)'])
     return '\n'.join(lines)
@@ -160,7 +189,7 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
             pass
 
 
-def ensure_clumsy_ics_enabled() -> Tuple[bool, str]:
+def ensure_clumsy_ics_enabled(topology: str | None = None) -> Tuple[bool, str]:
     if os.name != 'nt':
         return True, 'Non-Windows platform; skipping ICS automation.'
     if not _windows_is_admin():
@@ -169,17 +198,39 @@ def ensure_clumsy_ics_enabled() -> Tuple[bool, str]:
             'ZubCut must run as Administrator to enable Internet Connection Sharing. '
             'Close ZubCut, right-click the shortcut, choose Run as administrator, then try again.',
         )
+    topo = normalize_clumsy_topology(topology) if topology else read_clumsy_topology()
     os.makedirs(DOCUMENTS_PATH, exist_ok=True)
     state_path = _STATE_PATH.replace('\\', '\\\\')
     script = f"""
 $ErrorActionPreference = 'Stop'
+$ZubcutTopology = '{topo}'
 function NormGuid([object]$g) {{
   if ($null -eq $g) {{ return '' }}
   return ($g.ToString().Trim('{{','}}').ToLowerInvariant())
 }}
 function IsVirtualLike([string]$name, [string]$desc) {{
   $all = (($name + ' ' + $desc) -as [string]).ToLowerInvariant()
+  if ($ZubcutTopology -eq 'hotspot' -and ($all -match 'wi-fi direct|hosted network|mobile hotspot|local area connection\\*')) {{
+    return $false
+  }}
   return ($all -match 'hyper-v|vethernet|virtual|bluetooth|loopback|tap|vpn|wireguard|vmware|npcap loopback')
+}}
+function IsHotspotLike([string]$name, [string]$desc) {{
+  $all = (($name + ' ' + $desc) -as [string]).ToLowerInvariant()
+  return ($all -match 'wi-fi direct|hosted network|mobile hotspot|local area connection\\*|microsoft wi-fi direct')
+}}
+function LikelyHotspotDownstream($a) {{
+  if (IsHotspotLike $a.Name $a.InterfaceDescription) {{ return $true }}
+  try {{
+    $ips = @(Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+    foreach ($ip in $ips) {{
+      if ($ip.IPAddress -and $ip.IPAddress -notlike '169.254.*' -and $ip.IPAddress -match '^192\\.168\\.\\d+\\.\\d+$') {{
+        $last = [int]($ip.IPAddress.Split('.')[-1])
+        if ($last -eq 1) {{ return $true }}
+      }}
+    }}
+  }} catch {{}}
+  return $false
 }}
 function JsonOut([hashtable]$o) {{
   $json = $o | ConvertTo-Json -Compress -Depth 8
@@ -261,19 +312,25 @@ try {{
     try {{ Start-Service -Name $svc -ErrorAction SilentlyContinue }} catch {{}}
   }}
 
-  # Include USB/LAN adapters: using only HardwareInterface excludes some USB Ethernet NICs.
+  # Include USB/LAN adapters; hotspot mode also allows Wi-Fi Direct / Mobile Hotspot NICs.
   $allAdapters = Get-NetAdapter -ErrorAction Stop | Where-Object {{
     if ($_.Status -eq 'Disabled') {{ return $false }}
+    if ($ZubcutTopology -eq 'hotspot' -and (LikelyHotspotDownstream $_)) {{ return $true }}
     if (IsVirtualLike $_.Name $_.InterfaceDescription) {{ return $false }}
     $virtBad = $false
     try {{ if ($null -ne $_.Virtual -and $_.Virtual -eq $true) {{ $virtBad = $true }} }} catch {{ }}
     if ($virtBad) {{ return $false }}
     if ($_.HardwareInterface -eq $true) {{ return $true }}
     $d = ($_.Name + ' ' + $_.InterfaceDescription)
-    if ($d -match 'USB|Ethernet|Gigabit|GbE|LAN|RNDIS|ASIX|AX88179|NDIS|Thunderbolt') {{ return $true }}
+    if ($d -match 'USB|Ethernet|Gigabit|GbE|LAN|RNDIS|ASIX|AX88179|NDIS|Thunderbolt|Wi-Fi|WiFi|Wireless') {{ return $true }}
     return $false
   }}
-  if (-not $allAdapters) {{ throw 'No usable adapters found for Clumsy sharing.' }}
+  if (-not $allAdapters) {{
+    if ($ZubcutTopology -eq 'hotspot') {{
+      throw 'No hotspot adapter found. Turn on Mobile Hotspot, connect the PS5 to that Wi-Fi, then try again.'
+    }}
+    throw 'No usable adapters found for Clumsy sharing.'
+  }}
 
   function LikelyEthernet($a) {{
     $d = ($a.Name + ' ' + $a.InterfaceDescription)
@@ -282,14 +339,24 @@ try {{
     return $false
   }}
 
-  # Downstream is the console-facing adapter: strongly prefer Ethernet / 802.3 media.
-  $downCandidates = $allAdapters | Where-Object {{
-    (LikelyEthernet $_) -and $_.Status -eq 'Up'
-  }} | Sort-Object InterfaceMetric, ifIndex
-  if (-not $downCandidates) {{
+  if ($ZubcutTopology -eq 'hotspot') {{
+    # Downstream = PC Mobile Hotspot / Wi-Fi Direct (console-facing).
     $downCandidates = $allAdapters | Where-Object {{
-      $_.Name -match 'Ethernet' -or $_.InterfaceDescription -match 'Ethernet'
+      (LikelyHotspotDownstream $_) -and $_.Status -eq 'Up'
     }} | Sort-Object InterfaceMetric, ifIndex
+    if (-not $downCandidates) {{
+      $downCandidates = $allAdapters | Where-Object {{ LikelyHotspotDownstream $_ }} | Sort-Object InterfaceMetric, ifIndex
+    }}
+  }} else {{
+    # Downstream = console Ethernet port.
+    $downCandidates = $allAdapters | Where-Object {{
+      (LikelyEthernet $_) -and $_.Status -eq 'Up'
+    }} | Sort-Object InterfaceMetric, ifIndex
+    if (-not $downCandidates) {{
+      $downCandidates = $allAdapters | Where-Object {{
+        $_.Name -match 'Ethernet' -or $_.InterfaceDescription -match 'Ethernet'
+      }} | Sort-Object InterfaceMetric, ifIndex
+    }}
   }}
   if (-not $downCandidates) {{
     $downCandidates = $allAdapters | Where-Object {{ $_.Status -eq 'Up' }} | Sort-Object InterfaceMetric, ifIndex
@@ -298,7 +365,12 @@ try {{
     $downCandidates = $allAdapters | Sort-Object InterfaceMetric, ifIndex
   }}
   $down = $downCandidates | Select-Object -First 1
-  if ($null -eq $down) {{ throw 'Could not choose downstream adapter.' }}
+  if ($null -eq $down) {{
+    if ($ZubcutTopology -eq 'hotspot') {{
+      throw 'Could not find PC hotspot adapter. Turn on Mobile Hotspot in Windows Settings first.'
+    }}
+    throw 'Could not choose downstream adapter.'
+  }}
   $downGuid = NormGuid($down.InterfaceGuid)
 
   # Upstream is the internet-facing adapter: default-route owner excluding downstream.
@@ -308,6 +380,7 @@ try {{
   foreach ($rt in @($routes)) {{
     try {{
       $cand = Get-NetAdapter -InterfaceIndex $rt.InterfaceIndex -ErrorAction Stop
+      if ($ZubcutTopology -eq 'hotspot' -and (LikelyHotspotDownstream $cand)) {{ continue }}
       if ($cand -and (NormGuid($cand.InterfaceGuid)) -ne $downGuid -and -not (IsVirtualLike $cand.Name $cand.InterfaceDescription)) {{
         $up = $cand
         break
@@ -353,10 +426,47 @@ try {{
   if (-not $upKey) {{ throw ('Upstream adapter not found in sharing manager (GUID/name). NetAdapter=' + $up.Name) }}
   if (-not $dnKey) {{ throw ('Downstream adapter not found in sharing manager (GUID/name). NetAdapter=' + $down.Name) }}
 
-  try {{ netsh wlan stop hostednetwork 2>$null | Out-Null }} catch {{}}
+  if ($ZubcutTopology -ne 'hotspot') {{
+    try {{ netsh wlan stop hostednetwork 2>$null | Out-Null }} catch {{}}
+  }}
   try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
   try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
   try {{ Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }} catch {{}}
+
+  function Write-ClumsyState([object]$up, [object]$down, [array]$snapshot, [string]$msg) {{
+    $downIpObj = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $down.ifIndex -ErrorAction SilentlyContinue |
+      Where-Object {{ $_.IPAddress -and $_.IPAddress -notlike '169.254.*' }} |
+      Sort-Object SkipAsSource | Select-Object -First 1
+    $downIp = if ($downIpObj) {{ $downIpObj.IPAddress }} else {{ '' }}
+    if (-not $downIp) {{ throw 'Downstream adapter has no IPv4 yet.' }}
+    $prefix = ''
+    if ($downIp -match '^(\\d+\\.\\d+\\.\\d+)\\.') {{ $prefix = $Matches[1] + '.' }}
+    if (-not $prefix) {{ throw 'Could not determine downstream subnet prefix.' }}
+    $state = @{{
+      enabled_by_zubcut = $true
+      topology = $ZubcutTopology
+      upstream_guid = (NormGuid $up.InterfaceGuid)
+      upstream_name = $up.Name
+      downstream_guid = (NormGuid $down.InterfaceGuid)
+      downstream_name = $down.Name
+      downstream_ipv4 = $downIp
+      downstream_prefix = $prefix
+      snapshot = $snapshot
+      ts = (Get-Date).ToUniversalTime().ToString('o')
+    }}
+    $state | ConvertTo-Json -Depth 8 | Set-Content -Path "{state_path}" -Encoding UTF8
+    JsonOut @{{ ok=$true; message=$msg; state=$state }}
+    exit 0
+  }}
+
+  if ($ZubcutTopology -eq 'hotspot') {{
+    $downIpProbe = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $down.ifIndex -ErrorAction SilentlyContinue |
+      Where-Object {{ $_.IPAddress -and $_.IPAddress -notlike '169.254.*' }} |
+      Sort-Object SkipAsSource | Select-Object -First 1
+    if ($downIpProbe -and $downIpProbe.IPAddress) {{
+      Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot path ready (using active hotspot).'
+    }}
+  }}
 
   function Apply-ICS([bool]$privateFirst) {{
     foreach ($k in $connMap.Keys) {{
@@ -390,28 +500,7 @@ try {{
   }}
 
   if (Verify-ICS) {{
-    $downIpObj = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $down.ifIndex -ErrorAction SilentlyContinue |
-      Where-Object {{ $_.IPAddress -and $_.IPAddress -notlike '169.254.*' }} |
-      Sort-Object SkipAsSource | Select-Object -First 1
-    $downIp = if ($downIpObj) {{ $downIpObj.IPAddress }} else {{ '' }}
-    if (-not $downIp) {{ throw 'ICS sharing is active but downstream IPv4 not assigned.' }}
-    $prefix = ''
-    if ($downIp -match '^(\\d+\\.\\d+\\.\\d+)\\.') {{ $prefix = $Matches[1] + '.' }}
-    if (-not $prefix) {{ throw 'ICS sharing is active but could not determine downstream prefix.' }}
-    $state = @{{
-      enabled_by_zubcut = $true
-      upstream_guid = $upGuid
-      upstream_name = $up.Name
-      downstream_guid = $downGuid
-      downstream_name = $down.Name
-      downstream_ipv4 = $downIp
-      downstream_prefix = $prefix
-      snapshot = $snapshot
-      ts = (Get-Date).ToUniversalTime().ToString('o')
-    }}
-    $state | ConvertTo-Json -Depth 8 | Set-Content -Path "{state_path}" -Encoding UTF8
-    JsonOut @{{ ok=$true; message='ICS sharing already active.'; state=$state }}
-    exit 0
+    Write-ClumsyState $up $down $snapshot 'ICS sharing already active.'
   }}
 
   try {{
@@ -488,29 +577,7 @@ try {{
   }}
 
   Start-Sleep -Seconds 2
-  $downIpObj = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $down.ifIndex -ErrorAction SilentlyContinue |
-    Where-Object {{ $_.IPAddress -and $_.IPAddress -notlike '169.254.*' }} |
-    Sort-Object SkipAsSource | Select-Object -First 1
-  $downIp = if ($downIpObj) {{ $downIpObj.IPAddress }} else {{ '' }}
-  if (-not $downIp) {{ throw 'ICS sharing enabled but downstream IPv4 not assigned.' }}
-  $prefix = ''
-  if ($downIp -match '^(\\d+\\.\\d+\\.\\d+)\\.') {{ $prefix = $Matches[1] + '.' }}
-  if (-not $prefix) {{ throw 'ICS sharing enabled but could not determine downstream prefix.' }}
-
-  $state = @{{
-    enabled_by_zubcut = $true
-    upstream_guid = $upGuid
-    upstream_name = $up.Name
-    downstream_guid = $downGuid
-    downstream_name = $down.Name
-    downstream_ipv4 = $downIp
-    downstream_prefix = $prefix
-    snapshot = $snapshot
-    ts = (Get-Date).ToUniversalTime().ToString('o')
-  }}
-  $state | ConvertTo-Json -Depth 8 | Set-Content -Path "{state_path}" -Encoding UTF8
-  JsonOut @{{ ok=$true; message='ICS sharing enabled.'; state=$state }}
-  exit 0
+  Write-ClumsyState $up $down $snapshot 'ICS sharing enabled.'
 }}
 catch {{
   $em = if ($null -ne $_.Exception) {{ $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }} else {{ $_ | Out-String }}
