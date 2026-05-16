@@ -42,7 +42,8 @@ Write-Host '  Wait 15 seconds'
 Write-Host '  Mobile hotspot -> ON'
 Write-Host '  Reconnect PS5 to the PC hotspot Wi-Fi (not your router)'
 Write-Host ''
-Read-Host 'Press Enter after hotspot is ON again'
+Write-Host 'Waiting 20 seconds - turn hotspot OFF then ON in Settings if it was already on...'
+Start-Sleep -Seconds 20
 
 $after = Test-HotspotDhcp
 Write-Host 'After:'

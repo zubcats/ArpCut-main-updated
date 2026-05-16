@@ -99,6 +99,18 @@ def format_clumsy_ics_error(detail: str, *, topology: str | None = None) -> str:
                 '• Run ZubCut as Administrator, then enable Clumsy mode again',
             ]
         )
+        if 'sharing tab' in low or 'one-time' in low or 'ncpa.cpl' in low:
+            lines.extend(
+                [
+                    '',
+                    'Some USB Wi‑Fi adapters (e.g. Realtek) require a one-time Windows step:',
+                    '• Win+R → ncpa.cpl → Wi‑Fi → Properties → Sharing',
+                    '• Check “Allow other network users…”',
+                    '• Home network: Wi‑Fi Direct / Local Area Connection*',
+                    '• Mobile hotspot OFF → wait 15s → ON',
+                    '• If PS5 still fails DHCP: manual IP 192.168.137.2, gateway 192.168.137.1',
+                ]
+            )
     if '0x80040201' in low or 'abonnenten' in low or 'subscribers' in low:
         if topo == 'ethernet':
             lines.extend(
@@ -213,6 +225,126 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
             pass
 
 
+def prepare_pc_mobile_hotspot() -> Tuple[bool, str]:
+    """
+    Best-effort automation for PC Mobile Hotspot → console (DHCP, firewall, ICS).
+
+    Fully automatic on many PCs. Some USB Wi‑Fi drivers still require the Windows
+    Sharing tab once (HNetCfg EnableSharing fails while Mobile Hotspot is active).
+    """
+    if os.name != 'nt':
+        return True, 'Non-Windows platform; skipping hotspot prep.'
+    if not _windows_is_admin():
+        return False, 'Run ZubCut as Administrator to prepare Mobile Hotspot.'
+
+    script = f"""
+$ErrorActionPreference = 'Continue'
+function JsonOut([hashtable]$o) {{
+  $json = $o | ConvertTo-Json -Compress -Depth 8
+  Write-Output ('{_MARKER}' + $json)
+}}
+{_PS_ENSURE_WLAN_HEALTHY}
+Ensure-WlanAutoConfigHealthy | Out-Null
+
+Get-NetIPAddress -AddressFamily IPv4 -EA SilentlyContinue | Where-Object {{ $_.IPAddress -eq '192.168.137.1' }} | ForEach-Object {{
+  $a = Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -EA SilentlyContinue
+  if ($a -and $a.InterfaceDescription -notmatch 'Direct|Hosted' -and $a.Name -notmatch 'Local Area Connection') {{
+    Remove-NetIPAddress -IPAddress $_.IPAddress -InterfaceIndex $_.InterfaceIndex -Confirm:$false -EA SilentlyContinue
+  }}
+}}
+
+foreach ($r in @(
+  @{{N='ZubCut-DHCP-In';D='in';P=67}}, @{{N='ZubCut-DHCP-Out';D='out';P=67}},
+  @{{N='ZubCut-DHCPClient-In';D='in';P=68}}, @{{N='ZubCut-DHCPClient-Out';D='out';P=68}}
+)) {{
+  netsh advfirewall firewall delete rule name="$($r.N)" 2>$null | Out-Null
+  netsh advfirewall firewall add rule name="$($r.N)" dir=$($r.D) action=allow protocol=UDP localport=$($r.P) enable=yes | Out-Null
+}}
+netsh advfirewall firewall delete rule name="ZubCut-Hotspot-Subnet-In" 2>$null | Out-Null
+netsh advfirewall firewall add rule name="ZubCut-Hotspot-Subnet-In" dir=in action=allow remoteip=192.168.137.0/24 enable=yes | Out-Null
+netsh advfirewall firewall add rule name="ZubCut-Hotspot-Subnet-Out" dir=out action=allow remoteip=192.168.137.0/24 enable=yes | Out-Null
+
+$saParams = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\SharedAccess\\Parameters'
+foreach ($pair in @('ScopeAddress','ScopeAddressBackup')) {{
+  try {{ Set-ItemProperty -Path $saParams -Name $pair -Value '192.168.137.1' -Type String -Force -EA SilentlyContinue }} catch {{}}
+}}
+
+foreach ($svc in @('SharedAccess','icssvc','WlanSvc','Dhcp')) {{
+  try {{ Start-Service $svc -ErrorAction SilentlyContinue }} catch {{}}
+}}
+
+$gw = Get-NetIPAddress -AddressFamily IPv4 -EA SilentlyContinue | Where-Object {{ $_.IPAddress -eq '192.168.137.1' }} | Select-Object -First 1
+if (-not $gw) {{
+  JsonOut @{{ ok=$false; dhcp67=$false; needs_manual_sharing=$false; error='Turn ON Mobile Hotspot in Windows Settings first.' }}
+  exit 1
+}}
+
+$up = Get-NetAdapter -EA SilentlyContinue | Where-Object {{ $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'Direct|Virtual|Bluetooth' -and ($_.Name -eq 'Wi-Fi' -or $_.InterfaceDescription -match 'Wireless LAN|Wi-Fi') }} | Select-Object -First 1
+$down = Get-NetAdapter -EA SilentlyContinue | Where-Object {{ $_.InterfaceDescription -match 'Wi-Fi Direct|Hosted' -and $_.Status -eq 'Up' }} | Select-Object -First 1
+if (-not $down) {{
+  $down = Get-NetAdapter -InterfaceIndex $gw.InterfaceIndex -EA SilentlyContinue
+}}
+
+$dhcp67 = [bool](Get-NetUDPEndpoint -LocalPort 67 -EA SilentlyContinue)
+if ($dhcp67) {{
+  JsonOut @{{ ok=$true; dhcp67=$true; needs_manual_sharing=$false; message='Mobile Hotspot DHCP already active.' }}
+  exit 0
+}}
+
+if ($up -and $down) {{
+  try {{
+    $share = New-Object -ComObject HNetCfg.HNetShare
+    $connMap = @{{}}
+    foreach ($conn in @($share.EnumEveryConnection())) {{
+      $p = $share.NetConnectionProps($conn)
+      $g = ($p.Guid.ToString().Trim('{{','}}').ToLowerInvariant())
+      $connMap[$g] = $share.INetSharingConfigurationForINetConnection($conn)
+    }}
+    $upG = ($up.InterfaceGuid.ToString().Trim('{{','}}').ToLowerInvariant())
+    $dnG = ($down.InterfaceGuid.ToString().Trim('{{','}}').ToLowerInvariant())
+    foreach ($k in $connMap.Keys) {{ try {{ if ($connMap[$k].SharingEnabled) {{ $connMap[$k].DisableSharing() }} }} catch {{}} }}
+    Start-Sleep -Milliseconds 400
+    $ok1 = $false
+    try {{ $connMap[$upG].EnableSharing(0); $connMap[$dnG].EnableSharing(1); $ok1 = $true }} catch {{}}
+    if (-not $ok1) {{
+      foreach ($k in $connMap.Keys) {{ try {{ if ($connMap[$k].SharingEnabled) {{ $connMap[$k].DisableSharing() }} }} catch {{}} }}
+      Start-Sleep -Milliseconds 400
+      try {{ $connMap[$dnG].EnableSharing(1); $connMap[$upG].EnableSharing(0); $ok1 = $true }} catch {{}}
+    }}
+  }} catch {{}}
+}}
+
+Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 5
+$dhcp67 = [bool](Get-NetUDPEndpoint -LocalPort 67 -EA SilentlyContinue)
+if ($dhcp67) {{
+  JsonOut @{{ ok=$true; dhcp67=$true; needs_manual_sharing=$false; message='Mobile Hotspot DHCP is active.' }}
+  exit 0
+}}
+
+JsonOut @{{
+  ok=$false
+  dhcp67=$false
+  needs_manual_sharing=$true
+  error='Automatic sharing failed on this adapter. Use ncpa.cpl -> Wi-Fi -> Sharing tab once (Wi-Fi Direct home network), then toggle hotspot OFF/ON.'
+}}
+exit 1
+"""
+    ok, payload, raw = _run_powershell(script)
+    if ok and payload.get('dhcp67'):
+        return True, str(payload.get('message') or 'Mobile Hotspot ready.')
+    if payload.get('needs_manual_sharing'):
+        return False, str(
+            payload.get('error')
+            or (
+                'Windows blocked automatic Internet Connection Sharing on this Wi‑Fi adapter. '
+                'One-time Sharing tab setup is required (ncpa.cpl → Wi‑Fi → Sharing).'
+            )
+        )
+    msg = str(payload.get('error') or '').strip() or raw.strip() or 'Hotspot preparation failed.'
+    return False, msg
+
+
 def ensure_clumsy_ics_enabled(topology: str | None = None) -> Tuple[bool, str]:
     if os.name != 'nt':
         return True, 'Non-Windows platform; skipping ICS automation.'
@@ -223,6 +355,10 @@ def ensure_clumsy_ics_enabled(topology: str | None = None) -> Tuple[bool, str]:
             'Close ZubCut, right-click the shortcut, choose Run as administrator, then try again.',
         )
     topo = normalize_clumsy_topology(topology) if topology else read_clumsy_topology()
+    if topo == 'hotspot':
+        prep_ok, prep_detail = prepare_pc_mobile_hotspot()
+        if not prep_ok:
+            return False, format_clumsy_ics_error(prep_detail, topology=topo)
     os.makedirs(DOCUMENTS_PATH, exist_ok=True)
     state_path = _STATE_PATH.replace('\\', '\\\\')
     script = f"""

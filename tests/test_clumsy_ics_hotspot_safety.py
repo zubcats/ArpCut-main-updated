@@ -45,6 +45,16 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertNotIn('Stop-Service -Name $svc', src)
         self.assertIn('Ensure-WlanAutoConfigHealthy', src)
 
+    def test_prepare_pc_mobile_hotspot_automation(self) -> None:
+        src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
+        self.assertIn('ZubCut-DHCP-In', src)
+        self.assertIn('needs_manual_sharing', src)
+        self.assertNotIn('Stop-Service icssvc', src.replace(' ', ''))
+
+    def test_enable_calls_prepare_for_hotspot(self) -> None:
+        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        self.assertIn('prepare_pc_mobile_hotspot', src)
+
     def test_startup_heals_wlan_autoconfig(self) -> None:
         zubcut = os.path.join(_SRC, 'zubcut.py')
         with open(zubcut, encoding='utf-8') as f:

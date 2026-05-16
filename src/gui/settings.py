@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 from PyQt5.QtGui import QFont, QKeySequence
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QEvent, QObject
 import os
 import sys
 
@@ -95,6 +95,36 @@ def _settings_keybind_mono_font() -> QFont:
     return f
 
 
+class _WheelSafeComboBox(QComboBox):
+    """Ignore mouse wheel unless the user clicked the combo (avoids accidental index changes)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.ClickFocus)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+def _apply_wheel_safe_combo(combo: QComboBox) -> None:
+    """Same wheel policy for combos created by the .ui file (e.g. network interface)."""
+    combo.setFocusPolicy(Qt.ClickFocus)
+
+    class _WheelGuard(QObject):
+        def eventFilter(self, obj, event):
+            if event.type() == QEvent.Wheel and not combo.hasFocus():
+                event.ignore()
+                return True
+            return False
+
+    guard = _WheelGuard(combo)
+    combo.installEventFilter(guard)
+    combo._wheel_guard = guard  # keep reference
+
+
 def _normalized_update_channel_setting() -> str:
     c = str(UPDATE_CHANNEL or 'experimental').strip().lower()
     if c in ('stable', 'paid'):
@@ -122,6 +152,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setWindowIcon(icon)
         self.setupUi(self)
         self.setObjectName('zubcutAuxiliaryWindow')
+        _apply_wheel_safe_combo(self.comboInterface)
         self._install_percent_keybind_row()
         self._install_clumsy_controls()
         if _normalized_update_channel_setting() in ('main', 'experimental'):
@@ -134,9 +165,6 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnLicenseSignIn.setMinimumHeight(34)
             self.gridLayout.addWidget(self.btnLicenseSignIn, 7, 0, 1, 4)
             self.btnLicenseSignIn.clicked.connect(self._on_license_sign_in)
-        self.adjustSize()
-        self.setFixedSize(self.size())
-
         self.loadInterfaces()
 
         # Apply old settings on open
@@ -168,6 +196,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         setup_frameless_main_window(self, self.windowTitle(), self.icon, maximizable=False)
         register_window_surface_effects(self)
+        QTimer.singleShot(0, self._finalize_settings_layout)
 
     def _install_clumsy_controls(self):
         self.chkClumsy = QCheckBox('Clumsy Mode', self.gridLayoutWidget_2)
@@ -177,14 +206,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'Ethernet: console plugs into the PC LAN port (ICS). Turn off and restart if you change wiring.'
         )
         self.lblClumsyTopology = QLabel('Console connects via:', self.gridLayoutWidget_2)
-        self.cmbClumsyTopology = QComboBox(self.gridLayoutWidget_2)
+        self.cmbClumsyTopology = _WheelSafeComboBox(self.gridLayoutWidget_2)
         self.cmbClumsyTopology.addItem('Mobile Hotspot (PS5 → PC → router)', 'hotspot')
         self.cmbClumsyTopology.addItem('Ethernet cable (PS5 → LAN port)', 'ethernet')
         self.cmbClumsyTopology.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        try:
-            self.cmbClumsyTopology.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        except AttributeError:
-            pass
         self.cmbClumsyTopology.setToolTip(
             'Match how the console reaches this PC. Hotspot: turn on Windows Mobile Hotspot first, '
             'then connect the PS5 to that Wi‑Fi name (not the router Wi‑Fi).'
@@ -215,18 +240,31 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Misc. group was a fixed-size child widget in ui_settings; expand for Clumsy rows."""
         gb = self.groupBox_3
         inner = self.gridLayoutWidget_2
+        inner.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         if gb.layout() is None:
             lay = QVBoxLayout(gb)
             lay.setContentsMargins(10, 22, 10, 8)
             lay.setSpacing(4)
             lay.addWidget(inner)
-        inner.setMinimumHeight(185)
-        gb.setMinimumHeight(215)
-        # Widen settings so the topology combo is not clipped (ui file caps at 400px).
+        gb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        lay_inner = inner.layout()
+        if lay_inner is not None:
+            inner_h = lay_inner.minimumSize().height()
+            inner.setMinimumHeight(max(200, inner_h))
+        else:
+            inner.setMinimumHeight(200)
+        gb.setMinimumHeight(inner.minimumHeight() + 32)
+
+    def _finalize_settings_layout(self) -> None:
+        """Size the window after Clumsy rows are in the layout (ui file used a 71px-tall Misc. box)."""
+        self._relayout_misc_group()
+        self.groupBox_keys.setMinimumHeight(140)
         min_w = 430
-        min_h = max(self.minimumSize().height(), 600)
+        min_h = max(620, self.sizeHint().height())
         self.setMinimumSize(min_w, min_h)
-        self.setMaximumSize(max(self.maximumSize().width(), min_w), max(self.maximumSize().height(), min_h + 40))
+        self.setMaximumSize(16777215, min_h + 80)
+        self.adjustSize()
+        self.setFixedSize(max(min_w, self.width()), max(min_h, self.height()))
 
     def _refresh_clumsy_settings_widgets(self):
         if not sys.platform.startswith('win'):
@@ -450,11 +488,16 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        for combo in (getattr(self, 'cmbClumsyTopology', None), self.comboInterface):
+            if combo is not None:
+                combo.clearFocus()
+                combo.hidePopup()
         self.refresh_update_banner()
         el = getattr(self, 'elmocut', None)
         if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
             el._sync_settings_gear_update_hint()
         self._refresh_clumsy_settings_widgets()
+        self._finalize_settings_layout()
 
     def Apply(self, silent_apply=False):
         repair_settings()
@@ -709,7 +752,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if idx_topo < 0:
             idx_topo = self.cmbClumsyTopology.findData('hotspot')
         if idx_topo >= 0:
+            self.cmbClumsyTopology.blockSignals(True)
             self.cmbClumsyTopology.setCurrentIndex(idx_topo)
+            self.cmbClumsyTopology.blockSignals(False)
         self._refresh_clumsy_settings_widgets()
 
         self._apply_keybind_section_fonts()

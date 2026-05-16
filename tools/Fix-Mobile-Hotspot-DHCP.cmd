@@ -1,14 +1,13 @@
 @echo off
-title Fix PC Mobile Hotspot for PS5
+title ZubCut - Fix PC Hotspot for PS5
 echo.
-echo This enables Internet Connection Sharing (DHCP) for your PC hotspot.
-echo You MUST click Yes on the Administrator prompt.
+echo 1. Turn ON Mobile hotspot in Settings FIRST
+echo 2. Click Yes on the Administrator prompt
+echo 3. Window closes when done - read SUCCESS or ERROR
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File \"\"%~dp0enable_hotspot_ics_now.ps1\"\"'"
 echo.
 if exist "%~dp0_enable_ics_result.txt" type "%~dp0_enable_ics_result.txt"
 echo.
-echo If SUCCESS above: reconnect PS5 to PC hotspot Wi-Fi.
-echo If still failing: Settings -^> Mobile hotspot OFF 15 sec ON, then run this again.
-echo.
-pause
+echo Done. Close any other blank PowerShell windows (old stuck runs).
+timeout /t 8
