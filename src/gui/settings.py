@@ -33,7 +33,13 @@ from ui.ui_settings import Ui_MainWindow
 from networking.nicknames import Nicknames
 
 from tools.keybinds import keyseq_from_setting
-from tools.updater_core import get_update_status, launch_installer, selected_update_url
+from tools.updater_core import (
+    get_update_status,
+    launch_installer,
+    remote_installer_info,
+    resolve_installer_download_url,
+    selected_update_url,
+)
 from tools.updater_progress import download_update_with_progress_dialog
 from tools.updater_debug import (
     begin_updater_debug_session,
@@ -275,7 +281,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         ) == Buttons.NO:
             return
         try:
-            path = download_update_with_progress_dialog(self, url)
+            path = download_update_with_progress_dialog(
+                self, url, expected_size=expected_size
+            )
             if path is None:
                 return
             launch_installer(path)
@@ -592,7 +600,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def checkUpdate(self):
         begin_updater_debug_session('settings.checkUpdate')
         updater_log('checkUpdate: entered')
-        url = selected_update_url()
+        url = resolve_installer_download_url(force_refresh=True) or selected_update_url()
+        remote_info = remote_installer_info(force_refresh=True)
+        expected_size = int(remote_info.size) if remote_info and remote_info.size > 0 else 0
         if not url:
             MsgType.WARN(
                 self,
@@ -638,7 +648,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         quit_for_update = False
         try:
             updater_log('checkUpdate: calling download_update_with_progress_dialog')
-            path = download_update_with_progress_dialog(self, url)
+            path = download_update_with_progress_dialog(
+                self, url, expected_size=expected_size
+            )
             updater_log('checkUpdate: download returned path=%r', path)
             if path is None:
                 return

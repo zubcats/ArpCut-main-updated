@@ -16,6 +16,8 @@ UPDATE_DOWNLOAD_URL_MAIN = 'https://github.com/zubcats/ArpCut-main-updated/relea
 UPDATE_DOWNLOAD_URL_EXPERIMENTAL = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/experimental-latest/ZubCut-Setup-experimental.exe'
 # UTC ISO timestamp when this binary was built (CI overwrites). Used to detect newer installers online.
 APP_BUILD_TIME_ISO = ''
+# Git commit baked into this binary (CI sets GITHUB_SHA). Used to detect stale CDN installers.
+APP_BUILD_COMMIT = ''
 
 # Cross-platform settings paths
 if sys.platform.startswith('win'):

@@ -1,9 +1,9 @@
 """
 Shared update check + installer download for ZubCut (Windows frozen builds).
 
-Compares APP_BUILD_TIME_ISO (stamped in CI) to the rolling GitHub release asset time.
-Uses the GitHub Releases API (asset updated_at) as the primary source; HEAD
-Last-Modified is a fallback. Both requests disable caching.
+Compares APP_BUILD_TIME_ISO / APP_BUILD_COMMIT (stamped in CI) to the rolling
+GitHub release. Downloads use the GitHub Releases *asset API* URL (unique per
+upload) so ``stable-latest`` CDN caches cannot serve an older installer.
 """
 
 from __future__ import annotations
@@ -14,12 +14,14 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 from constants import (
     APP_BUNDLE_NAME,
+    APP_BUILD_COMMIT,
     APP_BUILD_TIME_ISO,
     UPDATE_CHANNEL,
     UPDATE_DOWNLOAD_URL_EXPERIMENTAL,
@@ -36,6 +38,22 @@ _NO_CACHE_HEADERS = {
 }
 
 _GITHUB_REPO_FALLBACK = 'zubcats/ArpCut-main-updated'
+_BUILD_INFO_ASSET = 'build-info.json'
+
+_REMOTE_CACHE_TTL_SEC = 45.0
+
+
+@dataclass(frozen=True)
+class RemoteInstallerInfo:
+    updated_at: datetime | None
+    download_url: str
+    asset_id: int
+    size: int
+    remote_commit: str
+    remote_built_at: str
+
+
+_remote_cache: tuple[float, RemoteInstallerInfo | None] | None = None
 
 
 def _parse_build_time_iso(raw):
@@ -89,8 +107,18 @@ def local_build_datetime() -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def local_build_commit() -> str:
+    return str(APP_BUILD_COMMIT or '').strip().lower()
+
+
 def local_build_label() -> str:
-    return _format_dt_label(local_build_datetime())
+    label = _format_dt_label(local_build_datetime())
+    commit = local_build_commit()
+    if commit and len(commit) > 12:
+        commit = commit[:12]
+    if label and commit:
+        return f'{label} ({commit})'
+    return label or commit
 
 
 def _github_repo() -> str:
@@ -114,10 +142,8 @@ def _installer_asset_name(channel: str) -> str:
     )
 
 
-def _fetch_remote_release_dt(channel: str) -> datetime | None:
-    """Release asset updated_at from GitHub API (authoritative for rolling tags)."""
+def _api_release_json(channel: str) -> dict:
     tag = _release_tag_for_channel(channel)
-    asset_name = _installer_asset_name(channel)
     api_url = f'https://api.github.com/repos/{_github_repo()}/releases/tags/{tag}'
     req = urllib.request.Request(
         api_url,
@@ -128,24 +154,126 @@ def _fetch_remote_release_dt(channel: str) -> datetime | None:
         },
     )
     with urllib.request.urlopen(req, timeout=12) as resp:
-        payload = json.loads(resp.read().decode('utf-8'))
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def _api_asset_download_url(asset_id: int) -> str:
+    """Per-asset URL; redirects to a unique objects.githubusercontent.com object."""
+    repo = _github_repo()
+    return f'https://api.github.com/repos/{repo}/releases/assets/{int(asset_id)}'
+
+
+def _fetch_build_info_for_release(channel: str) -> dict:
+    try:
+        payload = _api_release_json(channel)
+    except Exception:
+        return {}
+    for asset in payload.get('assets') or []:
+        if str(asset.get('name') or '') != _BUILD_INFO_ASSET:
+            continue
+        asset_id = asset.get('id')
+        if not asset_id:
+            return {}
+        req = urllib.request.Request(
+            _api_asset_download_url(int(asset_id)),
+            headers={
+                **_NO_CACHE_HEADERS,
+                'Accept': 'application/octet-stream',
+                'User-Agent': f'{APP_BUNDLE_NAME}-update-check',
+            },
+        )
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _fetch_remote_installer_info(channel: str) -> RemoteInstallerInfo | None:
+    """Release installer asset from GitHub API (authoritative; avoids stale tag CDN)."""
+    asset_name = _installer_asset_name(channel)
+    try:
+        payload = _api_release_json(channel)
+    except Exception:
+        return None
+
+    installer_asset = None
     for asset in payload.get('assets') or []:
         if str(asset.get('name') or '') == asset_name:
-            dt = _parse_build_time_iso(asset.get('updated_at') or '')
-            if dt is not None:
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt.astimezone(timezone.utc)
-    dt = _parse_build_time_iso(payload.get('published_at') or '')
-    if dt is None:
+            installer_asset = asset
+            break
+    if not installer_asset:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+
+    asset_id = int(installer_asset.get('id') or 0)
+    if asset_id <= 0:
+        return None
+
+    updated_at = _parse_build_time_iso(installer_asset.get('updated_at') or '')
+    if updated_at is not None:
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        updated_at = updated_at.astimezone(timezone.utc)
+
+    build_info = _fetch_build_info_for_release(channel)
+    remote_commit = str(build_info.get('commit') or '').strip().lower()
+    remote_built_at = str(build_info.get('built_at') or '').strip()
+    if not remote_built_at and build_info:
+        remote_built_at = str(build_info.get('build_time_iso') or '').strip()
+
+    if updated_at is None and remote_built_at:
+        updated_at = _parse_build_time_iso(remote_built_at)
+        if updated_at is not None:
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            updated_at = updated_at.astimezone(timezone.utc)
+
+    try:
+        size = int(installer_asset.get('size') or 0)
+    except (TypeError, ValueError):
+        size = 0
+
+    return RemoteInstallerInfo(
+        updated_at=updated_at,
+        download_url=_api_asset_download_url(asset_id),
+        asset_id=asset_id,
+        size=max(0, size),
+        remote_commit=remote_commit,
+        remote_built_at=remote_built_at,
+    )
+
+
+def _cached_remote_installer_info(channel: str, *, force: bool = False) -> RemoteInstallerInfo | None:
+    global _remote_cache
+    now = time.time()
+    if (
+        not force
+        and _remote_cache is not None
+        and (now - _remote_cache[0]) < _REMOTE_CACHE_TTL_SEC
+    ):
+        return _remote_cache[1]
+    info = _fetch_remote_installer_info(channel)
+    _remote_cache = (now, info)
+    return info
+
+
+def remote_installer_info(*, force_refresh: bool = False) -> RemoteInstallerInfo | None:
+    return _cached_remote_installer_info(_normalized_update_channel(), force=force_refresh)
+
+
+def resolve_installer_download_url(*, force_refresh: bool = False) -> str:
+    """
+    URL to pass to download_installer. Prefer GitHub asset API (fresh object) over
+    the static releases/download/<tag>/… link baked into constants.
+    """
+    channel = _normalized_update_channel()
+    info = _cached_remote_installer_info(channel, force=force_refresh)
+    if info and info.download_url:
+        return info.download_url
+    return selected_update_url()
 
 
 def _fetch_remote_head_dt(url: str) -> datetime | None:
-    """HEAD the installer URL; cache-busted so proxies do not serve stale Last-Modified."""
+    """HEAD fallback when the Releases API is unavailable."""
     parsed = urlparse(url)
     query_items = parse_qsl(parsed.query, keep_blank_values=True)
     query_items.append(('cb', str(int(time.time()))))
@@ -171,23 +299,29 @@ def _fetch_remote_head_dt(url: str) -> datetime | None:
 
 
 def _remote_installer_datetime(channel: str, download_url: str) -> datetime | None:
-    remote = None
+    info = _cached_remote_installer_info(channel)
+    if info and info.updated_at is not None:
+        return info.updated_at
     try:
-        remote = _fetch_remote_release_dt(channel)
+        return _fetch_remote_head_dt(download_url)
     except Exception:
-        pass
-    try:
-        head_dt = _fetch_remote_head_dt(download_url)
-        if head_dt is not None and (remote is None or head_dt > remote):
-            remote = head_dt
-    except Exception:
-        pass
-    return remote
+        return None
+
+
+def _update_available_by_commit(remote: RemoteInstallerInfo | None) -> bool | None:
+    """True/False when both sides have a commit; None if commit compare not possible."""
+    if remote is None:
+        return None
+    remote_commit = str(remote.remote_commit or '').strip().lower()
+    local_commit = local_build_commit()
+    if not remote_commit or not local_commit:
+        return None
+    return remote_commit != local_commit
 
 
 def get_update_status():
     """
-    Compare local CI build time to the latest channel installer online.
+    Compare local CI build metadata to the latest channel installer online.
 
     Returns (update_available, status_label_for_ui).
     """
@@ -196,26 +330,36 @@ def get_update_status():
     if not url:
         return False, ''
 
+    remote_info = _cached_remote_installer_info(channel)
     remote_dt = _remote_installer_datetime(channel, url)
-    if remote_dt is None:
+    if remote_dt is None and remote_info is None:
         return False, ''
 
     local_dt = local_build_datetime()
     remote_label = _format_dt_label(remote_dt)
-    local_label = _format_dt_label(local_dt)
+    local_label = local_build_label()
+
+    commit_cmp = _update_available_by_commit(remote_info)
+    if commit_cmp is True:
+        if local_label and remote_label:
+            return True, f'New build online: {remote_label} · yours: {local_label}'
+        return True, 'New build online (newer commit)'
 
     if local_dt is None:
-        return True, f'Latest online: {remote_label}'
+        return True, f'Latest online: {remote_label or "unknown"}'
 
-    available = (remote_dt - local_dt) > _MIN_REMOTE_AHEAD_OF_BUILD
+    available = (remote_dt - local_dt) > _MIN_REMOTE_AHEAD_OF_BUILD if remote_dt else False
+    if commit_cmp is False:
+        available = False
+
     if available:
-        if local_label:
+        if local_label and remote_label:
             return True, f'New version online: {remote_label} · yours: {local_label}'
         return True, f'New version online: {remote_label}'
 
-    if local_label:
+    if local_label and remote_label:
         return False, f'Up to date · built {local_label} · online: {remote_label}'
-    return False, f'Up to date · online: {remote_label}'
+    return False, f'Up to date · online: {remote_label or "unknown"}'
 
 
 def update_is_available():
@@ -226,7 +370,7 @@ def update_is_available():
 _READ_CHUNK = 256 * 1024
 
 
-def _validate_installer_exe(tmp_path):
+def _validate_installer_exe(tmp_path, *, expected_size: int = 0):
     if not os.path.exists(tmp_path):
         raise RuntimeError('Downloaded file missing.')
     sz = os.path.getsize(tmp_path)
@@ -250,13 +394,19 @@ def _validate_installer_exe(tmp_path):
             raise RuntimeError(
                 f'Downloaded file is not a Windows installer executable ({sz} bytes).'
             )
+    if expected_size > 0 and sz != expected_size:
+        raise RuntimeError(
+            f'Downloaded installer size mismatch (got {sz} bytes, expected {expected_size}). '
+            'Try again in a minute or download from GitHub Releases.'
+        )
 
 
 def _temp_installer_path(url):
     url_path = urlparse(url).path or ''
     fname = os.path.basename(url_path) or f'{APP_BUNDLE_NAME}-Setup-latest.exe'
     if not fname.lower().endswith('.exe'):
-        fname = f'{APP_BUNDLE_NAME}-Setup-latest.exe'
+        channel = _normalized_update_channel()
+        fname = _installer_asset_name(channel)
     stem, ext = os.path.splitext(fname)
     tmp_fname = f'{stem}-{int(time.time())}{ext or ".exe"}'
     return os.path.join(tempfile.gettempdir(), tmp_fname)
@@ -273,6 +423,8 @@ def download_installer(
     url,
     progress_callback=None,
     should_cancel=None,
+    *,
+    expected_size: int = 0,
 ):
     """
     Download the installer to a temp path. Optional progress_callback(received, total)
@@ -306,13 +458,13 @@ def download_installer(
         updater_log('download_installer: GET %r', download_url)
     except Exception:
         pass
-    req = urllib.request.Request(
-        download_url,
-        headers={
-            **_NO_CACHE_HEADERS,
-            'User-Agent': f'{APP_BUNDLE_NAME}-updater',
-        },
-    )
+    headers = {
+        **_NO_CACHE_HEADERS,
+        'User-Agent': f'{APP_BUNDLE_NAME}-updater',
+    }
+    if '/releases/assets/' in download_url:
+        headers['Accept'] = 'application/octet-stream'
+    req = urllib.request.Request(download_url, headers=headers)
     total = None
     try:
         from tools.updater_debug import updater_log
@@ -355,7 +507,7 @@ def download_installer(
             pass
         raise RuntimeError('Download cancelled.')
 
-    _validate_installer_exe(tmp_path)
+    _validate_installer_exe(tmp_path, expected_size=expected_size)
     return tmp_path
 
 

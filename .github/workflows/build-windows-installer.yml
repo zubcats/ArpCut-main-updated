@@ -85,14 +85,21 @@ jobs:
           p = Path("src/constants.py")
           text = p.read_text(encoding="utf-8")
           build_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          commit = os.environ.get("GITHUB_SHA", "").strip()
           text = re.sub(
               r"^APP_BUILD_TIME_ISO\s*=.*$",
               f"APP_BUILD_TIME_ISO = {build_iso!r}",
               text,
               flags=re.M,
           )
+          text = re.sub(
+              r"^APP_BUILD_COMMIT\s*=.*$",
+              f"APP_BUILD_COMMIT = {commit!r}",
+              text,
+              flags=re.M,
+          )
           p.write_text(text, encoding="utf-8")
-          print("Refreshed APP_BUILD_TIME_ISO to", build_iso)
+          print("Refreshed APP_BUILD_TIME_ISO to", build_iso, "commit", commit[:12])
           PY
 
       - name: Build Windows EXE (PyInstaller via build.py)
@@ -131,6 +138,12 @@ jobs:
           if (-not $latest) { throw "Installer not found in output/" }
           $aliasName = if ($channel -eq "main") { "ZubCut-Setup.exe" } else { "ZubCut-Setup-experimental.exe" }
           Copy-Item $latest.FullName ("output/" + $aliasName) -Force
+          $manifest = @{
+            commit = "$env:GITHUB_SHA"
+            built_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            channel = $channel
+          } | ConvertTo-Json -Compress
+          Set-Content -Path "output/build-info.json" -Value $manifest -Encoding utf8
 
       - name: Upload installer EXE
         if: ${{ github.event.inputs.release_channel == 'main' || github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}
@@ -154,7 +167,9 @@ jobs:
           name: ZubCut
           prerelease: false
           make_latest: false
-          files: output/ZubCut-Setup.exe
+          files: |
+            output/ZubCut-Setup.exe
+            output/build-info.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -166,6 +181,8 @@ jobs:
           name: ZubCut (experimental)
           prerelease: true
           make_latest: false
-          files: output/ZubCut-Setup-experimental.exe
+          files: |
+            output/ZubCut-Setup-experimental.exe
+            output/build-info.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

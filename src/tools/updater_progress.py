@@ -97,9 +97,10 @@ class _InstallerDownloadThread(QThread):
     succeeded = pyqtSignal(str)
     failed = pyqtSignal(str)
 
-    def __init__(self, url):
+    def __init__(self, url, expected_size=0):
         super().__init__()
         self._url = url
+        self._expected_size = int(expected_size or 0)
         self._cancel = False
 
     def request_cancel(self):
@@ -112,6 +113,7 @@ class _InstallerDownloadThread(QThread):
                 self._url,
                 progress_callback=lambda r, t: self.progress.emit(r, t),
                 should_cancel=lambda: self._cancel,
+                expected_size=self._expected_size,
             )
             updater_log('download thread: ok path=%s', path)
             self.succeeded.emit(path)
@@ -123,7 +125,7 @@ class _InstallerDownloadThread(QThread):
             self.failed.emit(str(e))
 
 
-def download_update_with_progress_dialog(parent, url, *, show_progress=True):
+def download_update_with_progress_dialog(parent, url, *, show_progress=True, expected_size=0):
     """
     Modal download dialog. Returns temp path, None if cancelled, or raises.
     show_progress=False omits the bar (compact text only).
@@ -149,7 +151,7 @@ def download_update_with_progress_dialog(parent, url, *, show_progress=True):
     if not show_progress:
         bar.hide()
 
-    thread = _InstallerDownloadThread(url)
+    thread = _InstallerDownloadThread(url, expected_size=expected_size)
     holder = {'path': None, 'err': None}
 
     def on_prog(received, total):

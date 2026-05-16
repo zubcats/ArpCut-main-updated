@@ -94,6 +94,13 @@ def main() -> None:
 
     build_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     txt = re.sub(r"^APP_BUILD_TIME_ISO\s*=.*$", f"APP_BUILD_TIME_ISO = {build_iso!r}", txt, flags=re.M)
+    commit = os.getenv("GITHUB_SHA", "").strip()
+    txt = re.sub(
+        r"^APP_BUILD_COMMIT\s*=.*$",
+        f"APP_BUILD_COMMIT = {commit!r}",
+        txt,
+        flags=re.M,
+    )
     p.write_text(txt, encoding="utf-8")
     print(f"Applied UPDATE_CHANNEL={channel} for ref={os.getenv('REF_NAME')}")
 
