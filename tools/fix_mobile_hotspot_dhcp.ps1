@@ -22,7 +22,10 @@ $before = Test-HotspotDhcp
 Write-Host ('  192.168.137.1 on hotspot adapter: ' + $before.Gateway)
 Write-Host ('  DHCP listening (UDP 67): ' + $before.DhcpListening)
 
-foreach ($svc in @('SharedAccess', 'icssvc', 'WlanSvc')) {
+# Do not restart icssvc while Mobile Hotspot is up — it drops tethering and client internet.
+$hotspotUp = $before.Gateway
+$svcList = if ($hotspotUp) { @('SharedAccess', 'WlanSvc') } else { @('SharedAccess', 'icssvc', 'WlanSvc') }
+foreach ($svc in $svcList) {
     try {
         if ((Get-Service -Name $svc -ErrorAction Stop).Status -ne 'Running') {
             Start-Service -Name $svc -ErrorAction Stop
@@ -33,6 +36,9 @@ foreach ($svc in @('SharedAccess', 'icssvc', 'WlanSvc')) {
     } catch {
         Write-Host ('  WARN: ' + $svc + ' - ' + $_.Exception.Message)
     }
+}
+if ($hotspotUp) {
+    Write-Host '  (skipped icssvc — hotspot is on; restarting it breaks PS5 internet)'
 }
 
 Write-Host ''

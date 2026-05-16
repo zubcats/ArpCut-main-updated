@@ -82,13 +82,18 @@ def read_clumsy_topology() -> str:
         return 'hotspot'
 
 
+def _clumsy_error_has_hotspot_hints(detail: str) -> bool:
+    low = (detail or '').lower()
+    return 'connect the ps5' in low and 'mobile hotspot' in low
+
+
 def format_clumsy_ics_error(detail: str, *, topology: str | None = None) -> str:
     """User-facing hints for common ICS / HNetCfg failures (incl. HRESULT 0x80040201)."""
     topo = normalize_clumsy_topology(topology) if topology else read_clumsy_topology()
     d = (detail or '').strip()
     lines = [d] if d else []
     low = d.lower()
-    if topo == 'hotspot':
+    if topo == 'hotspot' and not _clumsy_error_has_hotspot_hints(d):
         lines.extend(
             [
                 '',
@@ -159,6 +164,119 @@ function Ensure-WlanAutoConfigHealthy {
     $fixed = $true
   }
   return $fixed
+}
+"""
+
+# Hotspot: DHCP alone is not enough — PS5 needs ICS (Wi‑Fi public → Wi‑Fi Direct private).
+_PS_HOTSPOT_HELPERS = """
+function NormGuidHotspot([object]$g) {
+  if ($null -eq $g) { return '' }
+  return ($g.ToString().Trim('{','}').ToLowerInvariant())
+}
+function SharingTypeNumHotspot($cfg) {
+  if ($null -eq $cfg) { return -1 }
+  try {
+    $t = $cfg.SharingConnectionType
+    if ($null -eq $t) { return -1 }
+    try { return [System.Convert]::ToInt32($t) } catch { return [int]$t }
+  } catch { return -1 }
+}
+function Test-MobileHotspotGateway {
+  return [bool](Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -eq '192.168.137.1' } | Select-Object -First 1)
+}
+function Get-HotspotAdapterPair {
+  $gw = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -eq '192.168.137.1' } | Select-Object -First 1
+  if (-not $gw) { return @{ Up=$null; Down=$null } }
+  $down = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+    $_.InterfaceDescription -match 'Wi-Fi Direct|Hosted' -and $_.Status -eq 'Up'
+  } | Select-Object -First 1
+  if (-not $down) {
+    $down = Get-NetAdapter -InterfaceIndex $gw.InterfaceIndex -ErrorAction SilentlyContinue
+  }
+  $up = $null
+  $routes = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+    Sort-Object RouteMetric, InterfaceMetric
+  foreach ($rt in @($routes)) {
+    $cand = Get-NetAdapter -InterfaceIndex $rt.InterfaceIndex -ErrorAction SilentlyContinue
+    if ($cand -and $cand.Status -eq 'Up' -and (-not $down -or $cand.ifIndex -ne $down.ifIndex)) {
+      if ($cand.InterfaceDescription -notmatch 'Direct|Bluetooth|Virtual|Hyper-V|Loopback') {
+        $up = $cand
+        break
+      }
+    }
+  }
+  if (-not $up) {
+    $up = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+      $_.Status -eq 'Up' -and ($_.Name -eq 'Wi-Fi' -or $_.InterfaceDescription -match 'Wireless LAN|Wi-Fi')
+      $_.InterfaceDescription -notmatch 'Direct|Virtual|Bluetooth'
+    } | Select-Object -First 1
+  }
+  return @{ Up=$up; Down=$down }
+}
+function Test-HotspotDhcp67 {
+  return [bool](Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue)
+}
+function Test-HotspotIcsActive {
+  $pair = Get-HotspotAdapterPair
+  if ($null -eq $pair.Up -or $null -eq $pair.Down) { return $false }
+  $upG = NormGuidHotspot $pair.Up.InterfaceGuid
+  $dnG = NormGuidHotspot $pair.Down.InterfaceGuid
+  $share = New-Object -ComObject HNetCfg.HNetShare
+  $upPublic = $false
+  $dnPrivate = $false
+  foreach ($conn in @($share.EnumEveryConnection())) {
+    try {
+      $props = $share.NetConnectionProps($conn)
+      $g = NormGuidHotspot $props.Guid
+      $cfg = $share.INetSharingConfigurationForINetConnection($conn)
+      if (-not $cfg.SharingEnabled) { continue }
+      $st = SharingTypeNumHotspot $cfg
+      if ($g -eq $upG -and $st -eq 0) { $upPublic = $true }
+      if ($g -eq $dnG -and $st -eq 1) { $dnPrivate = $true }
+    } catch {}
+  }
+  return ($upPublic -and $dnPrivate)
+}
+function Apply-HotspotIcs {
+  $pair = Get-HotspotAdapterPair
+  if ($null -eq $pair.Up -or $null -eq $pair.Down) { return $false }
+  $share = New-Object -ComObject HNetCfg.HNetShare
+  $connMap = @{}
+  foreach ($conn in @($share.EnumEveryConnection())) {
+    try {
+      $p = $share.NetConnectionProps($conn)
+      $g = NormGuidHotspot $p.Guid
+      $connMap[$g] = $share.INetSharingConfigurationForINetConnection($conn)
+    } catch {}
+  }
+  $upG = NormGuidHotspot $pair.Up.InterfaceGuid
+  $dnG = NormGuidHotspot $pair.Down.InterfaceGuid
+  if (-not $connMap.ContainsKey($upG) -or -not $connMap.ContainsKey($dnG)) { return $false }
+  foreach ($k in $connMap.Keys) {
+    try { if ($connMap[$k].SharingEnabled) { $connMap[$k].DisableSharing() } } catch {}
+  }
+  Start-Sleep -Milliseconds 400
+  $ok = $false
+  try {
+    $connMap[$upG].EnableSharing(0)
+    $connMap[$dnG].EnableSharing(1)
+    $ok = $true
+  } catch {}
+  if (-not $ok) {
+    foreach ($k in $connMap.Keys) {
+      try { if ($connMap[$k].SharingEnabled) { $connMap[$k].DisableSharing() } } catch {}
+    }
+    Start-Sleep -Milliseconds 400
+    try {
+      $connMap[$dnG].EnableSharing(1)
+      $connMap[$upG].EnableSharing(0)
+      $ok = $true
+    } catch {}
+  }
+  Start-Sleep -Seconds 2
+  return (Test-HotspotIcsActive)
 }
 """
 
@@ -244,6 +362,7 @@ function JsonOut([hashtable]$o) {{
   Write-Output ('{_MARKER}' + $json)
 }}
 {_PS_ENSURE_WLAN_HEALTHY}
+{_PS_HOTSPOT_HELPERS}
 Ensure-WlanAutoConfigHealthy | Out-Null
 
 Get-NetIPAddress -AddressFamily IPv4 -EA SilentlyContinue | Where-Object {{ $_.IPAddress -eq '192.168.137.1' }} | ForEach-Object {{
@@ -285,41 +404,44 @@ if (-not $down) {{
   $down = Get-NetAdapter -InterfaceIndex $gw.InterfaceIndex -EA SilentlyContinue
 }}
 
-$dhcp67 = [bool](Get-NetUDPEndpoint -LocalPort 67 -EA SilentlyContinue)
-if ($dhcp67) {{
-  JsonOut @{{ ok=$true; dhcp67=$true; needs_manual_sharing=$false; message='Mobile Hotspot DHCP already active.' }}
+$dhcp67 = Test-HotspotDhcp67
+$icsOk = Test-HotspotIcsActive
+if ($dhcp67 -and $icsOk) {{
+  JsonOut @{{ ok=$true; dhcp67=$true; ics_ok=$true; needs_manual_sharing=$false; message='Mobile Hotspot DHCP and internet sharing (ICS) are active.' }}
   exit 0
+}}
+if ($dhcp67 -and -not $icsOk) {{
+  Apply-HotspotIcs | Out-Null
+  Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 4
+  $icsOk = Test-HotspotIcsActive
+  if ($icsOk) {{
+    JsonOut @{{ ok=$true; dhcp67=$true; ics_ok=$true; needs_manual_sharing=$false; message='Restored internet sharing (ICS) for Mobile Hotspot.' }}
+    exit 0
+  }}
 }}
 
 if ($up -and $down) {{
-  try {{
-    $share = New-Object -ComObject HNetCfg.HNetShare
-    $connMap = @{{}}
-    foreach ($conn in @($share.EnumEveryConnection())) {{
-      $p = $share.NetConnectionProps($conn)
-      $g = ($p.Guid.ToString().Trim('{{','}}').ToLowerInvariant())
-      $connMap[$g] = $share.INetSharingConfigurationForINetConnection($conn)
-    }}
-    $upG = ($up.InterfaceGuid.ToString().Trim('{{','}}').ToLowerInvariant())
-    $dnG = ($down.InterfaceGuid.ToString().Trim('{{','}}').ToLowerInvariant())
-    foreach ($k in $connMap.Keys) {{ try {{ if ($connMap[$k].SharingEnabled) {{ $connMap[$k].DisableSharing() }} }} catch {{}} }}
-    Start-Sleep -Milliseconds 400
-    $ok1 = $false
-    try {{ $connMap[$upG].EnableSharing(0); $connMap[$dnG].EnableSharing(1); $ok1 = $true }} catch {{}}
-    if (-not $ok1) {{
-      foreach ($k in $connMap.Keys) {{ try {{ if ($connMap[$k].SharingEnabled) {{ $connMap[$k].DisableSharing() }} }} catch {{}} }}
-      Start-Sleep -Milliseconds 400
-      try {{ $connMap[$dnG].EnableSharing(1); $connMap[$upG].EnableSharing(0); $ok1 = $true }} catch {{}}
-    }}
-  }} catch {{}}
+  Apply-HotspotIcs | Out-Null
 }}
 
 Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 5
-$dhcp67 = [bool](Get-NetUDPEndpoint -LocalPort 67 -EA SilentlyContinue)
-if ($dhcp67) {{
-  JsonOut @{{ ok=$true; dhcp67=$true; needs_manual_sharing=$false; message='Mobile Hotspot DHCP is active.' }}
+$dhcp67 = Test-HotspotDhcp67
+$icsOk = Test-HotspotIcsActive
+if ($dhcp67 -and $icsOk) {{
+  JsonOut @{{ ok=$true; dhcp67=$true; ics_ok=$true; needs_manual_sharing=$false; message='Mobile Hotspot DHCP and internet sharing (ICS) are active.' }}
   exit 0
+}}
+if ($dhcp67 -and -not $icsOk) {{
+  JsonOut @{{
+    ok=$false
+    dhcp67=$true
+    ics_ok=$false
+    needs_manual_sharing=$true
+    error='PS5 may connect to the hotspot but have no internet until sharing is configured. ncpa.cpl -> Wi-Fi -> Sharing -> allow other users -> home network: Wi-Fi Direct / Local Area Connection*. Then hotspot OFF 15 sec ON.'
+  }}
+  exit 1
 }}
 
 JsonOut @{{
@@ -358,7 +480,7 @@ def ensure_clumsy_ics_enabled(topology: str | None = None) -> Tuple[bool, str]:
     if topo == 'hotspot':
         prep_ok, prep_detail = prepare_pc_mobile_hotspot()
         if not prep_ok:
-            return False, format_clumsy_ics_error(prep_detail, topology=topo)
+            return False, prep_detail
     os.makedirs(DOCUMENTS_PATH, exist_ok=True)
     state_path = _STATE_PATH.replace('\\', '\\\\')
     script = f"""
@@ -832,8 +954,13 @@ function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
   try {{ $cfg.EnableSharing($sharingKind); return }} catch {{ }}
 }}
 {_PS_ENSURE_WLAN_HEALTHY}
-function Restart-NetworkSharingServicesSafe {{
-  foreach ($svc in @('SharedAccess', 'icssvc', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')) {{
+{_PS_HOTSPOT_HELPERS}
+function Restart-NetworkSharingServicesSafe([bool]$hotspotUp) {{
+  $svcs = @('SharedAccess', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')
+  if (-not $hotspotUp) {{
+    $svcs = @('icssvc') + $svcs
+  }}
+  foreach ($svc in $svcs) {{
     try {{
       $s = Get-Service -Name $svc -ErrorAction Stop
       if ($s.Status -eq 'Running') {{
@@ -854,17 +981,13 @@ try {{
     }} catch {{}}
   }}
 
-  Restart-NetworkSharingServicesSafe
+  $mobileHotspotActive = Test-MobileHotspotGateway
+
+  Restart-NetworkSharingServicesSafe $mobileHotspotActive
   Start-Sleep -Seconds 2
 
-  $mobileHotspotActive = $false
-  try {{
-    $mobileHotspotActive = [bool](Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-      Where-Object {{ $_.IPAddress -eq '192.168.137.1' }} | Select-Object -First 1)
-  }} catch {{}}
-
-  # Clearing ICS while Mobile Hotspot is up breaks DHCP (PS5 "cannot obtain IP").
-  $skipIcsReset = $mobileHotspotActive -and ($snapshot.Count -eq 0)
+  # Never wipe ICS while Mobile Hotspot is up — PS5 gets Wi‑Fi but loses internet/NAT.
+  $skipIcsReset = $mobileHotspotActive
   if (-not $skipIcsReset) {{
     $share = New-Object -ComObject HNetCfg.HNetShare
     $connMap = @{{}}
@@ -911,12 +1034,30 @@ try {{
     exit 1
   }}
 
-  if ($skipIcsReset) {{
-    $msg = @(
-      'Mobile Hotspot is active; left Windows ICS intact (clearing it breaks PS5 DHCP).'
-      'Restarted sharing services only. In Settings: Mobile hotspot OFF, wait 15 seconds, ON.'
-      'Reconnect the PS5 to the PC hotspot Wi-Fi (not the router).'
-    ) -join ' '
+  if ($mobileHotspotActive) {{
+    if (-not (Test-HotspotIcsActive)) {{
+      Apply-HotspotIcs | Out-Null
+      Start-Sleep -Seconds 2
+    }}
+    $dhcp67 = Test-HotspotDhcp67
+    $icsOk = Test-HotspotIcsActive
+    if ($dhcp67 -and $icsOk) {{
+      $msg = @(
+        'Mobile Hotspot is active; restored internet sharing (ICS) for clients.'
+        'If the PS5 still has no internet: forget the hotspot on the PS5, reconnect, or set manual IP 192.168.137.2 gateway 192.168.137.1 DNS 8.8.8.8.'
+      ) -join ' '
+    }} elseif ($dhcp67 -and -not $icsOk) {{
+      $msg = @(
+        'Mobile Hotspot DHCP is up but internet sharing (ICS) could not be enabled automatically.'
+        'Win+R -> ncpa.cpl -> Wi-Fi -> Sharing -> allow other users -> home network: Wi-Fi Direct / Local Area Connection*.'
+        'Then Mobile hotspot OFF 15 seconds ON and reconnect the PS5.'
+      ) -join ' '
+    }} else {{
+      $msg = @(
+        'Mobile Hotspot is on but DHCP is not running.'
+        'Settings -> Mobile hotspot OFF, wait 15 seconds, ON. Reconnect the PS5 to the PC hotspot Wi-Fi (not the router).'
+      ) -join ' '
+    }}
   }} else {{
     $msg = @(
       'Reset Internet Connection Sharing and restarted Wi-Fi / hotspot services.'

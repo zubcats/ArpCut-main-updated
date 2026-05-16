@@ -33,6 +33,17 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('Restart-NetworkSharingServicesSafe', src)
         self.assertIn("WlanSvc) is still not running", src)
 
+    def test_repair_preserves_ics_when_hotspot_active(self) -> None:
+        src = inspect.getsource(ics.repair_clumsy_network_sharing)
+        self.assertIn('$skipIcsReset = $mobileHotspotActive', src)
+        self.assertIn('Apply-HotspotIcs', src)
+        self.assertIn('if (-not $hotspotUp)', src)
+
+    def test_prepare_checks_ics_not_only_dhcp(self) -> None:
+        src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
+        self.assertIn('Test-HotspotIcsActive', src)
+        self.assertIn('ics_ok=$false', src)
+
     def test_enable_script_does_not_set_ics_services_manual(self) -> None:
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
         self.assertNotIn('Set-Service -Name $svc -StartupType Manual', src)
@@ -54,6 +65,14 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
     def test_enable_calls_prepare_for_hotspot(self) -> None:
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
         self.assertIn('prepare_pc_mobile_hotspot', src)
+
+    def test_format_clumsy_ics_error_not_duplicated(self) -> None:
+        raw = 'Turn ON Mobile Hotspot in Windows Settings first.'
+        once = ics.format_clumsy_ics_error(raw, topology='hotspot')
+        twice = ics.format_clumsy_ics_error(once, topology='hotspot')
+        self.assertEqual(once, twice)
+        self.assertEqual(once.count('For PS5 → PC Mobile Hotspot'), 1)
+        self.assertEqual(once.count('Connect the PS5'), 1)
 
     def test_startup_heals_wlan_autoconfig(self) -> None:
         zubcut = os.path.join(_SRC, 'zubcut.py')

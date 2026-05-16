@@ -99,10 +99,36 @@ foreach ($svc in @('SharedAccess', 'icssvc', 'WlanSvc', 'Dhcp')) {
 L "Upstream: $($up.Name)"
 L "Downstream: $($down.Name)"
 
-if (Test-Dhcp67) {
-    L 'SUCCESS: DHCP already running. Reconnect PS5.'
+function Test-HotspotIcsActive {
+    $up = $resolved.Up
+    $down = $resolved.Down
+    if (-not $up -or -not $down) { return $false }
+    $upG = NormGuid((Get-NetAdapter -InterfaceIndex $up.ifIndex).InterfaceGuid)
+    $dnG = NormGuid((Get-NetAdapter -InterfaceIndex $down.ifIndex).InterfaceGuid)
+    $share = New-Object -ComObject HNetCfg.HNetShare
+    $upPublic = $false
+    $dnPrivate = $false
+    foreach ($conn in @($share.EnumEveryConnection())) {
+        try {
+            $p = $share.NetConnectionProps($conn)
+            $g = NormGuid $p.Guid
+            $cfg = $share.INetSharingConfigurationForINetConnection($conn)
+            if (-not $cfg.SharingEnabled) { continue }
+            $st = [int]$cfg.SharingConnectionType
+            if ($g -eq $upG -and $st -eq 0) { $upPublic = $true }
+            if ($g -eq $dnG -and $st -eq 1) { $dnPrivate = $true }
+        } catch {}
+    }
+    return ($upPublic -and $dnPrivate)
+}
+
+if ((Test-Dhcp67) -and (Test-HotspotIcsActive)) {
+    L 'SUCCESS: DHCP and internet sharing (ICS) are active. Reconnect PS5 if needed.'
     Read-Host 'Press Enter to close'
     exit 0
+}
+if (Test-Dhcp67) {
+    L 'DHCP is running but ICS routing is missing — PS5 may connect with no internet. Re-applying ICS...'
 }
 
 L 'Clearing old ICS on all adapters...'

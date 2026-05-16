@@ -59,6 +59,7 @@ from tools.clumsy_inline import clumsy_bundle_offered, windivert_driver_installe
 from tools.clumsy_ics import (
     ensure_clumsy_ics_enabled,
     format_clumsy_ics_error,
+    prepare_pc_mobile_hotspot,
     repair_clumsy_network_sharing,
     rollback_clumsy_ics,
 )
@@ -292,20 +293,34 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if MsgType.WARN(
             self,
             'Repair hotspot / sharing',
-            'This resets Internet Connection Sharing and restarts Wi‑Fi / hotspot services.\n'
-            'You will still need to turn Mobile hotspot OFF then ON in Windows Settings.\n\n'
+            'While Mobile Hotspot is on, this restores internet sharing (ICS) for PS5 clients '
+            'without wiping hotspot DHCP.\n'
+            'You may still need to toggle hotspot OFF then ON, or set Wi‑Fi Sharing once in ncpa.cpl.\n\n'
             'Continue?',
             Buttons.YES | Buttons.NO,
         ) == Buttons.NO:
             return
         ok, detail = repair_clumsy_network_sharing()
         if ok:
+            prep_ok, prep_detail = prepare_pc_mobile_hotspot()
+            body = detail or 'Repair finished.'
+            if prep_detail and prep_detail not in body:
+                body += '\n\n' + prep_detail
+            if not prep_ok:
+                body += (
+                    '\n\nPS5 connected but no internet usually means Wi‑Fi Sharing (ICS) is off. '
+                    'Win+R → ncpa.cpl → Wi‑Fi → Sharing → allow other users → home network: '
+                    'Wi‑Fi Direct / Local Area Connection*. Then hotspot OFF 15 sec ON.'
+                )
+            else:
+                body += (
+                    '\n\nIf the PS5 still has no internet: forget the hotspot on the PS5 and reconnect, '
+                    'or use manual IP 192.168.137.2, gateway 192.168.137.1, DNS 8.8.8.8.'
+                )
             MsgType.INFO(
                 self,
                 'Repair complete',
-                (detail or 'Repair finished.')
-                + '\n\nIf hotspot still fails: Settings → Network → Mobile hotspot → OFF, '
-                'wait 10 seconds, ON. Reboot the PC if needed.',
+                body,
                 Buttons.OK,
             )
         else:
@@ -356,19 +371,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             ok, detail = ensure_clumsy_ics_enabled(topo)
             if not ok:
                 detail = format_clumsy_ics_error(detail or 'Unknown error.', topology=topo)
-                manual_hint = (
-                    'Turn on Mobile Hotspot, connect the PS5 to that Wi‑Fi, then restart ZubCut.'
-                    if topo == 'hotspot'
-                    else 'Turn on ICS manually: Network connections → internet adapter → '
-                    'Properties → Sharing → Allow other network users…'
-                )
                 if (
                     MsgType.WARN(
                         self,
                         'Clumsy Mode',
                         'Could not enable console sharing automatically.\n\n'
                         + detail
-                        + '\n\nEnable Clumsy mode anyway? (' + manual_hint + ')',
+                        + '\n\nEnable Clumsy mode anyway?',
                         Buttons.YES | Buttons.NO,
                     )
                     == Buttons.NO
