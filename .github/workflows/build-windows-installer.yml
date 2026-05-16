@@ -79,6 +79,7 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
+          import os
           from pathlib import Path
           from datetime import datetime, timezone
           import re
