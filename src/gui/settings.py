@@ -307,9 +307,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 body += '\n\n' + prep_detail
             if not prep_ok:
                 body += (
-                    '\n\nPS5 connected but no internet usually means Wi‑Fi Sharing (ICS) is off. '
-                    'Win+R → ncpa.cpl → Wi‑Fi → Sharing → allow other users → home network: '
-                    'Wi‑Fi Direct / Local Area Connection*. Then hotspot OFF 15 sec ON.'
+                    '\n\nIf the PS5 still has no internet, run Repair again or switch to '
+                    'Console connects via → Ethernet (PS5 cable to the PC LAN port).'
                 )
             else:
                 body += (

@@ -104,16 +104,12 @@ def format_clumsy_ics_error(detail: str, *, topology: str | None = None) -> str:
                 '• Run ZubCut as Administrator, then enable Clumsy mode again',
             ]
         )
-        if 'sharing tab' in low or 'one-time' in low or 'ncpa.cpl' in low:
+        if 'repair hotspot' not in low and 'ethernet' not in low:
             lines.extend(
                 [
                     '',
-                    'Some USB Wi‑Fi adapters (e.g. Realtek) require a one-time Windows step:',
-                    '• Win+R → ncpa.cpl → Wi‑Fi → Properties → Sharing',
-                    '• Check “Allow other network users…”',
-                    '• Home network: Wi‑Fi Direct / Local Area Connection*',
-                    '• Mobile hotspot OFF → wait 15s → ON',
-                    '• If PS5 still fails DHCP: manual IP 192.168.137.2, gateway 192.168.137.1',
+                    'Try Settings → Repair hotspot / sharing (ZubCut toggles hotspot to apply sharing).',
+                    'Or use Console connects via → Ethernet (PS5 cable to PC LAN port).',
                 ]
             )
     if '0x80040201' in low or 'abonnenten' in low or 'subscribers' in low:
@@ -239,8 +235,17 @@ function Test-HotspotIcsActive {
   }
   return ($upPublic -and $dnPrivate)
 }
-function Apply-HotspotIcs {
-  $pair = Get-HotspotAdapterPair
+function Get-HotspotAdapterPairForIcs {
+  $up = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+    $_.InterfaceDescription -notmatch 'Direct|Bluetooth|Virtual|Hyper-V|Loopback'
+    -and ($_.Name -eq 'Wi-Fi' -or $_.InterfaceDescription -match 'Wireless LAN|Wi-Fi')
+  } | Sort-Object @{ Expression = { if ($_.Status -eq 'Up') { 0 } else { 1 } } }, InterfaceMetric | Select-Object -First 1
+  $down = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+    $_.InterfaceDescription -match 'Wi-Fi Direct|Hosted' -or $_.Name -match 'Local Area Connection'
+  } | Sort-Object @{ Expression = { if ($_.Status -eq 'Up') { 0 } else { 1 } } } | Select-Object -First 1
+  return @{ Up=$up; Down=$down }
+}
+function Apply-HotspotIcsCore($pair) {
   if ($null -eq $pair.Up -or $null -eq $pair.Down) { return $false }
   $share = New-Object -ComObject HNetCfg.HNetShare
   $connMap = @{}
@@ -253,6 +258,26 @@ function Apply-HotspotIcs {
   }
   $upG = NormGuidHotspot $pair.Up.InterfaceGuid
   $dnG = NormGuidHotspot $pair.Down.InterfaceGuid
+  if (-not $connMap.ContainsKey($upG)) {
+    $wantUp = ($pair.Up.Name -as [string]).Trim().ToLowerInvariant()
+    foreach ($conn in @($share.EnumEveryConnection())) {
+      try {
+        $p = $share.NetConnectionProps($conn)
+        $g = NormGuidHotspot $p.Guid
+        if (($p.Name -as [string]).Trim().ToLowerInvariant() -eq $wantUp) { $upG = $g; break }
+      } catch {}
+    }
+  }
+  if (-not $connMap.ContainsKey($dnG)) {
+    $wantDn = ($pair.Down.Name -as [string]).Trim().ToLowerInvariant()
+    foreach ($conn in @($share.EnumEveryConnection())) {
+      try {
+        $p = $share.NetConnectionProps($conn)
+        $g = NormGuidHotspot $p.Guid
+        if (($p.Name -as [string]).Trim().ToLowerInvariant() -eq $wantDn) { $dnG = $g; break }
+      } catch {}
+    }
+  }
   if (-not $connMap.ContainsKey($upG) -or -not $connMap.ContainsKey($dnG)) { return $false }
   foreach ($k in $connMap.Keys) {
     try { if ($connMap[$k].SharingEnabled) { $connMap[$k].DisableSharing() } } catch {}
@@ -277,6 +302,39 @@ function Apply-HotspotIcs {
   }
   Start-Sleep -Seconds 2
   return (Test-HotspotIcsActive)
+}
+function Apply-HotspotIcs {
+  return (Apply-HotspotIcsCore (Get-HotspotAdapterPair))
+}
+function Stop-MobileHotspotIfOn {
+  $mgr = Get-TetheringManager
+  if ($null -eq $mgr) { return $false }
+  if ($mgr.TetheringOperationalState.ToString() -ne 'On') { return $true }
+  try {
+    $op = $mgr.StopTetheringAsync()
+    if (-not (Wait-TetheringAsync $op 'StopTethering')) { return $false }
+    Start-Sleep -Seconds 3
+    return $true
+  } catch {
+    return $false
+  }
+}
+function Apply-HotspotIcsWithTetheringToggle {
+  $wasOn = Test-TetheringOn
+  if ($wasOn) {
+    if (-not (Stop-MobileHotspotIfOn)) { return $false }
+    Start-Sleep -Seconds 2
+  }
+  $pair = Get-HotspotAdapterPairForIcs
+  Apply-HotspotIcsCore $pair | Out-Null
+  Ensure-MobileHotspotOn | Out-Null
+  Start-Sleep -Seconds 8
+  return (Test-HotspotIcsActive)
+}
+function Apply-HotspotIcsAutomated {
+  if (Test-HotspotIcsActive) { return $true }
+  if (Apply-HotspotIcs) { return $true }
+  return (Apply-HotspotIcsWithTetheringToggle)
 }
 function Wait-TetheringAsync($op, [string]$label) {
   $deadline = (Get-Date).AddSeconds(25)
@@ -396,8 +454,8 @@ def prepare_pc_mobile_hotspot() -> Tuple[bool, str]:
     """
     Best-effort automation for PC Mobile Hotspot → console (DHCP, firewall, ICS).
 
-    Fully automatic on many PCs. Some USB Wi‑Fi drivers still require the Windows
-    Sharing tab once (HNetCfg EnableSharing fails while Mobile Hotspot is active).
+    Fully automatic on most PCs: tries ICS while hotspot is on, then briefly toggles
+    hotspot off/on via Windows APIs to apply sharing (same as manual Sharing tab).
     """
     if os.name != 'nt':
         return True, 'Non-Windows platform; skipping hotspot prep.'
@@ -433,9 +491,12 @@ netsh advfirewall firewall add rule name="ZubCut-Hotspot-Subnet-In" dir=in actio
 netsh advfirewall firewall add rule name="ZubCut-Hotspot-Subnet-Out" dir=out action=allow remoteip=192.168.137.0/24 enable=yes | Out-Null
 
 $saParams = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\SharedAccess\\Parameters'
-foreach ($pair in @('ScopeAddress','ScopeAddressBackup')) {{
+foreach ($pair in @('ScopeAddress','ScopeAddressBackup','StandaloneDhcpAddress')) {{
   try {{ Set-ItemProperty -Path $saParams -Name $pair -Value '192.168.137.1' -Type String -Force -EA SilentlyContinue }} catch {{}}
 }}
+try {{
+  Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' -Name 'IPEnableRouter' -Value 1 -Type DWord -Force -EA SilentlyContinue
+}} catch {{}}
 
 foreach ($svc in @('SharedAccess','icssvc','WlanSvc','Dhcp')) {{
   try {{ Start-Service $svc -ErrorAction SilentlyContinue }} catch {{}}
@@ -468,28 +529,20 @@ if ($dhcp67 -and $icsOk) {{
   exit 0
 }}
 if ($dhcp67 -and -not $icsOk) {{
-  Apply-HotspotIcs | Out-Null
-  Restart-SharedAccessSafe $hotspotWasOn
-  if ($hotspotWasOn -and -not (Test-TetheringOn)) {{ Ensure-MobileHotspotOn | Out-Null }}
-  Start-Sleep -Seconds 4
-  $icsOk = Test-HotspotIcsActive
-  if ($icsOk) {{
+  if (Apply-HotspotIcsAutomated) {{
     JsonOut @{{ ok=$true; dhcp67=$true; ics_ok=$true; needs_manual_sharing=$false; message='Restored internet sharing (ICS) for Mobile Hotspot.' }}
     exit 0
   }}
 }}
 
-if ($up -and $down) {{
-  Apply-HotspotIcs | Out-Null
-}}
-
+Apply-HotspotIcsAutomated | Out-Null
 Restart-SharedAccessSafe $hotspotWasOn
 if ($hotspotWasOn -and -not (Test-TetheringOn)) {{ Ensure-MobileHotspotOn | Out-Null }}
 Start-Sleep -Seconds 5
 $dhcp67 = Test-HotspotDhcp67
 $icsOk = Test-HotspotIcsActive
 if ($dhcp67 -and $icsOk) {{
-  JsonOut @{{ ok=$true; dhcp67=$true; ics_ok=$true; needs_manual_sharing=$false; message='Mobile Hotspot DHCP and internet sharing (ICS) are active.' }}
+  JsonOut @{{ ok=$true; dhcp67=$true; ics_ok=$true; needs_manual_sharing=$false; message='Mobile Hotspot is ready for your console (Wi-Fi sharing enabled automatically).' }}
   exit 0
 }}
 if ($dhcp67 -and -not $icsOk) {{
@@ -498,7 +551,7 @@ if ($dhcp67 -and -not $icsOk) {{
     dhcp67=$true
     ics_ok=$false
     needs_manual_sharing=$true
-    error='PS5 may connect to the hotspot but have no internet until sharing is configured. ncpa.cpl -> Wi-Fi -> Sharing -> allow other users -> home network: Wi-Fi Direct / Local Area Connection*. Then hotspot OFF 15 sec ON.'
+    error='Hotspot is on but automatic Wi-Fi sharing failed on this adapter. Try Settings -> Repair hotspot / sharing, or use Console connects via -> Ethernet (PS5 cable to PC LAN port).'
   }}
   exit 1
 }}
@@ -507,7 +560,7 @@ JsonOut @{{
   ok=$false
   dhcp67=$false
   needs_manual_sharing=$true
-  error='Automatic sharing failed on this adapter. Use ncpa.cpl -> Wi-Fi -> Sharing tab once (Wi-Fi Direct home network), then toggle hotspot OFF/ON.'
+  error='Could not enable Mobile Hotspot sharing automatically. Turn hotspot ON in Windows Settings, then use Repair hotspot / sharing in ZubCut Settings, or switch to Ethernet topology.'
 }}
 exit 1
 """
@@ -518,8 +571,8 @@ exit 1
         return False, str(
             payload.get('error')
             or (
-                'Windows blocked automatic Internet Connection Sharing on this Wi‑Fi adapter. '
-                'One-time Sharing tab setup is required (ncpa.cpl → Wi‑Fi → Sharing).'
+                'Automatic hotspot sharing could not be enabled. '
+                'Try Repair hotspot / sharing in Settings, or use Ethernet (PS5 → LAN port) in Settings.'
             )
         )
     msg = str(payload.get('error') or '').strip() or raw.strip() or 'Hotspot preparation failed.'
@@ -1110,9 +1163,9 @@ try {{
   }}
   $mobileHotspotActive = (Test-MobileHotspotGateway) -or (Test-TetheringOn)
 
-  if ($hotspotWasOn) {{
+    if ($hotspotWasOn) {{
     if (-not (Test-HotspotIcsActive)) {{
-      Apply-HotspotIcs | Out-Null
+      Apply-HotspotIcsAutomated | Out-Null
       Start-Sleep -Seconds 2
     }}
     if (-not (Test-TetheringOn)) {{
@@ -1134,8 +1187,7 @@ try {{
     }} elseif ($dhcp67 -and -not $icsOk) {{
       $msg = @(
         'Mobile Hotspot DHCP is up but internet sharing (ICS) could not be enabled automatically.'
-        'Win+R -> ncpa.cpl -> Wi-Fi -> Sharing -> allow other users -> home network: Wi-Fi Direct / Local Area Connection*.'
-        'Then turn Mobile hotspot ON in Settings and reconnect the PS5.'
+        'Try Repair hotspot / sharing again, or set Console connects via -> Ethernet (PS5 cable to PC LAN port).'
       ) -join ' '
     }} else {{
       $msg = @(

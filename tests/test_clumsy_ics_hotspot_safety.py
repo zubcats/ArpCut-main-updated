@@ -50,6 +50,14 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('Ensure-MobileHotspotOn', src)
         self.assertIn('Restart-SharedAccessSafe', src)
 
+    def test_prepare_automates_sharing_with_hotspot_toggle(self) -> None:
+        helpers = ics._PS_HOTSPOT_HELPERS
+        self.assertIn('Apply-HotspotIcsAutomated', helpers)
+        self.assertIn('Stop-MobileHotspotIfOn', helpers)
+        self.assertIn('Apply-HotspotIcsWithTetheringToggle', helpers)
+        src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
+        self.assertIn('Apply-HotspotIcsAutomated', src)
+
     def test_prepare_checks_ics_not_only_dhcp(self) -> None:
         src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
         self.assertIn('Test-HotspotIcsActive', src)
