@@ -7,6 +7,8 @@ from PyQt5.QtWidgets import (
     QKeySequenceEdit,
     QCheckBox,
     QComboBox,
+    QVBoxLayout,
+    QSizePolicy,
 )
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer
@@ -176,14 +178,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
         self.lblClumsyTopology = QLabel('Console connects via:', self.gridLayoutWidget_2)
         self.cmbClumsyTopology = QComboBox(self.gridLayoutWidget_2)
-        self.cmbClumsyTopology.addItem(
-            'PC Mobile Hotspot (PS5 → PC Wi‑Fi → router)',
-            'hotspot',
-        )
-        self.cmbClumsyTopology.addItem(
-            'Ethernet cable (PS5 → PC LAN port)',
-            'ethernet',
-        )
+        self.cmbClumsyTopology.addItem('Mobile Hotspot (PS5 → PC → router)', 'hotspot')
+        self.cmbClumsyTopology.addItem('Ethernet cable (PS5 → LAN port)', 'ethernet')
+        self.cmbClumsyTopology.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        try:
+            self.cmbClumsyTopology.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        except AttributeError:
+            pass
         self.cmbClumsyTopology.setToolTip(
             'Match how the console reaches this PC. Hotspot: turn on Windows Mobile Hotspot first, '
             'then connect the PS5 to that Wi‑Fi name (not the router Wi‑Fi).'
@@ -199,18 +200,33 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
         self.gridLayout_3.addWidget(self.chkClumsy, 2, 0, 1, 2)
         self.gridLayout_3.addWidget(self.btnClumsyInstall, 2, 2, 1, 2)
-        self.gridLayout_3.addWidget(self.lblClumsyTopology, 3, 0, 1, 1)
-        self.gridLayout_3.addWidget(self.cmbClumsyTopology, 3, 1, 1, 3)
-        self.gridLayout_3.addWidget(self.btnClumsyRepair, 4, 0, 1, 4)
-        self.groupBox_3.setMinimumHeight(200)
-        self.gridLayoutWidget_2.setMinimumHeight(100)
-        # Clumsy row adds vertical pressure; increase keybind group height to keep labels readable.
+        self.gridLayout_3.addWidget(self.lblClumsyTopology, 3, 0, 1, 4)
+        self.gridLayout_3.addWidget(self.cmbClumsyTopology, 4, 0, 1, 4)
+        self.gridLayout_3.addWidget(self.btnClumsyRepair, 5, 0, 1, 4)
+        self._relayout_misc_group()
         self.groupBox_keys.setMinimumHeight(140)
         self._clumsy_toggle_guard = False
         self.chkClumsy.stateChanged.connect(self._on_clumsy_checkbox_changed)
         self.cmbClumsyTopology.currentIndexChanged.connect(self._on_clumsy_topology_changed)
         self.btnClumsyInstall.clicked.connect(self._on_clumsy_install_clicked)
         self.btnClumsyRepair.clicked.connect(self._on_clumsy_repair_clicked)
+
+    def _relayout_misc_group(self) -> None:
+        """Misc. group was a fixed-size child widget in ui_settings; expand for Clumsy rows."""
+        gb = self.groupBox_3
+        inner = self.gridLayoutWidget_2
+        if gb.layout() is None:
+            lay = QVBoxLayout(gb)
+            lay.setContentsMargins(10, 22, 10, 8)
+            lay.setSpacing(4)
+            lay.addWidget(inner)
+        inner.setMinimumHeight(185)
+        gb.setMinimumHeight(215)
+        # Widen settings so the topology combo is not clipped (ui file caps at 400px).
+        min_w = 430
+        min_h = max(self.minimumSize().height(), 600)
+        self.setMinimumSize(min_w, min_h)
+        self.setMaximumSize(max(self.maximumSize().width(), min_w), max(self.maximumSize().height(), min_h + 40))
 
     def _refresh_clumsy_settings_widgets(self):
         if not sys.platform.startswith('win'):
