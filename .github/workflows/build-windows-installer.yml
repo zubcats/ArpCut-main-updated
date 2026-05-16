@@ -106,6 +106,9 @@ jobs:
       - name: Build Windows EXE (PyInstaller via build.py)
         run: python build.py
 
+      - name: Verify PyNaCl is bundled in frozen build
+        run: python tools/verify_frozen_nacl.py
+
       - name: Install Inno Setup
         run: choco install innosetup -y
 

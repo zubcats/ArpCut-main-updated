@@ -40,12 +40,15 @@ HIDDEN_IMPORTS = [
     'nacl.signing',
     'nacl.bindings',
     'nacl.bindings.crypto_sign',
+    'nacl.bindings.sodium',
+    'nacl.exceptions',
 ]
 
 COLLECT_ALL = [
     'manuf',
     'scapy',
     'qdarkstyle',
+    'nacl',
 ]
 
 

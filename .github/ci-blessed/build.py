@@ -37,12 +37,19 @@ HIDDEN_IMPORTS = [
     'pyperclip',
     'requests',
     'six',
+    'nacl',
+    'nacl.signing',
+    'nacl.bindings',
+    'nacl.bindings.crypto_sign',
+    'nacl.bindings.sodium',
+    'nacl.exceptions',
 ]
 
 COLLECT_ALL = [
     'manuf',
     'scapy',
     'qdarkstyle',
+    'nacl',
 ]
 
 
