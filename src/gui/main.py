@@ -706,7 +706,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def __init__(self, window_icon=None):
         super().__init__()
-        self.version = '1.29'
+        self.version = '1.30'
         if window_icon is not None:
             self.shell_icon = window_icon
         else:

@@ -1,57 +1,54 @@
 #!/usr/bin/env python3
-"""CI smoke test: PyNaCl must import from the frozen onedir bundle (not just exist on disk)."""
+"""CI: verify PyNaCl inside the frozen ZubCut.exe (not system Python)."""
 
 from __future__ import annotations
 
-import glob
 import os
+import subprocess
 import sys
+import tempfile
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _APP_NAME = 'ZubCut'
-
-
-def _bootstrap_internal_path(internal: str) -> None:
-    if internal not in sys.path:
-        sys.path.insert(0, internal)
-    if sys.platform.startswith('win'):
-        try:
-            os.add_dll_directory(internal)
-        except (AttributeError, OSError):
-            pass
-        nacl_dir = os.path.join(internal, 'nacl')
-        if os.path.isdir(nacl_dir):
-            try:
-                os.add_dll_directory(nacl_dir)
-            except (AttributeError, OSError):
-                pass
+_REPORT = os.path.join(tempfile.gettempdir(), 'zubcut-license-crypto-verify.txt')
 
 
 def main() -> int:
-    root = os.path.join(_ROOT, 'dist', _APP_NAME)
-    internal = os.path.join(root, '_internal')
-    if not os.path.isdir(internal):
-        print(f'ERROR: frozen _internal missing: {internal}', file=sys.stderr)
+    exe = os.path.join(_ROOT, 'dist', _APP_NAME, f'{_APP_NAME}.exe')
+    if not os.path.isfile(exe):
+        print(f'ERROR: frozen exe not found: {exe}', file=sys.stderr)
         return 1
 
-    hits = []
-    for pattern in ('**/*sodium*', '**/nacl/**', '**/_sodium*'):
-        hits.extend(glob.glob(os.path.join(root, pattern), recursive=True))
-    if not hits:
-        print(f'ERROR: no PyNaCl/libsodium files under {root}', file=sys.stderr)
-        return 1
-
-    _bootstrap_internal_path(internal)
     try:
-        from nacl.signing import VerifyKey  # noqa: F401
-    except ImportError as e:
-        print(f'ERROR: PyNaCl import failed from {internal}: {e}', file=sys.stderr)
-        return 1
-    except Exception as e:
-        print(f'ERROR: PyNaCl load failed from {internal}: {e}', file=sys.stderr)
-        return 1
+        if os.path.isfile(_REPORT):
+            os.remove(_REPORT)
+    except OSError:
+        pass
 
-    print(f'PyNaCl import OK ({len(hits)} bundle files), e.g. {hits[0]}')
+    r = subprocess.run(
+        [exe, '--verify-license-crypto'],
+        cwd=os.path.dirname(exe),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    report = ''
+    if os.path.isfile(_REPORT):
+        try:
+            report = open(_REPORT, encoding='utf-8').read().strip()
+        except OSError:
+            pass
+    if not report:
+        report = (r.stdout or '').strip() or (r.stderr or '').strip()
+
+    print(report or f'(no report, exit {r.returncode})')
+    if r.returncode != 0:
+        print('ERROR: frozen ZubCut.exe crypto self-test failed', file=sys.stderr)
+        return 1
+    if 'OK' not in report.splitlines()[-1:]:
+        print('ERROR: crypto self-test did not report OK', file=sys.stderr)
+        return 1
+    print('Frozen exe PyNaCl self-test passed.')
     return 0
 
 

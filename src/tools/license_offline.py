@@ -109,18 +109,61 @@ def _bootstrap_pynacl_path() -> None:
                     pass
 
 
+def _build_stamp_for_errors() -> str:
+    try:
+        from constants import APP_BUILD_COMMIT, APP_BUILD_TIME_ISO, UPDATE_CHANNEL
+
+        commit = str(APP_BUILD_COMMIT or '').strip()[:12]
+        built = str(APP_BUILD_TIME_ISO or '').strip()
+        channel = str(UPDATE_CHANNEL or '').strip()
+        parts = [p for p in (channel, built, commit) if p]
+        return f' (build {" · ".join(parts)})' if parts else ''
+    except Exception:
+        return ''
+
+
 def _nacl_import_error() -> str | None:
     _bootstrap_pynacl_path()
+    stamp = _build_stamp_for_errors()
     try:
         from nacl.signing import VerifyKey  # noqa: F401
     except ImportError:
         return (
             'License verification is unavailable in this build (PyNaCl missing). '
             'Reinstall from the latest ZubCut installer.'
+            f'{stamp}'
         )
     except Exception as e:
-        return f'License verification failed to load ({e}).'
+        return f'License verification failed to load ({e}).{stamp}'
     return None
+
+
+def license_crypto_self_test() -> tuple[bool, str]:
+    """Frozen-build diagnostic (also used by CI via ZubCut.exe --verify-license-crypto)."""
+    lines: list[str] = []
+    if getattr(sys, 'frozen', False):
+        lines.append(f'frozen=1 exe={sys.executable}')
+        lines.append(f'_MEIPASS={getattr(sys, "_MEIPASS", "")}')
+    else:
+        lines.append('frozen=0')
+    try:
+        from constants import APP_BUILD_COMMIT, APP_BUILD_TIME_ISO, UPDATE_CHANNEL
+
+        lines.append(f'channel={UPDATE_CHANNEL}')
+        lines.append(f'built={APP_BUILD_TIME_ISO}')
+        lines.append(f'commit={str(APP_BUILD_COMMIT or "")[:12]}')
+        lines.append(f'verify_key_len={len(_effective_public_key_b64())}')
+    except Exception as e:
+        lines.append(f'constants_error={e}')
+    internal = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), '_internal')
+    lines.append(f'internal_exists={os.path.isdir(internal)}')
+    nacl_pyd = os.path.join(internal, 'nacl', '_sodium.pyd')
+    lines.append(f'nacl_pyd_exists={os.path.isfile(nacl_pyd)}')
+    err = _nacl_import_error()
+    if err:
+        return False, '\n'.join(lines + [f'FAIL: {err}'])
+    lines.append('nacl.signing: OK')
+    return True, '\n'.join(lines + ['OK'])
 
 
 def _verify_signature(payload: dict[str, Any], signature_b64: str, key_b64: str) -> bool:

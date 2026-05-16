@@ -7,7 +7,7 @@ from tools.qtools import clickable
 from tools.utils import goto
 from tools.branding import resolve_zubcut_png_path
 from assets import app_icon
-from constants import APP_DISPLAY_NAME
+from constants import APP_BUILD_COMMIT, APP_BUILD_TIME_ISO, APP_DISPLAY_NAME, UPDATE_CHANNEL
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
 from tools.utils_gui import register_window_surface_effects
 
@@ -36,11 +36,24 @@ class About(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lblAppIcon.setCursor(Qt.ArrowCursor)
 
         self.lblAppName.setText(f'{APP_DISPLAY_NAME} v{self.elmocut.version}')
+        build_bits = []
+        if str(APP_BUILD_TIME_ISO or '').strip():
+            build_bits.append(str(APP_BUILD_TIME_ISO).strip()[:10])
+        commit = str(APP_BUILD_COMMIT or '').strip()[:12]
+        if commit:
+            build_bits.append(commit)
+        channel = str(UPDATE_CHANNEL or '').strip()
+        if channel:
+            build_bits.append(channel)
+        if build_bits:
+            self.lblNickName.setText('Build: ' + ' · '.join(build_bits))
+            self.lblNickName.setStyleSheet('color: #9a9a9a; font-size: 11px;')
+            self.lblNickName.show()
+        else:
+            self.lblNickName.hide()
 
         self.lblMyName.setText('ZubOnTop')
         self.lblMyName.setCursor(Qt.ArrowCursor)
-
-        self.lblNickName.hide()
 
         self.lblTwitter.setText('🔗 Linktree')
         self.lblTwitter.setStyleSheet('color: #43b581; font-size: 12px;')

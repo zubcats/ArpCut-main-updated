@@ -211,7 +211,28 @@ def _start_license_runtime_validation(gui, icon) -> None:
 
 # import debug.test
 
+def _run_license_crypto_self_test_and_exit() -> None:
+    """Write result for CI / support; works with --windowed builds (no console)."""
+    import tempfile
+
+    from tools.license_offline import license_crypto_self_test
+
+    ok, report = license_crypto_self_test()
+    out = _os.path.join(tempfile.gettempdir(), 'zubcut-license-crypto-verify.txt')
+    try:
+        with open(out, 'w', encoding='utf-8') as fh:
+            fh.write(report)
+            fh.write('\n')
+    except OSError:
+        pass
+    print(report)
+    exit(0 if ok else 1)
+
+
 if __name__ == "__main__":
+    if '--verify-license-crypto' in argv:
+        _run_license_crypto_self_test_and_exit()
+
     # Before QApplication: real per-monitor DPI so Win32 icon loads + GetDpiForWindow match the display.
     if _sys.platform == 'win32':
         try:

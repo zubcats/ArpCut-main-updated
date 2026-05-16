@@ -7,7 +7,7 @@
 ; WizardStyle and images below apply to both.
 
 #define MyAppName "ZubCut"
-#define MyAppVersion "1.29"
+#define MyAppVersion "1.30"
 #define MyAppPublisher "Local build"
 #define MyAppExeName "ZubCut.exe"
 #define MyAppURL "https://github.com/"
@@ -45,6 +45,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "clumsymode"; Description: "Clumsy mode (WinDivert driver if missing)"; GroupDescription: "Optional:"
+
+; Replace the whole onedir payload on upgrade (avoids stale PyInstaller files beside new builds).
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]
 Source: "..\dist\{#MyAppName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
