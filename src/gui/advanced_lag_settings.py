@@ -1,9 +1,9 @@
 """Advanced Lag Settings — clumsy-style rows + master victim toggle (experimental MITM path).
 
-Each row: enable, In/Out, values, and optional timer (Lag ms, Pause ms, Repeat, Runs).
+Each row: enable, In/Out, values, and optional timer (Lag ms, Pause ms, Repeat, Cycles).
 Repeat: use pause and repeat lag→pause cycles; off = one lag phase then that row's timer
-stays off (other rows unaffected). Runs = −1 shows ∞ and means unlimited cycles when Repeat
-is on; otherwise Runs is how many full lag→pause cycles that row runs before stopping only
+stays off (other rows unaffected). Cycles = −1 shows ∞ and means unlimited cycles when Repeat
+is on; otherwise Cycles is how many full lag→pause cycles that row runs before stopping only
 that impairment. Turning the victim toggle on applies enabled rows; off stops all.
 """
 
@@ -594,8 +594,8 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
         hint = QLabel(
             'Turn on after configuring the rows above. Edits apply live while this is on. '
-            'Per-row Timer gates only that row: when a row’s Runs finish, that impairment stops cycling; '
-            'other enabled rows keep their own Lag / Pause / Repeat / Runs. Select the target device in the main list before starting.',
+            'Per-row Timer gates only that row: when a row’s Cycles finish, that impairment stops cycling; '
+            'other enabled rows keep their own Lag / Pause / Repeat / Cycles. Select the target device in the main list before starting.',
             box,
         )
         hint.setWordWrap(True)
@@ -635,7 +635,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         chk_timer_repeat: QCheckBox,
         spin_timer_runs: QSpinBox,
     ) -> None:
-        """Columns: impairment | row On | In/Out | values | Timer | Lag | Pause | Repeat | Runs."""
+        """Columns: impairment | row On | In/Out | values | Timer | Lag | Pause | Repeat | Cycles."""
         lbl = QLabel(title)
         lbl.setStyleSheet('color: #e8eaed;')
         lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -712,7 +712,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             'then this row’s timer stops for that impairment only (others keep their own schedules).',
         )
         h_runs = _sched_hdr(
-            'Runs',
+            'Cycles',
             'How many full Lag→Pause cycles while Repeat is on. Minimum value −1 shows as ∞ = unlimited. '
             'Only that row stops when its cycles finish.',
         )
@@ -988,7 +988,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         intro = QLabel(
             'Enable a row, tick In and/or Out, set values. 0 or −1 where shown as ∞ means unlimited (no cap, no added delay/jitter, '
             'or infinite timer cycles). Timer: Lag (ms) applies that row, Pause (ms) clears that row’s effect, then Repeat '
-            'controls whether the cycle continues. A positive Runs counts Lag→Pause cycles for that row only—when one row '
+            'controls whether the cycle continues. A positive Cycles value counts Lag→Pause cycles for that row only—when one row '
             'finishes, the others continue. Nothing applies until the victim toggle is on.',
             box,
         )
