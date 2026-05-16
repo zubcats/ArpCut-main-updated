@@ -7,7 +7,7 @@
 ; WizardStyle and images below apply to both.
 
 #define MyAppName "ZubCut"
-#define MyAppVersion "1.30"
+#define MyAppVersion "1.29"
 #define MyAppPublisher "Local build"
 #define MyAppExeName "ZubCut.exe"
 #define MyAppURL "https://github.com/"
