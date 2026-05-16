@@ -39,13 +39,17 @@ HIDDEN_IMPORTS = [
     'cryptography',
     'cryptography.hazmat.primitives.asymmetric.ed25519',
     'cryptography.hazmat.backends.openssl',
+    'cryptography.hazmat.backends.openssl.backend',
+    'cryptography.hazmat.bindings._rust',
+    'cryptography.hazmat.bindings.openssl',
+    '_cffi_backend',
+    'cffi',
 ]
 
 COLLECT_ALL = [
     'manuf',
     'scapy',
     'qdarkstyle',
-    'cryptography',
 ]
 
 

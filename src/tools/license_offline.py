@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+# PyInstaller analysis: trace cryptography native bindings (_rust) at freeze time.
+try:
+    import cryptography.hazmat.bindings._rust  # noqa: F401
+except ImportError:
+    pass
+
 SIGNIN_PBKDF2_ITERS_DEFAULT = 100_000
 
 # Pre-renaming on-disk license (migrated to LICENSE_FILE_PATH / zubcut-license.json on read).
@@ -98,14 +104,14 @@ def _crypto_import_error() -> str | None:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (  # noqa: F401
             Ed25519PublicKey,
         )
-    except ImportError:
+    except ImportError as e:
         return (
-            'License verification is unavailable in this build (crypto library missing). '
-            'Reinstall from the latest ZubCut installer.'
+            'License verification is unavailable in this build (crypto library missing: '
+            f'{e!r}). Reinstall from the latest ZubCut installer.'
             f'{stamp}'
         )
     except Exception as e:
-        return f'License verification failed to load ({e}).{stamp}'
+        return f'License verification failed to load ({e!r}).{stamp}'
     return None
 
 
@@ -126,6 +132,11 @@ def license_crypto_self_test() -> tuple[bool, str]:
         lines.append(f'verify_key_len={len(_effective_public_key_b64())}')
     except Exception as e:
         lines.append(f'constants_error={e}')
+    if getattr(sys, 'frozen', False):
+        internal = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), '_internal')
+        lines.append(f'internal_exists={os.path.isdir(internal)}')
+        rust_pyd = os.path.join(internal, 'cryptography', 'hazmat', 'bindings', '_rust.pyd')
+        lines.append(f'cryptography_rust_pyd_exists={os.path.isfile(rust_pyd)}')
     err = _crypto_import_error()
     if err:
         return False, '\n'.join(lines + [f'FAIL: {err}'])
