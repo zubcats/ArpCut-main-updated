@@ -481,16 +481,22 @@ try {{
     $downIpProbe = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $down.ifIndex -ErrorAction SilentlyContinue |
       Where-Object {{ $_.IPAddress -and $_.IPAddress -notlike '169.254.*' }} |
       Sort-Object SkipAsSource | Select-Object -First 1
-    if ($downIpProbe -and $downIpProbe.IPAddress) {{
-      Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot path ready (using active hotspot).'
+    if (-not $downIpProbe -or -not $downIpProbe.IPAddress) {{
+      throw ('Mobile Hotspot is not active yet. Turn ON Mobile hotspot in Windows Settings, connect the PS5 to your PC hotspot Wi-Fi (not the router), then enable Clumsy mode again.')
     }}
-    throw ('Mobile Hotspot is not active yet. Turn ON Mobile hotspot in Windows Settings, connect the PS5 to your PC hotspot Wi-Fi (not the router), then enable Clumsy mode again. ZubCut will not reset ICS in hotspot mode.')
-  }}
+    $dhcpListen = Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue
+    if ($dhcpListen) {{
+      Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot ready (DHCP active).'
+    }}
+    # Hotspot UI can be On without DHCP (no UDP 67). Enable ICS Wi-Fi -> hotspot like ethernet mode.
+    try {{ Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }} catch {{}}
+  }} else {{
 
-  try {{ netsh wlan stop hostednetwork 2>$null | Out-Null }} catch {{}}
-  try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
-  try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
-  try {{ Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }} catch {{}}
+    try {{ netsh wlan stop hostednetwork 2>$null | Out-Null }} catch {{}}
+    try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
+    try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
+    try {{ Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }} catch {{}}
+  }}
 
   function Apply-ICS([bool]$privateFirst) {{
     foreach ($k in $connMap.Keys) {{
@@ -550,12 +556,14 @@ try {{
     }}
     if (-not $applied) {{
       try {{
-        try {{
-          Disable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 1
-          Enable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 3
-        }} catch {{}}
+        if ($ZubcutTopology -ne 'hotspot') {{
+          try {{
+            Disable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1
+            Enable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 3
+          }} catch {{}}
+        }}
         $share3 = New-Object -ComObject HNetCfg.HNetShare
         $connMap = @{{}}
         foreach ($conn in @($share3.EnumEveryConnection())) {{
@@ -601,7 +609,12 @@ try {{
   }}
 
   Start-Sleep -Seconds 2
-  Write-ClumsyState $up $down $snapshot 'ICS sharing enabled.'
+  $dhcpOk = Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue
+  if ($ZubcutTopology -eq 'hotspot' -and -not $dhcpOk) {{
+    throw 'Mobile Hotspot is on but DHCP is not running. Toggle hotspot OFF then ON in Windows Settings, run ZubCut as Administrator, or use tools\\enable_hotspot_ics_now.ps1'
+  }}
+  $doneMsg = if ($ZubcutTopology -eq 'hotspot') {{ 'PC Mobile Hotspot ICS enabled (DHCP for PS5).' }} else {{ 'ICS sharing enabled.' }}
+  Write-ClumsyState $up $down $snapshot $doneMsg
 }}
 catch {{
   $em = if ($null -ne $_.Exception) {{ $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }} else {{ $_ | Out-String }}

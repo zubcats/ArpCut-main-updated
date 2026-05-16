@@ -16,15 +16,14 @@ from tools import clumsy_ics as ics
 
 
 class ClumsyHotspotSafetyTests(unittest.TestCase):
-    def test_enable_script_hotspot_exits_without_apply_ics(self) -> None:
+    def test_enable_script_hotspot_enables_ics_when_no_dhcp(self) -> None:
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
         self.assertIn("$ZubcutTopology = '{topo}'", src)
-        self.assertIn('ZubCut will not reset ICS in hotspot mode', src)
-        # Hotspot branch must throw before ethernet-only netsh stop (after hotspot block).
+        self.assertIn('Get-NetUDPEndpoint -LocalPort 67', src)
+        self.assertIn('Hotspot UI can be On without DHCP', src)
         hotspot_idx = src.index("if ($ZubcutTopology -eq 'hotspot')")
         netsh_idx = src.index('netsh wlan stop hostednetwork', hotspot_idx)
-        throw_idx = src.index('will not reset ICS in hotspot mode', hotspot_idx)
-        self.assertLess(throw_idx, netsh_idx)
+        self.assertGreater(netsh_idx, hotspot_idx)
 
     def test_repair_does_not_demote_wlansvc_to_manual(self) -> None:
         src = inspect.getsource(ics.repair_clumsy_network_sharing)
