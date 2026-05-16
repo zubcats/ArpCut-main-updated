@@ -711,10 +711,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             base = 'Install Latest Build (Experimental)'
         else:
             base = 'Install Latest Build'
+        detail = (self._update_published_label or '').strip()
+        if detail:
+            return f'{base} — {detail}'
         if self._update_available:
-            base = f'New version available — {base}'
-        if self._update_published_label:
-            return f'{base} [{self._update_published_label}]'
+            return f'New version available — {base}'
         return base
 
     def _apply_update_button_style(self):

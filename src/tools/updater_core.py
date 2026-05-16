@@ -1,8 +1,14 @@
 """
 Shared update check + installer download for ZubCut (Windows frozen builds).
-Uses Last-Modified on the channel installer URL vs APP_BUILD_TIME_ISO from CI.
+
+Compares APP_BUILD_TIME_ISO (stamped in CI) to the rolling GitHub release asset time.
+Uses the GitHub Releases API (asset updated_at) as the primary source; HEAD
+Last-Modified is a fallback. Both requests disable caching.
 """
 
+from __future__ import annotations
+
+import json
 import os
 import subprocess
 import tempfile
@@ -20,10 +26,16 @@ from constants import (
     UPDATE_DOWNLOAD_URL_MAIN,
 )
 
-# GitHub's Last-Modified on the installer is usually later than APP_BUILD_TIME_ISO
-# (CI stamps time before packaging/upload). Require this much skew so we do not
-# treat the same build as an update or loop reinstall at every startup.
-_MIN_REMOTE_AHEAD_OF_BUILD = timedelta(minutes=45)
+# CI stamps APP_BUILD_TIME_ISO before PyInstaller; the uploaded asset is usually
+# a few minutes later. Ignore small skew so we do not loop reinstalls.
+_MIN_REMOTE_AHEAD_OF_BUILD = timedelta(minutes=5)
+
+_NO_CACHE_HEADERS = {
+    'Cache-Control': 'no-cache, no-store',
+    'Pragma': 'no-cache',
+}
+
+_GITHUB_REPO_FALLBACK = 'zubcats/ArpCut-main-updated'
 
 
 def _parse_build_time_iso(raw):
@@ -36,6 +48,14 @@ def _parse_build_time_iso(raw):
         return datetime.fromisoformat(s)
     except ValueError:
         return None
+
+
+def _format_dt_label(dt: datetime | None) -> str:
+    if dt is None:
+        return ''
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone().strftime('%b %d, %Y %I:%M %p')
 
 
 def _normalized_update_channel():
@@ -59,42 +79,143 @@ def selected_update_url():
     return (UPDATE_DOWNLOAD_URL_EXPERIMENTAL or '').strip()
 
 
+def local_build_datetime() -> datetime | None:
+    """UTC-aware build time baked into this binary (CI)."""
+    dt = _parse_build_time_iso(APP_BUILD_TIME_ISO)
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def local_build_label() -> str:
+    return _format_dt_label(local_build_datetime())
+
+
+def _github_repo() -> str:
+    url = selected_update_url()
+    if url:
+        parts = urlparse(url).path.strip('/').split('/')
+        if len(parts) >= 2:
+            return f'{parts[0]}/{parts[1]}'
+    return _GITHUB_REPO_FALLBACK
+
+
+def _release_tag_for_channel(channel: str) -> str:
+    return 'experimental-latest' if channel == 'experimental' else 'stable-latest'
+
+
+def _installer_asset_name(channel: str) -> str:
+    return (
+        'ZubCut-Setup-experimental.exe'
+        if channel == 'experimental'
+        else 'ZubCut-Setup.exe'
+    )
+
+
+def _fetch_remote_release_dt(channel: str) -> datetime | None:
+    """Release asset updated_at from GitHub API (authoritative for rolling tags)."""
+    tag = _release_tag_for_channel(channel)
+    asset_name = _installer_asset_name(channel)
+    api_url = f'https://api.github.com/repos/{_github_repo()}/releases/tags/{tag}'
+    req = urllib.request.Request(
+        api_url,
+        headers={
+            **_NO_CACHE_HEADERS,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': f'{APP_BUNDLE_NAME}-update-check',
+        },
+    )
+    with urllib.request.urlopen(req, timeout=12) as resp:
+        payload = json.loads(resp.read().decode('utf-8'))
+    for asset in payload.get('assets') or []:
+        if str(asset.get('name') or '') == asset_name:
+            dt = _parse_build_time_iso(asset.get('updated_at') or '')
+            if dt is not None:
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+    dt = _parse_build_time_iso(payload.get('published_at') or '')
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _fetch_remote_head_dt(url: str) -> datetime | None:
+    """HEAD the installer URL; cache-busted so proxies do not serve stale Last-Modified."""
+    parsed = urlparse(url)
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    query_items.append(('cb', str(int(time.time()))))
+    bust_url = urlunparse(parsed._replace(query=urlencode(query_items)))
+    req = urllib.request.Request(
+        bust_url,
+        method='HEAD',
+        headers={
+            **_NO_CACHE_HEADERS,
+            'User-Agent': f'{APP_BUNDLE_NAME}-update-check',
+        },
+    )
+    with urllib.request.urlopen(req, timeout=12) as resp:
+        last_modified = (resp.headers.get('Last-Modified') or '').strip()
+    if not last_modified:
+        return None
+    dt = parsedate_to_datetime(last_modified)
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _remote_installer_datetime(channel: str, download_url: str) -> datetime | None:
+    remote = None
+    try:
+        remote = _fetch_remote_release_dt(channel)
+    except Exception:
+        pass
+    try:
+        head_dt = _fetch_remote_head_dt(download_url)
+        if head_dt is not None and (remote is None or head_dt > remote):
+            remote = head_dt
+    except Exception:
+        pass
+    return remote
+
+
 def get_update_status():
     """
-    HEAD the channel URL; compare Last-Modified to APP_BUILD_TIME_ISO.
-    Returns (update_available, published_label_for_ui).
+    Compare local CI build time to the latest channel installer online.
+
+    Returns (update_available, status_label_for_ui).
     """
+    channel = _normalized_update_channel()
     url = selected_update_url()
     if not url:
         return False, ''
-    try:
-        req = urllib.request.Request(
-            url,
-            method='HEAD',
-            headers={'User-Agent': f'{APP_BUNDLE_NAME}-update-check'},
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            last_modified = resp.headers.get('Last-Modified', '').strip()
-        if not last_modified:
-            return False, ''
-        remote_dt = parsedate_to_datetime(last_modified)
-        if remote_dt is None:
-            return False, ''
-        if remote_dt.tzinfo is None:
-            remote_dt = remote_dt.replace(tzinfo=timezone.utc)
-        dt_local = remote_dt.astimezone()
-        published_label = dt_local.strftime('%b %d, %Y %I:%M %p')
-        local_dt = _parse_build_time_iso(APP_BUILD_TIME_ISO)
-        if local_dt is None:
-            return False, ''
-        if local_dt.tzinfo is None:
-            local_dt = local_dt.replace(tzinfo=timezone.utc)
-        remote_utc = remote_dt.astimezone(timezone.utc)
-        local_utc = local_dt.astimezone(timezone.utc)
-        available = (remote_utc - local_utc) > _MIN_REMOTE_AHEAD_OF_BUILD
-        return available, published_label
-    except Exception:
+
+    remote_dt = _remote_installer_datetime(channel, url)
+    if remote_dt is None:
         return False, ''
+
+    local_dt = local_build_datetime()
+    remote_label = _format_dt_label(remote_dt)
+    local_label = _format_dt_label(local_dt)
+
+    if local_dt is None:
+        return True, f'Latest online: {remote_label}'
+
+    available = (remote_dt - local_dt) > _MIN_REMOTE_AHEAD_OF_BUILD
+    if available:
+        if local_label:
+            return True, f'New version online: {remote_label} · yours: {local_label}'
+        return True, f'New version online: {remote_label}'
+
+    if local_label:
+        return False, f'Up to date · built {local_label} · online: {remote_label}'
+    return False, f'Up to date · online: {remote_label}'
 
 
 def update_is_available():
@@ -188,8 +309,7 @@ def download_installer(
     req = urllib.request.Request(
         download_url,
         headers={
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
+            **_NO_CACHE_HEADERS,
             'User-Agent': f'{APP_BUNDLE_NAME}-updater',
         },
     )
