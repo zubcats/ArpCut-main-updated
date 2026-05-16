@@ -8,12 +8,11 @@ import os
 import sys
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_APP_NAME = 'ZubCut'
 
 
 def main() -> int:
-    from src.constants import APP_BUNDLE_NAME
-
-    root = os.path.join(_ROOT, 'dist', APP_BUNDLE_NAME)
+    root = os.path.join(_ROOT, 'dist', _APP_NAME)
     if not os.path.isdir(root):
         print(f'ERROR: dist folder missing: {root}', file=sys.stderr)
         return 1
