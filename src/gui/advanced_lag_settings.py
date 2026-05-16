@@ -184,8 +184,6 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._chk_adv_cap_out: QCheckBox | None = None
         self._spin_adv_cap_out_mbps: QDoubleSpinBox | None = None
         self._spin_adv_cap_in_mbps: QDoubleSpinBox | None = None
-        self._chk_compound_loss: QCheckBox | None = None
-        self._spin_cap_overflow_loss_pct: QSpinBox | None = None
 
         self._chk_adv_loss_on: QCheckBox | None = None
         self._chk_adv_loss_in: QCheckBox | None = None
@@ -291,22 +289,13 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         main = QLabel(
             'These controls work without Clumsy mode, but delay, loss, and bandwidth caps are '
             'usually more precise and behave more predictably when Clumsy mode is enabled in '
-            'Settings—especially on Windows ICS and other shared-client links.',
+            'Settings—especially on Windows ICS and other shared-client links. '
+            'Loss % and bandwidth caps use one combined drop roll when both apply.',
             wrap,
         )
         main.setWordWrap(True)
         main.setStyleSheet('color: #c5c5c5; font-size: 11px; background-color: #000000;')
         lay.addWidget(main)
-
-        self._chk_compound_loss = QCheckBox('Compound loss (% loss × cap overflow)', wrap)
-        self._chk_compound_loss.setChecked(_bool_setting('mitm_adv_compound_loss', True))
-        self._chk_compound_loss.setToolTip(
-            'One survival roll: P(forward) = (1 − loss%) × (1 − overflow% when over bandwidth cap). '
-            'Example: 50% loss and 50% overflow ≈ 25% packets delivered. '
-            'Turn off for the older sequential loss-then-cap behavior.'
-        )
-        self._chk_compound_loss.stateChanged.connect(self._on_mitm_field_changed)
-        lay.addWidget(self._chk_compound_loss)
 
         self._lbl_clumsy_status = QLabel(wrap)
         self._lbl_clumsy_status.setWordWrap(True)
@@ -363,8 +352,6 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
                     'mitm_adv_loss_in': self._chk_adv_loss_in.isChecked(),
                     'mitm_adv_loss_out': self._chk_adv_loss_out.isChecked(),
                     'mitm_adv_loss_pct': int(self._spin_adv_loss_pct.value()),
-                    'mitm_adv_compound_loss': self._chk_compound_loss.isChecked(),
-                    'mitm_adv_cap_overflow_loss_pct': int(self._spin_cap_overflow_loss_pct.value()),
                     'mitm_adv_delay_timer_on': self._chk_adv_delay_timer_on.isChecked(),
                     'mitm_adv_delay_timer_lag_ms': int(self._spin_adv_delay_timer_lag_ms.value()),
                     'mitm_adv_delay_timer_pause_ms': int(self._spin_adv_delay_timer_pause_ms.value()),
@@ -536,9 +523,6 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         l_on = self._chk_adv_loss_on.isChecked()
         for w in (self._chk_adv_loss_in, self._chk_adv_loss_out, self._spin_adv_loss_pct):
             w.setEnabled(l_on)
-        compound_on = self._chk_compound_loss.isChecked() if self._chk_compound_loss else True
-        if self._spin_cap_overflow_loss_pct is not None:
-            self._spin_cap_overflow_loss_pct.setEnabled(compound_on and c_on)
 
         def _row_timer_enables(
             row_on: bool,
@@ -936,16 +920,6 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         lbl_cap_out = QLabel('Out:')
         self._spin_adv_cap_out_mbps = _mk_cap_mbps_spin(box, 'mitm_adv_cap_out_mbps', 0.0)
         self._spin_adv_cap_out_mbps.valueChanged.connect(self._on_mitm_field_changed)
-        lbl_overflow = QLabel('Overflow %')
-        lbl_overflow.setToolTip(
-            'When traffic exceeds the Mbps cap, drop this % of over-cap packets. '
-            '100 = always drop (legacy). 50 with 50% loss compounds to ~25% delivery.'
-        )
-        self._spin_cap_overflow_loss_pct = QSpinBox(box)
-        self._spin_cap_overflow_loss_pct.setRange(0, 100)
-        self._spin_cap_overflow_loss_pct.setSuffix(' %')
-        self._spin_cap_overflow_loss_pct.setValue(_int_setting('mitm_adv_cap_overflow_loss_pct', 100))
-        self._spin_cap_overflow_loss_pct.valueChanged.connect(self._on_mitm_field_changed)
         self._chk_adv_cap_timer_on = _mk_timer_on_chk('mitm_adv_cap_timer_on', False, 'Schedule this cap row.')
         self._spin_adv_cap_timer_lag_ms = _mk_timer_lag_spin('mitm_adv_cap_timer_lag_ms', 1000)
         self._spin_adv_cap_timer_pause_ms = _mk_timer_pause_spin('mitm_adv_cap_timer_pause_ms', 1000)
@@ -967,8 +941,6 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
                 self._spin_adv_cap_in_mbps,
                 lbl_cap_out,
                 self._spin_adv_cap_out_mbps,
-                lbl_overflow,
-                self._spin_cap_overflow_loss_pct,
             ],
             chk_timer_on=self._chk_adv_cap_timer_on,
             spin_timer_lag_ms=self._spin_adv_cap_timer_lag_ms,

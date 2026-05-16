@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import random
 
+# Over-cap packets always take the cap factor in the combined roll (×0 survival from cap).
+CAP_OVERFLOW_LOSS_PCT = 100
+
 
 def survival_probability(
     loss_pct: int,

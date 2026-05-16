@@ -89,8 +89,6 @@ class IcsWinDivertShaper:
         self._loss_in = 0
         self._cap_out_bps = 0.0  # bytes/sec (max_kbps * 1000 / 8)
         self._cap_in_bps = 0.0
-        self._compound_loss = True
-        self._cap_overflow_loss_pct = 100
         self._bucket_out = 0.0
         self._bucket_in = 0.0
         self._last_bucket = 0.0
@@ -141,8 +139,6 @@ class IcsWinDivertShaper:
         loss_in: int,
         max_kbps_out: float,
         max_kbps_in: float,
-        compound_loss: bool = True,
-        cap_overflow_loss_pct: int = 100,
     ) -> None:
         with self._lock:
             self._delay_out_ms = max(0, int(delay_out_ms))
@@ -153,8 +149,6 @@ class IcsWinDivertShaper:
             self._loss_in = max(0, min(100, int(loss_in)))
             self._cap_out_bps = max(0.0, float(max_kbps_out)) * 1000.0 / 8.0
             self._cap_in_bps = max(0.0, float(max_kbps_in)) * 1000.0 / 8.0
-            self._compound_loss = bool(compound_loss)
-            self._cap_overflow_loss_pct = max(0, min(100, int(cap_overflow_loss_pct)))
 
     def start(
         self,
@@ -166,8 +160,6 @@ class IcsWinDivertShaper:
         loss_in: int,
         max_kbps_out: float,
         max_kbps_in: float,
-        compound_loss: bool = True,
-        cap_overflow_loss_pct: int = 100,
     ) -> None:
         self.stop(join_timeout=3.0)
         self.apply_params(
@@ -179,8 +171,6 @@ class IcsWinDivertShaper:
             loss_in,
             max_kbps_out,
             max_kbps_in,
-            compound_loss,
-            cap_overflow_loss_pct,
         )
         self._stop.clear()
         dll_path = _windivert_dll_path()
@@ -350,8 +340,6 @@ class IcsWinDivertShaper:
                 l_in = self._loss_in
                 cap_out = self._cap_out_bps
                 cap_in = self._cap_in_bps
-                compound = self._compound_loss
-                overflow_pct = self._cap_overflow_loss_pct
 
             now = time.perf_counter()
             if self._last_bucket <= 0:
@@ -363,21 +351,15 @@ class IcsWinDivertShaper:
             cap_ok = self._cap_peek(n, is_from_victim, is_to_victim)
             loss_pct = l_out if is_from_victim else (l_in if is_to_victim else 0)
             cap_active = (cap_out > 0 and is_from_victim) or (cap_in > 0 and is_to_victim)
-            if compound:
-                from tools.mitm_compound_loss import should_drop_compounded
+            from tools.mitm_compound_loss import CAP_OVERFLOW_LOSS_PCT, should_drop_compounded
 
-                if should_drop_compounded(
-                    loss_pct,
-                    cap_active=cap_active,
-                    cap_can_forward=cap_ok,
-                    overflow_loss_pct=overflow_pct,
-                ):
-                    continue
-            else:
-                if loss_pct > 0 and random.randint(1, 100) <= loss_pct:
-                    continue
-                if cap_active and not cap_ok:
-                    continue
+            if should_drop_compounded(
+                loss_pct,
+                cap_active=cap_active,
+                cap_can_forward=cap_ok,
+                overflow_loss_pct=CAP_OVERFLOW_LOSS_PCT,
+            ):
+                continue
 
             if cap_active and not self._cap_commit(n, is_from_victim, is_to_victim):
                 continue

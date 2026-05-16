@@ -42,8 +42,6 @@ class MitmForwarder:
         self.loss_pct_to_victim = 0
         self.max_kbps_from_victim = 0.0
         self.max_kbps_to_victim = 0.0
-        self.compound_loss = True
-        self.cap_overflow_loss_pct = 100
         self._pkt_count = 0
         self._drop_count = 0
         self._fwd_count = 0
@@ -81,8 +79,6 @@ class MitmForwarder:
         loss_pct_to_victim: int = 0,
         max_kbps_from_victim: float = 0.0,
         max_kbps_to_victim: float = 0.0,
-        compound_loss: bool = True,
-        cap_overflow_loss_pct: int = 100,
     ):
         """
         Start capturing traffic for victim/router and rewrite MACs before sending.
@@ -104,8 +100,6 @@ class MitmForwarder:
         self.loss_pct_to_victim = max(0, min(100, int(loss_pct_to_victim)))
         self.max_kbps_from_victim = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_from_victim)))
         self.max_kbps_to_victim = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_to_victim)))
-        self.compound_loss = bool(compound_loss)
-        self.cap_overflow_loss_pct = max(0, min(100, int(cap_overflow_loss_pct)))
         self._byte_budget_from_victim = 0.0
         self._byte_budget_to_victim = 0.0
         self._bucket_last_out = None
@@ -314,15 +308,6 @@ class MitmForwarder:
             return False
         return self._token_bucket_commit(direction, nbytes)
 
-    @staticmethod
-    def _rng_loss_drop(pct: int) -> bool:
-        p = max(0, min(100, int(pct)))
-        if p <= 0:
-            return False
-        if p >= 100:
-            return True
-        return random.random() * 100.0 < p
-
     def _should_drop_shaped_packet(
         self,
         loss_pct: int,
@@ -330,23 +315,19 @@ class MitmForwarder:
         nbytes: int,
         now: float,
     ) -> bool:
-        """Loss and cap drops: compounded (one draw) or legacy sequential."""
+        """Loss and cap drops: one compounded survival roll."""
+        from tools.mitm_compound_loss import CAP_OVERFLOW_LOSS_PCT, should_drop_compounded
+
         cap_active = (
             self.max_kbps_from_victim > 0 if direction == 'out' else self.max_kbps_to_victim > 0
         )
         cap_ok = self._token_bucket_peek(direction, nbytes, now)
-        if self.compound_loss:
-            from tools.mitm_compound_loss import should_drop_compounded
-
-            return should_drop_compounded(
-                loss_pct,
-                cap_active=cap_active,
-                cap_can_forward=cap_ok,
-                overflow_loss_pct=self.cap_overflow_loss_pct,
-            )
-        if self._rng_loss_drop(loss_pct):
-            return True
-        return cap_active and not cap_ok
+        return should_drop_compounded(
+            loss_pct,
+            cap_active=cap_active,
+            cap_can_forward=cap_ok,
+            overflow_loss_pct=CAP_OVERFLOW_LOSS_PCT,
+        )
 
     @staticmethod
     def _queued_delay_ms(base: int, jitter_max: int) -> int:
