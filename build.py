@@ -79,6 +79,14 @@ def build():
     cmd.extend(['--paths', os.path.join(_ROOT, 'src')])
     cmd.extend(['--collect-submodules', 'gui'])
     cmd.extend(['--additional-hooks-dir', os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks')])
+    cmd.extend(
+        [
+            '--runtime-hook',
+            os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks', 'rthook_pynacl.py').replace(
+                '\\', '/'
+            ),
+        ]
+    )
 
     # Platform-specific options
     if system == 'Windows':
