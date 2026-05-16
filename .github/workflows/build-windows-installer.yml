@@ -70,7 +70,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller pillow PyNaCl
+          pip install pyinstaller pillow
 
       - name: Verify build script syntax
         run: python -m py_compile build.py
@@ -106,7 +106,7 @@ jobs:
       - name: Build Windows EXE (PyInstaller via build.py)
         run: python build.py
 
-      - name: Verify PyNaCl is bundled in frozen build
+      - name: Verify license crypto in frozen build
         run: python tools/verify_frozen_nacl.py
 
       - name: Install Inno Setup

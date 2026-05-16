@@ -79,36 +79,6 @@ class LicenseValidationResult:
     payload: dict[str, Any] | None = None
 
 
-def _bootstrap_pynacl_path() -> None:
-    """Frozen onedir: put _internal (+ nacl) on sys.path and DLL search path (Windows)."""
-    if not getattr(sys, 'frozen', False):
-        return
-    bases: list[str] = []
-    meipass = getattr(sys, '_MEIPASS', None)
-    if meipass and os.path.isdir(meipass):
-        bases.append(meipass)
-    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-    internal = os.path.join(exe_dir, '_internal')
-    for candidate in (internal, exe_dir):
-        if candidate and os.path.isdir(candidate) and candidate not in bases:
-            bases.append(candidate)
-    for base in bases:
-        if base not in sys.path:
-            sys.path.insert(0, base)
-    if sys.platform.startswith('win'):
-        for base in bases:
-            try:
-                os.add_dll_directory(base)
-            except (AttributeError, OSError):
-                pass
-            nacl_dir = os.path.join(base, 'nacl')
-            if os.path.isdir(nacl_dir):
-                try:
-                    os.add_dll_directory(nacl_dir)
-                except (AttributeError, OSError):
-                    pass
-
-
 def _build_stamp_for_errors() -> str:
     try:
         from constants import APP_BUILD_COMMIT, APP_BUILD_TIME_ISO, UPDATE_CHANNEL
@@ -122,14 +92,15 @@ def _build_stamp_for_errors() -> str:
         return ''
 
 
-def _nacl_import_error() -> str | None:
-    _bootstrap_pynacl_path()
+def _crypto_import_error() -> str | None:
     stamp = _build_stamp_for_errors()
     try:
-        from nacl.signing import VerifyKey  # noqa: F401
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (  # noqa: F401
+            Ed25519PublicKey,
+        )
     except ImportError:
         return (
-            'License verification is unavailable in this build (PyNaCl missing). '
+            'License verification is unavailable in this build (crypto library missing). '
             'Reinstall from the latest ZubCut installer.'
             f'{stamp}'
         )
@@ -155,28 +126,27 @@ def license_crypto_self_test() -> tuple[bool, str]:
         lines.append(f'verify_key_len={len(_effective_public_key_b64())}')
     except Exception as e:
         lines.append(f'constants_error={e}')
-    internal = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), '_internal')
-    lines.append(f'internal_exists={os.path.isdir(internal)}')
-    nacl_pyd = os.path.join(internal, 'nacl', '_sodium.pyd')
-    lines.append(f'nacl_pyd_exists={os.path.isfile(nacl_pyd)}')
-    err = _nacl_import_error()
+    err = _crypto_import_error()
     if err:
         return False, '\n'.join(lines + [f'FAIL: {err}'])
-    lines.append('nacl.signing: OK')
+    lines.append('cryptography.ed25519: OK')
     return True, '\n'.join(lines + ['OK'])
 
 
 def _verify_signature(payload: dict[str, Any], signature_b64: str, key_b64: str) -> bool:
     if not key_b64:
         return False
-    if _nacl_import_error():
+    if _crypto_import_error():
         return False
     try:
-        from nacl.signing import VerifyKey
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-        verify_key = VerifyKey(base64.b64decode(key_b64))
-        verify_key.verify(_canonical_payload_bytes(payload), base64.b64decode(signature_b64))
+        pk = Ed25519PublicKey.from_public_bytes(base64.b64decode(key_b64))
+        pk.verify(base64.b64decode(signature_b64), _canonical_payload_bytes(payload))
         return True
+    except InvalidSignature:
+        return False
     except Exception:
         return False
 
@@ -229,9 +199,9 @@ def validate_license_document(
             False,
             'This build has no license verify key. Install the official ZubCut build from GitHub.',
         )
-    nacl_err = _nacl_import_error()
-    if nacl_err:
-        return LicenseValidationResult(False, nacl_err)
+    crypto_err = _crypto_import_error()
+    if crypto_err:
+        return LicenseValidationResult(False, crypto_err)
     if not _verify_signature(payload, signature, key_b64):
         return LicenseValidationResult(
             False,

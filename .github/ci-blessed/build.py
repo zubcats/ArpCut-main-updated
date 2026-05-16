@@ -37,19 +37,16 @@ HIDDEN_IMPORTS = [
     'pyperclip',
     'requests',
     'six',
-    'nacl',
-    'nacl.signing',
-    'nacl.bindings',
-    'nacl.bindings.crypto_sign',
-    'nacl.bindings.sodium',
-    'nacl.exceptions',
+    'cryptography',
+    'cryptography.hazmat.primitives.asymmetric.ed25519',
+    'cryptography.hazmat.backends.openssl',
 ]
 
 COLLECT_ALL = [
     'manuf',
     'scapy',
     'qdarkstyle',
-    'nacl',
+    'cryptography',
 ]
 
 
@@ -78,14 +75,6 @@ def build():
     cmd.extend(['--paths', os.path.join(_ROOT, 'src')])
     cmd.extend(['--collect-submodules', 'gui'])
     cmd.extend(['--additional-hooks-dir', os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks')])
-    cmd.extend(
-        [
-            '--runtime-hook',
-            os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks', 'rthook_pynacl.py').replace(
-                '\\', '/'
-            ),
-        ]
-    )
 
     if system == 'Windows':
         cmd.extend(['--onedir', '--windowed'])

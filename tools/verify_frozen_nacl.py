@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CI: verify PyNaCl inside the frozen ZubCut.exe (not system Python)."""
+"""CI: verify license Ed25519 crypto inside frozen ZubCut.exe (not system Python)."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def main() -> int:
     if 'OK' not in report.splitlines()[-1:]:
         print('ERROR: crypto self-test did not report OK', file=sys.stderr)
         return 1
-    print('Frozen exe PyNaCl self-test passed.')
+    print('Frozen exe license crypto self-test passed.')
     return 0
 
 
