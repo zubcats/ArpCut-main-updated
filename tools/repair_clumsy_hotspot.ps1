@@ -21,12 +21,42 @@ function NormGuid([object]$g) {
     return ($g.ToString().Trim('{', '}').ToLowerInvariant())
 }
 
-Write-Host 'Restarting SharedAccess, WlanSvc, RemoteAccess...'
-foreach ($svc in @('SharedAccess', 'WlanSvc', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')) {
-    try { Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue } catch {}
-    try { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue } catch {}
-    try { Start-Service -Name $svc -ErrorAction SilentlyContinue } catch {}
+function Ensure-WlanAutoConfigHealthy {
+    $fixed = $false
+    try {
+        $wl = Get-Service -Name WlanSvc -ErrorAction Stop
+        if ($wl.StartType -notin @('Automatic', 'AutomaticDelayedStart')) {
+            Set-Service -Name WlanSvc -StartupType Automatic -ErrorAction SilentlyContinue
+            $fixed = $true
+        }
+        if ($wl.Status -ne 'Running') {
+            Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
+            $fixed = $true
+        }
+    } catch {
+        try { Set-Service -Name WlanSvc -StartupType Automatic -ErrorAction SilentlyContinue } catch {}
+        try { Start-Service -Name WlanSvc -ErrorAction SilentlyContinue } catch {}
+        $fixed = $true
+    }
+    return $fixed
 }
+
+function Restart-NetworkSharingServicesSafe {
+    foreach ($svc in @('SharedAccess', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')) {
+        try {
+            $s = Get-Service -Name $svc -ErrorAction Stop
+            if ($s.Status -eq 'Running') {
+                Restart-Service -Name $svc -Force -ErrorAction SilentlyContinue
+            } else {
+                Start-Service -Name $svc -ErrorAction SilentlyContinue
+            }
+        } catch {}
+    }
+    Ensure-WlanAutoConfigHealthy | Out-Null
+}
+
+Write-Host 'Restarting SharedAccess, WlanSvc, RemoteAccess (preserving WLAN AutoConfig)...'
+Restart-NetworkSharingServicesSafe
 Start-Sleep -Seconds 2
 
 Write-Host 'Clearing Internet Connection Sharing on all adapters...'
@@ -66,6 +96,15 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
 }
 
 Remove-Item -Path $statePath -Force -ErrorAction SilentlyContinue
+
+Ensure-WlanAutoConfigHealthy | Out-Null
+$wlCheck = Get-Service -Name WlanSvc -ErrorAction SilentlyContinue
+if ($null -eq $wlCheck -or $wlCheck.Status -ne 'Running' -or $wlCheck.StartType -eq 'Manual' -or $wlCheck.StartType -eq 'Disabled') {
+    Write-Host ''
+    Write-Host 'ERROR: WLAN AutoConfig (WlanSvc) is still not running.'
+    Write-Host 'Open services.msc -> WLAN AutoConfig -> Startup type Automatic -> Start -> reboot.'
+    exit 1
+}
 
 Write-Host ''
 Write-Host 'Done. Now manually:'

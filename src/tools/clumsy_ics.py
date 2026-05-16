@@ -127,6 +127,30 @@ def _windows_is_admin() -> bool:
         return False
 
 
+# Never set WlanSvc to Manual or force-stop it (breaks Wi-Fi network list on Windows).
+_PS_ENSURE_WLAN_HEALTHY = """
+function Ensure-WlanAutoConfigHealthy {
+  $fixed = $false
+  try {
+    $wl = Get-Service -Name WlanSvc -ErrorAction Stop
+    if ($wl.StartType -notin @('Automatic', 'AutomaticDelayedStart')) {
+      Set-Service -Name WlanSvc -StartupType Automatic -ErrorAction SilentlyContinue
+      $fixed = $true
+    }
+    if ($wl.Status -ne 'Running') {
+      Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
+      $fixed = $true
+    }
+  } catch {
+    try { Set-Service -Name WlanSvc -StartupType Automatic -ErrorAction SilentlyContinue } catch {}
+    try { Start-Service -Name WlanSvc -ErrorAction SilentlyContinue } catch {}
+    $fixed = $true
+  }
+  return $fixed
+}
+"""
+
+
 def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
     fd, path = tempfile.mkstemp(prefix='zubcut_clumsy_', suffix='.ps1')
     try:
@@ -306,9 +330,8 @@ function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
   throw 'EnableSharing failed after retries.'
 }}
 try {{
-  # ICS / sharing: start related services (best-effort).
+  # ICS / sharing: start related services (best-effort; do not change startup types).
   foreach ($svc in @('RemoteAccess', 'SharedAccess', 'NlaSvc')) {{
-    try {{ Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue }} catch {{}}
     try {{ Start-Service -Name $svc -ErrorAction SilentlyContinue }} catch {{}}
   }}
 
@@ -659,6 +682,20 @@ function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
   try {{ $cfg.EnableSharing([uint32]$sharingKind); return }} catch {{ }}
   try {{ $cfg.EnableSharing($sharingKind); return }} catch {{ }}
 }}
+{_PS_ENSURE_WLAN_HEALTHY}
+function Restart-NetworkSharingServicesSafe {{
+  foreach ($svc in @('SharedAccess', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')) {{
+    try {{
+      $s = Get-Service -Name $svc -ErrorAction Stop
+      if ($s.Status -eq 'Running') {{
+        Restart-Service -Name $svc -Force -ErrorAction SilentlyContinue
+      }} else {{
+        Start-Service -Name $svc -ErrorAction SilentlyContinue
+      }}
+    }} catch {{}}
+  }}
+  Ensure-WlanAutoConfigHealthy | Out-Null
+}}
 try {{
   $snapshot = @()
   if (Test-Path "{state_path}") {{
@@ -668,11 +705,7 @@ try {{
     }} catch {{}}
   }}
 
-  foreach ($svc in @('SharedAccess', 'WlanSvc', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')) {{
-    try {{ Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue }} catch {{}}
-    try {{ Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue }} catch {{}}
-    try {{ Start-Service -Name $svc -ErrorAction SilentlyContinue }} catch {{}}
-  }}
+  Restart-NetworkSharingServicesSafe
   Start-Sleep -Seconds 2
 
   $share = New-Object -ComObject HNetCfg.HNetShare
@@ -708,6 +741,17 @@ try {{
   }}
 
   Remove-Item -Path "{state_path}" -Force -ErrorAction SilentlyContinue
+
+  Ensure-WlanAutoConfigHealthy | Out-Null
+  $wlCheck = Get-Service -Name WlanSvc -ErrorAction SilentlyContinue
+  if ($null -eq $wlCheck -or $wlCheck.Status -ne 'Running' -or $wlCheck.StartType -eq 'Manual' -or $wlCheck.StartType -eq 'Disabled') {{
+    JsonOut @{{
+      ok=$false
+      error='WLAN AutoConfig (WlanSvc) is still not running. Open services.msc, set WLAN AutoConfig to Automatic, click Start, then reboot.'
+    }}
+    exit 1
+  }}
+
   $msg = @(
     'Reset Internet Connection Sharing and restarted Wi-Fi / hotspot services.'
     'In Windows Settings: turn Mobile hotspot OFF, wait 10 seconds, turn it ON again.'
@@ -727,6 +771,64 @@ catch {{
         return True, str(payload.get('message') or 'Network sharing repair completed.')
     msg = str(payload.get('error') or '').strip() or raw.strip() or 'Repair failed.'
     return False, msg
+
+
+def ensure_wlan_autoconfig_healthy() -> Tuple[bool, str]:
+    """
+    Restore WLAN AutoConfig (WlanSvc) if an older build left it Manual or stopped.
+
+    Safe to call repeatedly; does nothing when the service is already Automatic and running.
+    """
+    if os.name != 'nt':
+        return True, 'Non-Windows platform; skipping.'
+    if not _windows_is_admin():
+        return (
+            False,
+            'Run ZubCut as Administrator to restore WLAN AutoConfig (Wi-Fi).',
+        )
+    script = f"""
+$ErrorActionPreference = 'Continue'
+function JsonOut([hashtable]$o) {{
+  $json = $o | ConvertTo-Json -Compress -Depth 8
+  Write-Output ('{_MARKER}' + $json)
+}}
+{_PS_ENSURE_WLAN_HEALTHY}
+$fixed = Ensure-WlanAutoConfigHealthy
+$wl = Get-Service -Name WlanSvc -ErrorAction SilentlyContinue
+if ($null -eq $wl -or $wl.Status -ne 'Running') {{
+  JsonOut @{{
+    ok=$false
+    fixed=$fixed
+    error='WLAN AutoConfig (WlanSvc) is not running. Open services.msc, set WLAN AutoConfig to Automatic, click Start, then reboot.'
+  }}
+  exit 1
+}}
+if ($wl.StartType -eq 'Manual' -or $wl.StartType -eq 'Disabled') {{
+  JsonOut @{{
+    ok=$false
+    fixed=$fixed
+    error='WLAN AutoConfig startup type is still Manual or Disabled.'
+  }}
+  exit 1
+}}
+$msg = if ($fixed) {{ 'Restored WLAN AutoConfig (Wi-Fi).' }} else {{ 'WLAN AutoConfig already healthy.' }}
+JsonOut @{{ ok=$true; fixed=$fixed; message=$msg }}
+exit 0
+"""
+    ok, payload, _raw = _run_powershell(script)
+    if ok:
+        return True, str(payload.get('message') or 'WLAN AutoConfig OK.')
+    return False, str(payload.get('error') or 'Could not verify WLAN AutoConfig.')
+
+
+def maybe_ensure_wlan_autoconfig_on_startup() -> None:
+    """Every launch (admin): undo WlanSvc damage from older ZubCut builds without full ICS repair."""
+    if os.name != 'nt' or not _windows_is_admin():
+        return
+    try:
+        ensure_wlan_autoconfig_healthy()
+    except Exception:
+        pass
 
 
 def rollback_clumsy_ics() -> Tuple[bool, str]:
