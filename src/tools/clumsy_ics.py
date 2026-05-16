@@ -66,6 +66,38 @@ def read_clumsy_ics_state() -> Dict[str, Any]:
     return {}
 
 
+def format_clumsy_ics_error(detail: str) -> str:
+    """User-facing hints for common ICS / HNetCfg failures (incl. HRESULT 0x80040201)."""
+    d = (detail or '').strip()
+    lines = [d] if d else []
+    low = d.lower()
+    if '0x80040201' in low or 'abonnenten' in low or 'subscribers' in low:
+        lines.extend(
+            [
+                '',
+                'This Windows sharing error is often fixed by:',
+                '• Turn off Mobile hotspot (Settings → Network → Mobile hotspot)',
+                '• Network connections → your internet adapter → Properties → Sharing: '
+                'uncheck sharing, Apply, then try Clumsy mode again',
+                '• Set both Ethernet adapters to Private network, then retry',
+            ]
+        )
+    if 'administrator' not in low and 'admin' not in low:
+        lines.extend(['', '• Run ZubCut as Administrator (right-click → Run as administrator)'])
+    return '\n'.join(lines)
+
+
+def _windows_is_admin() -> bool:
+    if os.name != 'nt':
+        return True
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
 def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
     fd, path = tempfile.mkstemp(prefix='zubcut_clumsy_', suffix='.ps1')
     try:
@@ -131,6 +163,12 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
 def ensure_clumsy_ics_enabled() -> Tuple[bool, str]:
     if os.name != 'nt':
         return True, 'Non-Windows platform; skipping ICS automation.'
+    if not _windows_is_admin():
+        return (
+            False,
+            'ZubCut must run as Administrator to enable Internet Connection Sharing. '
+            'Close ZubCut, right-click the shortcut, choose Run as administrator, then try again.',
+        )
     os.makedirs(DOCUMENTS_PATH, exist_ok=True)
     state_path = _STATE_PATH.replace('\\', '\\\\')
     script = f"""
@@ -170,7 +208,14 @@ function SharingEnabledSafe($cfg) {{
     return $false
   }}
 }}
-function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
+function DisableSharingSafe([object]$cfg) {{
+  if ($null -eq $cfg) {{ return }}
+  if (-not (SharingEnabledSafe $cfg)) {{ return }}
+  for ($i = 0; $i -lt 3; $i++) {{
+    try {{ $cfg.DisableSharing(); return }} catch {{ Start-Sleep -Milliseconds 600 }}
+  }}
+}}
+function Invoke-EnableSharingOnce([object]$cfg, [int]$sharingKind) {{
   if ($null -eq $cfg) {{ throw 'EnableSharingSafe: null configuration object.' }}
   try {{
     $mi = $cfg.GetType().GetMethod('EnableSharing')
@@ -193,6 +238,21 @@ function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
   try {{ $cfg.EnableSharing($sharingKind); return }} catch {{ $lastErr = $_ }}
   if ($null -ne $lastErr) {{ throw $lastErr.Exception }}
   throw 'EnableSharing failed (no matching invocation).'
+}}
+function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
+  $lastErr = $null
+  for ($try = 0; $try -lt 4; $try++) {{
+    try {{
+      Invoke-EnableSharingOnce $cfg $sharingKind
+      return
+    }} catch {{
+      $lastErr = $_
+      try {{ Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue }} catch {{}}
+      Start-Sleep -Seconds 2
+    }}
+  }}
+  if ($null -ne $lastErr) {{ throw $lastErr.Exception }}
+  throw 'EnableSharing failed after retries.'
 }}
 try {{
   # ICS / sharing: start related services (best-effort).
@@ -293,10 +353,14 @@ try {{
   if (-not $upKey) {{ throw ('Upstream adapter not found in sharing manager (GUID/name). NetAdapter=' + $up.Name) }}
   if (-not $dnKey) {{ throw ('Downstream adapter not found in sharing manager (GUID/name). NetAdapter=' + $down.Name) }}
 
+  try {{ netsh wlan stop hostednetwork 2>$null | Out-Null }} catch {{}}
+  try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
+  try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
+  try {{ Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }} catch {{}}
+
   function Apply-ICS([bool]$privateFirst) {{
     foreach ($k in $connMap.Keys) {{
-      $cfg = $connMap[$k].cfg
-      if (SharingEnabledSafe $cfg) {{ try {{ $cfg.DisableSharing() }} catch {{ }} }}
+      DisableSharingSafe $connMap[$k].cfg
     }}
     Start-Sleep -Milliseconds 400
     if ($privateFirst) {{
@@ -325,6 +389,31 @@ try {{
     return ($okUp -and $okDn)
   }}
 
+  if (Verify-ICS) {{
+    $downIpObj = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $down.ifIndex -ErrorAction SilentlyContinue |
+      Where-Object {{ $_.IPAddress -and $_.IPAddress -notlike '169.254.*' }} |
+      Sort-Object SkipAsSource | Select-Object -First 1
+    $downIp = if ($downIpObj) {{ $downIpObj.IPAddress }} else {{ '' }}
+    if (-not $downIp) {{ throw 'ICS sharing is active but downstream IPv4 not assigned.' }}
+    $prefix = ''
+    if ($downIp -match '^(\\d+\\.\\d+\\.\\d+)\\.') {{ $prefix = $Matches[1] + '.' }}
+    if (-not $prefix) {{ throw 'ICS sharing is active but could not determine downstream prefix.' }}
+    $state = @{{
+      enabled_by_zubcut = $true
+      upstream_guid = $upGuid
+      upstream_name = $up.Name
+      downstream_guid = $downGuid
+      downstream_name = $down.Name
+      downstream_ipv4 = $downIp
+      downstream_prefix = $prefix
+      snapshot = $snapshot
+      ts = (Get-Date).ToUniversalTime().ToString('o')
+    }}
+    $state | ConvertTo-Json -Depth 8 | Set-Content -Path "{state_path}" -Encoding UTF8
+    JsonOut @{{ ok=$true; message='ICS sharing already active.'; state=$state }}
+    exit 0
+  }}
+
   try {{
     try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
     try {{ Enable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
@@ -335,10 +424,7 @@ try {{
         Start-Sleep -Seconds 2
         if (Verify-ICS) {{ $applied = $true; break }}
       }} catch {{
-        foreach ($k in $connMap.Keys) {{
-          $c = $connMap[$k].cfg
-          if (SharingEnabledSafe $c) {{ try {{ $c.DisableSharing() }} catch {{ }} }}
-        }}
+        foreach ($k in $connMap.Keys) {{ DisableSharingSafe $connMap[$k].cfg }}
         foreach ($row in @($snapshot)) {{
           $g = NormGuid($row.guid)
           if (-not $connMap.ContainsKey($g)) {{ continue }}
@@ -377,10 +463,7 @@ try {{
         }}
         $applied = $true
       }} catch {{
-        foreach ($k in $connMap.Keys) {{
-          $cfg = $connMap[$k].cfg
-          if (SharingEnabledSafe $cfg) {{ try {{ $cfg.DisableSharing() }} catch {{ }} }}
-        }}
+        foreach ($k in $connMap.Keys) {{ DisableSharingSafe $connMap[$k].cfg }}
         foreach ($row in @($snapshot)) {{
           $g = NormGuid($row.guid)
           if (-not $connMap.ContainsKey($g)) {{ continue }}
@@ -393,10 +476,7 @@ try {{
     }}
   }}
   catch {{
-    foreach ($k in $connMap.Keys) {{
-      $cfg = $connMap[$k].cfg
-      if (SharingEnabledSafe $cfg) {{ try {{ $cfg.DisableSharing() }} catch {{ }} }}
-    }}
+    foreach ($k in $connMap.Keys) {{ DisableSharingSafe $connMap[$k].cfg }}
     foreach ($row in @($snapshot)) {{
       $g = NormGuid($row.guid)
       if (-not $connMap.ContainsKey($g)) {{ continue }}

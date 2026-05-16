@@ -51,7 +51,7 @@ from constants import *
 import constants as _zcut_constants
 
 from tools.clumsy_inline import clumsy_bundle_offered, windivert_driver_installed
-from tools.clumsy_ics import ensure_clumsy_ics_enabled, rollback_clumsy_ics
+from tools.clumsy_ics import ensure_clumsy_ics_enabled, format_clumsy_ics_error, rollback_clumsy_ics
 from tools.utils_gui import restart_zubcut
 
 _UPDATE_BTN_QSS_FALLBACK = (
@@ -219,17 +219,24 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if new_v:
             ok, detail = ensure_clumsy_ics_enabled()
             if not ok:
-                MsgType.ERROR(
-                    self,
-                    'Clumsy Mode',
-                    'Could not enable console sharing automatically.\n\n'
-                    + (detail or 'Unknown error.'),
-                    Buttons.OK,
-                )
-                self._clumsy_toggle_guard = True
-                self.chkClumsy.setChecked(old_v)
-                self._clumsy_toggle_guard = False
-                return
+                detail = format_clumsy_ics_error(detail or 'Unknown error.')
+                if (
+                    MsgType.WARN(
+                        self,
+                        'Clumsy Mode',
+                        'Could not enable console sharing automatically.\n\n'
+                        + detail
+                        + '\n\nEnable Clumsy mode anyway? '
+                        '(Turn on ICS manually: Network connections → internet adapter → '
+                        'Properties → Sharing → Allow other network users…)',
+                        Buttons.YES | Buttons.NO,
+                    )
+                    == Buttons.NO
+                ):
+                    self._clumsy_toggle_guard = True
+                    self.chkClumsy.setChecked(old_v)
+                    self._clumsy_toggle_guard = False
+                    return
             try:
                 cur = (get_settings('iface') or '').strip()
             except Exception:
