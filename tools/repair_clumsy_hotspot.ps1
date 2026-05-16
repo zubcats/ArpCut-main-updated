@@ -42,7 +42,7 @@ function Ensure-WlanAutoConfigHealthy {
 }
 
 function Restart-NetworkSharingServicesSafe {
-    foreach ($svc in @('SharedAccess', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')) {
+    foreach ($svc in @('SharedAccess', 'icssvc', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')) {
         try {
             $s = Get-Service -Name $svc -ErrorAction Stop
             if ($s.Status -eq 'Running') {
@@ -59,31 +59,41 @@ Write-Host 'Restarting SharedAccess, WlanSvc, RemoteAccess (preserving WLAN Auto
 Restart-NetworkSharingServicesSafe
 Start-Sleep -Seconds 2
 
-Write-Host 'Clearing Internet Connection Sharing on all adapters...'
-$share = New-Object -ComObject HNetCfg.HNetShare
-$connMap = @{}
-foreach ($conn in @($share.EnumEveryConnection())) {
-    try {
-        $props = $share.NetConnectionProps($conn)
-        $guid = NormGuid($props.Guid)
-        $cfg = $share.INetSharingConfigurationForINetConnection($conn)
-        $connMap[$guid] = $cfg
-    } catch { continue }
-}
-foreach ($cfg in $connMap.Values) {
-    try { if ($cfg.SharingEnabled) { $cfg.DisableSharing() } } catch {}
-}
-Start-Sleep -Milliseconds 800
+$mobileHotspotActive = $false
+try {
+    $mobileHotspotActive = [bool](Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -eq '192.168.137.1' } | Select-Object -First 1)
+} catch {}
 
-if ($snapshot.Count -gt 0) {
-    Write-Host 'Restoring saved sharing snapshot...'
-    foreach ($row in $snapshot) {
-        $g = NormGuid($row.guid)
-        if (-not $connMap.ContainsKey($g)) { continue }
+if ($mobileHotspotActive -and $snapshot.Count -eq 0) {
+    Write-Host 'Mobile Hotspot is active — skipping ICS reset (clearing it breaks client DHCP).'
+} else {
+    Write-Host 'Clearing Internet Connection Sharing on all adapters...'
+    $share = New-Object -ComObject HNetCfg.HNetShare
+    $connMap = @{}
+    foreach ($conn in @($share.EnumEveryConnection())) {
         try {
-            $kind = [int]$row.type
-            if ($kind -eq 0 -or $kind -eq 1) { $connMap[$g].EnableSharing($kind) }
-        } catch {}
+            $props = $share.NetConnectionProps($conn)
+            $guid = NormGuid($props.Guid)
+            $cfg = $share.INetSharingConfigurationForINetConnection($conn)
+            $connMap[$guid] = $cfg
+        } catch { continue }
+    }
+    foreach ($cfg in $connMap.Values) {
+        try { if ($cfg.SharingEnabled) { $cfg.DisableSharing() } } catch {}
+    }
+    Start-Sleep -Milliseconds 800
+
+    if ($snapshot.Count -gt 0) {
+        Write-Host 'Restoring saved sharing snapshot...'
+        foreach ($row in $snapshot) {
+            $g = NormGuid($row.guid)
+            if (-not $connMap.ContainsKey($g)) { continue }
+            try {
+                $kind = [int]$row.type
+                if ($kind -eq 0 -or $kind -eq 1) { $connMap[$g].EnableSharing($kind) }
+            } catch {}
+        }
     }
 }
 

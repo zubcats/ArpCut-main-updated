@@ -684,7 +684,7 @@ function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
 }}
 {_PS_ENSURE_WLAN_HEALTHY}
 function Restart-NetworkSharingServicesSafe {{
-  foreach ($svc in @('SharedAccess', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')) {{
+  foreach ($svc in @('SharedAccess', 'icssvc', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')) {{
     try {{
       $s = Get-Service -Name $svc -ErrorAction Stop
       if ($s.Status -eq 'Running') {{
@@ -708,24 +708,34 @@ try {{
   Restart-NetworkSharingServicesSafe
   Start-Sleep -Seconds 2
 
-  $share = New-Object -ComObject HNetCfg.HNetShare
-  $connMap = @{{}}
-  foreach ($conn in @($share.EnumEveryConnection())) {{
-    try {{
-      $props = $share.NetConnectionProps($conn)
-      $guid = NormGuid($props.Guid)
-      $cfg = $share.INetSharingConfigurationForINetConnection($conn)
-      $connMap[$guid] = $cfg
-    }} catch {{ continue }}
-  }}
-  foreach ($cfg in $connMap.Values) {{ DisableSharingSafe $cfg }}
-  Start-Sleep -Milliseconds 800
-  foreach ($row in @($snapshot)) {{
-    $g = NormGuid($row.guid)
-    if (-not $connMap.ContainsKey($g)) {{ continue }}
-    $kind = SnapshotTypeInt $row
-    if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
-    EnableSharingSafe $connMap[$g] $kind
+  $mobileHotspotActive = $false
+  try {{
+    $mobileHotspotActive = [bool](Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object {{ $_.IPAddress -eq '192.168.137.1' }} | Select-Object -First 1)
+  }} catch {{}}
+
+  # Clearing ICS while Mobile Hotspot is up breaks DHCP (PS5 "cannot obtain IP").
+  $skipIcsReset = $mobileHotspotActive -and ($snapshot.Count -eq 0)
+  if (-not $skipIcsReset) {{
+    $share = New-Object -ComObject HNetCfg.HNetShare
+    $connMap = @{{}}
+    foreach ($conn in @($share.EnumEveryConnection())) {{
+      try {{
+        $props = $share.NetConnectionProps($conn)
+        $guid = NormGuid($props.Guid)
+        $cfg = $share.INetSharingConfigurationForINetConnection($conn)
+        $connMap[$guid] = $cfg
+      }} catch {{ continue }}
+    }}
+    foreach ($cfg in $connMap.Values) {{ DisableSharingSafe $cfg }}
+    Start-Sleep -Milliseconds 800
+    foreach ($row in @($snapshot)) {{
+      $g = NormGuid($row.guid)
+      if (-not $connMap.ContainsKey($g)) {{ continue }}
+      $kind = SnapshotTypeInt $row
+      if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
+      EnableSharingSafe $connMap[$g] $kind
+    }}
   }}
 
   Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {{
@@ -752,11 +762,19 @@ try {{
     exit 1
   }}
 
-  $msg = @(
-    'Reset Internet Connection Sharing and restarted Wi-Fi / hotspot services.'
-    'In Windows Settings: turn Mobile hotspot OFF, wait 10 seconds, turn it ON again.'
-    'Then reconnect the PS5 to the PC hotspot Wi-Fi.'
-  ) -join ' '
+  if ($skipIcsReset) {{
+    $msg = @(
+      'Mobile Hotspot is active; left Windows ICS intact (clearing it breaks PS5 DHCP).'
+      'Restarted sharing services only. In Settings: Mobile hotspot OFF, wait 15 seconds, ON.'
+      'Reconnect the PS5 to the PC hotspot Wi-Fi (not the router).'
+    ) -join ' '
+  }} else {{
+    $msg = @(
+      'Reset Internet Connection Sharing and restarted Wi-Fi / hotspot services.'
+      'In Windows Settings: turn Mobile hotspot OFF, wait 10 seconds, turn it ON again.'
+      'Then reconnect the PS5 to the PC hotspot Wi-Fi.'
+    ) -join ' '
+  }}
   JsonOut @{{ ok=$true; message=$msg }}
   exit 0
 }}
