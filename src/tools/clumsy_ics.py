@@ -278,6 +278,55 @@ function Apply-HotspotIcs {
   Start-Sleep -Seconds 2
   return (Test-HotspotIcsActive)
 }
+function Wait-TetheringAsync($op, [string]$label) {
+  $deadline = (Get-Date).AddSeconds(25)
+  while ($op.Status -eq 'Started') {
+    if ((Get-Date) -gt $deadline) { return $false }
+    Start-Sleep -Milliseconds 250
+  }
+  return ($op.Status -ne 'Error')
+}
+function Get-TetheringManager {
+  try {
+    [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager, Windows.Networking.NetworkOperators, ContentType = WindowsRuntime]
+    $profile = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
+    if (-not $profile) { return $null }
+    return [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
+  } catch {
+    return $null
+  }
+}
+function Test-TetheringOn {
+  $mgr = Get-TetheringManager
+  if ($null -eq $mgr) { return $false }
+  return ($mgr.TetheringOperationalState.ToString() -eq 'On')
+}
+function Ensure-MobileHotspotOn {
+  $mgr = Get-TetheringManager
+  if ($null -eq $mgr) { return $false }
+  if ($mgr.TetheringOperationalState.ToString() -eq 'On') { return $true }
+  try {
+    $op = $mgr.StartTetheringAsync()
+    if (-not (Wait-TetheringAsync $op 'StartTethering')) { return $false }
+    Start-Sleep -Seconds 6
+    return ((Test-TetheringOn) -and (Test-MobileHotspotGateway))
+  } catch {
+    return $false
+  }
+}
+function Restart-SharedAccessSafe([bool]$hotspotWasOn) {
+  try {
+    $sa = Get-Service -Name SharedAccess -ErrorAction Stop
+    if ($sa.Status -ne 'Running') {
+      Start-Service -Name SharedAccess -ErrorAction SilentlyContinue
+      return
+    }
+    if ($hotspotWasOn) {
+      return
+    }
+    Restart-Service -Name SharedAccess -Force -ErrorAction SilentlyContinue
+  } catch {}
+}
 """
 
 
@@ -392,10 +441,18 @@ foreach ($svc in @('SharedAccess','icssvc','WlanSvc','Dhcp')) {{
   try {{ Start-Service $svc -ErrorAction SilentlyContinue }} catch {{}}
 }}
 
+$hotspotWasOn = (Test-MobileHotspotGateway) -or (Test-TetheringOn)
 $gw = Get-NetIPAddress -AddressFamily IPv4 -EA SilentlyContinue | Where-Object {{ $_.IPAddress -eq '192.168.137.1' }} | Select-Object -First 1
 if (-not $gw) {{
-  JsonOut @{{ ok=$false; dhcp67=$false; needs_manual_sharing=$false; error='Turn ON Mobile Hotspot in Windows Settings first.' }}
-  exit 1
+  if ($hotspotWasOn) {{
+    Ensure-MobileHotspotOn | Out-Null
+    Start-Sleep -Seconds 5
+    $gw = Get-NetIPAddress -AddressFamily IPv4 -EA SilentlyContinue | Where-Object {{ $_.IPAddress -eq '192.168.137.1' }} | Select-Object -First 1
+  }}
+  if (-not $gw) {{
+    JsonOut @{{ ok=$false; dhcp67=$false; needs_manual_sharing=$false; error='Turn ON Mobile Hotspot in Windows Settings first.' }}
+    exit 1
+  }}
 }}
 
 $up = Get-NetAdapter -EA SilentlyContinue | Where-Object {{ $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'Direct|Virtual|Bluetooth' -and ($_.Name -eq 'Wi-Fi' -or $_.InterfaceDescription -match 'Wireless LAN|Wi-Fi') }} | Select-Object -First 1
@@ -412,7 +469,8 @@ if ($dhcp67 -and $icsOk) {{
 }}
 if ($dhcp67 -and -not $icsOk) {{
   Apply-HotspotIcs | Out-Null
-  Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue
+  Restart-SharedAccessSafe $hotspotWasOn
+  if ($hotspotWasOn -and -not (Test-TetheringOn)) {{ Ensure-MobileHotspotOn | Out-Null }}
   Start-Sleep -Seconds 4
   $icsOk = Test-HotspotIcsActive
   if ($icsOk) {{
@@ -425,7 +483,8 @@ if ($up -and $down) {{
   Apply-HotspotIcs | Out-Null
 }}
 
-Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue
+Restart-SharedAccessSafe $hotspotWasOn
+if ($hotspotWasOn -and -not (Test-TetheringOn)) {{ Ensure-MobileHotspotOn | Out-Null }}
 Start-Sleep -Seconds 5
 $dhcp67 = Test-HotspotDhcp67
 $icsOk = Test-HotspotIcsActive
@@ -955,10 +1014,10 @@ function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
 }}
 {_PS_ENSURE_WLAN_HEALTHY}
 {_PS_HOTSPOT_HELPERS}
-function Restart-NetworkSharingServicesSafe([bool]$hotspotUp) {{
-  $svcs = @('SharedAccess', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')
-  if (-not $hotspotUp) {{
-    $svcs = @('icssvc') + $svcs
+function Restart-NetworkSharingServicesSafe([bool]$preserveHotspot) {{
+  $svcs = @('RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')
+  if (-not $preserveHotspot) {{
+    $svcs = @('icssvc', 'SharedAccess') + $svcs
   }}
   foreach ($svc in $svcs) {{
     try {{
@@ -969,6 +1028,16 @@ function Restart-NetworkSharingServicesSafe([bool]$hotspotUp) {{
         Start-Service -Name $svc -ErrorAction SilentlyContinue
       }}
     }} catch {{}}
+  }}
+  if ($preserveHotspot) {{
+    foreach ($svc in @('SharedAccess', 'icssvc')) {{
+      try {{
+        $s = Get-Service -Name $svc -ErrorAction Stop
+        if ($s.Status -ne 'Running') {{
+          Start-Service -Name $svc -ErrorAction SilentlyContinue
+        }}
+      }} catch {{}}
+    }}
   }}
   Ensure-WlanAutoConfigHealthy | Out-Null
 }}
@@ -981,13 +1050,13 @@ try {{
     }} catch {{}}
   }}
 
-  $mobileHotspotActive = Test-MobileHotspotGateway
+  $hotspotWasOn = (Test-MobileHotspotGateway) -or (Test-TetheringOn)
 
-  Restart-NetworkSharingServicesSafe $mobileHotspotActive
+  Restart-NetworkSharingServicesSafe $hotspotWasOn
   Start-Sleep -Seconds 2
 
-  # Never wipe ICS while Mobile Hotspot is up — PS5 gets Wi‑Fi but loses internet/NAT.
-  $skipIcsReset = $mobileHotspotActive
+  # Never wipe ICS while Mobile Hotspot was on — PS5 gets Wi‑Fi but loses internet/NAT.
+  $skipIcsReset = $hotspotWasOn
   if (-not $skipIcsReset) {{
     $share = New-Object -ComObject HNetCfg.HNetShare
     $connMap = @{{}}
@@ -1034,14 +1103,30 @@ try {{
     exit 1
   }}
 
-  if ($mobileHotspotActive) {{
+  $hotspotReenabled = $false
+  if ($hotspotWasOn -and -not (Test-TetheringOn)) {{
+    $hotspotReenabled = Ensure-MobileHotspotOn
+    Start-Sleep -Seconds 4
+  }}
+  $mobileHotspotActive = (Test-MobileHotspotGateway) -or (Test-TetheringOn)
+
+  if ($hotspotWasOn) {{
     if (-not (Test-HotspotIcsActive)) {{
       Apply-HotspotIcs | Out-Null
       Start-Sleep -Seconds 2
     }}
+    if (-not (Test-TetheringOn)) {{
+      $hotspotReenabled = Ensure-MobileHotspotOn
+      Start-Sleep -Seconds 4
+    }}
     $dhcp67 = Test-HotspotDhcp67
     $icsOk = Test-HotspotIcsActive
-    if ($dhcp67 -and $icsOk) {{
+    if ($hotspotReenabled) {{
+      $msg = @(
+        'Mobile Hotspot was turned back on automatically.'
+        'Reconnect the PS5 to your PC hotspot Wi-Fi (not the router).'
+      ) -join ' '
+    }} elseif ($dhcp67 -and $icsOk) {{
       $msg = @(
         'Mobile Hotspot is active; restored internet sharing (ICS) for clients.'
         'If the PS5 still has no internet: forget the hotspot on the PS5, reconnect, or set manual IP 192.168.137.2 gateway 192.168.137.1 DNS 8.8.8.8.'
@@ -1050,12 +1135,12 @@ try {{
       $msg = @(
         'Mobile Hotspot DHCP is up but internet sharing (ICS) could not be enabled automatically.'
         'Win+R -> ncpa.cpl -> Wi-Fi -> Sharing -> allow other users -> home network: Wi-Fi Direct / Local Area Connection*.'
-        'Then Mobile hotspot OFF 15 seconds ON and reconnect the PS5.'
+        'Then turn Mobile hotspot ON in Settings and reconnect the PS5.'
       ) -join ' '
     }} else {{
       $msg = @(
-        'Mobile Hotspot is on but DHCP is not running.'
-        'Settings -> Mobile hotspot OFF, wait 15 seconds, ON. Reconnect the PS5 to the PC hotspot Wi-Fi (not the router).'
+        'Mobile Hotspot is off after repair.'
+        'Open Settings -> Network -> Mobile hotspot and turn it ON, then reconnect the PS5.'
       ) -join ' '
     }}
   }} else {{

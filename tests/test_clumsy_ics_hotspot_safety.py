@@ -35,9 +35,20 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
 
     def test_repair_preserves_ics_when_hotspot_active(self) -> None:
         src = inspect.getsource(ics.repair_clumsy_network_sharing)
-        self.assertIn('$skipIcsReset = $mobileHotspotActive', src)
+        self.assertIn('$skipIcsReset = $hotspotWasOn', src)
         self.assertIn('Apply-HotspotIcs', src)
-        self.assertIn('if (-not $hotspotUp)', src)
+        self.assertIn('if (-not $preserveHotspot)', src)
+
+    def test_repair_reenables_mobile_hotspot(self) -> None:
+        src = inspect.getsource(ics.repair_clumsy_network_sharing)
+        self.assertIn('Ensure-MobileHotspotOn', src)
+        self.assertIn('hotspotWasOn', src)
+        self.assertIn('hotspotReenabled', src)
+
+    def test_prepare_can_restart_tethering(self) -> None:
+        src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
+        self.assertIn('Ensure-MobileHotspotOn', src)
+        self.assertIn('Restart-SharedAccessSafe', src)
 
     def test_prepare_checks_ics_not_only_dhcp(self) -> None:
         src = inspect.getsource(ics.prepare_pc_mobile_hotspot)

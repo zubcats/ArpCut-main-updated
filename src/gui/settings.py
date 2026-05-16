@@ -293,9 +293,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if MsgType.WARN(
             self,
             'Repair hotspot / sharing',
-            'While Mobile Hotspot is on, this restores internet sharing (ICS) for PS5 clients '
-            'without wiping hotspot DHCP.\n'
-            'You may still need to toggle hotspot OFF then ON, or set Wi‑Fi Sharing once in ncpa.cpl.\n\n'
+            'Keeps Mobile Hotspot on when possible and turns it back on automatically if Windows '
+            'disables it during repair. Restores internet sharing (ICS) for PS5 clients.\n\n'
             'Continue?',
             Buttons.YES | Buttons.NO,
         ) == Buttons.NO:
