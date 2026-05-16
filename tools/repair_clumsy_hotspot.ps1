@@ -22,7 +22,7 @@ function NormGuid([object]$g) {
 }
 
 Write-Host 'Restarting SharedAccess, WlanSvc, RemoteAccess...'
-foreach ($svc in @('SharedAccess', 'WlanSvc', 'RemoteAccess', 'NlaSvc')) {
+foreach ($svc in @('SharedAccess', 'WlanSvc', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')) {
     try { Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue } catch {}
     try { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue } catch {}
     try { Start-Service -Name $svc -ErrorAction SilentlyContinue } catch {}

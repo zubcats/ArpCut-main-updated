@@ -327,7 +327,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 cur = ''
             set_settings('iface_before_clumsy', cur)
         else:
-            ok, detail = rollback_clumsy_ics()
+            ok, detail = repair_clumsy_network_sharing()
             if not ok:
                 if (
                     MsgType.WARN(

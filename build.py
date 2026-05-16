@@ -89,6 +89,8 @@ def build():
         cmd.extend(['--add-data', 'exe/manuf;manuf'])
         cmd.extend(['--add-data', 'exe/zubcut_icon.png;.'])
         cmd.extend(['--add-data', 'exe/zubcut_shell.ico;.'])
+        cmd.extend(['--add-data', 'tools/repair_clumsy_hotspot.ps1;tools'])
+        cmd.extend(['--add-data', 'tools/Repair-Clumsy-Hotspot.cmd;tools'])
         _ico = _windows_pyinstaller_icon_path()
         cmd.extend(['--icon', os.path.relpath(_ico, _ROOT).replace('\\', '/')])
         cmd.extend(['--uac-admin'])  # Force admin elevation prompt

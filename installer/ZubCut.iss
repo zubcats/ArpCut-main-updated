@@ -56,6 +56,8 @@ Source: "..\dist\{#MyAppName}\*"; DestDir: "{app}"; Flags: ignoreversion recurse
 Source: "..\installer\{#NpcapInstallerName}"; DestDir: "{tmp}"; Flags: deleteafterinstall ignoreversion skipifsourcedoesntexist
 ; WinDivert 2.x: run installer\fetch_windivert.ps1 before compile (CI does). Ships WinDivert.dll + WinDivert64.sys — no pnputil.
 Source: "..\installer\windivert\*"; DestDir: "{app}\windivert"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+Source: "..\tools\repair_clumsy_hotspot.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\tools\Repair-Clumsy-Hotspot.cmd"; DestDir: "{app}\tools"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

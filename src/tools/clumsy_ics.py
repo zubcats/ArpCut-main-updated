@@ -426,13 +426,6 @@ try {{
   if (-not $upKey) {{ throw ('Upstream adapter not found in sharing manager (GUID/name). NetAdapter=' + $up.Name) }}
   if (-not $dnKey) {{ throw ('Downstream adapter not found in sharing manager (GUID/name). NetAdapter=' + $down.Name) }}
 
-  if ($ZubcutTopology -ne 'hotspot') {{
-    try {{ netsh wlan stop hostednetwork 2>$null | Out-Null }} catch {{}}
-  }}
-  try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
-  try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
-  try {{ Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }} catch {{}}
-
   function Write-ClumsyState([object]$up, [object]$down, [array]$snapshot, [string]$msg) {{
     $downIpObj = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $down.ifIndex -ErrorAction SilentlyContinue |
       Where-Object {{ $_.IPAddress -and $_.IPAddress -notlike '169.254.*' }} |
@@ -460,13 +453,21 @@ try {{
   }}
 
   if ($ZubcutTopology -eq 'hotspot') {{
+    try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
+    try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
     $downIpProbe = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $down.ifIndex -ErrorAction SilentlyContinue |
       Where-Object {{ $_.IPAddress -and $_.IPAddress -notlike '169.254.*' }} |
       Sort-Object SkipAsSource | Select-Object -First 1
     if ($downIpProbe -and $downIpProbe.IPAddress) {{
       Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot path ready (using active hotspot).'
     }}
+    throw ('Mobile Hotspot is not active yet. Turn ON Mobile hotspot in Windows Settings, connect the PS5 to your PC hotspot Wi-Fi (not the router), then enable Clumsy mode again. ZubCut will not reset ICS in hotspot mode.')
   }}
+
+  try {{ netsh wlan stop hostednetwork 2>$null | Out-Null }} catch {{}}
+  try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
+  try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
+  try {{ Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }} catch {{}}
 
   function Apply-ICS([bool]$privateFirst) {{
     foreach ($k in $connMap.Keys) {{
@@ -667,7 +668,7 @@ try {{
     }} catch {{}}
   }}
 
-  foreach ($svc in @('SharedAccess', 'WlanSvc', 'RemoteAccess', 'NlaSvc')) {{
+  foreach ($svc in @('SharedAccess', 'WlanSvc', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')) {{
     try {{ Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue }} catch {{}}
     try {{ Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue }} catch {{}}
     try {{ Start-Service -Name $svc -ErrorAction SilentlyContinue }} catch {{}}
@@ -730,3 +731,24 @@ catch {{
 
 def rollback_clumsy_ics() -> Tuple[bool, str]:
     return repair_clumsy_network_sharing()
+
+
+def maybe_repair_stale_clumsy_ics_on_startup() -> None:
+    """
+    If Clumsy left a state file but mode is off, undo ICS changes automatically once at launch.
+    Fixes PCs broken by older builds without requiring the user to find Repair in Settings.
+    """
+    if os.name != 'nt':
+        return
+    if not os.path.isfile(_STATE_PATH):
+        return
+    try:
+        from tools.clumsy_inline import clumsy_mode_enabled
+
+        if clumsy_mode_enabled():
+            return
+    except Exception:
+        return
+    if not _windows_is_admin():
+        return
+    repair_clumsy_network_sharing()
