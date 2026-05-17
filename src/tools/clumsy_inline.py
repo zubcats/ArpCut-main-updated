@@ -43,27 +43,48 @@ def clumsy_bundle_offered() -> bool:
     return os.path.isfile(clumsy_bundle_flag_path())
 
 
+def windivert_app_dir() -> Optional[str]:
+    """{app}\\windivert next to ZubCut.exe (installer layout)."""
+    if not sys.platform.startswith('win'):
+        return None
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.getcwd()
+    path = os.path.join(base, 'windivert')
+    return path if os.path.isdir(path) else None
+
+
+def windivert_bundled_next_to_app() -> bool:
+    """True when WinDivert.dll and WinDivert64.sys are beside the running app."""
+    wd = windivert_app_dir()
+    if not wd:
+        return False
+    return (
+        os.path.isfile(os.path.join(wd, 'WinDivert.dll'))
+        and os.path.isfile(os.path.join(wd, 'WinDivert64.sys'))
+    )
+
+
 def windivert_driver_installed() -> bool:
     """
-    WinDivert 2.x: no pnputil — ship WinDivert64.sys (+ WinDivert.dll) with the app.
-    Treat as "available" if the signed .sys is bundled next to the exe or already in DriverStore.
-    """
+    WinDivert 2.x: bundled under {app}\\windivert (installer) or legacy System32 copy.
+  """
     if not sys.platform.startswith('win'):
         return False
+    if windivert_bundled_next_to_app():
+        return True
     sys_root = os.environ.get('SystemRoot', r'C:\Windows')
     if os.path.isfile(os.path.join(sys_root, 'System32', 'drivers', 'WinDivert64.sys')):
         return True
-    from tools.ics_windivert_shaper import _windivert_search_bases
+    from tools.ics_windivert_shaper import _windivert_dll_path
 
-    for base in _windivert_search_bases():
-        for rel in (
-            os.path.join('windivert', 'WinDivert64.sys'),
-            'WinDivert64.sys',
-            os.path.join('installer', 'windivert', 'WinDivert64.sys'),
-        ):
-            if os.path.isfile(os.path.join(base, rel)):
-                return True
-    return False
+    return bool(_windivert_dll_path())
+
+
+def clumsy_bundle_incomplete() -> bool:
+    """Installer offered Clumsy but WinDivert files are missing (broken install)."""
+    return clumsy_bundle_offered() and not windivert_bundled_next_to_app()
 
 
 def clumsy_runtime_ready() -> bool:
@@ -123,6 +144,27 @@ def clumsy_ics_lag_can_use_windivert(device) -> bool:
     from tools.ics_windivert_shaper import _windivert_dll_path
 
     return bool(_windivert_dll_path())
+
+
+def clumsy_windivert_unavailable_reason(device) -> str:
+    """Short reason WinDivert ICS lag is unavailable (for logs / settings)."""
+    if not sys.platform.startswith('win'):
+        return 'Windows only'
+    if not clumsy_mode_enabled():
+        return 'enable Clumsy mode in Settings and restart ZubCut'
+    if getattr(sys, 'frozen', False) and not clumsy_bundle_offered():
+        return 'reinstall with Clumsy mode checked (WinDivert bundle)'
+    if not windivert_bundled_next_to_app():
+        return 'WinDivert.dll missing next to ZubCut.exe (reinstall or repair)'
+    if not isinstance(device, dict):
+        return 'no device selected'
+    ip = str(device.get('ip') or '').strip()
+    if not ip:
+        return 'target has no IP yet'
+    if not victim_on_clumsy_ics_subnet(ip):
+        prefix = clumsy_ics_downstream_prefix()
+        return f'target {ip} is not on hotspot subnet {prefix}x'
+    return 'unknown'
 
 
 def apply_ics_victim_arp_block(scanner: Scanner, killer, device) -> bool:

@@ -213,13 +213,18 @@ class IcsWinDivertLagGate:
         _bind_windivert_api(self._dll)
         vip = self._victim
         filt = f'ip and (ip.SrcAddr == {vip} or ip.DstAddr == {vip})'
+        # Mobile Hotspot / ICS client traffic is often visible on NETWORK, not FORWARD.
         # One handle only — dual-layer divert can duplicate or reorder ICS/NAT packets.
-        hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK_FORWARD)
-        if hrv < 0:
-            hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK)
+        if vip.startswith('192.168.137.'):
+            layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
+        else:
+            layers = (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
         handles: list[int] = []
-        if hrv >= 0:
-            handles.append(hrv)
+        for layer in layers:
+            hrv = _open_windivert_handle(self._dll, filt, layer)
+            if hrv >= 0:
+                handles.append(hrv)
+                break
         if not handles:
             raise OSError('WinDivertOpen failed (run as Administrator; check WinDivert driver).')
         self._handles = handles
@@ -458,19 +463,23 @@ class IcsWinDivertLagGate:
                 n = len(pkt)
 
                 if blocking:
-                    if not hold_pause and loss_pct > 0 and random.randint(1, 100) <= loss_pct:
+                    if not hold_pause:
+                        if loss_pct > 0:
+                            if random.randint(1, 100) <= loss_pct:
+                                continue
+                            self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                            continue
+                        if delay_ms > 0:
+                            if len(heap) >= _MAX_LAG_HEAP_PACKETS:
+                                heapq.heappop(heap)
+                            due = time.perf_counter() + delay_ms / 1000.0
+                            heapq.heappush(heap, (due, pkt, addr_b, h))
+                            continue
+                        self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                         continue
                     if len(heap) >= _MAX_LAG_HEAP_PACKETS:
                         heapq.heappop(heap)
-                    if hold_pause:
-                        due = _PAUSE_HOLD_DUE
-                    elif delay_ms > 0:
-                        due = time.perf_counter() + delay_ms / 1000.0
-                    elif loss_pct > 0:
-                        continue
-                    else:
-                        due = _PAUSE_HOLD_DUE
-                    heapq.heappush(heap, (due, pkt, addr_b, h))
+                    heapq.heappush(heap, (_PAUSE_HOLD_DUE, pkt, addr_b, h))
                     continue
 
                 if shaping and (is_from_victim or is_to_victim):

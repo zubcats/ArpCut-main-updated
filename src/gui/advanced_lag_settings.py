@@ -457,6 +457,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         main = self.elmocut
         if main is None or self._mitm_sync_guard:
             return
+        try:
+            from tools.utils_gui import repair_settings
+
+            repair_settings()
+        except Exception:
+            pass
         if checked:
             self._persist_mitm_ui()
             if not self._has_valid_mitm_config():
@@ -467,10 +473,17 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
                 self._set_toggle_state(self._tog_victim_all, False)
                 self._refresh_mitm_status()
                 return
-            du, dd, ju, jd, cu, cd, lu, ld = self._mitm_effective_params()
-            main.start_mitm_shaping_from_advanced(du, dd, ju, jd, cu, cd, lu, ld)
+            try:
+                du, dd, ju, jd, cu, cd, lu, ld = self._mitm_effective_params()
+                main.start_mitm_shaping_from_advanced(du, dd, ju, jd, cu, cd, lu, ld)
+            except Exception as exc:
+                self._log(f'Advanced Lag failed to start: {exc}', 'red')
+                self._set_toggle_state(self._tog_victim_all, False)
         else:
-            main.stop_mitm_shaping(log=True)
+            try:
+                main.stop_mitm_shaping(log=True)
+            except Exception as exc:
+                self._log(f'Advanced Lag failed to stop: {exc}', 'red')
             self._persist_mitm_ui()
         self._refresh_mitm_status()
 

@@ -1,13 +1,14 @@
-WinDivert (64-bit) for the Clumsy mode optional installer task (WinDivert 2.x, LGPL).
+WinDivert (64-bit) for the Clumsy mode installer task (WinDivert 2.x, LGPL).
 
-WinDivert 2.x does not use an .inf in the release zip: ship WinDivert.dll + WinDivert64.sys
-(next to ZubCut in {app}\windivert\). The driver loads when a program opens it (admin).
+When the user selects "Clumsy mode" in setup, ZubCut installs:
+  {app}\windivert\WinDivert.dll
+  {app}\windivert\WinDivert64.sys
+and writes clumsy_mode_bundle.flag (only if both files are present).
 
-CI: GitHub Actions runs installer\fetch_windivert.ps1 before ISCC so this folder contains
-the real binaries for that build.
+WinDivert 2.x does not use pnputil. The driver loads when ZubCut runs as Administrator.
 
-Local Inno compile: from repo root, run:
+Before compiling ZubCut.iss (required — compile fails if DLL/SYS are missing):
   pwsh -File installer\fetch_windivert.ps1
-then compile ZubCut.iss.
+  pwsh -File tools\verify_windivert_bundle.ps1
 
-If you skip the fetch step, only README.txt may be here and the installer will not bundle WinDivert.
+CI runs fetch + verify automatically before Inno Setup.

@@ -5,6 +5,7 @@ Run: python build.py
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import platform
@@ -70,6 +71,22 @@ def _windows_pyinstaller_icon_path():
     return png
 
 
+def _stage_windivert_dist_if_present() -> None:
+    """Copy installer\\windivert into dist\\ZubCut\\windivert when binaries exist (local release builds)."""
+    src_dir = os.path.join(_ROOT, 'installer', 'windivert')
+    dll = os.path.join(src_dir, 'WinDivert.dll')
+    sys_file = os.path.join(src_dir, 'WinDivert64.sys')
+    if not (os.path.isfile(dll) and os.path.isfile(sys_file)):
+        return
+    dest_dir = os.path.join(_ROOT, 'dist', APP_BUNDLE_NAME, 'windivert')
+    os.makedirs(dest_dir, exist_ok=True)
+    for name in ('WinDivert.dll', 'WinDivert64.sys', 'WinDivert-LICENSE.txt'):
+        src = os.path.join(src_dir, name)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(dest_dir, name))
+    print(f"Staged WinDivert: {dest_dir}")
+
+
 def build():
     system = platform.system()
     
@@ -125,6 +142,7 @@ def build():
         print()
         print("Build complete!")
         if system == 'Windows':
+            _stage_windivert_dist_if_present()
             print(f"Output: dist/{APP_BUNDLE_NAME}/{APP_BUNDLE_NAME}.exe")
         elif system == 'Darwin':
             print(f"Output: dist/{APP_BUNDLE_NAME}.app")

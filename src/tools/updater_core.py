@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -678,6 +679,14 @@ def launch_installer(tmp_path, *, no_ui=False):
         flags = ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', f'/LOG={install_log}']
     else:
         flags = ['/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', f'/LOG={install_log}']
+    if sys.platform.startswith('win'):
+        try:
+            from tools.clumsy_inline import clumsy_bundle_offered
+
+            if clumsy_bundle_offered():
+                flags.append('/MERGETASKS=clumsymode')
+        except Exception:
+            pass
     subprocess.Popen([tmp_path] + flags, close_fds=True)
 
 

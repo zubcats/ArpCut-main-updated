@@ -44,7 +44,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "clumsymode"; Description: "Clumsy mode (WinDivert driver if missing)"; GroupDescription: "Optional:"
+Name: "clumsymode"; Description: "Clumsy mode (WinDivert for PC Mobile Hotspot lag)"; GroupDescription: "Optional:"; Flags: checked
 
 ; Replace the whole onedir payload on upgrade (avoids stale PyInstaller files beside new builds).
 [InstallDelete]
@@ -54,8 +54,11 @@ Type: filesandordirs; Name: "{app}\_internal"
 Source: "..\dist\{#MyAppName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Bundle Npcap installer with setup. Place this file at installer\npcap-1.87.exe before compiling.
 Source: "..\installer\{#NpcapInstallerName}"; DestDir: "{tmp}"; Flags: deleteafterinstall ignoreversion skipifsourcedoesntexist
-; WinDivert 2.x: run installer\fetch_windivert.ps1 before compile (CI does). Ships WinDivert.dll + WinDivert64.sys — no pnputil.
-Source: "..\installer\windivert\*"; DestDir: "{app}\windivert"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; WinDivert 2.x: run installer\fetch_windivert.ps1 before compile (required — ISCC fails if missing).
+; Installed only when the Clumsy mode task is selected (checked by default).
+Source: "..\installer\windivert\WinDivert.dll"; DestDir: "{app}\windivert"; Tasks: clumsymode; Flags: ignoreversion
+Source: "..\installer\windivert\WinDivert64.sys"; DestDir: "{app}\windivert"; Tasks: clumsymode; Flags: ignoreversion
+Source: "..\installer\windivert\WinDivert-LICENSE.txt"; DestDir: "{app}\windivert"; Tasks: clumsymode; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\tools\repair_clumsy_hotspot.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\tools\Repair-Clumsy-Hotspot.cmd"; DestDir: "{app}\tools"; Flags: ignoreversion skipifsourcedoesntexist
 
@@ -202,12 +205,51 @@ begin
     Log('Npcap installer finished with exit code ' + IntToStr(ResultCode) + '.');
 end;
 
+function WinDivertDllInstalled: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\windivert\WinDivert.dll'));
+end;
+
+function WinDivertSysInstalled: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\windivert\WinDivert64.sys'));
+end;
+
+function ClumsyModeTaskSelected: Boolean;
+begin
+  Result := WizardIsTaskSelected('clumsymode');
+end;
+
+procedure EnsureWinDivertInstalledForClumsy();
+begin
+  if not ClumsyModeTaskSelected() then
+    Exit;
+  if WinDivertDllInstalled() and WinDivertSysInstalled() then
+  begin
+    Log('WinDivert installed under {app}\windivert');
+    Exit;
+  end;
+  Log('Clumsy mode selected but WinDivert files missing under {app}\windivert');
+  MsgBox(
+    'Clumsy mode was selected, but WinDivert could not be installed.' + #13#10 + #13#10 +
+    'Expected under:' + #13#10 +
+    '  ' + ExpandConstant('{app}\windivert\') + #13#10 + #13#10 +
+    'Re-download ZubCut from the official build, keep "Clumsy mode" checked, and run setup as Administrator.',
+    mbError,
+    MB_OK);
+end;
+
 procedure MaybeWriteClumsyBundleFlag();
 var
   FlagPath: String;
 begin
-  if not WizardIsTaskSelected('clumsymode') then
+  if not ClumsyModeTaskSelected() then
     Exit;
+  if not (WinDivertDllInstalled() and WinDivertSysInstalled()) then
+  begin
+    Log('Skipping clumsy_mode_bundle.flag — WinDivert not installed.');
+    Exit;
+  end;
   FlagPath := ExpandConstant('{app}\clumsy_mode_bundle.flag');
   SaveStringToFile(FlagPath, '1', False);
   Log('Wrote Clumsy bundle marker: ' + FlagPath);
@@ -219,6 +261,7 @@ begin
   begin
     UninstallWinPcapIfPresent();
     InstallNpcapIfMissing();
+    EnsureWinDivertInstalledForClumsy();
     MaybeWriteClumsyBundleFlag();
   end;
 end;

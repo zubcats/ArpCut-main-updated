@@ -55,7 +55,11 @@ from tools.updater_debug import (
 from constants import *
 import constants as _zcut_constants
 
-from tools.clumsy_inline import clumsy_bundle_offered, windivert_driver_installed
+from tools.clumsy_inline import (
+    clumsy_bundle_incomplete,
+    clumsy_bundle_offered,
+    windivert_driver_installed,
+)
 from tools.clumsy_ics import (
     ensure_clumsy_ics_enabled,
     format_clumsy_ics_error,
@@ -265,14 +269,21 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         bundle = clumsy_bundle_offered()
         driver_ok = windivert_driver_installed()
+        incomplete = clumsy_bundle_incomplete()
         if bundle and driver_ok:
             self.btnClumsyInstall.hide()
             self.chkClumsy.show()
             self.lblClumsyPath.show()
             self._update_clumsy_path_label()
+        elif incomplete:
+            self.chkClumsy.hide()
+            self.btnClumsyInstall.show()
+            self.btnClumsyInstall.setText('Repair Clumsy / WinDivert')
+            self.lblClumsyPath.hide()
         else:
             self.chkClumsy.hide()
             self.btnClumsyInstall.show()
+            self.btnClumsyInstall.setText('Install Clumsy mode')
             self.lblClumsyPath.hide()
 
     def _update_clumsy_path_label(self) -> None:

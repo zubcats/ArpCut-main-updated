@@ -101,6 +101,8 @@ jobs:
         shell: pwsh
         run: |
           & "${{ github.workspace }}/installer/fetch_windivert.ps1"
+          & "${{ github.workspace }}/tools/verify_windivert_bundle.ps1"
+          & "${{ github.workspace }}/tools/stage_windivert_dist.ps1"
 
       - name: Compile Windows installer
         shell: pwsh

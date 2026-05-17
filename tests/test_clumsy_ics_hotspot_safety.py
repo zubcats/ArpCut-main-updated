@@ -211,7 +211,15 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('_hold_pause', gate_src)
         self.assertIn('_PAUSE_HOLD_DUE', gate_src)
         self.assertIn('WINDIVERT_LAYER_NETWORK_FORWARD', gate_src)
+        self.assertIn('192.168.137.', gate_src)
+        self.assertIn('WINDIVERT_LAYER_NETWORK', gate_src)
         self.assertNotIn('apply_ics_victim_arp_block', ics_block)
+        block_src = gate_src[gate_src.index('def start'):gate_src.index('def set_blocking')]
+        net_pos = block_src.find('WINDIVERT_LAYER_NETWORK,')
+        fwd_pos = block_src.find('WINDIVERT_LAYER_NETWORK_FORWARD')
+        self.assertGreater(net_pos, 0)
+        self.assertGreater(fwd_pos, 0)
+        self.assertLess(net_pos, fwd_pos, 'ICS hotspot should try NETWORK before FORWARD')
         killer_py = os.path.join(_SRC, 'networking', 'killer.py')
         with open(killer_py, encoding='utf-8') as f:
             ksrc = f.read()

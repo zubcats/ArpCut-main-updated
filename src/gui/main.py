@@ -52,6 +52,7 @@ from tools.clumsy_inline import (
     apply_clumsy_ics_router_context,
     clumsy_ics_lag_can_use_windivert,
     clumsy_ics_use_firewall_only,
+    clumsy_windivert_unavailable_reason,
     release_ics_victim_block,
     clumsy_mode_enabled,
     sync_clumsy_row,
@@ -1338,6 +1339,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         menu.exec_(w.mapToGlobal(pos))
 
     def _open_advanced_lag_settings(self):
+        try:
+            from tools.utils_gui import repair_settings
+
+            repair_settings()
+        except Exception:
+            pass
         if self.advanced_lag_settings_dialog is None:
             self.advanced_lag_settings_dialog = AdvancedLagSettingsDialog(self)
             _chrome = [
@@ -2843,16 +2850,37 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killer.disable_percent_cut(device['mac'])
         if device['mac'] in self.killer.killed:
             release_ics_victim_block(self.scanner, self.killer, device)
-        if self._ensure_ics_lag_gate(device, direction):
-            gate = self._ics_lag_gate
-            if gate is not None:
-                gate.clear_shaping()
-            self._ics_lag_gate.set_blocking(True, mode='pause')
-            self._sync_killed_devices()
-            self._refresh_table_row_for_mac(device['mac'])
-            self._updateKillButtonState()
-            return True
+        if clumsy_ics_lag_can_use_windivert(device):
+            try:
+                if self._ensure_ics_lag_gate(device, direction):
+                    gate = self._ics_lag_gate
+                    if gate is not None:
+                        gate.clear_shaping()
+                    self._ics_lag_gate.set_blocking(True, mode='pause')
+                    self.killer.killed[device['mac']] = device
+                    self.killed_devices[device['mac']] = True
+                    self._sync_killed_devices()
+                    self._refresh_table_row_for_mac(device['mac'])
+                    self._updateKillButtonState()
+                    return True
+            except OSError as exc:
+                self.log(
+                    f'WinDivert lag failed for {device.get("ip")}: {exc}. '
+                    'Run ZubCut as Administrator.',
+                    'red',
+                )
+        else:
+            self.log(
+                'Hotspot lag needs WinDivert: '
+                + clumsy_windivert_unavailable_reason(device),
+                'red',
+            )
         self._stop_ics_lag_gate()
+        self.log(
+            'Firewall-only block on Mobile Hotspot usually does not affect the console — '
+            'fix WinDivert above.',
+            'red',
+        )
         iface = self.scanner.iface.name if self.scanner.iface else 'en0'
         block_ip(iface, device['ip'], direction)
         self._sync_killed_devices()

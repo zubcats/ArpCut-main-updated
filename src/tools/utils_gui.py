@@ -1214,7 +1214,26 @@ def set_settings_many(updates: dict) -> None:
     merged.update(updates)
     export_settings([merged[k] for k in SETTINGS_KEYS])
 
-def get_settings(key):
+def _setting_key_fallback(key: str):
+    """Defaults for keys missing from an older build's SETTINGS_KEYS (no crash)."""
+    if key.endswith('_timer_on') or key.endswith('_on'):
+        return False
+    if key.endswith('_timer_lag_ms') or key.endswith('_timer_pause_ms'):
+        return 1000
+    if key.endswith('_timer_repeat_forever'):
+        return True
+    if key.endswith('_timer_runs'):
+        return -1
+    if key.endswith('_ms') or key.endswith('_pct'):
+        return 0
+    if 'mbps' in key:
+        return 0.0
+    if key.endswith('_in') or key.endswith('_out'):
+        return True
+    return False
+
+
+def get_settings(key, default=None):
     """
     Get certain setting item by key.
 
@@ -1231,7 +1250,13 @@ def get_settings(key):
     except (JSONDecodeError, OSError):
         raw = {}
     merged = {**defaults, **{k: raw[k] for k in SETTINGS_KEYS if k in raw}}
-    return merged[key]
+    if key in merged:
+        return merged[key]
+    if key in defaults:
+        return defaults[key]
+    if default is not None:
+        return default
+    return _setting_key_fallback(key)
 
 def restart_zubcut(main_window=None):
     """
@@ -1328,6 +1353,17 @@ def repair_settings():
             original['mitm_adv_loss_in'] = True
             original['mitm_adv_loss_out'] = True
             original['mitm_adv_loss_pct'] = 0
+        for _pre in ('mitm_adv_delay', 'mitm_adv_jitter', 'mitm_adv_cap', 'mitm_adv_loss'):
+            if f'{_pre}_timer_on' not in s:
+                original[f'{_pre}_timer_on'] = False
+            if f'{_pre}_timer_lag_ms' not in s:
+                original[f'{_pre}_timer_lag_ms'] = 1000
+            if f'{_pre}_timer_pause_ms' not in s:
+                original[f'{_pre}_timer_pause_ms'] = 1000
+            if f'{_pre}_timer_repeat_forever' not in s:
+                original[f'{_pre}_timer_repeat_forever'] = True
+            if f'{_pre}_timer_runs' not in s:
+                original[f'{_pre}_timer_runs'] = -1
         # Advanced Lag timer: old "repeat forever" meant infinite lag+pause; runs=-1 encodes that now.
         if not s.get('mitm_adv_timer_schema_v2'):
             original['mitm_adv_timer_schema_v2'] = True
