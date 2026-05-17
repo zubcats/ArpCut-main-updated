@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QMainWindow
 from PyQt5.QtGui import QPalette, QColor
-from networking.nicknames import Nicknames, record_nickname_last_ip
+from networking.nicknames import Nicknames, ipv4_subnet_prefix, record_nickname_last_ip
 from ui.ui_device import Ui_MainWindow
 from tools.frameless_chrome import (
     FramelessResizableMixin,
@@ -38,7 +38,10 @@ class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         register_window_surface_effects(self)
 
     def load(self, device, current_row):
-        self.lblIP.setText(device['ip'])
+        ip = device.get('ip') or ''
+        prefix = ipv4_subnet_prefix(ip)
+        ip_label = f'{ip}  ({prefix}.x)' if prefix else ip
+        self.lblIP.setText(ip_label)
         self.lblMAC.setText(device['mac'])
         if device['name'] != '-':
             self.txtNickname.setText(device['name'])
@@ -57,13 +60,13 @@ class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not name or name == '-':
             name = self.device['name']
             return self.instantApplyChanges(name)
-        self.__nicknames.set_name(self.device['mac'], name)
+        self.__nicknames.set_name(self.device['mac'], name, self.device['ip'])
         record_nickname_last_ip(self.device['mac'], self.device['ip'])
         self.instantApplyChanges(name)
     
     def resetName(self):
         name = '-'
-        self.__nicknames.reset_name(self.device['mac'])
+        self.__nicknames.reset_name(self.device['mac'], self.device['ip'])
         self.txtNickname.setText('')
         self.instantApplyChanges(name)
 

@@ -165,7 +165,7 @@ SETTINGS_KEYS = [
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
 # clumsy_mode default False; cleared on cold start (quit + relaunch), not after Settings restart.
 # iface_before_clumsy: last Settings iface before enabling Clumsy; restored when Clumsy is turned off.
-# nickname_last_ip: MAC -> last known IPv4 for nicknamed devices (fills table when host is missing from scan).
+# nicknames / nickname_last_ip: keys are MAC|subnet (e.g. aa:bb:cc:dd:ee:ff|192.168.137) for per-network names.
 # mitm_*: legacy Advanced Lag keys; mitm_adv_* clumsy-style rows (caps in Mbps).
 SETTINGS_VALS = [
     25,

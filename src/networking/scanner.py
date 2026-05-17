@@ -10,6 +10,9 @@ from networking.nicknames import (
     Nicknames,
     get_nicknames_dict,
     get_nickname_last_ip_map,
+    ipv4_subnet_prefix,
+    nickname_profile_key,
+    parse_nickname_profile_key,
     record_nickname_last_ip,
 )
 from tools.device_display import infer_network_device_type
@@ -197,16 +200,28 @@ class Scanner():
         if not nick_db:
             return
         last_map = get_nickname_last_ip_map()
-        present = {d.get('mac') for d in self.devices if isinstance(d, dict)}
+        present_profiles = set()
+        for d in self.devices:
+            if not isinstance(d, dict) or d.get('admin'):
+                continue
+            mac = good_mac(d.get('mac'))
+            ip = str(d.get('ip') or '').strip()
+            if mac and ip:
+                present_profiles.add(nickname_profile_key(mac, ip))
         to_add = []
-        for mac_raw, name in sorted(nick_db.items()):
+        for key_raw, name in sorted(nick_db.items()):
             if not name or name == '-':
                 continue
-            mac = good_mac(mac_raw)
-            if not mac or mac in present:
+            mac, prefix = parse_nickname_profile_key(key_raw)
+            if not mac:
                 continue
-            ip = last_map.get(mac)
+            ip = last_map.get(key_raw) or last_map.get(mac)
             if not ip:
+                continue
+            pk = nickname_profile_key(mac, ip)
+            if not pk or pk in present_profiles:
+                continue
+            if prefix and ipv4_subnet_prefix(ip) != prefix:
                 continue
             parts = str(ip).split('.')
             if len(parts) != 4:
@@ -216,6 +231,7 @@ class Scanner():
                     continue
             except (TypeError, ValueError):
                 continue
+            present_profiles.add(pk)
             vend = get_vendor(mac)
             try:
                 dev_type = infer_network_device_type(mac, vend, '')
@@ -243,7 +259,7 @@ class Scanner():
         nicknames = Nicknames()
 
         self.devices = []
-        unique = []
+        seen_profiles = set()
 
         # Sort by last IPv4 octet (tolerant of odd rows so we never abort the scan thread).
         def _ip_sort_key(item):
@@ -256,22 +272,22 @@ class Scanner():
 
         for ip, mac in scan_result:
             mac = good_mac(mac)
+            profile = nickname_profile_key(mac, ip)
 
-            # Skip me or router and duplicated devices
-            if ip in [self.router_ip, self.my_ip] or mac in unique:
+            # Skip me/router; allow same MAC on different subnets as separate rows.
+            if ip in [self.router_ip, self.my_ip] or not profile or profile in seen_profiles:
                 continue
-            
-            # update same device with new ip
-            if self.old_ips.get(mac, ip) != ip:
-                self.old_ips[mac] = ip
-                unique.append(mac)
+
+            if self.old_ips.get(profile, ip) != ip:
+                self.old_ips[profile] = ip
+            seen_profiles.add(profile)
 
             vend = get_vendor(mac)
             try:
                 dev_type = infer_network_device_type(mac, vend, '')
             except Exception:
                 dev_type = 'User'
-            nm = nicknames.get_name(mac)
+            nm = nicknames.get_name(mac, ip)
             self.devices.append(
                 {
                     'ip':     ip,
@@ -284,20 +300,27 @@ class Scanner():
             )
             if nm and nm != '-':
                 record_nickname_last_ip(mac, ip)
-        
-        # Remove device with old ip
+
+        # Drop stale row when this profile's IP changed on the same subnet.
         for device in self.devices[:]:
-            mac, ip = device['mac'], device['ip']
-            if self.old_ips.get(mac, ip) != ip:
+            pk = nickname_profile_key(device['mac'], device['ip'])
+            if pk and self.old_ips.get(pk, device['ip']) != device['ip']:
                 self.devices.remove(device)
-        
-        # Re-create devices old ips dict
-        self.old_ips = {d['mac']: d['ip'] for d in self.devices}
+
+        self.old_ips = {
+            nickname_profile_key(d['mac'], d['ip']): d['ip']
+            for d in self.devices
+            if not d.get('admin')
+        }
 
         self.add_me()
         self.add_router()
         self.inject_nicknamed_favorites()
-        self.old_ips = {d['mac']: d['ip'] for d in self.devices if not d.get('admin')}
+        self.old_ips = {
+            nickname_profile_key(d['mac'], d['ip']): d['ip']
+            for d in self.devices
+            if not d.get('admin')
+        }
         sync_clumsy_row(self)
 
         # Clear arp cache to avoid duplicates next time
@@ -312,18 +335,23 @@ class Scanner():
         if not hits:
             return
         nicknames = Nicknames()
-        by_mac = {d['mac']: d for d in self.devices if not d.get('admin')}
+        by_profile = {
+            nickname_profile_key(d['mac'], d['ip']): d
+            for d in self.devices
+            if not d.get('admin')
+        }
         for ip, mac in hits:
             mac = good_mac(mac)
-            if ip in [self.router_ip, self.my_ip] or not mac:
+            profile = nickname_profile_key(mac, ip)
+            if ip in [self.router_ip, self.my_ip] or not profile:
                 continue
             vend = get_vendor(mac)
             try:
                 dev_type = infer_network_device_type(mac, vend, '')
             except Exception:
                 dev_type = 'User'
-            nm = nicknames.get_name(mac)
-            by_mac[mac] = {
+            nm = nicknames.get_name(mac, ip)
+            by_profile[profile] = {
                 'ip': ip,
                 'mac': mac,
                 'vendor': vend,
@@ -340,12 +368,20 @@ class Scanner():
             except (ValueError, IndexError, TypeError, AttributeError):
                 return 0
 
-        self.devices = sorted(by_mac.values(), key=_sort_dev)
-        self.old_ips = {d['mac']: d['ip'] for d in self.devices}
+        self.devices = sorted(by_profile.values(), key=_sort_dev)
+        self.old_ips = {
+            nickname_profile_key(d['mac'], d['ip']): d['ip']
+            for d in self.devices
+            if not d.get('admin')
+        }
         self.add_me()
         self.add_router()
         self.inject_nicknamed_favorites()
-        self.old_ips = {d['mac']: d['ip'] for d in self.devices if not d.get('admin')}
+        self.old_ips = {
+            nickname_profile_key(d['mac'], d['ip']): d['ip']
+            for d in self.devices
+            if not d.get('admin')
+        }
         # Ping sweep can take seconds; this runs on the scan QThread, not the GUI thread.
         sync_clumsy_row(self, allow_subnet_ping=True)
 
