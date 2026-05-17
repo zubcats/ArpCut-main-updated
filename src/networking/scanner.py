@@ -103,6 +103,49 @@ class Scanner():
                 row['vendor'] = get_vendor(self.my_mac)
         return True
 
+    def refresh_local_topology(self) -> None:
+        """
+        Re-read gateway and local addresses on the current iface without changing NIC.
+        Clumsy enable/repair + restart do this implicitly; Kill/Lag need it on every arm.
+        """
+        guid = getattr(self.iface, 'guid', None) or getattr(self.iface, 'name', None)
+        if not guid or guid == 'NULL':
+            return
+        self.router_ip = get_gateway_ip(guid)
+        self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
+        self.my_ip = get_my_ip(guid)
+        self.my_mac = good_mac(self.iface.mac)
+        try:
+            self.perfix = self.my_ip.rsplit('.', 1)[0]
+        except Exception:
+            pass
+        self.router = {
+            'ip': self.router_ip,
+            'mac': self.router_mac,
+            'vendor': get_vendor(self.router_mac),
+            'type': 'Router',
+            'name': '',
+            'admin': True,
+        }
+        self.me = {
+            'ip': self.my_ip,
+            'mac': self.my_mac,
+            'vendor': get_vendor(self.my_mac),
+            'type': 'Me',
+            'name': '',
+            'admin': True,
+        }
+        for row in self.devices:
+            t = row.get('type')
+            if t == 'Router':
+                row['ip'] = self.router_ip
+                row['mac'] = self.router_mac
+                row['vendor'] = get_vendor(self.router_mac)
+            elif t == 'Me':
+                row['ip'] = self.my_ip
+                row['mac'] = self.my_mac
+                row['vendor'] = get_vendor(self.my_mac)
+
     def flush_arp(self):
         """
         Flush ARP cache

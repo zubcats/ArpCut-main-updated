@@ -64,7 +64,7 @@ from tools.utils import (
     get_default_iface,
 )
 from tools.tray_cleanup import hide_all_system_tray_icons
-from tools.pfctl import _is_valid_ip, block_ip, last_error, unblock_ip
+from tools.pfctl import _is_valid_ip, block_ip, unblock_ip
 
 
 def _dupe_net_run_unblock(ip: str) -> None:
@@ -1925,15 +1925,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         
         # Killing process
         self._ensure_network_context_for_victim(device)
-        if not self.killer.kill(device):
-            self._log_kill_router_unresolved()
-            return
+        self.killer.kill(device)
         try:
             iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-            if not block_ip(iface, device['ip'], 'both'):
-                err = last_error()
-                if err:
-                    self.log(f'Firewall block failed: {err}', 'red')
+            block_ip(iface, device['ip'], 'both')
         except Exception:
             pass
         self.killed_devices[device['mac']] = True
@@ -2578,9 +2573,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.spinPercentCutMain.setStyleSheet(percent_style)
 
     def startLagSwitch(self, device):
-        if device.get('admin'):
-            self.log('Cannot lag Me or Router — select another device on your network.', UI_LOG_VICTIM_BLOCK_FG)
-            return
         if not _is_valid_ip(device.get('ip') or ''):
             self.log('Target has no IP yet — cannot start lag.', 'red')
             return
@@ -2675,18 +2667,34 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Bind scanner + killer to the NIC that routes to the victim (e.g. hotspot vs Ethernet).
         Runtime only — does not write ``iface`` to settings (so Clumsy/victim auto-pick
         does not replace your chosen adapter in zubcut.json).
+
+        Applies the network stack prep that Clumsy enable/repair + restart used to do
+        implicitly (ARP flush, topology refresh, Windows IP forwarding).
         """
         if not device or not device.get('ip'):
             return False
+        changed = False
         try:
-            changed = self.scanner.sync_iface_for_victim_ip(device['ip'])
+            changed = bool(self.scanner.sync_iface_for_victim_ip(device['ip']))
         except Exception:
-            return False
-        if not changed:
-            return False
+            pass
+        try:
+            self.scanner.flush_arp()
+        except Exception:
+            pass
+        try:
+            self.scanner.refresh_local_topology()
+        except Exception:
+            pass
         self.killer.iface = self.scanner.iface
         self.killer.router = self.scanner.router
         self.killer._close_socket()
+        try:
+            from networking.killer import enable_ip_forwarding
+
+            enable_ip_forwarding()
+        except Exception:
+            pass
         try:
             from scapy.all import conf as scapy_conf
 
@@ -2695,41 +2703,26 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 scapy_conf.iface = guid
         except Exception:
             pass
-        label = (getattr(self.scanner.iface, 'name', None) or '').strip() or getattr(
-            self.scanner.iface, 'guid', ''
-        )
-        self.log(
-            f'Using network adapter for {device["ip"]}: {label}',
-            UI_LOG_RESTORE_FG,
-        )
+        if changed:
+            label = (getattr(self.scanner.iface, 'name', None) or '').strip() or getattr(
+                self.scanner.iface, 'guid', ''
+            )
+            self.log(
+                f'Using network adapter for {device["ip"]}: {label}',
+                UI_LOG_RESTORE_FG,
+            )
         return True
-
-    def _log_kill_router_unresolved(self):
-        gw = (self.killer.router.get('ip') or 'gateway')
-        self.log(
-            f'Kill failed: could not resolve router MAC for {gw}. '
-            'Run Scan, ping your router, then retry. '
-            'On guest Wi‑Fi, disable AP/client isolation.',
-            'red',
-        )
 
     def _apply_victim_block(self, device, direction):
         self._ensure_network_context_for_victim(device)
         self.killer.disable_percent_cut(device['mac'])
-        # Always re-arm ARP (kill() restarts workers); stale killer.killed after network reset
-        # made lag/kill look dead when the MAC was still in self.killer.killed.
-        if not self.killer.kill(device):
-            self._log_kill_router_unresolved()
-            return False
+        if device['mac'] not in self.killer.killed:
+            self.killer.kill(device)
         iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-        if not block_ip(iface, device['ip'], direction):
-            err = last_error()
-            if err:
-                self.log(f'Firewall block failed: {err}', 'red')
+        block_ip(iface, device['ip'], direction)
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
-        return True
 
     def _clear_victim_block(self, device):
         self._ensure_network_context_for_victim(device)
@@ -2980,7 +2973,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._arm_dupe_burst_wall_clock()
             self._ensure_network_context_for_victim(dev)
             self.killer.disable_percent_cut(dev['mac'])
-            self.killer.kill(dev)
+            if dev['mac'] not in self.killer.killed:
+                self.killer.kill(dev)
             iface = self.scanner.iface.name if self.scanner.iface else 'en0'
             if ex is None:
                 exc = _dupe_net_run_block(iface, dev['ip'], direction)
@@ -3594,9 +3588,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             pct = self._clamp_percent(self.spinPercentCutMain.value())
             allow_pct = max(0, 100 - pct)
             self._ensure_network_context_for_victim(device)
-            if not self.killer.apply_percent_cut(device, pass_percent=allow_pct):
-                self._log_kill_router_unresolved()
-                return
+            self.killer.apply_percent_cut(device, pass_percent=allow_pct)
             self.percent_cut_active = True
             self.percent_cut_device_mac = mac
             self.log(
@@ -3870,7 +3862,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if use_forwarder:
             try:
                 self._ensure_network_context_for_victim(device)
-                if not self.killer.apply_link_shaping(
+                self.killer.apply_link_shaping(
                     device,
                     delay_ms_out=du,
                     delay_ms_in=dd,
@@ -3880,10 +3872,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     loss_pct_in=ld,
                     max_kbps_out=cu_mbps * 1000.0,
                     max_kbps_in=cd_mbps * 1000.0,
-                ):
-                    self._log_kill_router_unresolved()
-                    self._refresh_advanced_lag_mitm_if_visible()
-                    return
+                )
             except Exception as exc:
                 self.log(f'MITM shaping failed: {exc}', 'red')
                 self._refresh_advanced_lag_mitm_if_visible()
@@ -4085,24 +4074,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
                     self.stop_mitm_shaping(log=False)
                     self._await_mitm_teardown_thread()
-                if device:
+                if not actual_on and device:
                     self.killer.disable_percent_cut(mac)
                     if not _is_valid_ip(device.get('ip') or ''):
                         self.log('Target has no IP yet — enable sharing and rescan.', 'red')
                     else:
-                        if not self.killer.kill(device):
-                            self._log_kill_router_unresolved()
-                        else:
-                            try:
-                                iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-                                if not block_ip(iface, device['ip'], 'both'):
-                                    err = last_error()
-                                    if err:
-                                        self.log(f'Firewall block failed: {err}', 'red')
-                            except Exception:
-                                pass
-                            self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
-                            kill_applied = True
+                        self.killer.kill(device)
+                        try:
+                            iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+                            block_ip(iface, device['ip'], 'both')
+                        except Exception:
+                            pass
+                        self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                        kill_applied = True
             else:
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
                     self.stop_mitm_shaping(log=False)

@@ -305,6 +305,13 @@ if __name__ == "__main__":
 
     # Initialize scanner and ensure interface is valid
     GUI.scanner.init()
+    try:
+        from networking.killer import enable_ip_forwarding
+
+        enable_ip_forwarding()
+        GUI.scanner.refresh_local_topology()
+    except Exception:
+        pass
     if GUI.scanner.iface.name == 'NULL':
         # Try to get a valid interface
         from tools.utils import get_default_iface
@@ -316,12 +323,6 @@ if __name__ == "__main__":
         GUI.scanner.add_me()
         GUI.scanner.add_router()
         GUI.showDevices()  # Show at least "Me" and "Router" on startup
-        GUI.killer.router = GUI.scanner.router
-        if not GUI.killer.refresh_router_mac(ping_gateway=True):
-            GUI.log(
-                'Router MAC not resolved yet — run Scan or ping your gateway before Kill/Lag.',
-                _UI_LOG_VICTIM_BLOCK_FG,
-            )
     except Exception as e:
         GUI.log(f'Warning: Could not initialize local devices: {e}', _UI_LOG_VICTIM_BLOCK_FG)
 
