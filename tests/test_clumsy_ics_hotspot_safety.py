@@ -178,6 +178,17 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
             elif not had and os.path.isfile(path):
                 os.remove(path)
 
+    def test_windivert_gate_keeps_recv_loop_on_idle(self) -> None:
+        from tools import ics_windivert_shaper as wd
+
+        src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
+        self.assertIn('ERROR_NO_DATA', src)
+        self.assertIn('continue', src)
+        self.assertNotRegex(
+            src,
+            r'if err == ERROR_NO_DATA:\s*\n\s*break',
+        )
+
     def test_clumsy_ics_block_prefers_windivert_over_arp(self) -> None:
         self.assertIn('release_ics_victim_block', inline.__dict__)
         self.assertIn('IcsWinDivertLagGate', inspect.getsource(

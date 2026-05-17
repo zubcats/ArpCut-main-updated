@@ -338,7 +338,7 @@ class Killer:
         # Immediate ARP burst with no sleep — sleeps belong in @threaded _unkill_restore_worker
         # so the GUI thread returns instantly on Kill/Lag/Dupe OFF.
         self._restore_arp_now(victim, seq, repeats=3, delay_s=0)
-        self._unkill_restore_worker(victim, seq)
+        self._unkill_restore_worker(victim, seq, quick=ics_mode)
 
     def reinforce_restore(self, victim, *, ics_mode=False):
         """
@@ -383,15 +383,18 @@ class Killer:
                 sleep(delay_s)
 
     @threaded
-    def _unkill_restore_worker(self, victim, seq=0):
-        # Follow-up restore bursts over ~2s so late poison frames do not re-break connectivity.
-        # (Some routers/clients apply a stray ARP update after immediate OFF restore.)
-        plan = (
-            (0.0, 2),
-            (0.25, 2),
-            (0.75, 2),
-            (1.5, 2),
-        )
+    def _unkill_restore_worker(self, victim, seq=0, *, quick=False):
+        # Follow-up restore bursts so late poison frames do not re-break connectivity.
+        # ICS hotspot uses a short plan — PS5 should recover in under ~300ms, not ~2s.
+        if quick:
+            plan = ((0.0, 2), (0.08, 1))
+        else:
+            plan = (
+                (0.0, 2),
+                (0.25, 2),
+                (0.75, 2),
+                (1.5, 2),
+            )
         for wait_s, repeats in plan:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
                 return

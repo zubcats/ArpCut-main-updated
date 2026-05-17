@@ -235,7 +235,9 @@ class IcsWinDivertLagGate:
             if not ok:
                 err = kernel32.GetLastError()
                 if err == ERROR_NO_DATA:
-                    break
+                    # Non-blocking idle — keep thread alive so reinject resumes when traffic returns.
+                    time.sleep(0.001)
+                    continue
                 if err in (0, ERROR_INSUFFICIENT_BUFFER):
                     time.sleep(0.001)
                     continue
@@ -475,7 +477,8 @@ class IcsWinDivertShaper:
             if not ok:
                 err = kernel32.GetLastError()
                 if err == ERROR_NO_DATA:
-                    break
+                    time.sleep(0.001)
+                    continue
                 if err in (0, ERROR_INSUFFICIENT_BUFFER):
                     time.sleep(0.001)
                     continue

@@ -2739,12 +2739,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
-    def _stop_ics_lag_gate(self) -> None:
+    def _stop_ics_lag_gate(self, join_timeout: float = 0.35) -> None:
         gate = getattr(self, '_ics_lag_gate', None)
         self._ics_lag_gate = None
         if gate is not None:
             try:
-                gate.stop()
+                gate.stop(join_timeout=join_timeout)
             except Exception:
                 pass
 
@@ -2790,19 +2790,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateKillButtonState()
         return True
 
-    def _clear_ics_client_block(self, device) -> bool:
+    def _clear_ics_client_block(self, device, *, pause_only: bool = False) -> bool:
         if not clumsy_ics_use_firewall_only(device):
             return False
+        ip = str(device.get('ip') or '').strip()
         gate = getattr(self, '_ics_lag_gate', None)
-        if gate is not None and gate.victim_ip == str(device.get('ip') or '').strip():
+        if pause_only and gate is not None and gate.victim_ip == ip:
             gate.set_blocking(False)
         else:
             self._stop_ics_lag_gate()
-        victim = self._victim_record_for_mac(device['mac']) or device
-        try:
-            release_ics_victim_block(self.scanner, self.killer, victim)
-        except Exception:
-            pass
+        if not pause_only:
+            victim = self._victim_record_for_mac(device['mac']) or device
+            try:
+                release_ics_victim_block(self.scanner, self.killer, victim)
+            except Exception:
+                pass
         try:
             unblock_ip(device['ip'])
         except Exception:
@@ -3174,11 +3176,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _lag_enter_allow_phase(self, device):
         """
         Allow window (bottom spin): drop firewall rules and stop ARP spoof for this victim.
-        If we only removed firewall rules while still MITM'd, traffic would still flow through
-        this PC — and on Windows IP forwarding is often off, so the victim stays broken.
+        On ICS/hotspot keep WinDivert open with blocking=False so traffic resumes instantly.
         """
         try:
-            self._clear_victim_block(device)
+            if clumsy_ics_use_firewall_only(device):
+                self._clear_ics_client_block(device, pause_only=True)
+            else:
+                self._clear_victim_block(device)
         except Exception:
             pass
 
@@ -4245,9 +4249,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if not victim:
                 return
             try:
-                self._ensure_network_context_for_victim(victim)
-                self.killer.unkill(victim)
-                self.killer.reinforce_restore(victim)
+                if clumsy_ics_use_firewall_only(victim):
+                    if mac in self.killer.killed:
+                        release_ics_victim_block(self.scanner, self.killer, victim)
+                    else:
+                        return
+                    try:
+                        unblock_ip(victim.get('ip') or '')
+                    except Exception:
+                        pass
+                    self._stop_ics_lag_gate()
+                else:
+                    self._ensure_network_context_for_victim(victim)
+                    self.killer.unkill(victim)
+                    self.killer.reinforce_restore(victim)
             except Exception:
                 pass
 
@@ -4279,11 +4294,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             try:
                 if clumsy_ics_use_firewall_only(victim):
+                    if mac not in self.killer.killed:
+                        return
                     release_ics_victim_block(self.scanner, self.killer, victim)
                     try:
                         unblock_ip(victim.get('ip') or '')
                     except Exception:
                         pass
+                    self._stop_ics_lag_gate()
                 else:
                     self._ensure_network_context_for_victim(victim)
                     self.killer.unkill(victim)

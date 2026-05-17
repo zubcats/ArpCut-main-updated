@@ -156,21 +156,25 @@ def apply_ics_victim_arp_block(scanner: Scanner, killer, device) -> bool:
 
 
 def release_ics_victim_block(scanner: Scanner, killer, victim) -> bool:
-    """Stop ICS ARP MITM and heal gateway ARP on the console (hotspot clients only)."""
+    """
+    Tear down ICS ARP MITM only when it was started (killer.killed).
+
+    WinDivert-only lag/dupe/kill must not run reinforce_restore/heal — that adds
+    seconds of stray ARP and makes the PS5 look offline long after OFF.
+    """
     if not isinstance(victim, dict):
         return False
     ip = str(victim.get('ip') or '').strip()
-    if not victim_on_clumsy_ics_subnet(ip):
-        return False
-    apply_clumsy_ics_router_context(scanner, killer, ip)
-    killer.iface = scanner.iface
-    killer.router = scanner.router
     mac = str(victim.get('mac') or '').strip()
+    if not victim_on_clumsy_ics_subnet(ip) or not mac:
+        return False
+    if mac not in killer.killed:
+        return False
     try:
-        if mac and mac in killer.killed:
-            killer.unkill(victim, ics_mode=True)
-        else:
-            killer.reinforce_restore(victim, ics_mode=True)
+        apply_clumsy_ics_router_context(scanner, killer, ip)
+        killer.iface = scanner.iface
+        killer.router = scanner.router
+        killer.unkill(victim, ics_mode=True)
         heal_ics_client_after_mitm(scanner, killer, victim)
         return True
     except Exception:
@@ -214,7 +218,7 @@ def apply_clumsy_ics_router_context(scanner: Scanner, killer, victim_ip: str) ->
     return True
 
 
-def heal_ics_client_after_mitm(scanner: Scanner, killer, victim: dict) -> bool:
+def heal_ics_client_after_mitm(scanner: Scanner, killer, victim: dict, *, repeats: int = 2) -> bool:
     """
     After lag/kill on a hotspot client, the console may keep a stale ARP entry for the
     gateway (192.168.137.1). PS5 "automatic IP" fix is DHCP renew; gratuitous ARP helps
@@ -257,7 +261,8 @@ def heal_ics_client_after_mitm(scanner: Scanner, killer, victim: dict) -> bool:
             hwdst='ff:ff:ff:ff:ff:ff',
         )
     )
-    for _ in range(6):
+    n = max(1, min(6, int(repeats)))
+    for _ in range(n):
         try:
             killer._send_packet(unicast)
             killer._send_packet(gratuitous)
