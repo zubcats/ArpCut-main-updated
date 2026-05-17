@@ -66,20 +66,27 @@ def windivert_bundled_next_to_app() -> bool:
     )
 
 
+def windivert_bundle_complete() -> bool:
+    """WinDivert.dll and WinDivert64.sys in the same folder (Clumsy layout)."""
+    try:
+        from tools.ics_windivert_shaper import _windivert_bundle_paths
+
+        dll, sys_p = _windivert_bundle_paths()
+        return bool(dll and sys_p)
+    except Exception:
+        return windivert_bundled_next_to_app()
+
+
 def windivert_driver_installed() -> bool:
     """
     WinDivert 2.x: bundled under {app}\\windivert (installer) or legacy System32 copy.
-  """
+    """
     if not sys.platform.startswith('win'):
         return False
-    if windivert_bundled_next_to_app():
+    if windivert_bundle_complete():
         return True
     sys_root = os.environ.get('SystemRoot', r'C:\Windows')
-    if os.path.isfile(os.path.join(sys_root, 'System32', 'drivers', 'WinDivert64.sys')):
-        return True
-    from tools.ics_windivert_shaper import _windivert_dll_path
-
-    return bool(_windivert_dll_path())
+    return os.path.isfile(os.path.join(sys_root, 'System32', 'drivers', 'WinDivert64.sys'))
 
 
 def clumsy_bundle_incomplete() -> bool:
@@ -187,9 +194,18 @@ def clumsy_ics_lag_can_use_windivert(device, scanner: Optional['Scanner'] = None
         return False
     if not clumsy_runtime_ready():
         return False
-    from tools.ics_windivert_shaper import _windivert_dll_path
+    return windivert_bundle_complete()
 
-    return bool(_windivert_dll_path())
+
+def _process_is_elevated() -> bool:
+    if not sys.platform.startswith('win'):
+        return False
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
 
 
 def clumsy_windivert_unavailable_reason(device) -> str:
@@ -198,19 +214,32 @@ def clumsy_windivert_unavailable_reason(device) -> str:
         return 'Windows only'
     if not clumsy_mode_enabled():
         return 'enable Clumsy mode in Settings and restart ZubCut'
+    if not _process_is_elevated():
+        return 'run ZubCut as Administrator'
     if getattr(sys, 'frozen', False) and not clumsy_bundle_offered():
         return 'reinstall with Clumsy mode checked (WinDivert bundle)'
-    if not windivert_bundled_next_to_app():
-        return 'WinDivert.dll missing next to ZubCut.exe (reinstall or repair)'
+    if not windivert_bundle_complete():
+        return 'WinDivert.dll + WinDivert64.sys missing in ZubCut\\windivert (reinstall Clumsy mode)'
     if not isinstance(device, dict):
         return 'no device selected'
-    ip = str(device.get('ip') or '').strip()
+    ip = clumsy_ics_resolve_victim_ip(device)
     if not ip:
         return 'target has no IP yet'
     if not victim_on_clumsy_ics_subnet(ip):
         prefix = clumsy_ics_downstream_prefix()
         return f'target {ip} is not on hotspot subnet {prefix}x'
-    return 'unknown'
+    return 'WinDivert could not start (run as Administrator)'
+
+
+def clumsy_windivert_probe_detail(victim_ip: str) -> str:
+    """Live WinDivertOpen test — use in error logs after a failed kill/dupe."""
+    try:
+        from tools.ics_windivert_shaper import probe_windivert_for_victim
+
+        _ok, detail = probe_windivert_for_victim(victim_ip)
+        return detail
+    except Exception as exc:
+        return str(exc)
 
 
 def apply_ics_victim_arp_block(scanner: Scanner, killer, device) -> bool:
@@ -360,6 +389,32 @@ def heal_ics_client_after_mitm(scanner: Scanner, killer, victim: dict, *, repeat
         except Exception:
             pass
     return True
+
+
+def restore_ics_hotspot_connectivity(
+    scanner: 'Scanner',
+    killer,
+    victim: dict,
+    *,
+    repeats: int = 4,
+) -> bool:
+    """
+    After dupe/kill/lag on hotspot: bind the hotspot NIC, fix router context, relearn gateway ARP.
+    Clumsy only touches packets; we must also undo any stray ARP MITM and refresh the PS5 gateway.
+    """
+    if not isinstance(victim, dict):
+        return False
+    ip = clumsy_ics_resolve_victim_ip(victim, scanner)
+    if not victim_on_clumsy_ics_subnet(ip):
+        return False
+    try:
+        scanner.sync_iface_for_victim_ip(ip)
+    except Exception:
+        pass
+    apply_clumsy_ics_router_context(scanner, killer, ip)
+    vic = dict(victim)
+    vic['ip'] = ip
+    return heal_ics_client_after_mitm(scanner, killer, vic, repeats=repeats)
 
 
 def maybe_prepare_ics() -> None:

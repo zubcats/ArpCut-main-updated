@@ -58,19 +58,70 @@ def _windivert_search_bases() -> list[str]:
 
 
 def _windivert_dll_path() -> Optional[str]:
+    dll, _sys = _windivert_bundle_paths()
+    return dll
+
+
+def _windivert_bundle_paths() -> tuple[Optional[str], Optional[str]]:
+    """Full paths to WinDivert.dll and WinDivert64.sys (same directory, like Clumsy)."""
     if not sys.platform.startswith('win'):
-        return None
-    rels = (
-        os.path.join('windivert', 'WinDivert.dll'),
-        'WinDivert.dll',
-        os.path.join('installer', 'windivert', 'WinDivert.dll'),
-    )
+        return None, None
+    rel_dirs = ('windivert', '.', os.path.join('installer', 'windivert'))
+    names = ('WinDivert.dll', 'WinDivert64.sys')
     for base in _windivert_search_bases():
-        for rel in rels:
-            p = os.path.join(base, rel)
-            if os.path.isfile(p):
-                return p
-    return None
+        for rel_dir in rel_dirs:
+            dll = os.path.join(base, rel_dir, names[0])
+            sys_p = os.path.join(base, rel_dir, names[1])
+            if os.path.isfile(dll) and os.path.isfile(sys_p):
+                return os.path.abspath(dll), os.path.abspath(sys_p)
+    return None, None
+
+
+def _windivert_last_error_message() -> str:
+    kernel32 = ctypes.windll.kernel32
+    err = int(kernel32.GetLastError())
+    if err == 0:
+        return 'unknown error'
+    buf = ctypes.create_unicode_buffer(512)
+    kernel32.FormatMessageW(
+        0x00001000,
+        None,
+        err,
+        0,
+        buf,
+        len(buf),
+        None,
+    )
+    msg = (buf.value or '').strip() or f'Win32 error {err}'
+    return f'{msg} (code {err})'
+
+
+def _windivert_prepare_dll_dir(dll_path: str) -> None:
+    """WinDivert64.sys must load from the same directory as WinDivert.dll (Clumsy layout)."""
+    dll_dir = os.path.dirname(os.path.abspath(dll_path))
+    if not dll_dir:
+        return
+    if hasattr(os, 'add_dll_directory'):
+        try:
+            os.add_dll_directory(dll_dir)
+        except OSError:
+            pass
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetDllDirectoryW(dll_dir)
+    except Exception:
+        pass
+
+
+def _windivert_load_dll(dll_path: str) -> ctypes.WinDLL:
+    _windivert_prepare_dll_dir(dll_path)
+    return ctypes.WinDLL(dll_path)
+
+
+def _ics_clumsy_victim_filter(victim_ip: str) -> str:
+    """Clumsy-style per-host filter (simple quad match, no subnet ranges)."""
+    vip = _ipv4_quad(victim_ip)
+    return f'ip and (ip.SrcAddr == {vip} or ip.DstAddr == {vip})'
 
 
 def _ipv4_quad(ip: str) -> str:
@@ -161,6 +212,43 @@ def _open_windivert_handle(dll: ctypes.WinDLL, filt: str, layer: int) -> int:
     if hv == 0 or hv == maxptr:
         return -1
     return hv
+
+
+def probe_windivert_for_victim(victim_ip: str) -> tuple[bool, str]:
+    """
+    Try opening WinDivert like Clumsy (dll+sys colocated, admin required).
+    Returns (ok, message).
+    """
+    vip = _ipv4_quad(victim_ip)
+    if not vip:
+        return False, 'no victim IP'
+    dll_path, sys_path = _windivert_bundle_paths()
+    if not dll_path:
+        return False, 'WinDivert.dll not found (reinstall with Clumsy mode)'
+    if not sys_path:
+        return False, 'WinDivert64.sys missing next to WinDivert.dll'
+    try:
+        dll = _windivert_load_dll(dll_path)
+        _bind_windivert_api(dll)
+    except OSError as exc:
+        return False, f'failed to load WinDivert.dll: {exc}'
+    filters = (
+        _ics_clumsy_victim_filter(vip),
+        _ics_windivert_filter(vip, '192.168.137.'),
+    )
+    layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
+    last_err = ''
+    for filt in filters:
+        for layer in layers:
+            h = _open_windivert_handle(dll, filt, layer)
+            if h >= 0:
+                try:
+                    dll.WinDivertClose(h)
+                except Exception:
+                    pass
+                return True, f'ok (layer {layer})'
+            last_err = _windivert_last_error_message()
+    return False, last_err or 'WinDivertOpen failed'
 
 
 def _parse_ipv4_src_dst(packet: bytes) -> Optional[Tuple[str, str]]:
@@ -255,10 +343,12 @@ class IcsWinDivertLagGate:
                 self._direction = 'both'
             self._blocking = False
             self._discard_heap = False
-        dll_path = _windivert_dll_path()
+        dll_path, sys_path = _windivert_bundle_paths()
         if not dll_path:
-            raise OSError('WinDivert.dll not found (expected next to ZubCut or in windivert\\).')
-        self._dll = ctypes.WinDLL(dll_path)
+            raise OSError('WinDivert.dll not found (expected in ZubCut\\windivert\\).')
+        if not sys_path:
+            raise OSError('WinDivert64.sys missing next to WinDivert.dll — reinstall Clumsy mode.')
+        self._dll = _windivert_load_dll(dll_path)
         _bind_windivert_api(self._dll)
         vip = self._victim
         try:
@@ -267,21 +357,29 @@ class IcsWinDivertLagGate:
             prefix = clumsy_ics_downstream_prefix()
         except Exception:
             prefix = '192.168.137.'
-        filt = _ics_windivert_filter(vip, prefix)
-        # Mobile Hotspot / ICS: try NETWORK and FORWARD — traffic may only appear on one layer.
-        if vip.startswith(prefix) or vip.startswith('192.168.137.'):
-            layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
-        else:
-            layers = (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
+        filters = (
+            _ics_clumsy_victim_filter(vip),
+            _ics_windivert_filter(vip, prefix),
+        )
+        layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
         handles: list[int] = []
         opened_layers: list[int] = []
-        for layer in layers:
-            hrv = _open_windivert_handle(self._dll, filt, layer)
-            if hrv >= 0:
-                handles.append(hrv)
-                opened_layers.append(layer)
+        last_err = ''
+        for filt in filters:
+            for layer in layers:
+                hrv = _open_windivert_handle(self._dll, filt, layer)
+                if hrv >= 0:
+                    handles.append(hrv)
+                    opened_layers.append(layer)
+                    break
+                last_err = _windivert_last_error_message()
+            if handles:
+                break
         if not handles:
-            raise OSError('WinDivertOpen failed (run as Administrator; check WinDivert driver).')
+            hint = 'Run ZubCut as Administrator.'
+            if last_err:
+                raise OSError(f'WinDivertOpen failed: {last_err} {hint}')
+            raise OSError(f'WinDivertOpen failed. {hint}')
         self._handles = handles
         self._open_layers = opened_layers
         self._packets_seen = 0

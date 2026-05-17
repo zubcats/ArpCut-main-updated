@@ -55,8 +55,10 @@ from tools.clumsy_inline import (
     clumsy_ics_resolve_victim_ip,
     clumsy_ics_use_firewall_only,
     clumsy_windivert_unavailable_reason,
+    clumsy_windivert_probe_detail,
     heal_ics_client_after_mitm,
     release_ics_victim_block,
+    restore_ics_hotspot_connectivity,
     clumsy_mode_enabled,
     sync_clumsy_row,
     use_windivert_for_advanced_ics_shaping,
@@ -2845,13 +2847,52 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if mac:
             self.killer.killed.pop(mac, None)
             self.killed_devices[mac] = False
-        self._stop_ics_lag_gate()
+        self._stop_ics_lag_gate(join_timeout=0.35)
         if heal and resolved_ip:
             victim = dict(device)
             if resolved_ip:
                 victim['ip'] = resolved_ip
+            self._schedule_ics_hotspot_heal(victim)
+
+    def _schedule_ics_hotspot_heal(self, device) -> None:
+        """Clumsy does not need ARP heal; hotspot + our ARP path needs repeated gateway refresh."""
+        if not isinstance(device, dict):
+            return
+        snap = dict(device)
+
+        def _pulse() -> None:
             try:
-                heal_ics_client_after_mitm(self.scanner, self.killer, victim)
+                restore_ics_hotspot_connectivity(
+                    self.scanner,
+                    self.killer,
+                    snap,
+                    repeats=4,
+                )
+            except Exception:
+                pass
+
+        for delay_ms in (0, 350, 900, 2000):
+            QTimer.singleShot(delay_ms, _pulse)
+
+    def _ics_emergency_release(self, device, *, heal: bool = True) -> None:
+        """
+        Hotspot OFF: WinDivert gate, any stray ARP MITM, and firewall rules for this victim.
+        Used when dupe/kill/lag ends (including instant toggle-off before timers fire).
+        """
+        if not isinstance(device, dict) or not clumsy_ics_use_firewall_only(device, self.scanner):
+            return
+        self._release_ics_windivert_block(device, heal=heal)
+        mac = str(device.get('mac') or '').strip()
+        victim = self._victim_record_for_mac(mac) or device
+        if mac and mac in self.killer.killed:
+            try:
+                release_ics_victim_block(self.scanner, self.killer, victim)
+            except Exception:
+                pass
+        ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(device.get('ip') or '')
+        if ip:
+            try:
+                unblock_ip(ip)
             except Exception:
                 pass
 
@@ -2931,9 +2972,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._schedule_ics_windivert_traffic_check(ip)
                     return True
             except OSError as exc:
+                detail = clumsy_windivert_probe_detail(ip)
                 self.log(
-                    f'WinDivert lag failed for {ip}: {exc}. '
-                    'Run ZubCut as Administrator.',
+                    f'WinDivert lag failed for {ip}: {exc} [{detail}]',
                     'red',
                 )
         else:
@@ -2986,10 +3027,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return True
 
     def _finish_dupe_ics_teardown(self, device, prev_mac: str | None) -> bool:
-        """Fast dupe OFF on hotspot: stop WinDivert pause and heal gateway ARP (no firewall)."""
-        if not isinstance(device, dict) or not clumsy_ics_lag_can_use_windivert(device, self.scanner):
+        """Fast dupe OFF on hotspot: WinDivert + any stray ARP/firewall, then heal gateway."""
+        if not isinstance(device, dict) or not clumsy_ics_use_firewall_only(device, self.scanner):
             return False
-        self._release_ics_windivert_block(device, heal=True)
+        self._ics_emergency_release(device, heal=True)
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device.get('mac') or '')
         self._updateKillButtonState()
@@ -3253,9 +3294,24 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         direction = getattr(self, '_dupe_arm_direction', 'both')
         ex = getattr(self, '_dupe_net_executor', None)
         try:
-            if self._apply_ics_client_block(dev, direction, for_dupe=True):
-                self._arm_dupe_burst_wall_clock()
-                self._start_dupe_timers_after_network_ready()
+            if clumsy_ics_use_firewall_only(dev, self.scanner):
+                if self._apply_ics_client_block(dev, direction, for_dupe=True):
+                    self._arm_dupe_burst_wall_clock()
+                    self._start_dupe_timers_after_network_ready()
+                    return
+                self.dupe_active = False
+                self.dupe_device_mac = None
+                self._abort_dupe_apply_failed()
+                self.btnDupe.setText('Dupe')
+                self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+                self._ics_emergency_release(dev, heal=False)
+                reason = clumsy_windivert_unavailable_reason(dev)
+                self.log(
+                    f'Dupe on hotspot needs WinDivert (run ZubCut as Administrator). {reason}',
+                    'red',
+                )
+                self._refresh_flow_toggle_ui()
+                self._repaint_all_table_rows_for_hover()
                 return
             self._arm_dupe_burst_wall_clock()
             self._ensure_network_context_for_victim(dev)
@@ -3291,7 +3347,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
             try:
-                self._clear_victim_block(dev)
+                if clumsy_ics_use_firewall_only(dev, self.scanner):
+                    self._ics_emergency_release(dev, heal=True)
+                else:
+                    self._clear_victim_block(dev)
             except Exception:
                 pass
             self.log(f'Dupe failed to start: {exc}', 'red')
@@ -3321,7 +3380,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
             try:
-                self._clear_victim_block(dev)
+                if clumsy_ics_use_firewall_only(dev, self.scanner):
+                    self._ics_emergency_release(dev, heal=True)
+                else:
+                    self._clear_victim_block(dev)
             except Exception:
                 pass
             self.log(f'Dupe failed to start: {exc}', 'red')
@@ -3506,8 +3568,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             victim = self._victim_record_for_mac(prev_mac) or device
             try:
-                if clumsy_ics_lag_can_use_windivert(device, self.scanner):
-                    self._release_ics_windivert_block(device, heal=True)
+                if clumsy_ics_use_firewall_only(device, self.scanner):
+                    self._ics_emergency_release(device, heal=True)
                 else:
                     for cand in (device, snap_ok):
                         if isinstance(cand, dict):
@@ -3676,7 +3738,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             snap = dict(arm_ok)
         else:
             snap = None
-        if snap and clumsy_ics_lag_can_use_windivert(snap, self.scanner):
+        if snap and clumsy_ics_use_firewall_only(snap, self.scanner):
             self._dupe_pending_clear = None
             self._finish_dupe_ics_teardown(snap, prev_mac)
             return
@@ -4416,8 +4478,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         if kill_applied:
                             self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
                         else:
+                            self._ics_emergency_release(device, heal=False)
+                            ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
+                            detail = clumsy_windivert_probe_detail(ip)
                             self.log(
-                                'Kill failed — hotspot needs WinDivert (run as Administrator).',
+                                f'Kill failed — WinDivert: {detail}',
                                 'red',
                             )
                     else:
@@ -4438,11 +4503,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 victim = self._victim_record_for_mac(mac) or device
                 if victim:
                     if clumsy_ics_use_firewall_only(victim, self.scanner):
-                        if clumsy_ics_lag_can_use_windivert(victim, self.scanner):
-                            self._release_ics_windivert_block(victim, heal=True)
-                        else:
-                            self._clear_ics_client_block(victim, pause_only=False)
-                            self._stop_ics_lag_gate()
+                        self._ics_emergency_release(victim, heal=True)
                     else:
                         try:
                             unblock_ip(victim.get('ip') or '')
