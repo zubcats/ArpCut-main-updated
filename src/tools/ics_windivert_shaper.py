@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ctypes
 import heapq
+import math
 import os
 import random
 import sys
@@ -158,8 +159,19 @@ class IcsWinDivertLagGate:
     def victim_ip(self) -> str:
         return self._victim
 
+    def is_running(self) -> bool:
+        th = self._thread
+        return th is not None and th.is_alive() and bool(self._handles)
+
     def start(self, direction: str = 'both') -> None:
-        self.stop(join_timeout=3.0)
+        d = str(direction or 'both').strip().lower()
+        if d not in ('both', 'in', 'out'):
+            d = 'both'
+        if self.is_running():
+            with self._lock:
+                self._direction = d
+            return
+        self.stop(join_timeout=0.2)
         self._stop.clear()
         with self._lock:
             self._direction = str(direction or 'both').strip().lower()
@@ -174,12 +186,13 @@ class IcsWinDivertLagGate:
         _bind_windivert_api(self._dll)
         vip = self._victim
         filt = f'ip and (ip.SrcAddr == {vip} or ip.DstAddr == {vip})'
-        # ICS/NAT may appear on forward and/or network layer — open both when possible.
+        # One handle only — dual-layer divert can duplicate or reorder ICS/NAT packets.
+        hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK_FORWARD)
+        if hrv < 0:
+            hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK)
         handles: list[int] = []
-        for layer in (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK):
-            hrv = _open_windivert_handle(self._dll, filt, layer)
-            if hrv >= 0:
-                handles.append(hrv)
+        if hrv >= 0:
+            handles.append(hrv)
         if not handles:
             raise OSError('WinDivertOpen failed (run as Administrator; check WinDivert driver).')
         self._handles = handles
@@ -271,7 +284,7 @@ class IcsWinDivertLagGate:
             self._blocking = False
             self._discard_heap = True
 
-    def stop(self, join_timeout: float = 2.0) -> None:
+    def stop(self, join_timeout: float = 0.15) -> None:
         self.prepare_stop()
         self._stop.set()
         handles = list(self._handles)
@@ -283,7 +296,7 @@ class IcsWinDivertLagGate:
                     pass
         th = self._thread
         if th is not None and th.is_alive():
-            th.join(timeout=join_timeout)
+            th.join(timeout=max(0.05, float(join_timeout)))
         self._thread = None
         if handles and self._dll is not None:
             for h in handles:
@@ -381,6 +394,10 @@ class IcsWinDivertLagGate:
                     self._tick_buckets_unlocked(dt)
 
             while heap and heap[0][0] <= now:
+                due = heap[0][0]
+                if math.isinf(due) or due >= _PAUSE_HOLD_DUE:
+                    heapq.heappop(heap)
+                    continue
                 if blocking and hold_pause:
                     heapq.heappop(heap)
                     continue

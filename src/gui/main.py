@@ -2610,7 +2610,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self._toggle_start_blocked('lag'):
             return
         self.stopDupe(refresh_dialog=True, log=False)
-        self._flush_pending_dupe_clear_sync()
+        if self._dupe_pending_clear or getattr(self, '_dupe_clear_future', None):
+            self._flush_pending_dupe_clear_sync(max_wait_ms=400)
         self._drop_dupe_restoring_banner()
         if self.lag_active:
             self.stopLagSwitch(refresh_dialog=False)
@@ -2784,9 +2785,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return self._kill_ui_shows_on(mac)
         return any(self._kill_ui_shows_on(m) for m in list(self.killed_devices.keys()))
 
-    def _stop_ics_lag_gate(self, join_timeout: float = 0.5) -> None:
+    def _stop_ics_lag_gate(self, join_timeout: float = 0.12) -> None:
         gate = getattr(self, '_ics_lag_gate', None)
         self._ics_lag_gate = None
+        self._ics_windivert_shaper = None
         if gate is not None:
             try:
                 if hasattr(gate, 'prepare_stop'):
@@ -2794,6 +2796,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 gate.stop(join_timeout=join_timeout)
             except Exception:
                 pass
+
+    def _ics_unpause_victim(self, device) -> None:
+        """Instantly resume live traffic; discard held pause packets (no replay burst)."""
+        if not isinstance(device, dict):
+            return
+        ip = str(device.get('ip') or '').strip()
+        gate = getattr(self, '_ics_lag_gate', None)
+        if gate is not None and gate.victim_ip == ip:
+            try:
+                gate.set_blocking(False)
+            except Exception:
+                pass
+
+    def _ics_teardown_gate_if_idle(self, mac: str | None = None) -> None:
+        if not self._ics_windivert_busy(mac):
+            self._stop_ics_lag_gate()
 
     def _ensure_ics_lag_gate(self, device, direction: str) -> bool:
         if not clumsy_ics_lag_can_use_windivert(device):
@@ -2804,13 +2822,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         from tools.ics_windivert_shaper import IcsWinDivertLagGate
 
         gate = getattr(self, '_ics_lag_gate', None)
-        if gate is None or gate.victim_ip != ip:
-            self._stop_ics_lag_gate()
-            gate = IcsWinDivertLagGate(ip)
-            gate.start(direction=direction)
-            self._ics_lag_gate = gate
-        else:
+        if gate is not None and gate.victim_ip == ip and gate.is_running():
             gate.set_direction(direction)
+            return True
+        if gate is not None:
+            self._stop_ics_lag_gate()
+        gate = IcsWinDivertLagGate(ip)
+        gate.start(direction=direction)
+        self._ics_lag_gate = gate
         return True
 
     def _apply_ics_client_block(self, device, direction, *, for_dupe: bool = False) -> bool:
@@ -2845,24 +2864,40 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not clumsy_ics_use_firewall_only(device):
             return False
         ip = str(device.get('ip') or '').strip()
-        gate = getattr(self, '_ics_lag_gate', None)
-        if pause_only and gate is not None and gate.victim_ip == ip:
-            gate.set_blocking(False)
-        else:
-            self._stop_ics_lag_gate()
-        if not pause_only:
-            victim = self._victim_record_for_mac(device['mac']) or device
+        mac = str(device.get('mac') or '').strip()
+        windivert = clumsy_ics_lag_can_use_windivert(device)
+        self._ics_unpause_victim(device)
+        if pause_only:
+            self._sync_killed_devices()
+            self._refresh_table_row_for_mac(mac)
+            self._updateKillButtonState()
+            return True
+        if not windivert:
+            victim = self._victim_record_for_mac(mac) or device
             try:
                 release_ics_victim_block(self.scanner, self.killer, victim)
             except Exception:
                 pass
-        try:
-            unblock_ip(device['ip'])
-        except Exception:
-            pass
+            try:
+                unblock_ip(device['ip'])
+            except Exception:
+                pass
+        self._ics_teardown_gate_if_idle(mac)
         self._sync_killed_devices()
-        self._refresh_table_row_for_mac(device['mac'])
+        self._refresh_table_row_for_mac(mac)
         self._updateKillButtonState()
+        return True
+
+    def _finish_dupe_ics_teardown(self, device, prev_mac: str | None) -> bool:
+        """Fast dupe OFF on hotspot: unpause WinDivert only (no netsh / ARP)."""
+        if not isinstance(device, dict) or not clumsy_ics_lag_can_use_windivert(device):
+            return False
+        self._ics_unpause_victim(device)
+        self._ics_teardown_gate_if_idle(prev_mac)
+        self._sync_killed_devices()
+        self._refresh_table_row_for_mac(device.get('mac') or '')
+        self._updateKillButtonState()
+        self._drop_dupe_restoring_banner()
         return True
 
     def _apply_victim_block(self, device, direction, **ics_block_kw):
@@ -2931,11 +2966,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             return False
 
-    def _drain_dupe_async_network(self):
+    def _drain_dupe_async_network(self, max_wait_ms: int = 120_000):
         """Wait for in-flight async unblock_ip; Queued unkill slot must run on the GUI thread."""
+        cap = max(50, int(max_wait_ms))
         fut = getattr(self, '_dupe_clear_future', None)
         if fut is not None:
-            self._pump_gui_until(lambda: fut.done(), 120_000)
+            self._pump_gui_until(lambda: fut.done(), cap)
             try:
                 if fut.done():
                     fut.result(timeout=0)
@@ -2944,7 +2980,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._dupe_clear_future = None
         self._pump_gui_until(
             lambda: getattr(self, '_dupe_async_unblock_ctx', None) is None,
-            2500,
+            cap,
         )
         ctx = getattr(self, '_dupe_async_unblock_ctx', None)
         if ctx:
@@ -2952,8 +2988,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._dupe_async_unblock_ctx = None
             try:
                 if device and device.get('mac') == prev_mac:
-                    self._clear_victim_block(device)
-                    self._schedule_dupe_off_reinforce(prev_mac, device)
+                    if not self._finish_dupe_ics_teardown(device, prev_mac):
+                        self._clear_victim_block(device)
+                        self._schedule_dupe_off_reinforce(prev_mac, device)
             except Exception:
                 pass
             self._sync_killed_devices()
@@ -3003,14 +3040,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
 
-    def _flush_pending_dupe_clear_sync(self):
+    def _flush_pending_dupe_clear_sync(self, max_wait_ms: int = 120_000):
         """Run any scheduled dupe OFF firewall/ARP work immediately (before starting a new dupe)."""
         self._dupe_deferred_clear_timer.stop()
         try:
             self._dupe_deferred_clear_timer.timeout.disconnect()
         except TypeError:
             pass
-        self._drain_dupe_async_network()
+        self._drain_dupe_async_network(max_wait_ms)
         self._drain_dupe_block_if_needed()
         pending = self._dupe_pending_clear
         self._dupe_pending_clear = None
@@ -3023,8 +3060,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._drop_dupe_restoring_banner()
             return
         try:
-            self._clear_victim_block(device)
-            self._schedule_dupe_off_reinforce(prev_mac, device)
+            if not self._finish_dupe_ics_teardown(device, prev_mac):
+                self._clear_victim_block(device)
+                self._schedule_dupe_off_reinforce(prev_mac, device)
         except Exception:
             pass
         self._sync_killed_devices()
@@ -3046,6 +3084,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not device or device.get('mac') != prev_mac:
             self._sync_killed_devices()
             self._drop_dupe_restoring_banner()
+            return
+        if self._finish_dupe_ics_teardown(device, prev_mac):
             return
         ip = device.get('ip') or ''
         ex = getattr(self, '_dupe_net_executor', None)
@@ -3081,8 +3121,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._drop_dupe_restoring_banner()
             return
         try:
-            self._clear_victim_block(device)
-            self._schedule_dupe_off_reinforce(prev_mac, device)
+            if not self._finish_dupe_ics_teardown(device, prev_mac):
+                self._clear_victim_block(device)
+                self._schedule_dupe_off_reinforce(prev_mac, device)
         except Exception:
             pass
         self._sync_killed_devices()
@@ -3115,10 +3156,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         direction = getattr(self, '_dupe_arm_direction', 'both')
         ex = getattr(self, '_dupe_net_executor', None)
         try:
-            self._arm_dupe_burst_wall_clock()
             if self._apply_ics_client_block(dev, direction, for_dupe=True):
+                self._arm_dupe_burst_wall_clock()
                 self._start_dupe_timers_after_network_ready()
                 return
+            self._arm_dupe_burst_wall_clock()
             self._ensure_network_context_for_victim(dev)
             self.killer.disable_percent_cut(dev['mac'])
             if dev['mac'] not in self.killer.killed:
@@ -3318,18 +3360,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def stopLagSwitch(self, refresh_dialog=True):
         if not self.lag_active:
-            self._stop_ics_lag_gate()
+            self._ics_teardown_gate_if_idle()
             return
         prev_mac = self.lag_device_mac
+        snap = getattr(self, '_lag_device_snapshot', None)
         # Tear down active state first so any concurrent timer tick becomes a no-op.
         self.lag_active = False
         self.lag_device_mac = None
         self._lag_in_allow_phase = False
         self.lag_timer.stop()
-        snap = getattr(self, '_lag_device_snapshot', None)
         self._lag_device_snapshot = None
-        self._lag_restoring_after_stop = True
-        self._lag_restoring_mac = prev_mac
+        self._lag_restoring_after_stop = False
+        self._lag_restoring_mac = None
         self._sync_killed_devices()
         self.btnLagSwitch.setText('Lag Switch')
         self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
@@ -3346,62 +3388,56 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 dlg_lag.refresh_toggle_state()
             except Exception:
                 pass
-        live = self._get_device_by_mac(prev_mac) if prev_mac else None
-        snap_ok = snap if (isinstance(snap, dict) and snap.get('mac') == prev_mac) else None
-        if not live and snap_ok:
-            device = dict(snap_ok)
-        elif live and snap_ok:
-            device = dict(live)
-            lip = (live.get('ip') or '').strip()
-            sip = (snap_ok.get('ip') or '').strip()
-            if (not lip) and sip:
-                device['ip'] = sip
-        elif live:
-            device = dict(live)
-        else:
-            device = None
-        if device and device.get('mac') == prev_mac:
-            # Full teardown after OFF: firewall unblock always; ARP unkill only for MITM victims.
+
+        def _lag_teardown():
+            live = self._get_device_by_mac(prev_mac) if prev_mac else None
+            snap_ok = snap if (isinstance(snap, dict) and snap.get('mac') == prev_mac) else None
+            if not live and snap_ok:
+                device = dict(snap_ok)
+            elif live and snap_ok:
+                device = dict(live)
+                lip = (live.get('ip') or '').strip()
+                sip = (snap_ok.get('ip') or '').strip()
+                if (not lip) and sip:
+                    device['ip'] = sip
+            elif live:
+                device = dict(live)
+            else:
+                device = None
+            if not device or device.get('mac') != prev_mac:
+                self._ics_teardown_gate_if_idle(prev_mac)
+                return
             victim = self._victim_record_for_mac(prev_mac) or device
-            ips = []
-            for cand in (device, snap_ok):
-                if isinstance(cand, dict):
-                    ip = (cand.get('ip') or '').strip()
-                    if ip and _is_valid_ip(ip):
-                        ips.append(ip)
-            seen_ip = set()
-            for ip in ips:
-                if ip in seen_ip:
-                    continue
-                seen_ip.add(ip)
-                try:
-                    unblock_ip(ip)
-                except Exception:
-                    pass
-            if victim:
-                try:
-                    self._clear_victim_block(victim)
-                    if not clumsy_ics_use_firewall_only(victim):
-                        self.killer.unkill(victim)
-                        self.killer.reinforce_restore(victim)
-                        lag_off_seq = self._bump_flow_off_intent('lag', prev_mac)
-                        self._schedule_flow_off_reinforce(
-                            'lag', prev_mac, lag_off_seq, 25, victim
-                        )
-                        self._schedule_flow_off_reinforce(
-                            'lag', prev_mac, lag_off_seq, 100, victim
-                        )
-                except Exception:
-                    pass
-        self._stop_ics_lag_gate()
-        try:
-            app = QApplication.instance()
-            if app is not None:
-                app.processEvents(QEventLoop.ExcludeUserInputEvents)
-        except Exception:
-            pass
-        self._sync_killed_devices()
-        self._drop_lag_restoring_banner()
+            try:
+                if clumsy_ics_lag_can_use_windivert(device):
+                    self._ics_unpause_victim(device)
+                    self._ics_teardown_gate_if_idle(prev_mac)
+                else:
+                    for cand in (device, snap_ok):
+                        if isinstance(cand, dict):
+                            ip = (cand.get('ip') or '').strip()
+                            if ip and _is_valid_ip(ip):
+                                try:
+                                    unblock_ip(ip)
+                                except Exception:
+                                    pass
+                    if victim:
+                        self._clear_ics_client_block(victim)
+                        if not clumsy_ics_use_firewall_only(victim):
+                            self.killer.unkill(victim)
+                            self.killer.reinforce_restore(victim)
+                            lag_off_seq = self._bump_flow_off_intent('lag', prev_mac)
+                            self._schedule_flow_off_reinforce(
+                                'lag', prev_mac, lag_off_seq, 25, victim
+                            )
+                            self._schedule_flow_off_reinforce(
+                                'lag', prev_mac, lag_off_seq, 100, victim
+                            )
+            except Exception:
+                pass
+            self._sync_killed_devices()
+
+        QTimer.singleShot(0, _lag_teardown)
 
     def startDupe(self, device, duration_ms, direction):
         if not _is_valid_ip(device.get('ip') or ''):
@@ -3544,6 +3580,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             snap = dict(arm_ok)
         else:
             snap = None
+        if snap and clumsy_ics_lag_can_use_windivert(snap):
+            self._dupe_pending_clear = None
+            self._finish_dupe_ics_teardown(snap, prev_mac)
+            return
         self._dupe_pending_clear = (prev_mac, snap)
         try:
             self._dupe_deferred_clear_timer.timeout.disconnect()
@@ -4287,8 +4327,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 victim = self._victim_record_for_mac(mac) or device
                 if victim:
                     if clumsy_ics_use_firewall_only(victim):
-                        self._clear_ics_client_block(victim)
-                        self._stop_ics_lag_gate()
+                        self._clear_ics_client_block(victim, pause_only=True)
+                        self._ics_teardown_gate_if_idle(mac)
                     else:
                         try:
                             unblock_ip(victim.get('ip') or '')
