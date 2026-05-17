@@ -220,6 +220,8 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertGreater(net_pos, 0)
         self.assertGreater(fwd_pos, 0)
         self.assertLess(net_pos, fwd_pos, 'ICS hotspot should try NETWORK before FORWARD')
+        self.assertIn('_ics_windivert_filter', gate_src)
+        self.assertNotIn('break', block_src[net_pos:fwd_pos + 80])
         killer_py = os.path.join(_SRC, 'networking', 'killer.py')
         with open(killer_py, encoding='utf-8') as f:
             ksrc = f.read()

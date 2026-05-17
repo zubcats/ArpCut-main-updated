@@ -121,7 +121,53 @@ def victim_on_clumsy_ics_subnet(victim_ip: str) -> bool:
     return ip.startswith(clumsy_ics_downstream_prefix())
 
 
-def clumsy_ics_use_firewall_only(device) -> bool:
+def clumsy_ics_resolve_victim_ip(device, scanner: Optional['Scanner'] = None) -> str:
+    """
+    Best IPv4 for ICS lag when the device table still shows the home LAN (e.g. 192.168.1.x)
+    but the console is on the PC hotspot (192.168.137.x).
+    """
+    ip = str((device or {}).get('ip') or '').strip()
+    if victim_on_clumsy_ics_subnet(ip):
+        return ip
+    if not clumsy_mode_enabled() or not isinstance(device, dict):
+        return ip
+    mac = good_mac(device.get('mac'))
+    if not mac or mac == GLOBAL_MAC:
+        return ip
+    prefix = clumsy_ics_downstream_prefix()
+    try:
+        from tools.utils import terminal
+
+        state = read_clumsy_ics_state()
+        gw = str(state.get('downstream_ipv4') or '').strip()
+        caches: list[str] = []
+        if gw:
+            caches.append(terminal(f'arp -a -N {gw}') or '')
+        if scanner is not None:
+            my = (getattr(scanner, 'my_ip', None) or '').strip()
+            if my and my.startswith(prefix):
+                caches.append(terminal(f'arp -a -N {my}') or '')
+        caches.append(terminal('arp -a') or '')
+        mac_needle = mac.lower()
+        seen: set[str] = set()
+        for cache in caches:
+            if not cache or cache in seen:
+                continue
+            seen.add(cache)
+            for line in cache.splitlines():
+                if prefix not in line or mac_needle not in line.lower().replace('-', ':'):
+                    continue
+                for part in line.split():
+                    if part.startswith(prefix) and re.match(
+                        r'^\d{1,3}(?:\.\d{1,3}){3}$', part
+                    ):
+                        return part.strip()
+    except Exception:
+        pass
+    return ip
+
+
+def clumsy_ics_use_firewall_only(device, scanner: Optional['Scanner'] = None) -> bool:
     """
     Victim is on the Mobile Hotspot / ICS subnet (e.g. 192.168.137.x).
 
@@ -132,12 +178,12 @@ def clumsy_ics_use_firewall_only(device) -> bool:
         return False
     if not isinstance(device, dict):
         return False
-    return victim_on_clumsy_ics_subnet(str(device.get('ip') or ''))
+    return victim_on_clumsy_ics_subnet(clumsy_ics_resolve_victim_ip(device, scanner))
 
 
-def clumsy_ics_lag_can_use_windivert(device) -> bool:
+def clumsy_ics_lag_can_use_windivert(device, scanner: Optional['Scanner'] = None) -> bool:
     """WinDivert path for all ICS lag (Kill, Dupe, Advanced Lag, Percent Cut, etc.)."""
-    if not clumsy_ics_use_firewall_only(device):
+    if not clumsy_ics_use_firewall_only(device, scanner):
         return False
     if not clumsy_runtime_ready():
         return False

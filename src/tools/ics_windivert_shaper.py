@@ -77,6 +77,39 @@ def _ipv4_quad(ip: str) -> str:
     return (ip or '').strip()
 
 
+def _ics_subnet_quad_prefix(prefix: str) -> str:
+    p = (prefix or '').strip().rstrip('.')
+    if not p:
+        return ''
+    parts = p.split('.')
+    if len(parts) != 3:
+        return ''
+    return p
+
+
+def _ics_windivert_filter(victim_ip: str, downstream_prefix: str = '') -> str:
+    """
+    WinDivert filter for ICS client traffic.
+
+    On Mobile Hotspot, FORWARD-layer packets can show post-NAT addresses; a subnet-wide
+    filter on the downstream prefix plus victim matching in the recv loop catches more paths.
+    """
+    vip = _ipv4_quad(victim_ip)
+    quad = _ics_subnet_quad_prefix(downstream_prefix)
+    if quad and vip.startswith(quad + '.'):
+        return (
+            f'ip and ('
+            f'(ip.SrcAddr >= {quad}.2 and ip.SrcAddr <= {quad}.254) or '
+            f'(ip.DstAddr >= {quad}.2 and ip.DstAddr <= {quad}.254)'
+            ')'
+        )
+    return f'ip and (ip.SrcAddr == {vip} or ip.DstAddr == {vip})'
+
+
+def _packet_involves_victim(src: str, dst: str, victim: str) -> bool:
+    return src == victim or dst == victim
+
+
 def _ipv4_bytes(b: bytes) -> str:
     return '.'.join(str(x) for x in b)
 
@@ -181,10 +214,26 @@ class IcsWinDivertLagGate:
         self._bucket_out = 0.0
         self._bucket_in = 0.0
         self._last_bucket = 0.0
+        self._packets_seen = 0
+        self._packets_matched = 0
+        self._packets_held = 0
+        self._open_layers: list[int] = []
 
     @property
     def victim_ip(self) -> str:
         return self._victim
+
+    @property
+    def packets_seen(self) -> int:
+        return int(self._packets_seen)
+
+    @property
+    def packets_matched(self) -> int:
+        return int(self._packets_matched)
+
+    @property
+    def active_layers(self) -> tuple[int, ...]:
+        return tuple(self._open_layers)
 
     def is_running(self) -> bool:
         th = self._thread
@@ -212,22 +261,32 @@ class IcsWinDivertLagGate:
         self._dll = ctypes.WinDLL(dll_path)
         _bind_windivert_api(self._dll)
         vip = self._victim
-        filt = f'ip and (ip.SrcAddr == {vip} or ip.DstAddr == {vip})'
-        # Mobile Hotspot / ICS client traffic is often visible on NETWORK, not FORWARD.
-        # One handle only — dual-layer divert can duplicate or reorder ICS/NAT packets.
-        if vip.startswith('192.168.137.'):
+        try:
+            from tools.clumsy_inline import clumsy_ics_downstream_prefix
+
+            prefix = clumsy_ics_downstream_prefix()
+        except Exception:
+            prefix = '192.168.137.'
+        filt = _ics_windivert_filter(vip, prefix)
+        # Mobile Hotspot / ICS: try NETWORK and FORWARD — traffic may only appear on one layer.
+        if vip.startswith(prefix) or vip.startswith('192.168.137.'):
             layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
         else:
             layers = (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
         handles: list[int] = []
+        opened_layers: list[int] = []
         for layer in layers:
             hrv = _open_windivert_handle(self._dll, filt, layer)
             if hrv >= 0:
                 handles.append(hrv)
-                break
+                opened_layers.append(layer)
         if not handles:
             raise OSError('WinDivertOpen failed (run as Administrator; check WinDivert driver).')
         self._handles = handles
+        self._open_layers = opened_layers
+        self._packets_seen = 0
+        self._packets_matched = 0
+        self._packets_held = 0
         self._thread = threading.Thread(
             target=self._run_loop,
             name='ics_windivert_lag_gate',
@@ -337,6 +396,7 @@ class IcsWinDivertLagGate:
                 except Exception:
                     pass
         self._handles = []
+        self._open_layers = []
         self._dll = None
 
     def _shapes_packet(self, src: str, dst: str, direction: str) -> bool:
@@ -448,12 +508,17 @@ class IcsWinDivertLagGate:
                     continue
                 got_pkt = True
                 pkt, addr_b = got
+                self._packets_seen += 1
                 parsed = _parse_ipv4_src_dst(pkt)
                 if not parsed:
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
                 src, dst = parsed
+                if not _packet_involves_victim(src, dst, victim):
+                    self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                    continue
+                self._packets_matched += 1
                 if not self._shapes_packet(src, dst, direction):
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
@@ -480,6 +545,7 @@ class IcsWinDivertLagGate:
                     if len(heap) >= _MAX_LAG_HEAP_PACKETS:
                         heapq.heappop(heap)
                     heapq.heappush(heap, (_PAUSE_HOLD_DUE, pkt, addr_b, h))
+                    self._packets_held += 1
                     continue
 
                 if shaping and (is_from_victim or is_to_victim):
