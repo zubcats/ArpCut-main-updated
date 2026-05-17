@@ -53,6 +53,55 @@ def _ipv4_bytes(b: bytes) -> str:
     return '.'.join(str(x) for x in b)
 
 
+def _bind_windivert_api(dll: ctypes.WinDLL) -> None:
+    dll.WinDivertOpen.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_int16,
+        ctypes.c_uint64,
+    ]
+    dll.WinDivertOpen.restype = ctypes.c_void_p
+
+    dll.WinDivertRecvEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_uint,
+        ctypes.POINTER(ctypes.c_uint),
+        ctypes.c_uint64,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint),
+        ctypes.c_void_p,
+    ]
+    dll.WinDivertRecvEx.restype = wintypes.BOOL
+
+    dll.WinDivertSend.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_uint,
+        ctypes.POINTER(ctypes.c_uint),
+        ctypes.c_void_p,
+    ]
+    dll.WinDivertSend.restype = wintypes.BOOL
+
+    dll.WinDivertShutdown.argtypes = [wintypes.HANDLE, ctypes.c_int]
+    dll.WinDivertShutdown.restype = wintypes.BOOL
+
+    dll.WinDivertClose.argtypes = [wintypes.HANDLE]
+    dll.WinDivertClose.restype = wintypes.BOOL
+
+
+def _open_windivert_handle(dll: ctypes.WinDLL, filt: str, layer: int) -> int:
+    f = filt.encode('ascii', errors='ignore')
+    h = dll.WinDivertOpen(ctypes.c_char_p(f), ctypes.c_int(layer), ctypes.c_int16(0), ctypes.c_uint64(0))
+    if not h:
+        return -1
+    hv = int(h) if not isinstance(h, ctypes.c_void_p) else int(h.value or 0)
+    maxptr = (1 << 64) - 1
+    if hv == 0 or hv == maxptr:
+        return -1
+    return hv
+
+
 def _parse_ipv4_src_dst(packet: bytes) -> Optional[Tuple[str, str]]:
     if len(packet) < 20:
         return None
@@ -65,6 +114,172 @@ def _parse_ipv4_src_dst(packet: bytes) -> Optional[Tuple[str, str]]:
     src = _ipv4_bytes(packet[12:16])
     dst = _ipv4_bytes(packet[16:20])
     return src, dst
+
+
+class IcsWinDivertLagGate:
+    """
+    Lag / kill on ICS clients without ARP MITM or firewall rules.
+
+    Drops or reinjects IPv4 to/from one host. Hotspot gateway state on the console
+    stays valid (no PS5 DHCP renew needed).
+    """
+
+    def __init__(self, victim_ip: str):
+        self._victim = _ipv4_quad(victim_ip)
+        self._dll: Optional[ctypes.WinDLL] = None
+        self._handle: Optional[int] = None
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._blocking = False
+        self._direction = 'both'
+
+    @property
+    def victim_ip(self) -> str:
+        return self._victim
+
+    def start(self, direction: str = 'both') -> None:
+        self.stop(join_timeout=3.0)
+        self._stop.clear()
+        with self._lock:
+            self._direction = str(direction or 'both').strip().lower()
+            if self._direction not in ('both', 'in', 'out'):
+                self._direction = 'both'
+            self._blocking = False
+        dll_path = _windivert_dll_path()
+        if not dll_path:
+            raise OSError('WinDivert.dll not found (expected next to ZubCut or in windivert\\).')
+        self._dll = ctypes.WinDLL(dll_path)
+        _bind_windivert_api(self._dll)
+        vip = self._victim
+        filt = f'ip and (ip.SrcAddr == {vip} or ip.DstAddr == {vip})'
+        hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK)
+        if hrv < 0:
+            hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK_FORWARD)
+        if hrv < 0:
+            raise OSError('WinDivertOpen failed (run as Administrator; check WinDivert driver).')
+        self._handle = hrv
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name='ics_windivert_lag_gate',
+            daemon=True,
+        )
+        self._thread.start()
+
+    def set_blocking(self, block: bool) -> None:
+        with self._lock:
+            self._blocking = bool(block)
+
+    def set_direction(self, direction: str) -> None:
+        with self._lock:
+            d = str(direction or 'both').strip().lower()
+            self._direction = d if d in ('both', 'in', 'out') else 'both'
+
+    def stop(self, join_timeout: float = 2.0) -> None:
+        self._stop.set()
+        h = self._handle
+        if h is not None and self._dll is not None:
+            try:
+                self._dll.WinDivertShutdown(h, WINDIVERT_SHUTDOWN_BOTH)
+            except Exception:
+                pass
+        th = self._thread
+        if th is not None and th.is_alive():
+            th.join(timeout=join_timeout)
+        self._thread = None
+        if h is not None and self._dll is not None:
+            try:
+                self._dll.WinDivertClose(h)
+            except Exception:
+                pass
+        self._handle = None
+        self._dll = None
+
+    def _drop_for_direction(self, src: str, dst: str, blocking: bool, direction: str) -> bool:
+        if not blocking:
+            return False
+        if direction == 'both':
+            return True
+        if direction == 'in':
+            return dst == self._victim
+        if direction == 'out':
+            return src == self._victim
+        return True
+
+    def _run_loop(self) -> None:
+        assert self._dll is not None
+        dll = self._dll
+        h = self._handle
+        assert h is not None
+        buf = (ctypes.c_ubyte * MAX_PACKET)()
+        addr = (ctypes.c_ubyte * ADDR_BUF)()
+        recv_len = ctypes.c_uint(0)
+        addr_len = ctypes.c_uint(ADDR_BUF)
+        send_len = ctypes.c_uint(0)
+        kernel32 = ctypes.windll.kernel32
+        victim = self._victim
+
+        while not self._stop.is_set():
+            recv_len.value = 0
+            addr_len.value = ADDR_BUF
+            ok = dll.WinDivertRecvEx(
+                h,
+                ctypes.cast(buf, ctypes.c_void_p),
+                MAX_PACKET,
+                ctypes.byref(recv_len),
+                ctypes.c_uint64(WINDIVERT_RECV_FLAG_NOBLOCK),
+                ctypes.cast(addr, ctypes.c_void_p),
+                ctypes.byref(addr_len),
+                None,
+            )
+            if not ok:
+                err = kernel32.GetLastError()
+                if err == ERROR_NO_DATA:
+                    break
+                if err in (0, ERROR_INSUFFICIENT_BUFFER):
+                    time.sleep(0.001)
+                    continue
+                time.sleep(0.002)
+                continue
+
+            n = int(recv_len.value)
+            if n <= 0:
+                continue
+            pkt = bytes(ctypes.string_at(ctypes.addressof(buf), n))
+            addr_b = bytes(ctypes.string_at(ctypes.addressof(addr), int(addr_len.value)))
+
+            parsed = _parse_ipv4_src_dst(pkt)
+            if not parsed:
+                send_len.value = 0
+                pkt_buf = (ctypes.c_ubyte * len(pkt)).from_buffer_copy(pkt)
+                addr_buf = (ctypes.c_ubyte * len(addr_b)).from_buffer_copy(addr_b)
+                dll.WinDivertSend(
+                    h,
+                    ctypes.cast(pkt_buf, ctypes.c_void_p),
+                    len(pkt),
+                    ctypes.byref(send_len),
+                    ctypes.cast(addr_buf, ctypes.c_void_p),
+                )
+                continue
+
+            src, dst = parsed
+            with self._lock:
+                blocking = self._blocking
+                direction = self._direction
+
+            if self._drop_for_direction(src, dst, blocking, direction):
+                continue
+
+            send_len.value = 0
+            pkt_buf = (ctypes.c_ubyte * len(pkt)).from_buffer_copy(pkt)
+            addr_buf = (ctypes.c_ubyte * len(addr_b)).from_buffer_copy(addr_b)
+            dll.WinDivertSend(
+                h,
+                ctypes.cast(pkt_buf, ctypes.c_void_p),
+                len(pkt),
+                ctypes.byref(send_len),
+                ctypes.cast(addr_buf, ctypes.c_void_p),
+            )
 
 
 class IcsWinDivertShaper:
@@ -177,12 +392,12 @@ class IcsWinDivertShaper:
         if not dll_path:
             raise OSError('WinDivert.dll not found (expected next to ZubCut or in windivert\\).')
         self._dll = ctypes.WinDLL(dll_path)
-        self._bind_api()
+        _bind_windivert_api(self._dll)
         vip = self._victim
         filt = f'ip and (ip.SrcAddr == {vip} or ip.DstAddr == {vip})'
-        hrv = self._open_handle(filt, WINDIVERT_LAYER_NETWORK)
+        hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK)
         if hrv < 0:
-            hrv = self._open_handle(filt, WINDIVERT_LAYER_NETWORK_FORWARD)
+            hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK_FORWARD)
         if hrv < 0:
             raise OSError('WinDivertOpen failed (run as Administrator; check WinDivert driver).')
         self._handle = hrv
@@ -192,56 +407,6 @@ class IcsWinDivertShaper:
             daemon=True,
         )
         self._thread.start()
-
-    def _open_handle(self, filt: str, layer: int) -> int:
-        assert self._dll is not None
-        f = filt.encode('ascii', errors='ignore')
-        h = self._dll.WinDivertOpen(ctypes.c_char_p(f), ctypes.c_int(layer), ctypes.c_int16(0), ctypes.c_uint64(0))
-        if not h:
-            return -1
-        hv = int(h) if not isinstance(h, ctypes.c_void_p) else int(h.value or 0)
-        maxptr = (1 << 64) - 1
-        if hv == 0 or hv == maxptr:
-            return -1
-        return hv
-
-    def _bind_api(self) -> None:
-        assert self._dll is not None
-        d = self._dll
-        d.WinDivertOpen.argtypes = [
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_int16,
-            ctypes.c_uint64,
-        ]
-        d.WinDivertOpen.restype = ctypes.c_void_p
-
-        d.WinDivertRecvEx.argtypes = [
-            wintypes.HANDLE,
-            ctypes.c_void_p,
-            ctypes.c_uint,
-            ctypes.POINTER(ctypes.c_uint),
-            ctypes.c_uint64,
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_uint),
-            ctypes.c_void_p,
-        ]
-        d.WinDivertRecvEx.restype = wintypes.BOOL
-
-        d.WinDivertSend.argtypes = [
-            wintypes.HANDLE,
-            ctypes.c_void_p,
-            ctypes.c_uint,
-            ctypes.POINTER(ctypes.c_uint),
-            ctypes.c_void_p,
-        ]
-        d.WinDivertSend.restype = wintypes.BOOL
-
-        d.WinDivertShutdown.argtypes = [wintypes.HANDLE, ctypes.c_int]
-        d.WinDivertShutdown.restype = wintypes.BOOL
-
-        d.WinDivertClose.argtypes = [wintypes.HANDLE]
-        d.WinDivertClose.restype = wintypes.BOOL
 
     def stop(self, join_timeout: float = 2.0) -> None:
         self._stop.set()

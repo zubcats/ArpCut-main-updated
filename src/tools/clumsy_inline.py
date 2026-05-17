@@ -97,6 +97,29 @@ def victim_on_clumsy_ics_subnet(victim_ip: str) -> bool:
     return ip.startswith(clumsy_ics_downstream_prefix())
 
 
+def clumsy_ics_use_firewall_only(device) -> bool:
+    """
+    Hotspot / ICS clients should not use ARP MITM (breaks console gateway / DHCP).
+
+    Prefer WinDivert lag gate when available; firewall is the fallback.
+    """
+    if not clumsy_mode_enabled() or not sys.platform.startswith('win'):
+        return False
+    if not isinstance(device, dict):
+        return False
+    return victim_on_clumsy_ics_subnet(str(device.get('ip') or ''))
+
+
+def clumsy_ics_lag_can_use_windivert(device) -> bool:
+    if not clumsy_ics_use_firewall_only(device):
+        return False
+    if not clumsy_runtime_ready():
+        return False
+    from tools.ics_windivert_shaper import _windivert_dll_path
+
+    return bool(_windivert_dll_path())
+
+
 def apply_clumsy_ics_router_context(scanner: Scanner, killer, victim_ip: str) -> bool:
     """
     On ICS/hotspot, the console's gateway is this PC (e.g. 192.168.137.1), not the home router.

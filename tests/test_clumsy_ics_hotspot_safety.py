@@ -170,11 +170,21 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
             elif not had and os.path.isfile(path):
                 os.remove(path)
 
-    def test_heal_ics_client_sends_gratuitous_arp(self) -> None:
-        src = inspect.getsource(inline.heal_ics_client_after_mitm)
-        self.assertIn("dst='ff:ff:ff:ff:ff:ff'", src)
-        self.assertIn('psrc=gw', src)
-        self.assertIn('hwsrc=pc_mac', src)
+    def test_clumsy_ics_lag_prefers_windivert_gate(self) -> None:
+        self.assertIn('clumsy_ics_lag_can_use_windivert', inline.__dict__)
+        self.assertIn('IcsWinDivertLagGate', inspect.getsource(
+            __import__('tools.ics_windivert_shaper', fromlist=['IcsWinDivertLagGate'])
+        ))
+        main_py = os.path.join(_SRC, 'gui', 'main.py')
+        with open(main_py, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('def _apply_ics_client_block', src)
+        self.assertIn('_ensure_ics_lag_gate', src)
+        self.assertIn('self._ics_lag_gate.set_blocking(True)', src)
+        block_idx = src.index('def _apply_victim_block')
+        ics_idx = src.index('def _apply_ics_client_block')
+        kill_idx = src.index('self.killer.kill(device)', block_idx)
+        self.assertLess(ics_idx, kill_idx)
 
     def test_ensure_network_skips_arp_flush_in_clumsy_mode(self) -> None:
         path = os.path.join(_SRC, 'gui', 'main.py')
