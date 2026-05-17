@@ -202,12 +202,14 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         ics_block = src[src.index('def _apply_ics_client_block'):src.index('def _clear_ics_client_block')]
         self.assertIn('_ensure_ics_lag_gate', ics_block)
         self.assertIn('set_blocking(', ics_block)
-        self.assertIn('delay_ms=', ics_block)
+        self.assertIn("mode='pause'", ics_block)
         gate_src = inspect.getsource(
             __import__('tools.ics_windivert_shaper', fromlist=['IcsWinDivertLagGate']).IcsWinDivertLagGate
         )
         self.assertIn('prepare_stop', gate_src)
         self.assertIn('_discard_heap', gate_src)
+        self.assertIn('_hold_pause', gate_src)
+        self.assertIn('_PAUSE_HOLD_DUE', gate_src)
         self.assertIn('WINDIVERT_LAYER_NETWORK_FORWARD', gate_src)
         self.assertNotIn('apply_ics_victim_arp_block', ics_block)
         killer_py = os.path.join(_SRC, 'networking', 'killer.py')

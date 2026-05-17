@@ -1933,14 +1933,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log('Device is already killed', 'red')
             return
         
-        # Killing process
-        self._ensure_network_context_for_victim(device)
-        self.killer.kill(device)
-        try:
-            iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-            block_ip(iface, device['ip'], 'both')
-        except Exception:
-            pass
+        if clumsy_ics_use_firewall_only(device):
+            self._apply_victim_block(device, 'both')
+        else:
+            self._ensure_network_context_for_victim(device)
+            self.killer.kill(device)
+            try:
+                iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+                block_ip(iface, device['ip'], 'both')
+            except Exception:
+                pass
         self.killed_devices[device['mac']] = True
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
@@ -1972,12 +1974,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         victim = self._victim_record_for_mac(device['mac']) or device
-        self._ensure_network_context_for_victim(victim)
-        try:
-            unblock_ip(victim.get('ip') or '')
-        except Exception:
-            pass
-        self.killer.unkill(victim)
+        if clumsy_ics_use_firewall_only(victim):
+            self._clear_victim_block(victim)
+            self._stop_ics_lag_gate()
+        else:
+            self._ensure_network_context_for_victim(victim)
+            try:
+                unblock_ip(victim.get('ip') or '')
+            except Exception:
+                pass
+            self.killer.unkill(victim)
         self.killed_devices[device['mac']] = False
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
@@ -2000,16 +2006,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self.connected():
             return
         
-        self.killer.kill_all(self.scanner.devices)
-        for v in list(self.killer.killed.values()):
-            try:
-                self._ensure_network_context_for_victim(v)
-                iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-                block_ip(iface, v['ip'], 'both')
-            except Exception:
-                pass
-        for mac in self.killer.killed:
-            self.killed_devices[mac] = True
+        for d in self.scanner.devices:
+            if d.get('admin'):
+                continue
+            if clumsy_ics_use_firewall_only(d):
+                self._apply_victim_block(d, 'both')
+                self.killed_devices[d['mac']] = True
+            else:
+                self.killer.kill(d)
+                try:
+                    iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+                    block_ip(iface, d['ip'], 'both')
+                except Exception:
+                    pass
+                self.killed_devices[d['mac']] = True
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
         self.log('Killed All devices', UI_LOG_VICTIM_BLOCK_FG)
@@ -2032,7 +2042,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         
         victims_before = [dict(v) for v in self.killer.killed.values()]
+        for d in self.scanner.devices:
+            if clumsy_ics_use_firewall_only(d):
+                try:
+                    self._clear_victim_block(d)
+                except Exception:
+                    pass
+        self._stop_ics_lag_gate()
         for v in victims_before:
+            if clumsy_ics_use_firewall_only(v):
+                continue
             try:
                 unblock_ip(v.get('ip') or '')
             except Exception:
@@ -2041,6 +2060,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for victim in victims_before:
             mac = victim.get('mac')
             if not mac:
+                continue
+            if clumsy_ics_use_firewall_only(victim):
                 continue
             # OFF-only reinforcement for bulk unkill (same cadence as per-device kill OFF).
             self.killer.reinforce_restore(victim)
@@ -2749,12 +2770,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
         self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 100, device)
 
-    def _ics_clumsy_delay_ms(self, *, for_dupe: bool = False) -> int:
-        """Clumsy-style per-packet delay (red chain) — not hard drop."""
-        if for_dupe:
-            dur = max(500, int(getattr(self, 'dupe_duration_ms', 5000) or 5000))
-            return max(750, min(6000, dur // 2))
-        return max(500, min(12000, int(getattr(self, 'lag_block_ms', 9000) or 9000)))
+    def _ics_windivert_busy(self, mac: str | None = None) -> bool:
+        """True if any flow still uses the shared ICS WinDivert gate for this MAC (or any)."""
+        if self.lag_active and (mac is None or self.lag_device_mac == mac):
+            return True
+        if self.dupe_active and (mac is None or self.dupe_device_mac == mac):
+            return True
+        if self.percent_cut_active and (mac is None or self.percent_cut_device_mac == mac):
+            return True
+        if self.mitm_shaping_active and (mac is None or self.mitm_shaping_mac == mac):
+            return True
+        if mac is not None:
+            return self._kill_ui_shows_on(mac)
+        return any(self._kill_ui_shows_on(m) for m in list(self.killed_devices.keys()))
 
     def _stop_ics_lag_gate(self, join_timeout: float = 0.5) -> None:
         gate = getattr(self, '_ics_lag_gate', None)
@@ -2787,7 +2815,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _apply_ics_client_block(self, device, direction, *, for_dupe: bool = False) -> bool:
         """
-        Hotspot lag: Clumsy-style WinDivert delay (red chain), no ARP MITM.
+        ICS client impairment (all lag methods): pause connection in WinDivert.
+
+        Used for Kill, Dupe, Lag Switch block phase, and firewall fallback avoidance — not ARP MITM.
         """
         if not clumsy_ics_use_firewall_only(device):
             return False
@@ -2795,11 +2825,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if device['mac'] in self.killer.killed:
             release_ics_victim_block(self.scanner, self.killer, device)
         if self._ensure_ics_lag_gate(device, direction):
-            delay_ms = self._ics_clumsy_delay_ms(for_dupe=for_dupe)
-            loss_pct = 35 if for_dupe else 15
-            self._ics_lag_gate.set_blocking(
-                True, delay_ms=delay_ms, loss_pct=loss_pct
-            )
+            gate = self._ics_lag_gate
+            if gate is not None:
+                gate.clear_shaping()
+            self._ics_lag_gate.set_blocking(True, mode='pause')
             self._sync_killed_devices()
             self._refresh_table_row_for_mac(device['mac'])
             self._updateKillButtonState()
@@ -3188,8 +3217,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _lag_enter_allow_phase(self, device):
         """
-        Allow window (bottom spin): drop firewall rules and stop ARP spoof for this victim.
-        On ICS/hotspot keep WinDivert open with blocking=False so traffic resumes instantly.
+        Allow window (bottom spin): unpause WinDivert (discard held packets, live traffic passes).
+        On ICS/hotspot the gate stays open — no ARP MITM or firewall rules.
         """
         try:
             if clumsy_ics_use_firewall_only(device):
@@ -3573,10 +3602,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self.percent_cut_active and self.percent_cut_device_mac:
             dev = self._get_device_by_mac(self.percent_cut_device_mac) or self._victim_record_for_mac(self.percent_cut_device_mac)
             if dev:
-                allow_pct = max(0, 100 - pct)
                 try:
-                    self._ensure_network_context_for_victim(dev)
-                    self.killer.apply_percent_cut(dev, pass_percent=allow_pct)
+                    if clumsy_ics_lag_can_use_windivert(dev):
+                        if self._ensure_ics_lag_gate(dev, 'both'):
+                            self._ics_lag_gate.set_blocking(
+                                True, mode='delay', delay_ms=0, loss_pct=pct
+                            )
+                    else:
+                        allow_pct = max(0, 100 - pct)
+                        self._ensure_network_context_for_victim(dev)
+                        self.killer.apply_percent_cut(dev, pass_percent=allow_pct)
                 except Exception:
                     pass
         self._updatePercentCutButtonState()
@@ -3711,8 +3746,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._run_kill_command(mac, dev, turn_on=False, source='pctcut_auto_off_kill')
             pct = self._clamp_percent(self.spinPercentCutMain.value())
             allow_pct = max(0, 100 - pct)
-            self._ensure_network_context_for_victim(device)
-            self.killer.apply_percent_cut(device, pass_percent=allow_pct)
+            if clumsy_ics_lag_can_use_windivert(device):
+                if not self._ensure_ics_lag_gate(device, 'both'):
+                    self.log(
+                        'Percent Cut needs WinDivert (run as Administrator).',
+                        'red',
+                    )
+                    return
+                self._ics_lag_gate.clear_shaping()
+                self._ics_lag_gate.set_blocking(
+                    True, mode='delay', delay_ms=0, loss_pct=pct
+                )
+            else:
+                self._ensure_network_context_for_victim(device)
+                self.killer.apply_percent_cut(device, pass_percent=allow_pct)
             self.percent_cut_active = True
             self.percent_cut_device_mac = mac
             self.log(
@@ -3734,14 +3781,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         victim = self._victim_record_for_mac(prev_mac) or self._get_device_by_mac(prev_mac)
         if victim:
             try:
-                self._ensure_network_context_for_victim(victim)
-                self.killer.disable_percent_cut(prev_mac)
-                self.killer.unkill(victim)
-                self.killer.reinforce_restore(victim)
-                pct_off_seq = self._bump_flow_off_intent('pctcut', prev_mac)
-                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 25, victim)
-                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 90, victim)
-                self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 200, victim)
+                if clumsy_ics_lag_can_use_windivert(victim):
+                    self._clear_ics_client_block(victim)
+                    if not self._ics_windivert_busy(prev_mac):
+                        self._stop_ics_lag_gate()
+                else:
+                    self._ensure_network_context_for_victim(victim)
+                    self.killer.disable_percent_cut(prev_mac)
+                    self.killer.unkill(victim)
+                    self.killer.reinforce_restore(victim)
+                    pct_off_seq = self._bump_flow_off_intent('pctcut', prev_mac)
+                    self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 25, victim)
+                    self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 90, victim)
+                    self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 200, victim)
             except Exception:
                 pass
         if log and victim:
@@ -3907,16 +3959,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             and shaping_mac == mac
             and self.mitm_shaping_active
             and getattr(self, '_mitm_shaping_backend', None) == 'windivert'
-            and self._ics_windivert_shaper is not None
+            and self._ics_lag_gate is not None
         ):
             if use_wd:
-                self._ics_windivert_shaper.apply_params(du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps)
+                self._ics_lag_gate.set_blocking(False)
+                self._ics_lag_gate.apply_shaping_params(
+                    du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps
+                )
+                self._ics_windivert_shaper = self._ics_lag_gate
                 self._mitm_adv_sched_record(du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld)
                 self._start_mitm_adv_schedule()
                 self._refresh_advanced_lag_mitm_if_visible()
                 return
             try:
-                self._ics_windivert_shaper.stop()
+                self._ics_lag_gate.clear_shaping()
+                self._ics_lag_gate.prepare_stop()
+                self._stop_ics_lag_gate()
             except Exception:
                 pass
             self._ics_windivert_shaper = None
@@ -3970,10 +4028,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.killer.disable_percent_cut(mac)
             except Exception:
                 pass
-            shaper = IcsWinDivertShaper(device.get('ip') or '')
             try:
-                shaper.start(du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps)
-                self._ics_windivert_shaper = shaper
+                if not self._ensure_ics_lag_gate(device, 'both'):
+                    raise OSError('WinDivert gate failed')
+                self._ics_lag_gate.set_blocking(False)
+                self._ics_lag_gate.apply_shaping_params(
+                    du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps
+                )
+                self._ics_windivert_shaper = self._ics_lag_gate
                 self._mitm_shaping_backend = 'windivert'
                 use_forwarder = False
             except Exception as exc:
@@ -4068,6 +4130,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _on_mitm_teardown_finished(self, prev_mac: str, log: bool, log_ip: str, was_windivert: bool, victim_snap):
         self._mitm_teardown_thread = None
         mac = prev_mac or None
+        if was_windivert and not self._ics_windivert_busy(mac):
+            self._stop_ics_lag_gate()
         if mac:
             self.killed_devices[mac] = False
         self._sync_killed_devices()
@@ -4120,6 +4184,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._refresh_advanced_lag_mitm_if_visible()
 
         was_wd = backend == 'windivert' and shaper is not None
+        gate = self._ics_lag_gate if was_wd else None
 
         def _teardown_worker():
             log_ip = ''
@@ -4129,9 +4194,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         self.killer.disable_percent_cut(prev_mac)
                     except Exception:
                         pass
-                if was_wd:
+                if was_wd and gate is not None:
                     try:
-                        shaper.stop()
+                        gate.clear_shaping()
+                        gate.prepare_stop()
                     except Exception:
                         pass
                     if isinstance(victim_snap, dict):

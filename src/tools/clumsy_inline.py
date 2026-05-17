@@ -112,7 +112,7 @@ def clumsy_ics_use_firewall_only(device) -> bool:
 
 
 def clumsy_ics_lag_can_use_windivert(device) -> bool:
-    """WinDivert lag gate is fallback when ARP kill is unavailable."""
+    """WinDivert path for all ICS lag (Kill, Dupe, Advanced Lag, Percent Cut, etc.)."""
     if not clumsy_ics_use_firewall_only(device):
         return False
     if not clumsy_runtime_ready():

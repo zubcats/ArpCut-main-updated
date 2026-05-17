@@ -117,28 +117,42 @@ def _parse_ipv4_src_dst(packet: bytes) -> Optional[Tuple[str, str]]:
 
 
 _MAX_LAG_HEAP_PACKETS = 4096
+_PAUSE_HOLD_DUE = float('inf')
 
 
 class IcsWinDivertLagGate:
     """
-    Clumsy-style lag on ICS clients: delay (+ optional loss) while blocking, pass-through when not.
+    Single WinDivert path for all Clumsy / ICS client impairment (Kill, Dupe, Advanced Lag,
+    Percent Cut, Lag Switch, etc.): connection pause, percent loss, or shaped delay/jitter/cap.
 
-    Queued packets are discarded on OFF/allow (not blasted at the console) so lag end does not
-    kick the player. Hotspot gateway ARP is untouched.
+    Pause holds traffic until unpause/OFF; queued packets are discarded on resume (not replayed)
+    so the console is not kicked. Hotspot gateway ARP is untouched.
     """
 
     def __init__(self, victim_ip: str):
         self._victim = _ipv4_quad(victim_ip)
         self._dll: Optional[ctypes.WinDLL] = None
-        self._handle: Optional[int] = None
+        self._handles: list[int] = []
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._blocking = False
+        self._hold_pause = True
         self._direction = 'both'
-        self._delay_ms = 750
+        self._delay_ms = 0
         self._loss_pct = 0
         self._discard_heap = False
+        self._delay_out_ms = 0
+        self._delay_in_ms = 0
+        self._jitter_out_ms = 0
+        self._jitter_in_ms = 0
+        self._loss_out = 0
+        self._loss_in = 0
+        self._cap_out_bps = 0.0
+        self._cap_in_bps = 0.0
+        self._bucket_out = 0.0
+        self._bucket_in = 0.0
+        self._last_bucket = 0.0
 
     @property
     def victim_ip(self) -> str:
@@ -160,13 +174,15 @@ class IcsWinDivertLagGate:
         _bind_windivert_api(self._dll)
         vip = self._victim
         filt = f'ip and (ip.SrcAddr == {vip} or ip.DstAddr == {vip})'
-        # ICS/NAT traffic is usually on the forward layer (same as Clumsy on a router path).
-        hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK_FORWARD)
-        if hrv < 0:
-            hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK)
-        if hrv < 0:
+        # ICS/NAT may appear on forward and/or network layer — open both when possible.
+        handles: list[int] = []
+        for layer in (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK):
+            hrv = _open_windivert_handle(self._dll, filt, layer)
+            if hrv >= 0:
+                handles.append(hrv)
+        if not handles:
             raise OSError('WinDivertOpen failed (run as Administrator; check WinDivert driver).')
-        self._handle = hrv
+        self._handles = handles
         self._thread = threading.Thread(
             target=self._run_loop,
             name='ics_windivert_lag_gate',
@@ -178,17 +194,72 @@ class IcsWinDivertLagGate:
         self,
         block: bool,
         *,
+        mode: str | None = None,
         delay_ms: int | None = None,
         loss_pct: int | None = None,
     ) -> None:
         with self._lock:
             self._blocking = bool(block)
+            if mode is not None:
+                m = str(mode).strip().lower()
+                self._hold_pause = m != 'delay'
             if delay_ms is not None:
-                self._delay_ms = max(50, min(15000, int(delay_ms)))
+                self._delay_ms = max(0, min(2000, int(delay_ms)))
             if loss_pct is not None:
                 self._loss_pct = max(0, min(100, int(loss_pct)))
             if not block:
                 self._discard_heap = True
+
+    def apply_shaping_params(
+        self,
+        delay_out_ms: int,
+        delay_in_ms: int,
+        jitter_out_ms: int,
+        jitter_in_ms: int,
+        loss_out: int,
+        loss_in: int,
+        max_kbps_out: float,
+        max_kbps_in: float,
+    ) -> None:
+        with self._lock:
+            self._delay_out_ms = max(0, int(delay_out_ms))
+            self._delay_in_ms = max(0, int(delay_in_ms))
+            self._jitter_out_ms = max(0, int(jitter_out_ms))
+            self._jitter_in_ms = max(0, int(jitter_in_ms))
+            self._loss_out = max(0, min(100, int(loss_out)))
+            self._loss_in = max(0, min(100, int(loss_in)))
+            self._cap_out_bps = max(0.0, float(max_kbps_out)) * 1000.0 / 8.0
+            self._cap_in_bps = max(0.0, float(max_kbps_in)) * 1000.0 / 8.0
+
+    def clear_shaping(self) -> None:
+        with self._lock:
+            self._delay_out_ms = 0
+            self._delay_in_ms = 0
+            self._jitter_out_ms = 0
+            self._jitter_in_ms = 0
+            self._loss_out = 0
+            self._loss_in = 0
+            self._cap_out_bps = 0.0
+            self._cap_in_bps = 0.0
+            self._discard_heap = True
+
+    def _shaping_active_unlocked(self) -> bool:
+        return (
+            self._delay_out_ms > 0
+            or self._delay_in_ms > 0
+            or self._jitter_out_ms > 0
+            or self._jitter_in_ms > 0
+            or self._loss_out > 0
+            or self._loss_in > 0
+            or self._cap_out_bps > 0
+            or self._cap_in_bps > 0
+        )
+
+    def _tick_buckets_unlocked(self, dt: float) -> None:
+        if self._cap_out_bps > 0:
+            self._bucket_out = min(self._cap_out_bps, self._bucket_out + self._cap_out_bps * dt)
+        if self._cap_in_bps > 0:
+            self._bucket_in = min(self._cap_in_bps, self._bucket_in + self._cap_in_bps * dt)
 
     def set_direction(self, direction: str) -> None:
         with self._lock:
@@ -203,22 +274,24 @@ class IcsWinDivertLagGate:
     def stop(self, join_timeout: float = 2.0) -> None:
         self.prepare_stop()
         self._stop.set()
-        h = self._handle
-        if h is not None and self._dll is not None:
-            try:
-                self._dll.WinDivertShutdown(h, WINDIVERT_SHUTDOWN_BOTH)
-            except Exception:
-                pass
+        handles = list(self._handles)
+        if handles and self._dll is not None:
+            for h in handles:
+                try:
+                    self._dll.WinDivertShutdown(h, WINDIVERT_SHUTDOWN_BOTH)
+                except Exception:
+                    pass
         th = self._thread
         if th is not None and th.is_alive():
             th.join(timeout=join_timeout)
         self._thread = None
-        if h is not None and self._dll is not None:
-            try:
-                self._dll.WinDivertClose(h)
-            except Exception:
-                pass
-        self._handle = None
+        if handles and self._dll is not None:
+            for h in handles:
+                try:
+                    self._dll.WinDivertClose(h)
+                except Exception:
+                    pass
+        self._handles = []
         self._dll = None
 
     def _shapes_packet(self, src: str, dst: str, direction: str) -> bool:
@@ -242,11 +315,34 @@ class IcsWinDivertLagGate:
             ctypes.cast(addr_buf, ctypes.c_void_p),
         )
 
+    def _recv_one(self, dll, h, buf, addr, recv_len, addr_len) -> Optional[Tuple[bytes, bytes]]:
+        recv_len.value = 0
+        addr_len.value = ADDR_BUF
+        ok = dll.WinDivertRecvEx(
+            h,
+            ctypes.cast(buf, ctypes.c_void_p),
+            MAX_PACKET,
+            ctypes.byref(recv_len),
+            ctypes.c_uint64(WINDIVERT_RECV_FLAG_NOBLOCK),
+            ctypes.cast(addr, ctypes.c_void_p),
+            ctypes.byref(addr_len),
+            None,
+        )
+        if not ok:
+            return None
+        n = int(recv_len.value)
+        if n <= 0:
+            return None
+        pkt = bytes(ctypes.string_at(ctypes.addressof(buf), n))
+        addr_b = bytes(ctypes.string_at(ctypes.addressof(addr), int(addr_len.value)))
+        return pkt, addr_b
+
     def _run_loop(self) -> None:
         assert self._dll is not None
         dll = self._dll
-        h = self._handle
-        assert h is not None
+        handles = list(self._handles)
+        if not handles:
+            return
         buf = (ctypes.c_ubyte * MAX_PACKET)()
         addr = (ctypes.c_ubyte * ADDR_BUF)()
         recv_len = ctypes.c_uint(0)
@@ -254,7 +350,8 @@ class IcsWinDivertLagGate:
         send_len = ctypes.c_uint(0)
         kernel32 = ctypes.windll.kernel32
         victim = self._victim
-        heap: list[Tuple[float, bytes, bytes]] = []
+        heap: list[Tuple[float, bytes, bytes, int]] = []
+        from tools.mitm_compound_loss import CAP_OVERFLOW_LOSS_PCT, should_drop_compounded
 
         while not self._stop.is_set():
             now = time.perf_counter()
@@ -263,138 +360,136 @@ class IcsWinDivertLagGate:
                     self._discard_heap = False
                     heap.clear()
                 blocking = self._blocking
+                hold_pause = self._hold_pause
                 direction = self._direction
                 delay_ms = self._delay_ms
                 loss_pct = self._loss_pct
+                shaping = self._shaping_active_unlocked()
+                d_out = self._delay_out_ms
+                d_in = self._delay_in_ms
+                j_out = self._jitter_out_ms
+                j_in = self._jitter_in_ms
+                l_out = self._loss_out
+                l_in = self._loss_in
+                cap_out = self._cap_out_bps
+                cap_in = self._cap_in_bps
+                if shaping:
+                    if self._last_bucket <= 0:
+                        self._last_bucket = now
+                    dt = max(0.0, now - self._last_bucket)
+                    self._last_bucket = now
+                    self._tick_buckets_unlocked(dt)
 
             while heap and heap[0][0] <= now:
-                if not blocking:
+                if blocking and hold_pause:
                     heapq.heappop(heap)
                     continue
-                _, pkt_b, addr_b = heapq.heappop(heap)
+                _, pkt_b, addr_b, h_send = heapq.heappop(heap)
                 if self._stop.is_set():
                     break
-                self._send_immediate(h, dll, pkt_b, addr_b, ctypes.byref(send_len))
+                self._send_immediate(h_send, dll, pkt_b, addr_b, ctypes.byref(send_len))
 
-            recv_len.value = 0
-            addr_len.value = ADDR_BUF
-            ok = dll.WinDivertRecvEx(
-                h,
-                ctypes.cast(buf, ctypes.c_void_p),
-                MAX_PACKET,
-                ctypes.byref(recv_len),
-                ctypes.c_uint64(WINDIVERT_RECV_FLAG_NOBLOCK),
-                ctypes.cast(addr, ctypes.c_void_p),
-                ctypes.byref(addr_len),
-                None,
-            )
-            if not ok:
-                err = kernel32.GetLastError()
-                if err == ERROR_NO_DATA:
-                    time.sleep(0.001)
+            got_pkt = False
+            for h in handles:
+                got = self._recv_one(dll, h, buf, addr, recv_len, addr_len)
+                if got is None:
+                    err = kernel32.GetLastError()
+                    if err not in (ERROR_NO_DATA, 0, ERROR_INSUFFICIENT_BUFFER):
+                        time.sleep(0.001)
                     continue
-                if err in (0, ERROR_INSUFFICIENT_BUFFER):
-                    time.sleep(0.001)
+                got_pkt = True
+                pkt, addr_b = got
+                parsed = _parse_ipv4_src_dst(pkt)
+                if not parsed:
+                    self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
-                time.sleep(0.002)
-                continue
 
-            n = int(recv_len.value)
-            if n <= 0:
-                continue
-            pkt = bytes(ctypes.string_at(ctypes.addressof(buf), n))
-            addr_b = bytes(ctypes.string_at(ctypes.addressof(addr), int(addr_len.value)))
+                src, dst = parsed
+                if not self._shapes_packet(src, dst, direction):
+                    self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                    continue
 
-            parsed = _parse_ipv4_src_dst(pkt)
-            if not parsed:
+                is_from_victim = src == victim
+                is_to_victim = dst == victim
+                n = len(pkt)
+
+                if blocking:
+                    if not hold_pause and loss_pct > 0 and random.randint(1, 100) <= loss_pct:
+                        continue
+                    if len(heap) >= _MAX_LAG_HEAP_PACKETS:
+                        heapq.heappop(heap)
+                    if hold_pause:
+                        due = _PAUSE_HOLD_DUE
+                    elif delay_ms > 0:
+                        due = time.perf_counter() + delay_ms / 1000.0
+                    elif loss_pct > 0:
+                        continue
+                    else:
+                        due = _PAUSE_HOLD_DUE
+                    heapq.heappush(heap, (due, pkt, addr_b, h))
+                    continue
+
+                if shaping and (is_from_victim or is_to_victim):
+                    cap_ok = True
+                    if cap_out > 0 and is_from_victim:
+                        cap_ok = self._bucket_out >= float(n)
+                    if cap_ok and cap_in > 0 and is_to_victim:
+                        cap_ok = self._bucket_in >= float(n)
+                    loss_shape = l_out if is_from_victim else (l_in if is_to_victim else 0)
+                    cap_active = (cap_out > 0 and is_from_victim) or (
+                        cap_in > 0 and is_to_victim
+                    )
+                    if should_drop_compounded(
+                        loss_shape,
+                        cap_active=cap_active,
+                        cap_can_forward=cap_ok,
+                        overflow_loss_pct=CAP_OVERFLOW_LOSS_PCT,
+                    ):
+                        continue
+                    if cap_active:
+                        with self._lock:
+                            if cap_out > 0 and is_from_victim:
+                                if self._bucket_out < float(n):
+                                    continue
+                                self._bucket_out -= float(n)
+                            if cap_in > 0 and is_to_victim:
+                                if self._bucket_in < float(n):
+                                    continue
+                                self._bucket_in -= float(n)
+                    extra_j = 0
+                    base_d = 0
+                    if is_from_victim:
+                        base_d = d_out
+                        extra_j = random.randint(0, j_out) if j_out else 0
+                    elif is_to_victim:
+                        base_d = d_in
+                        extra_j = random.randint(0, j_in) if j_in else 0
+                    shape_delay = base_d + extra_j
+                    if shape_delay > 0:
+                        if len(heap) >= _MAX_LAG_HEAP_PACKETS:
+                            heapq.heappop(heap)
+                        due = time.perf_counter() + shape_delay / 1000.0
+                        heapq.heappush(heap, (due, pkt, addr_b, h))
+                        continue
+
                 self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                 continue
 
-            src, dst = parsed
-            if not self._shapes_packet(src, dst, direction):
-                self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
-                continue
-
-            if not blocking:
-                self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
-                continue
-
-            if loss_pct > 0 and random.randint(1, 100) <= loss_pct:
-                continue
-
-            if delay_ms > 0:
-                if len(heap) >= _MAX_LAG_HEAP_PACKETS:
-                    heapq.heappop(heap)
-                due = time.perf_counter() + delay_ms / 1000.0
-                heapq.heappush(heap, (due, pkt, addr_b))
-                continue
-
-            continue
+            if not got_pkt:
+                time.sleep(0.001)
 
         heap.clear()
 
 
 class IcsWinDivertShaper:
-    """
-    Divert IPv4 traffic to/from a single host; apply loss, simple token-bucket caps,
-    and queued delay (fixed + optional jitter) before reinjecting.
-    """
+    """Advanced Lag on ICS — thin wrapper over :class:`IcsWinDivertLagGate`."""
 
     def __init__(self, victim_ip: str):
-        self._victim = _ipv4_quad(victim_ip)
-        self._dll: Optional[ctypes.WinDLL] = None
-        self._handle: Optional[int] = None
-        self._thread: Optional[threading.Thread] = None
-        self._stop = threading.Event()
-        self._lock = threading.Lock()
-        # Mutable shaping params (updated from GUI thread)
-        self._delay_out_ms = 0
-        self._delay_in_ms = 0
-        self._jitter_out_ms = 0
-        self._jitter_in_ms = 0
-        self._loss_out = 0
-        self._loss_in = 0
-        self._cap_out_bps = 0.0  # bytes/sec (max_kbps * 1000 / 8)
-        self._cap_in_bps = 0.0
-        self._bucket_out = 0.0
-        self._bucket_in = 0.0
-        self._last_bucket = 0.0
+        self._gate = IcsWinDivertLagGate(victim_ip)
 
-    def _tick_buckets(self, dt: float) -> None:
-        with self._lock:
-            if self._cap_out_bps > 0:
-                self._bucket_out = min(self._cap_out_bps, self._bucket_out + self._cap_out_bps * dt)
-            if self._cap_in_bps > 0:
-                self._bucket_in = min(self._cap_in_bps, self._bucket_in + self._cap_in_bps * dt)
-
-    def _cap_peek(self, n: int, is_from_victim: bool, is_to_victim: bool) -> bool:
-        """True if bandwidth cap allows this packet (does not deduct)."""
-        with self._lock:
-            if self._cap_out_bps > 0 and is_from_victim:
-                if self._bucket_out < float(n):
-                    return False
-            if self._cap_in_bps > 0 and is_to_victim:
-                if self._bucket_in < float(n):
-                    return False
-        return True
-
-    def _cap_commit(self, n: int, is_from_victim: bool, is_to_victim: bool) -> bool:
-        with self._lock:
-            if self._cap_out_bps > 0 and is_from_victim:
-                if self._bucket_out < float(n):
-                    return False
-                self._bucket_out -= float(n)
-            if self._cap_in_bps > 0 and is_to_victim:
-                if self._bucket_in < float(n):
-                    return False
-                self._bucket_in -= float(n)
-        return True
-
-    def _consume_caps(self, n: int, is_from_victim: bool, is_to_victim: bool) -> bool:
-        """Return False if packet should be dropped (over cap)."""
-        if not self._cap_peek(n, is_from_victim, is_to_victim):
-            return False
-        return self._cap_commit(n, is_from_victim, is_to_victim)
+    @property
+    def victim_ip(self) -> str:
+        return self._gate.victim_ip
 
     def apply_params(
         self,
@@ -407,15 +502,16 @@ class IcsWinDivertShaper:
         max_kbps_out: float,
         max_kbps_in: float,
     ) -> None:
-        with self._lock:
-            self._delay_out_ms = max(0, int(delay_out_ms))
-            self._delay_in_ms = max(0, int(delay_in_ms))
-            self._jitter_out_ms = max(0, int(jitter_out_ms))
-            self._jitter_in_ms = max(0, int(jitter_in_ms))
-            self._loss_out = max(0, min(100, int(loss_out)))
-            self._loss_in = max(0, min(100, int(loss_in)))
-            self._cap_out_bps = max(0.0, float(max_kbps_out)) * 1000.0 / 8.0
-            self._cap_in_bps = max(0.0, float(max_kbps_in)) * 1000.0 / 8.0
+        self._gate.apply_shaping_params(
+            delay_out_ms,
+            delay_in_ms,
+            jitter_out_ms,
+            jitter_in_ms,
+            loss_out,
+            loss_in,
+            max_kbps_out,
+            max_kbps_in,
+        )
 
     def start(
         self,
@@ -428,8 +524,9 @@ class IcsWinDivertShaper:
         max_kbps_out: float,
         max_kbps_in: float,
     ) -> None:
-        self.stop(join_timeout=3.0)
-        self.apply_params(
+        self._gate.start(direction='both')
+        self._gate.set_blocking(False)
+        self._gate.apply_shaping_params(
             delay_out_ms,
             delay_in_ms,
             jitter_out_ms,
@@ -439,172 +536,8 @@ class IcsWinDivertShaper:
             max_kbps_out,
             max_kbps_in,
         )
-        self._stop.clear()
-        dll_path = _windivert_dll_path()
-        if not dll_path:
-            raise OSError('WinDivert.dll not found (expected next to ZubCut or in windivert\\).')
-        self._dll = ctypes.WinDLL(dll_path)
-        _bind_windivert_api(self._dll)
-        vip = self._victim
-        filt = f'ip and (ip.SrcAddr == {vip} or ip.DstAddr == {vip})'
-        hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK)
-        if hrv < 0:
-            hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK_FORWARD)
-        if hrv < 0:
-            raise OSError('WinDivertOpen failed (run as Administrator; check WinDivert driver).')
-        self._handle = hrv
-        self._thread = threading.Thread(
-            target=self._run_loop,
-            name='ics_windivert_shaper',
-            daemon=True,
-        )
-        self._thread.start()
 
     def stop(self, join_timeout: float = 2.0) -> None:
-        self._stop.set()
-        h = self._handle
-        if h is not None and self._dll is not None:
-            try:
-                self._dll.WinDivertShutdown(h, WINDIVERT_SHUTDOWN_BOTH)
-            except Exception:
-                pass
-        th = self._thread
-        if th is not None and th.is_alive():
-            th.join(timeout=join_timeout)
-        self._thread = None
-        if h is not None and self._dll is not None:
-            try:
-                self._dll.WinDivertClose(h)
-            except Exception:
-                pass
-        self._handle = None
-        self._dll = None
-
-    def _run_loop(self) -> None:
-        assert self._dll is not None
-        dll = self._dll
-        h = self._handle
-        assert h is not None
-        buf = (ctypes.c_ubyte * MAX_PACKET)()
-        addr = (ctypes.c_ubyte * ADDR_BUF)()
-        recv_len = ctypes.c_uint(0)
-        addr_len = ctypes.c_uint(ADDR_BUF)
-        send_len = ctypes.c_uint(0)
-        kernel32 = ctypes.windll.kernel32
-        heap: list[Tuple[float, bytes, bytes]] = []
-        victim = self._victim
-
-        while not self._stop.is_set():
-            now = time.perf_counter()
-            while heap and heap[0][0] <= now:
-                _, pkt_b, addr_b = heapq.heappop(heap)
-                if self._stop.is_set():
-                    break
-                send_len.value = 0
-                pkt_buf = (ctypes.c_ubyte * len(pkt_b)).from_buffer_copy(pkt_b)
-                addr_buf = (ctypes.c_ubyte * len(addr_b)).from_buffer_copy(addr_b)
-                dll.WinDivertSend(
-                    h,
-                    ctypes.cast(pkt_buf, ctypes.c_void_p),
-                    len(pkt_b),
-                    ctypes.byref(send_len),
-                    ctypes.cast(addr_buf, ctypes.c_void_p),
-                )
-                del pkt_buf, addr_buf
-
-            recv_len.value = 0
-            addr_len.value = ADDR_BUF
-            ok = dll.WinDivertRecvEx(
-                h,
-                ctypes.cast(buf, ctypes.c_void_p),
-                MAX_PACKET,
-                ctypes.byref(recv_len),
-                ctypes.c_uint64(WINDIVERT_RECV_FLAG_NOBLOCK),
-                ctypes.cast(addr, ctypes.c_void_p),
-                ctypes.byref(addr_len),
-                None,
-            )
-            if not ok:
-                err = kernel32.GetLastError()
-                if err == ERROR_NO_DATA:
-                    time.sleep(0.001)
-                    continue
-                if err in (0, ERROR_INSUFFICIENT_BUFFER):
-                    time.sleep(0.001)
-                    continue
-                time.sleep(0.002)
-                continue
-
-            n = int(recv_len.value)
-            if n <= 0:
-                continue
-            pkt = bytes(ctypes.string_at(ctypes.addressof(buf), n))
-            addr_b = bytes(ctypes.string_at(ctypes.addressof(addr), int(addr_len.value)))
-
-            parsed = _parse_ipv4_src_dst(pkt)
-            if not parsed:
-                self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
-                continue
-            src, dst = parsed
-            is_from_victim = src == victim
-            is_to_victim = dst == victim
-
-            with self._lock:
-                d_out = self._delay_out_ms
-                d_in = self._delay_in_ms
-                j_out = self._jitter_out_ms
-                j_in = self._jitter_in_ms
-                l_out = self._loss_out
-                l_in = self._loss_in
-                cap_out = self._cap_out_bps
-                cap_in = self._cap_in_bps
-
-            now = time.perf_counter()
-            if self._last_bucket <= 0:
-                self._last_bucket = now
-            dt = max(0.0, now - self._last_bucket)
-            self._last_bucket = now
-            self._tick_buckets(dt)
-
-            cap_ok = self._cap_peek(n, is_from_victim, is_to_victim)
-            loss_pct = l_out if is_from_victim else (l_in if is_to_victim else 0)
-            cap_active = (cap_out > 0 and is_from_victim) or (cap_in > 0 and is_to_victim)
-            from tools.mitm_compound_loss import CAP_OVERFLOW_LOSS_PCT, should_drop_compounded
-
-            if should_drop_compounded(
-                loss_pct,
-                cap_active=cap_active,
-                cap_can_forward=cap_ok,
-                overflow_loss_pct=CAP_OVERFLOW_LOSS_PCT,
-            ):
-                continue
-
-            if cap_active and not self._cap_commit(n, is_from_victim, is_to_victim):
-                continue
-
-            extra_j = 0
-            base_d = 0
-            if is_from_victim:
-                base_d = d_out
-                extra_j = random.randint(0, j_out) if j_out else 0
-            elif is_to_victim:
-                base_d = d_in
-                extra_j = random.randint(0, j_in) if j_in else 0
-            delay_ms = base_d + extra_j
-            if delay_ms > 0:
-                due = time.perf_counter() + delay_ms / 1000.0
-                heapq.heappush(heap, (due, pkt, addr_b))
-            else:
-                self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
-
-    def _send_immediate(self, h, dll, pkt: bytes, addr_b: bytes, send_len_ptr) -> None:
-        pkt_buf = (ctypes.c_ubyte * len(pkt)).from_buffer_copy(pkt)
-        addr_buf = (ctypes.c_ubyte * len(addr_b)).from_buffer_copy(addr_b)
-        send_len_ptr.value = 0
-        dll.WinDivertSend(
-            h,
-            ctypes.cast(pkt_buf, ctypes.c_void_p),
-            len(pkt),
-            send_len_ptr,
-            ctypes.cast(addr_buf, ctypes.c_void_p),
-        )
+        self._gate.clear_shaping()
+        self._gate.prepare_stop()
+        self._gate.stop(join_timeout=join_timeout)
