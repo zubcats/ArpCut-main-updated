@@ -2573,6 +2573,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.spinPercentCutMain.setStyleSheet(percent_style)
 
     def startLagSwitch(self, device):
+        if device.get('admin'):
+            self.log('Cannot lag Me or Router — select another device on your network.', UI_LOG_VICTIM_BLOCK_FG)
+            return
         if not _is_valid_ip(device.get('ip') or ''):
             self.log('Target has no IP yet — cannot start lag.', 'red')
             return
@@ -2699,8 +2702,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _apply_victim_block(self, device, direction):
         self._ensure_network_context_for_victim(device)
         self.killer.disable_percent_cut(device['mac'])
-        if device['mac'] not in self.killer.killed:
-            self.killer.kill(device)
+        # Always re-arm ARP (kill() restarts workers); stale killer.killed after network reset
+        # made lag/kill look dead when the MAC was still in self.killer.killed.
+        self.killer.kill(device)
         iface = self.scanner.iface.name if self.scanner.iface else 'en0'
         block_ip(iface, device['ip'], direction)
         self._sync_killed_devices()
@@ -2956,8 +2960,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._arm_dupe_burst_wall_clock()
             self._ensure_network_context_for_victim(dev)
             self.killer.disable_percent_cut(dev['mac'])
-            if dev['mac'] not in self.killer.killed:
-                self.killer.kill(dev)
+            self.killer.kill(dev)
             iface = self.scanner.iface.name if self.scanner.iface else 'en0'
             if ex is None:
                 exc = _dupe_net_run_block(iface, dev['ip'], direction)
@@ -4057,7 +4060,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
                     self.stop_mitm_shaping(log=False)
                     self._await_mitm_teardown_thread()
-                if not actual_on and device:
+                if device:
                     self.killer.disable_percent_cut(mac)
                     if not _is_valid_ip(device.get('ip') or ''):
                         self.log('Target has no IP yet — enable sharing and rescan.', 'red')

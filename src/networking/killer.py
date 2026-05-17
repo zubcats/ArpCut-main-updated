@@ -150,8 +150,7 @@ class Killer:
         """
         Keep MITM active and forward only a percentage of packets (both directions).
         """
-        if victim['mac'] not in self.killed:
-            self.kill(victim)
+        self.kill(victim)
         pass_percent = max(0, min(100, int(pass_percent)))
         pass_from_victim = pass_percent
         pass_to_victim = pass_percent
@@ -196,8 +195,7 @@ class Killer:
         """
         Forwarder with per-direction delay, optional jitter, loss %, and token-bucket caps.
         """
-        if victim['mac'] not in self.killed:
-            self.kill(victim)
+        self.kill(victim)
         delay_ms_out = max(0, min(_MAX_DELAY_MS, int(delay_ms_out)))
         delay_ms_in = max(0, min(_MAX_DELAY_MS, int(delay_ms_in)))
         jitter_ms_out = max(0, min(_MAX_DELAY_MS, int(jitter_ms_out)))
