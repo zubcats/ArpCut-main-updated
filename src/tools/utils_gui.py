@@ -1176,7 +1176,25 @@ def import_settings():
     Get stored settings
     """
     check_documents_dir()
-    return load(open(SETTINGS_PATH))
+    return load(open(SETTINGS_PATH, encoding='utf-8'))
+
+
+def import_settings_as_dict() -> dict:
+    """Normalize on-disk settings to a dict (legacy list/array formats included)."""
+    from constants import SETTINGS_KEYS, SETTINGS_VALS
+
+    check_documents_dir()
+    try:
+        raw = load(open(SETTINGS_PATH, encoding='utf-8'))
+    except (JSONDecodeError, OSError):
+        raw = None
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, list) and raw:
+        n = min(len(SETTINGS_KEYS), len(raw))
+        return dict(zip(SETTINGS_KEYS[:n], raw[:n]))
+    return dict(zip(SETTINGS_KEYS, SETTINGS_VALS))
+
 
 def export_settings(values=None):
     """
@@ -1184,8 +1202,16 @@ def export_settings(values=None):
     """
     keys = SETTINGS_KEYS
     values = values if values else SETTINGS_VALS
-    json = dict(zip(keys, values))
-    dump(json, open(SETTINGS_PATH, 'w'))
+    payload = dict(zip(keys, values))
+    with open(SETTINGS_PATH, 'w', encoding='utf-8') as fp:
+        dump(payload, fp)
+        fp.flush()
+        try:
+            import os
+
+            os.fsync(fp.fileno())
+        except OSError:
+            pass
 
 def set_settings(key, value):
     """
@@ -1304,7 +1330,7 @@ def repair_settings():
     """
     original = dict(zip(SETTINGS_KEYS, SETTINGS_VALS))
     try:
-        s = import_settings()
+        s = import_settings_as_dict()
         for key in SETTINGS_KEYS:
             if key in s:
                 original[key] = s[key]

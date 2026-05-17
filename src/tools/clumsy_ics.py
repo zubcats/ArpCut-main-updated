@@ -9,7 +9,37 @@ from typing import Any, Dict, Tuple
 from constants import DOCUMENTS_PATH
 
 _STATE_PATH = os.path.join(DOCUMENTS_PATH, 'clumsy_ics_state.json')
+_CLUMSY_SETTINGS_RESTART_MARKER = 'clumsy_settings_restart.flag'
 _MARKER = 'ZUBCUT_JSON:'
+
+
+def clumsy_settings_restart_marker_path() -> str:
+    return os.path.join(DOCUMENTS_PATH, _CLUMSY_SETTINGS_RESTART_MARKER)
+
+
+def mark_clumsy_settings_restart_pending() -> None:
+    """Written before Settings-driven restart so startup does not clear clumsy_mode."""
+    if os.name != 'nt':
+        return
+    try:
+        os.makedirs(DOCUMENTS_PATH, exist_ok=True)
+        path = clumsy_settings_restart_marker_path()
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write('pending\n')
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError:
+        pass
+
+
+def consume_clumsy_settings_restart_pending() -> bool:
+    if not os.path.isfile(clumsy_settings_restart_marker_path()):
+        return False
+    try:
+        os.remove(clumsy_settings_restart_marker_path())
+    except OSError:
+        pass
+    return True
 
 
 def _parse_marker_json(text: str) -> Dict[str, Any]:
@@ -1435,17 +1465,17 @@ def reset_clumsy_mode_on_startup() -> None:
     """
     Clumsy is session-only across quit/relaunch: clear clumsy_mode on cold start.
 
-    Settings enables ICS then restarts ZubCut; clumsy_persist_across_restart skips this
-    once so the checkbox stays on after that intentional restart.
+    Settings enables ICS then restarts ZubCut; a marker file (and legacy
+    clumsy_persist_across_restart) skips this once so the checkbox stays on.
     """
     if os.name != 'nt':
         return
     try:
-        from tools.utils_gui import import_settings, set_settings_many
+        from tools.utils_gui import import_settings_as_dict, set_settings_many
 
-        raw = import_settings()
-        if not isinstance(raw, dict):
-            raw = {}
+        if consume_clumsy_settings_restart_pending():
+            return
+        raw = import_settings_as_dict()
         if bool(raw.get('clumsy_persist_across_restart')):
             set_settings_many({'clumsy_persist_across_restart': False})
             return

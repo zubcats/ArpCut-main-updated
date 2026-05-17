@@ -64,6 +64,7 @@ from tools.clumsy_inline import (
 from tools.clumsy_ics import (
     ensure_clumsy_ics_enabled,
     format_clumsy_ics_error,
+    mark_clumsy_settings_restart_pending,
     read_clumsy_topology,
     repair_clumsy_network_sharing,
     rollback_clumsy_ics,
@@ -384,8 +385,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if prev:
                 set_settings('iface', prev)
             set_settings('iface_before_clumsy', '')
-        # One write before restart — separate writes let the new process start with
-        # persist=True but clumsy_mode still False, so startup reset leaves Clumsy off.
+        mark_clumsy_settings_restart_pending()
         try:
             set_settings_many(
                 {
@@ -554,27 +554,27 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             iface_stash = ''
 
-        export_settings(
-            [
-            count,
-            is_autostart,
-            is_minimized,
-            is_remember,
-            killed_all,
-            is_autoupdate,
-            threads,
-            iface,
-            iface_stash,
-            nicknames.nicknames_database,
-            k_kill,
-            k_lag,
-            k_dupe,
-            k_pct,
-            show_mac,
-            show_ven,
-            traffic_pct,
-            clumsy_mode,
-            ]
+        set_settings_many(
+            {
+                'count': count,
+                'autostart': is_autostart,
+                'minimized': is_minimized,
+                'remember': is_remember,
+                'killed': killed_all,
+                'autoupdate': is_autoupdate,
+                'threads': threads,
+                'iface': iface,
+                'iface_before_clumsy': iface_stash,
+                'nicknames': nicknames.nicknames_database,
+                'key_kill': k_kill,
+                'key_lag': k_lag,
+                'key_dupe': k_dupe,
+                'key_pctcut': k_pct,
+                'show_scan_mac_column': show_mac,
+                'show_scan_vendor_column': show_ven,
+                'traffic_percent': traffic_pct,
+                'clumsy_mode': clumsy_mode,
+            }
         )
 
         old_iface = self.elmocut.scanner.iface.name

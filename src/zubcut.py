@@ -284,7 +284,6 @@ if __name__ == "__main__":
 
     # Run the GUI
     migrate_settings_file()
-    repair_settings()
     if _sys.platform.startswith('win'):
         try:
             from tools.clumsy_ics import (
@@ -298,6 +297,7 @@ if __name__ == "__main__":
             maybe_repair_stale_clumsy_ics_on_startup()
         except Exception:
             pass
+    repair_settings()
     _validate_license_or_exit(icon)
     GUI = ElmoCut(window_icon=icon)
     _start_license_runtime_validation(GUI, icon)
