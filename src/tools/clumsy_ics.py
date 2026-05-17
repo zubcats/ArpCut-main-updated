@@ -1441,13 +1441,16 @@ def reset_clumsy_mode_on_startup() -> None:
     if os.name != 'nt':
         return
     try:
-        from tools.utils_gui import get_settings, set_settings
+        from tools.utils_gui import import_settings, set_settings_many
 
-        if bool(get_settings('clumsy_persist_across_restart')):
-            set_settings('clumsy_persist_across_restart', False)
+        raw = import_settings()
+        if not isinstance(raw, dict):
+            raw = {}
+        if bool(raw.get('clumsy_persist_across_restart')):
+            set_settings_many({'clumsy_persist_across_restart': False})
             return
-        if bool(get_settings('clumsy_mode')):
-            set_settings('clumsy_mode', False)
+        if bool(raw.get('clumsy_mode')):
+            set_settings_many({'clumsy_mode': False})
     except Exception:
         pass
 

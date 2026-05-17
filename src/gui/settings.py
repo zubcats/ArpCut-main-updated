@@ -17,6 +17,7 @@ import sys
 
 from tools.utils_gui import import_settings, export_settings, get_settings, \
                       is_admin, add_to_startup, remove_from_startup, set_settings, \
+                      set_settings_many, \
                       zubcut_dark_stylesheet, \
                       sync_translucent_chrome, register_window_surface_effects, \
                       repair_settings
@@ -383,11 +384,21 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if prev:
                 set_settings('iface', prev)
             set_settings('iface_before_clumsy', '')
+        # One write before restart — separate writes let the new process start with
+        # persist=True but clumsy_mode still False, so startup reset leaves Clumsy off.
         try:
-            set_settings('clumsy_persist_across_restart', True)
+            set_settings_many(
+                {
+                    'clumsy_persist_across_restart': True,
+                    'clumsy_mode': new_v,
+                }
+            )
         except Exception:
-            pass
-        set_settings('clumsy_mode', new_v)
+            try:
+                set_settings('clumsy_persist_across_restart', True)
+            except Exception:
+                pass
+            set_settings('clumsy_mode', new_v)
         restart_zubcut(self.elmocut)
 
     def _on_clumsy_install_clicked(self):

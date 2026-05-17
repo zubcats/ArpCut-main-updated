@@ -264,26 +264,22 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
     def test_reset_clumsy_mode_on_startup_clears_setting(self) -> None:
         from unittest.mock import patch
 
-        def _get(key):
-            return key == 'clumsy_mode'
-
-        with patch('tools.utils_gui.get_settings', side_effect=_get), patch(
-            'tools.utils_gui.set_settings'
-        ) as ss:
+        with patch(
+            'tools.utils_gui.import_settings',
+            return_value={'clumsy_mode': True, 'clumsy_persist_across_restart': False},
+        ), patch('tools.utils_gui.set_settings_many') as sm:
             ics.reset_clumsy_mode_on_startup()
-        ss.assert_called_once_with('clumsy_mode', False)
+        sm.assert_called_once_with({'clumsy_mode': False})
 
     def test_reset_clumsy_mode_skips_when_persist_flag_set(self) -> None:
         from unittest.mock import patch
 
-        def _get(key):
-            return key == 'clumsy_persist_across_restart'
-
-        with patch('tools.utils_gui.get_settings', side_effect=_get), patch(
-            'tools.utils_gui.set_settings'
-        ) as ss:
+        with patch(
+            'tools.utils_gui.import_settings',
+            return_value={'clumsy_mode': True, 'clumsy_persist_across_restart': True},
+        ), patch('tools.utils_gui.set_settings_many') as sm:
             ics.reset_clumsy_mode_on_startup()
-        ss.assert_called_once_with('clumsy_persist_across_restart', False)
+        sm.assert_called_once_with({'clumsy_persist_across_restart': False})
 
     def test_maybe_repair_skips_when_no_state_file(self) -> None:
         path = ics.clumsy_ics_state_path()
