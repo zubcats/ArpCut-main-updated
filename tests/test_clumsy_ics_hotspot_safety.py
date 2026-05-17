@@ -178,8 +178,8 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
             elif not had and os.path.isfile(path):
                 os.remove(path)
 
-    def test_clumsy_ics_block_uses_arp_for_game_disconnect(self) -> None:
-        self.assertIn('apply_ics_victim_arp_block', inline.__dict__)
+    def test_clumsy_ics_block_prefers_windivert_over_arp(self) -> None:
+        self.assertIn('release_ics_victim_block', inline.__dict__)
         self.assertIn('IcsWinDivertLagGate', inspect.getsource(
             __import__('tools.ics_windivert_shaper', fromlist=['IcsWinDivertLagGate'])
         ))
@@ -187,14 +187,16 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         with open(main_py, encoding='utf-8') as f:
             src = f.read()
         self.assertIn('def _apply_ics_client_block', src)
-        self.assertIn('apply_ics_victim_arp_block', src)
-        self.assertIn('heal_ics_client_after_mitm', src)
+        self.assertIn('release_ics_victim_block', src)
         ics_block = src[src.index('def _apply_ics_client_block'):src.index('def _clear_ics_client_block')]
-        self.assertIn('apply_ics_victim_arp_block', ics_block)
-        self.assertLess(
-            ics_block.index('apply_ics_victim_arp_block'),
-            ics_block.index('_ensure_ics_lag_gate'),
-        )
+        self.assertIn('_ensure_ics_lag_gate', ics_block)
+        self.assertIn('set_blocking(True)', ics_block)
+        self.assertNotIn('apply_ics_victim_arp_block', ics_block)
+        killer_py = os.path.join(_SRC, 'networking', 'killer.py')
+        with open(killer_py, encoding='utf-8') as f:
+            ksrc = f.read()
+        self.assertIn('ics_mode=False', ksrc)
+        self.assertIn('refresh_router=not ics_mode', ksrc)
 
     def test_ensure_network_skips_arp_flush_in_clumsy_mode(self) -> None:
         path = os.path.join(_SRC, 'gui', 'main.py')

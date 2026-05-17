@@ -99,9 +99,10 @@ def victim_on_clumsy_ics_subnet(victim_ip: str) -> bool:
 
 def clumsy_ics_use_firewall_only(device) -> bool:
     """
-    Hotspot / ICS clients should not use ARP MITM (breaks console gateway / DHCP).
+    Victim is on the Mobile Hotspot / ICS subnet (e.g. 192.168.137.x).
 
-    Prefer WinDivert lag gate when available; firewall is the fallback.
+    Use WinDivert or firewall for block — not home-router ARP MITM. Optional ICS ARP
+    kill must use ics_mode on Killer after apply_clumsy_ics_router_context.
     """
     if not clumsy_mode_enabled() or not sys.platform.startswith('win'):
         return False
@@ -148,7 +149,29 @@ def apply_ics_victim_arp_block(scanner: Scanner, killer, device) -> bool:
         pass
     try:
         killer.disable_percent_cut(mac)
-        killer.kill(device)
+        killer.kill(device, ics_mode=True)
+        return True
+    except Exception:
+        return False
+
+
+def release_ics_victim_block(scanner: Scanner, killer, victim) -> bool:
+    """Stop ICS ARP MITM and heal gateway ARP on the console (hotspot clients only)."""
+    if not isinstance(victim, dict):
+        return False
+    ip = str(victim.get('ip') or '').strip()
+    if not victim_on_clumsy_ics_subnet(ip):
+        return False
+    apply_clumsy_ics_router_context(scanner, killer, ip)
+    killer.iface = scanner.iface
+    killer.router = scanner.router
+    mac = str(victim.get('mac') or '').strip()
+    try:
+        if mac and mac in killer.killed:
+            killer.unkill(victim, ics_mode=True)
+        else:
+            killer.reinforce_restore(victim, ics_mode=True)
+        heal_ics_client_after_mitm(scanner, killer, victim)
         return True
     except Exception:
         return False

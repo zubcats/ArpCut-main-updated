@@ -50,10 +50,9 @@ from tools.frameless_chrome import (
 )
 from tools.clumsy_inline import (
     apply_clumsy_ics_router_context,
-    apply_ics_victim_arp_block,
     clumsy_ics_lag_can_use_windivert,
     clumsy_ics_use_firewall_only,
-    heal_ics_client_after_mitm,
+    release_ics_victim_block,
     clumsy_mode_enabled,
     sync_clumsy_row,
     use_windivert_for_advanced_ics_shaping,
@@ -2768,22 +2767,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return True
 
     def _apply_ics_client_block(self, device, direction) -> bool:
-        """Hotspot kill/lag: ARP to console (red Wi‑Fi in-game), else WinDivert/firewall."""
+        """
+        Hotspot block: WinDivert drop (no ARP, no killer.killed) so OFF is instant and
+        ICS internet stays up; firewall if WinDivert unavailable.
+        """
         if not clumsy_ics_use_firewall_only(device):
             return False
-        self._stop_ics_lag_gate()
         self.killer.disable_percent_cut(device['mac'])
-        if apply_ics_victim_arp_block(self.scanner, self.killer, device):
-            self._sync_killed_devices()
-            self._refresh_table_row_for_mac(device['mac'])
-            self._updateKillButtonState()
-            return True
+        if device['mac'] in self.killer.killed:
+            release_ics_victim_block(self.scanner, self.killer, device)
         if self._ensure_ics_lag_gate(device, direction):
             self._ics_lag_gate.set_blocking(True)
             self._sync_killed_devices()
             self._refresh_table_row_for_mac(device['mac'])
             self._updateKillButtonState()
             return True
+        self._stop_ics_lag_gate()
         iface = self.scanner.iface.name if self.scanner.iface else 'en0'
         block_ip(iface, device['ip'], direction)
         self._sync_killed_devices()
@@ -2794,17 +2793,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _clear_ics_client_block(self, device) -> bool:
         if not clumsy_ics_use_firewall_only(device):
             return False
-        self._stop_ics_lag_gate()
+        gate = getattr(self, '_ics_lag_gate', None)
+        if gate is not None and gate.victim_ip == str(device.get('ip') or '').strip():
+            gate.set_blocking(False)
+        else:
+            self._stop_ics_lag_gate()
         victim = self._victim_record_for_mac(device['mac']) or device
         try:
-            apply_clumsy_ics_router_context(self.scanner, self.killer, victim.get('ip') or '')
-            self.killer.iface = self.scanner.iface
-            self.killer.router = self.scanner.router
-            if device['mac'] in self.killer.killed:
-                self.killer.unkill(victim)
-            else:
-                self.killer.reinforce_restore(victim)
-            heal_ics_client_after_mitm(self.scanner, self.killer, victim)
+            release_ics_victim_block(self.scanner, self.killer, victim)
         except Exception:
             pass
         try:
@@ -3039,9 +3035,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._drop_dupe_restoring_banner()
             return
         try:
-            if device['mac'] in self.killer.killed:
-                victim = self._victim_record_for_mac(device['mac']) or device
-                self.killer.unkill(victim)
+            self._clear_victim_block(device)
             dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
             self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
             self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 100, device)
@@ -4284,9 +4278,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if not victim:
                 return
             try:
-                self._ensure_network_context_for_victim(victim)
-                self.killer.unkill(victim)
-                self.killer.reinforce_restore(victim)
+                if clumsy_ics_use_firewall_only(victim):
+                    release_ics_victim_block(self.scanner, self.killer, victim)
+                    try:
+                        unblock_ip(victim.get('ip') or '')
+                    except Exception:
+                        pass
+                else:
+                    self._ensure_network_context_for_victim(victim)
+                    self.killer.unkill(victim)
+                    self.killer.reinforce_restore(victim)
             except Exception:
                 pass
 

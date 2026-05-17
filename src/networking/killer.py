@@ -126,19 +126,26 @@ class Killer:
                 pass
             self._socket = None
 
-    def _sync_iface_for_victim(self, victim):
+    def _sync_iface_for_victim(self, victim, *, refresh_router=True):
         """
         Rebind killer iface/router context to whatever NIC reaches victim['ip'].
         Safe no-op if already on the right interface.
+
+        On Clumsy hotspot (ICS), caller must pass refresh_router=False and set router
+        to 192.168.137.1 via apply_clumsy_ics_router_context — otherwise we pick the
+        home LAN gateway and break hotspot internet / stick ARP "on" after OFF.
         """
         ip = victim.get('ip') if isinstance(victim, dict) else None
         if not ip:
             return
         target = get_iface_for_victim_ip(ip, fallback=self.iface)
-        if (
+        same_iface = (
             getattr(target, 'guid', None) == getattr(self.iface, 'guid', None)
             and getattr(target, 'name', None) == getattr(self.iface, 'name', None)
-        ):
+        )
+        if same_iface and not refresh_router:
+            return
+        if same_iface:
             return
         self.iface = target
         self._close_socket()
@@ -147,8 +154,12 @@ class Killer:
             conf.iface = guid
         except Exception:
             pass
-        router_ip = get_gateway_ip(guid)
         iface_ip = get_my_ip(guid)
+        self.iface.ip = iface_ip
+        self.iface.mac = good_mac(getattr(self.iface, 'mac', GLOBAL_MAC))
+        if not refresh_router:
+            return
+        router_ip = get_gateway_ip(guid)
         router_mac = get_gateway_mac(iface_ip, router_ip)
         self.router = {
             'ip': router_ip,
@@ -158,11 +169,8 @@ class Killer:
             'name': '',
             'admin': True,
         }
-        # Keep iface fields in sync for packet crafting / forwarder metadata.
-        self.iface.ip = iface_ip
-        self.iface.mac = good_mac(getattr(self.iface, 'mac', GLOBAL_MAC))
     
-    def kill(self, victim, wait_after=2):
+    def kill(self, victim, wait_after=2, *, ics_mode=False):
         """
         Spoofing victim.
         Default 2 second delay - ARP cache lasts 30-120s, no need to spam.
@@ -171,7 +179,7 @@ class Killer:
         Registers ``self.killed`` on the caller thread so UI state (e.g. toggleKill)
         stays in sync; only the ARP loop runs in a background thread.
         """
-        self._sync_iface_for_victim(victim)
+        self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         mac = victim['mac']
         # Reassert path: even if already marked killed, refresh victim record and restart
         # ARP worker generation so ON state recovers from stale/desynced workers.
@@ -316,14 +324,14 @@ class Killer:
         if victim['mac'] not in self.killed:
             self._stop_forwarder(victim['mac'])
 
-    def unkill(self, victim):
+    def unkill(self, victim, *, ics_mode=False):
         """
         Unspoofing victim.
 
         Removes from ``self.killed`` on the caller thread before ARP restore runs
         in the background, so the UI does not race with _sync_killed_devices().
         """
-        self._sync_iface_for_victim(victim)
+        self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         seq = self._next_op_seq(victim['mac'])
         if victim['mac'] in self.killed:
             self.killed.pop(victim['mac'])
@@ -332,7 +340,7 @@ class Killer:
         self._restore_arp_now(victim, seq, repeats=3, delay_s=0)
         self._unkill_restore_worker(victim, seq)
 
-    def reinforce_restore(self, victim):
+    def reinforce_restore(self, victim, *, ics_mode=False):
         """
         Extra best-effort restore packets for a victim that should already be OFF.
         Safe no-op when victim is currently killed again.
@@ -342,7 +350,7 @@ class Killer:
             return
         if mac in self.killed:
             return
-        self._sync_iface_for_victim(victim)
+        self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         seq = self._op_seq.get(mac, 0)
         self._restore_arp_now(victim, seq, repeats=2, delay_s=0)
 
