@@ -2739,11 +2739,30 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
-    def _stop_ics_lag_gate(self, join_timeout: float = 0.35) -> None:
+    def _schedule_dupe_off_reinforce(self, prev_mac, device) -> None:
+        """ARP reinforce only; WinDivert-only ICS dupe skips delayed callbacks."""
+        if not device or not prev_mac:
+            return
+        if clumsy_ics_use_firewall_only(device) and prev_mac not in self.killer.killed:
+            return
+        dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
+        self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
+        self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 100, device)
+
+    def _ics_clumsy_delay_ms(self, *, for_dupe: bool = False) -> int:
+        """Clumsy-style per-packet delay (red chain) — not hard drop."""
+        if for_dupe:
+            dur = max(500, int(getattr(self, 'dupe_duration_ms', 5000) or 5000))
+            return max(750, min(6000, dur // 2))
+        return max(500, min(12000, int(getattr(self, 'lag_block_ms', 9000) or 9000)))
+
+    def _stop_ics_lag_gate(self, join_timeout: float = 0.5) -> None:
         gate = getattr(self, '_ics_lag_gate', None)
         self._ics_lag_gate = None
         if gate is not None:
             try:
+                if hasattr(gate, 'prepare_stop'):
+                    gate.prepare_stop()
                 gate.stop(join_timeout=join_timeout)
             except Exception:
                 pass
@@ -2766,10 +2785,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             gate.set_direction(direction)
         return True
 
-    def _apply_ics_client_block(self, device, direction) -> bool:
+    def _apply_ics_client_block(self, device, direction, *, for_dupe: bool = False) -> bool:
         """
-        Hotspot block: WinDivert drop (no ARP, no killer.killed) so OFF is instant and
-        ICS internet stays up; firewall if WinDivert unavailable.
+        Hotspot lag: Clumsy-style WinDivert delay (red chain), no ARP MITM.
         """
         if not clumsy_ics_use_firewall_only(device):
             return False
@@ -2777,7 +2795,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if device['mac'] in self.killer.killed:
             release_ics_victim_block(self.scanner, self.killer, device)
         if self._ensure_ics_lag_gate(device, direction):
-            self._ics_lag_gate.set_blocking(True)
+            delay_ms = self._ics_clumsy_delay_ms(for_dupe=for_dupe)
+            loss_pct = 35 if for_dupe else 15
+            self._ics_lag_gate.set_blocking(
+                True, delay_ms=delay_ms, loss_pct=loss_pct
+            )
             self._sync_killed_devices()
             self._refresh_table_row_for_mac(device['mac'])
             self._updateKillButtonState()
@@ -2814,8 +2836,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateKillButtonState()
         return True
 
-    def _apply_victim_block(self, device, direction):
-        if self._apply_ics_client_block(device, direction):
+    def _apply_victim_block(self, device, direction, **ics_block_kw):
+        if self._apply_ics_client_block(device, direction, **ics_block_kw):
             return
         self._ensure_network_context_for_victim(device)
         self.killer.disable_percent_cut(device['mac'])
@@ -2900,12 +2922,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             device, prev_mac = ctx
             self._dupe_async_unblock_ctx = None
             try:
-                if device and device.get('mac') == prev_mac and device['mac'] in self.killer.killed:
-                    victim = self._victim_record_for_mac(device['mac']) or device
-                    self.killer.unkill(victim)
-                dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 100, device)
+                if device and device.get('mac') == prev_mac:
+                    self._clear_victim_block(device)
+                    self._schedule_dupe_off_reinforce(prev_mac, device)
             except Exception:
                 pass
             self._sync_killed_devices()
@@ -2976,9 +2995,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         try:
             self._clear_victim_block(device)
-            dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
-            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
-            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 100, device)
+            self._schedule_dupe_off_reinforce(prev_mac, device)
         except Exception:
             pass
         self._sync_killed_devices()
@@ -3006,9 +3023,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if ex is None:
             try:
                 self._clear_victim_block(device)
-                dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
-                self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 100, device)
+                self._schedule_dupe_off_reinforce(prev_mac, device)
             except Exception:
                 pass
             self._sync_killed_devices()
@@ -3038,9 +3053,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         try:
             self._clear_victim_block(device)
-            dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
-            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
-            self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 100, device)
+            self._schedule_dupe_off_reinforce(prev_mac, device)
         except Exception:
             pass
         self._sync_killed_devices()
@@ -3074,7 +3087,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         ex = getattr(self, '_dupe_net_executor', None)
         try:
             self._arm_dupe_burst_wall_clock()
-            if self._apply_ics_client_block(dev, direction):
+            if self._apply_ics_client_block(dev, direction, for_dupe=True):
                 self._start_dupe_timers_after_network_ready()
                 return
             self._ensure_network_context_for_victim(dev)
@@ -3187,7 +3200,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             pass
 
     def _lag_apply_block(self, device):
-        self._apply_victim_block(device, self.lag_direction)
+        self._apply_victim_block(device, self.lag_direction, for_dupe=False)
 
     def _lag_resolved_victim(self):
         """
@@ -3342,9 +3355,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if not clumsy_ics_use_firewall_only(victim):
                         self.killer.unkill(victim)
                         self.killer.reinforce_restore(victim)
-                    lag_off_seq = self._bump_flow_off_intent('lag', prev_mac)
-                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 25, victim)
-                    self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 100, victim)
+                        lag_off_seq = self._bump_flow_off_intent('lag', prev_mac)
+                        self._schedule_flow_off_reinforce(
+                            'lag', prev_mac, lag_off_seq, 25, victim
+                        )
+                        self._schedule_flow_off_reinforce(
+                            'lag', prev_mac, lag_off_seq, 100, victim
+                        )
                 except Exception:
                     pass
         self._stop_ics_lag_gate()

@@ -116,12 +116,15 @@ def _parse_ipv4_src_dst(packet: bytes) -> Optional[Tuple[str, str]]:
     return src, dst
 
 
+_MAX_LAG_HEAP_PACKETS = 4096
+
+
 class IcsWinDivertLagGate:
     """
-    Lag / kill on ICS clients without ARP MITM or firewall rules.
+    Clumsy-style lag on ICS clients: delay (+ optional loss) while blocking, pass-through when not.
 
-    Drops or reinjects IPv4 to/from one host. Hotspot gateway state on the console
-    stays valid (no PS5 DHCP renew needed).
+    Queued packets are discarded on OFF/allow (not blasted at the console) so lag end does not
+    kick the player. Hotspot gateway ARP is untouched.
     """
 
     def __init__(self, victim_ip: str):
@@ -133,6 +136,9 @@ class IcsWinDivertLagGate:
         self._lock = threading.Lock()
         self._blocking = False
         self._direction = 'both'
+        self._delay_ms = 750
+        self._loss_pct = 0
+        self._discard_heap = False
 
     @property
     def victim_ip(self) -> str:
@@ -146,6 +152,7 @@ class IcsWinDivertLagGate:
             if self._direction not in ('both', 'in', 'out'):
                 self._direction = 'both'
             self._blocking = False
+            self._discard_heap = False
         dll_path = _windivert_dll_path()
         if not dll_path:
             raise OSError('WinDivert.dll not found (expected next to ZubCut or in windivert\\).')
@@ -153,9 +160,10 @@ class IcsWinDivertLagGate:
         _bind_windivert_api(self._dll)
         vip = self._victim
         filt = f'ip and (ip.SrcAddr == {vip} or ip.DstAddr == {vip})'
-        hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK)
+        # ICS/NAT traffic is usually on the forward layer (same as Clumsy on a router path).
+        hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK_FORWARD)
         if hrv < 0:
-            hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK_FORWARD)
+            hrv = _open_windivert_handle(self._dll, filt, WINDIVERT_LAYER_NETWORK)
         if hrv < 0:
             raise OSError('WinDivertOpen failed (run as Administrator; check WinDivert driver).')
         self._handle = hrv
@@ -166,16 +174,34 @@ class IcsWinDivertLagGate:
         )
         self._thread.start()
 
-    def set_blocking(self, block: bool) -> None:
+    def set_blocking(
+        self,
+        block: bool,
+        *,
+        delay_ms: int | None = None,
+        loss_pct: int | None = None,
+    ) -> None:
         with self._lock:
             self._blocking = bool(block)
+            if delay_ms is not None:
+                self._delay_ms = max(50, min(15000, int(delay_ms)))
+            if loss_pct is not None:
+                self._loss_pct = max(0, min(100, int(loss_pct)))
+            if not block:
+                self._discard_heap = True
 
     def set_direction(self, direction: str) -> None:
         with self._lock:
             d = str(direction or 'both').strip().lower()
             self._direction = d if d in ('both', 'in', 'out') else 'both'
 
+    def prepare_stop(self) -> None:
+        with self._lock:
+            self._blocking = False
+            self._discard_heap = True
+
     def stop(self, join_timeout: float = 2.0) -> None:
+        self.prepare_stop()
         self._stop.set()
         h = self._handle
         if h is not None and self._dll is not None:
@@ -195,9 +221,7 @@ class IcsWinDivertLagGate:
         self._handle = None
         self._dll = None
 
-    def _drop_for_direction(self, src: str, dst: str, blocking: bool, direction: str) -> bool:
-        if not blocking:
-            return False
+    def _shapes_packet(self, src: str, dst: str, direction: str) -> bool:
         if direction == 'both':
             return True
         if direction == 'in':
@@ -205,6 +229,18 @@ class IcsWinDivertLagGate:
         if direction == 'out':
             return src == self._victim
         return True
+
+    def _send_immediate(self, h, dll, pkt: bytes, addr_b: bytes, send_len_ptr) -> None:
+        pkt_buf = (ctypes.c_ubyte * len(pkt)).from_buffer_copy(pkt)
+        addr_buf = (ctypes.c_ubyte * len(addr_b)).from_buffer_copy(addr_b)
+        send_len_ptr.value = 0
+        dll.WinDivertSend(
+            h,
+            ctypes.cast(pkt_buf, ctypes.c_void_p),
+            len(pkt),
+            send_len_ptr,
+            ctypes.cast(addr_buf, ctypes.c_void_p),
+        )
 
     def _run_loop(self) -> None:
         assert self._dll is not None
@@ -218,8 +254,28 @@ class IcsWinDivertLagGate:
         send_len = ctypes.c_uint(0)
         kernel32 = ctypes.windll.kernel32
         victim = self._victim
+        heap: list[Tuple[float, bytes, bytes]] = []
 
         while not self._stop.is_set():
+            now = time.perf_counter()
+            with self._lock:
+                if self._discard_heap:
+                    self._discard_heap = False
+                    heap.clear()
+                blocking = self._blocking
+                direction = self._direction
+                delay_ms = self._delay_ms
+                loss_pct = self._loss_pct
+
+            while heap and heap[0][0] <= now:
+                if not blocking:
+                    heapq.heappop(heap)
+                    continue
+                _, pkt_b, addr_b = heapq.heappop(heap)
+                if self._stop.is_set():
+                    break
+                self._send_immediate(h, dll, pkt_b, addr_b, ctypes.byref(send_len))
+
             recv_len.value = 0
             addr_len.value = ADDR_BUF
             ok = dll.WinDivertRecvEx(
@@ -235,7 +291,6 @@ class IcsWinDivertLagGate:
             if not ok:
                 err = kernel32.GetLastError()
                 if err == ERROR_NO_DATA:
-                    # Non-blocking idle — keep thread alive so reinject resumes when traffic returns.
                     time.sleep(0.001)
                     continue
                 if err in (0, ERROR_INSUFFICIENT_BUFFER):
@@ -252,36 +307,31 @@ class IcsWinDivertLagGate:
 
             parsed = _parse_ipv4_src_dst(pkt)
             if not parsed:
-                send_len.value = 0
-                pkt_buf = (ctypes.c_ubyte * len(pkt)).from_buffer_copy(pkt)
-                addr_buf = (ctypes.c_ubyte * len(addr_b)).from_buffer_copy(addr_b)
-                dll.WinDivertSend(
-                    h,
-                    ctypes.cast(pkt_buf, ctypes.c_void_p),
-                    len(pkt),
-                    ctypes.byref(send_len),
-                    ctypes.cast(addr_buf, ctypes.c_void_p),
-                )
+                self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                 continue
 
             src, dst = parsed
-            with self._lock:
-                blocking = self._blocking
-                direction = self._direction
-
-            if self._drop_for_direction(src, dst, blocking, direction):
+            if not self._shapes_packet(src, dst, direction):
+                self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                 continue
 
-            send_len.value = 0
-            pkt_buf = (ctypes.c_ubyte * len(pkt)).from_buffer_copy(pkt)
-            addr_buf = (ctypes.c_ubyte * len(addr_b)).from_buffer_copy(addr_b)
-            dll.WinDivertSend(
-                h,
-                ctypes.cast(pkt_buf, ctypes.c_void_p),
-                len(pkt),
-                ctypes.byref(send_len),
-                ctypes.cast(addr_buf, ctypes.c_void_p),
-            )
+            if not blocking:
+                self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                continue
+
+            if loss_pct > 0 and random.randint(1, 100) <= loss_pct:
+                continue
+
+            if delay_ms > 0:
+                if len(heap) >= _MAX_LAG_HEAP_PACKETS:
+                    heapq.heappop(heap)
+                due = time.perf_counter() + delay_ms / 1000.0
+                heapq.heappush(heap, (due, pkt, addr_b))
+                continue
+
+            continue
+
+        heap.clear()
 
 
 class IcsWinDivertShaper:
