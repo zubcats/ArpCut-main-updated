@@ -109,47 +109,38 @@ function Get-WifiUplinkChannel {
 function Move-UplinkWifiTo24GhzIfNeeded {
     $ch = Get-WifiUplinkChannel
     if ($ch -ge 1 -and $ch -le 14) { return $true }
+    Stop-MobileHotspotIfOn | Out-Null
+    Start-Sleep -Seconds 4
     $ifaces = netsh wlan show interfaces 2>$null | Out-String
     if ($ifaces -notmatch 'SSID\s*:\s*(.+)\r?\n') { return $false }
     $ssid = $Matches[1].Trim()
     if (-not $ssid) { return $false }
-    $scan = netsh wlan show networks mode=bssid 2>$null | Out-String
-    $blocks = $scan -split '(?=SSID\s+\d+\s*:)'
-    $ssidPat = [regex]::Escape($ssid)
-    $bestBssid = $null
-    $bestSignal = -1
-    foreach ($block in $blocks) {
-        if ($block -notmatch "SSID\s*(?:\d+\s*)?:\s*$ssidPat") { continue }
-        foreach ($part in ($block -split 'BSSID \d+\s*:')) {
-            if ($part -notmatch '([0-9a-f]{2}(?::[0-9a-f]{2}){5})') { continue }
-            $bssid = $Matches[1]
-            $chB = 0; $sig = 0
-            if ($part -match 'Channel\s*:\s*(\d+)') { $chB = [int]$Matches[1] }
-            if ($part -match 'Signal\s*:\s*(\d+)') { $sig = [int]$Matches[1] }
-            if ($chB -ge 1 -and $chB -le 14 -and $sig -gt $bestSignal) {
-                $bestBssid = $bssid
-                $bestSignal = $sig
-            }
-        }
-    }
-    if (-not $bestBssid) { return $false }
-    $iface = 'Wi-Fi'
-    try {
-        $wa = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'Wireless LAN' -and $_.Status -eq 'Up' } | Select-Object -First 1
-        if ($wa) { $iface = $wa.Name }
-    } catch {}
-    Stop-MobileHotspotIfOn | Out-Null
-    Start-Sleep -Seconds 2
+    $iface = Get-WifiClientInterfaceName
     netsh wlan disconnect interface="$iface" 2>$null | Out-Null
-    Start-Sleep -Seconds 2
-    netsh wlan connect name="$ssid" ssid="$ssid" interface="$iface" bss="$bestBssid" 2>$null | Out-Null
-    Start-Sleep -Seconds 8
+    Start-Sleep -Seconds 4
+    $target = Find-BssidForSsidBand -Ssid $ssid -Band '2.4'
+    if (-not $target) { return $false }
+    $null = netsh wlan connect name="$($target.Ssid)" ssid="$($target.Ssid)" interface="$iface" bss="$($target.Bssid)"
+    Start-Sleep -Seconds 10
     $ch2 = Get-WifiUplinkChannel
     return ($ch2 -ge 1 -and $ch2 -le 14)
 }
+function Restart-IcssvcIfNeeded {
+    try {
+        $s = Get-Service -Name icssvc -ErrorAction SilentlyContinue
+        if ($null -ne $s -and $s.Status -eq 'Running') {
+            Restart-Service -Name icssvc -Force -ErrorAction Stop
+            Start-Sleep -Seconds 3
+            return $true
+        }
+    } catch {}
+    return $false
+}
+
 function Ensure-MobileHotspot2GhzBand {
-    # Hotspot AP only — does not move PC Wi-Fi uplink off 5 GHz.
+    # Hotspot AP only — does not move PC Wi-Fi uplink off 5 GHz (use Ethernet for 5 GHz PC + 2.4 hotspot).
     Set-MobileHotspotBandRegistry2Ghz | Out-Null
+    Restart-IcssvcIfNeeded | Out-Null
     if (-not (Ensure-TetheringWinRTLoaded)) { return $false }
     $mgr = Get-TetheringManager
     if ($null -eq $mgr) { return $false }
@@ -166,7 +157,9 @@ function Test-EthernetInternetUplink {
             $if = Get-NetAdapter -InterfaceIndex $rt.InterfaceIndex -ErrorAction SilentlyContinue
             if ($null -eq $if -or $if.Status -ne 'Up') { continue }
             $d = ($if.Name + ' ' + $if.InterfaceDescription)
-            if ($d -match 'Ethernet|Gigabit|GbE|LAN' -and $d -notmatch 'Virtual|Bluetooth|Direct') {
+            if ($d -match 'Wireless|Wi-Fi|WiFi|WLAN|802\.11|WiFi Direct|Hosted') { continue }
+            if ($d -match 'Virtual|Bluetooth|Direct|Hyper-V|VPN|Loopback') { continue }
+            if ($d -match 'Ethernet|Gigabit|GbE|\bLAN\b') {
                 return $true
             }
         }

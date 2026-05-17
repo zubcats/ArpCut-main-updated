@@ -1,9 +1,10 @@
-# Optional local tool — NOT part of ZubCut.
-# Sets Mobile Hotspot to 2.4 GHz only, then puts PC Wi-Fi back on 5 GHz when possible.
+# Optional local tool — NOT part of ZubCut. ONE entry point for hotspot band setup.
 #
-# Recommended: Ethernet cable PC -> router for internet; USB Wi-Fi only for hotspot.
-# On a single-radio USB adapter, 5 GHz PC + 2.4 GHz hotspot together is often not possible
-# unless internet uses Ethernet (see tools\set_hotspot_2ghz_ethernet.ps1).
+# Wi-Fi-only (your USB radio): run this once to save profile, then ALWAYS use:
+#   _wifi_only_ps5_hotspot_on.ps1  before PS5  |  _wifi_only_ps5_hotspot_off.ps1  after
+# Do NOT turn hotspot ON only in Windows Settings while PC is on 5 GHz — it will show 5 GHz.
+#
+# Ethernet internet: PC can stay on 5 GHz; this script can start 2.4 GHz hotspot directly.
 
 $ErrorActionPreference = 'Continue'
 Write-Host '=== Hotspot 2.4 GHz (PC Wi-Fi stays on 5 GHz when possible) ==='
@@ -24,21 +25,32 @@ if (Test-EthernetInternetUplink) {
     Write-Host 'For best results use Ethernet to the router: tools\set_hotspot_2ghz_ethernet.ps1'
 }
 
-$ok = Ensure-MobileHotspot2GhzBand
-# Leave hotspot OFF so PC Wi-Fi can use 5 GHz on a single USB radio (turn hotspot ON when PS5 needs it).
+$eth = Test-EthernetInternetUplink
 Stop-MobileHotspotIfOn | Out-Null
 Start-Sleep -Seconds 2
 
-if (-not (Test-EthernetInternetUplink)) {
-    Write-Host 'Restoring PC Wi-Fi to 5 GHz (router connection)...'
-    if (Connect-WifiUplinkTo5Ghz) {
-        Write-Host 'PC Wi-Fi reconnected on 5 GHz.'
-    } else {
-        Write-Host 'Could not auto-connect to 5 GHz — in Settings connect Wifi1 to the 5 GHz band, or use Ethernet + set_hotspot_2ghz_ethernet.ps1'
-    }
-} else {
-    Write-Host 'With Ethernet internet you can turn Mobile hotspot ON anytime (stays 2.4 GHz for clients).'
+if ($eth) {
+    Write-Host 'Ethernet: configuring 2.4 GHz hotspot (PC Wi-Fi can stay on 5 GHz).'
+    $ok = Ensure-MobileHotspot2GhzBand
     if ($ok) { Start-MobileHotspotAfter2GhzConfig | Out-Null }
+} else {
+    Write-Host 'Wi-Fi-only USB radio: saving 2.4 GHz hotspot profile (PC will use 2.4 while hotspot is on).'
+    Write-Host '  For PS5: run tools\_wifi_only_ps5_hotspot_on.ps1  (Admin)'
+    Write-Host '  After play: run tools\_wifi_only_ps5_hotspot_off.ps1  (Admin)'
+    Set-MobileHotspotBandRegistry2Ghz | Out-Null
+    Restart-IcssvcIfNeeded | Out-Null
+    if (Move-UplinkWifiTo24GhzIfNeeded) {
+        $mgr = Get-TetheringManager
+        $ok = $false
+        if ($mgr) { $ok = Configure-MobileHotspotAccessPoint2Ghz $mgr $false }
+        Stop-MobileHotspotIfOn | Out-Null
+        Start-Sleep -Seconds 2
+        Write-Host 'Restoring PC to 5 GHz for daily use (hotspot stays OFF until PS5 script)...'
+        Connect-WifiUplinkTo5Ghz | Out-Null
+    } else {
+        $ok = $false
+        Write-Host 'Could not reach router on 2.4 GHz — in Wi-Fi settings connect to the 2.4 GHz band of Wifi1 first.'
+    }
 }
 
 $mgr = Get-TetheringManager
@@ -53,11 +65,13 @@ if ($ch -gt 0) {
 
 if ($ok) {
     Write-Host ''
-    Write-Host 'Done:'
-    Write-Host '  • Hotspot is set to 2.4 GHz (for PS5).'
-    Write-Host '  • PC Wi-Fi should stay on 5 GHz for everyday use.'
-    Write-Host '  • When you need the PS5: Settings -> Mobile hotspot -> ON'
-    Write-Host '  • When done: hotspot OFF to get fastest 5 GHz back on Wi-Fi-only setups'
+    if ($eth) {
+        Write-Host 'Done (Ethernet): Hotspot can stay 2.4 GHz. PC Wi-Fi may stay on 5 GHz.'
+    } else {
+        Write-Host 'Done (Wi-Fi-only): Profile saved. Hotspot is OFF; PC back on 5 GHz for daily use.'
+        Write-Host '  BEFORE PS5:  tools\_wifi_only_ps5_hotspot_on.ps1   (Admin — do not use Settings ON alone)'
+        Write-Host '  AFTER PS5:   tools\_wifi_only_ps5_hotspot_off.ps1  (Admin)'
+    }
     exit 0
 }
 Write-Host 'FAILED: Could not set hotspot to 2.4 GHz.'
