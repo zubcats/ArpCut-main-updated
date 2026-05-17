@@ -208,42 +208,81 @@ def get_gateway_ip(iface_name):
 
     return chosen_gw or '0.0.0.0'
 
-def get_gateway_mac(iface_ip, router_ip):
+def is_usable_ether_mac(mac: str) -> bool:
+    m = (mac or '').strip().upper()
+    return bool(m) and m not in ('FF:FF:FF:FF:FF:FF', '00:00:00:00:00:00')
+
+
+def _parse_windows_arp_table_for_ip(arp_text: str, router_ip: str) -> str:
+    want = (router_ip or '').strip()
+    if not want or not arp_text:
+        return GLOBAL_MAC
+    for line in arp_text.split('\n'):
+        line = line.strip()
+        if not line or 'Interface:' in line or 'Schnittstelle:' in line:
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == want:
+            mac = good_mac(parts[1].replace('-', ':'))
+            if is_usable_ether_mac(mac):
+                return mac
+    return GLOBAL_MAC
+
+
+def _lookup_gateway_mac_once(iface_ip: str, router_ip: str) -> str:
     if sys.platform.startswith('win'):
-        # Windows: try ARP table lookup
-        if iface_ip and iface_ip != '127.0.0.1':
-            response = terminal(f'arp -a {router_ip} -N {iface_ip}')
-        else:
-            response = terminal(f'arp -a {router_ip}')
-        
-        if response:
-            # Parse Windows ARP output: "  IP_ADDRESS      MAC_ADDRESS      TYPE"
-            for line in response.split('\n'):
-                line = line.strip()
-                if not line or 'Interface:' in line:
-                    continue
-                parts = line.split()
-                if len(parts) >= 2 and parts[0] == router_ip:
-                    mac_candidate = parts[1].replace('-', ':')
-                    mac = good_mac(mac_candidate)
-                    if mac and mac != GLOBAL_MAC:
-                        return mac
+        response = ''
+        if iface_ip and iface_ip not in ('127.0.0.1', '0.0.0.0'):
+            response = terminal(f'arp -a {router_ip} -N {iface_ip}') or ''
+        if not response.strip():
+            response = terminal(f'arp -a {router_ip}') or ''
+        mac = _parse_windows_arp_table_for_ip(response, router_ip)
+        if is_usable_ether_mac(mac):
+            return mac
+        if iface_ip and iface_ip not in ('127.0.0.1', '0.0.0.0'):
+            response = terminal(f'arp -a -N {iface_ip}') or ''
+        if not response.strip():
+            response = terminal('arp -a') or ''
+        mac = _parse_windows_arp_table_for_ip(response, router_ip)
+        if is_usable_ether_mac(mac):
+            return mac
     else:
-        # macOS/Linux: query ARP table
         response = terminal(f'arp -n {router_ip}')
         if response:
             parts = response.split()
             for token in parts:
                 if ':' in token and len(token) >= 17:
-                    return good_mac(token)
-    # Fallback: actively resolve via scapy
+                    mac = good_mac(token)
+                    if is_usable_ether_mac(mac):
+                        return mac
     try:
         from scapy.all import getmacbyip
+
         mac = getmacbyip(router_ip)
         if mac:
-            return good_mac(mac)
+            mac = good_mac(mac)
+            if is_usable_ether_mac(mac):
+                return mac
     except Exception:
         pass
+    return GLOBAL_MAC
+
+
+def get_gateway_mac(iface_ip, router_ip):
+    """Resolve default-gateway L2 address; ping + full ARP table if the first lookup fails."""
+    if not router_ip or router_ip in ('0.0.0.0', ''):
+        return GLOBAL_MAC
+    mac = _lookup_gateway_mac_once(iface_ip, router_ip)
+    if is_usable_ether_mac(mac):
+        return mac
+    if sys.platform.startswith('win'):
+        try:
+            terminal(f'ping -n 1 -w 1000 {router_ip}')
+        except Exception:
+            pass
+        mac = _lookup_gateway_mac_once(iface_ip, router_ip)
+        if is_usable_ether_mac(mac):
+            return mac
     return GLOBAL_MAC
 
 def goto(url):

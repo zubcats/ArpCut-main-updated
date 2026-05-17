@@ -316,6 +316,12 @@ if __name__ == "__main__":
         GUI.scanner.add_me()
         GUI.scanner.add_router()
         GUI.showDevices()  # Show at least "Me" and "Router" on startup
+        GUI.killer.router = GUI.scanner.router
+        if not GUI.killer.refresh_router_mac(ping_gateway=True):
+            GUI.log(
+                'Router MAC not resolved yet — run Scan or ping your gateway before Kill/Lag.',
+                _UI_LOG_VICTIM_BLOCK_FG,
+            )
     except Exception as e:
         GUI.log(f'Warning: Could not initialize local devices: {e}', _UI_LOG_VICTIM_BLOCK_FG)
 

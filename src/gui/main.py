@@ -64,7 +64,7 @@ from tools.utils import (
     get_default_iface,
 )
 from tools.tray_cleanup import hide_all_system_tray_icons
-from tools.pfctl import _is_valid_ip, block_ip, unblock_ip
+from tools.pfctl import _is_valid_ip, block_ip, last_error, unblock_ip
 
 
 def _dupe_net_run_unblock(ip: str) -> None:
@@ -1925,10 +1925,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         
         # Killing process
         self._ensure_network_context_for_victim(device)
-        self.killer.kill(device)
+        if not self.killer.kill(device):
+            self._log_kill_router_unresolved()
+            return
         try:
             iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-            block_ip(iface, device['ip'], 'both')
+            if not block_ip(iface, device['ip'], 'both'):
+                err = last_error()
+                if err:
+                    self.log(f'Firewall block failed: {err}', 'red')
         except Exception:
             pass
         self.killed_devices[device['mac']] = True
@@ -2699,17 +2704,32 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
         return True
 
+    def _log_kill_router_unresolved(self):
+        gw = (self.killer.router.get('ip') or 'gateway')
+        self.log(
+            f'Kill failed: could not resolve router MAC for {gw}. '
+            'Run Scan, ping your router, then retry. '
+            'On guest Wi‑Fi, disable AP/client isolation.',
+            'red',
+        )
+
     def _apply_victim_block(self, device, direction):
         self._ensure_network_context_for_victim(device)
         self.killer.disable_percent_cut(device['mac'])
         # Always re-arm ARP (kill() restarts workers); stale killer.killed after network reset
         # made lag/kill look dead when the MAC was still in self.killer.killed.
-        self.killer.kill(device)
+        if not self.killer.kill(device):
+            self._log_kill_router_unresolved()
+            return False
         iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-        block_ip(iface, device['ip'], direction)
+        if not block_ip(iface, device['ip'], direction):
+            err = last_error()
+            if err:
+                self.log(f'Firewall block failed: {err}', 'red')
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
+        return True
 
     def _clear_victim_block(self, device):
         self._ensure_network_context_for_victim(device)
@@ -3574,7 +3594,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             pct = self._clamp_percent(self.spinPercentCutMain.value())
             allow_pct = max(0, 100 - pct)
             self._ensure_network_context_for_victim(device)
-            self.killer.apply_percent_cut(device, pass_percent=allow_pct)
+            if not self.killer.apply_percent_cut(device, pass_percent=allow_pct):
+                self._log_kill_router_unresolved()
+                return
             self.percent_cut_active = True
             self.percent_cut_device_mac = mac
             self.log(
@@ -3848,7 +3870,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if use_forwarder:
             try:
                 self._ensure_network_context_for_victim(device)
-                self.killer.apply_link_shaping(
+                if not self.killer.apply_link_shaping(
                     device,
                     delay_ms_out=du,
                     delay_ms_in=dd,
@@ -3858,7 +3880,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     loss_pct_in=ld,
                     max_kbps_out=cu_mbps * 1000.0,
                     max_kbps_in=cd_mbps * 1000.0,
-                )
+                ):
+                    self._log_kill_router_unresolved()
+                    self._refresh_advanced_lag_mitm_if_visible()
+                    return
             except Exception as exc:
                 self.log(f'MITM shaping failed: {exc}', 'red')
                 self._refresh_advanced_lag_mitm_if_visible()
@@ -4065,14 +4090,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if not _is_valid_ip(device.get('ip') or ''):
                         self.log('Target has no IP yet — enable sharing and rescan.', 'red')
                     else:
-                        self.killer.kill(device)
-                        try:
-                            iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-                            block_ip(iface, device['ip'], 'both')
-                        except Exception:
-                            pass
-                        self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
-                        kill_applied = True
+                        if not self.killer.kill(device):
+                            self._log_kill_router_unresolved()
+                        else:
+                            try:
+                                iface = self.scanner.iface.name if self.scanner.iface else 'en0'
+                                if not block_ip(iface, device['ip'], 'both'):
+                                    err = last_error()
+                                    if err:
+                                        self.log(f'Firewall block failed: {err}', 'red')
+                            except Exception:
+                                pass
+                            self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                            kill_applied = True
             else:
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
                     self.stop_mitm_shaping(log=False)
