@@ -13,7 +13,9 @@ import sys
 import time
 from typing import TYPE_CHECKING, List, Optional
 
+from constants import GLOBAL_MAC
 from tools.clumsy_ics import read_clumsy_ics_state
+from tools.utils import good_mac, get_vendor
 
 if TYPE_CHECKING:
     from networking.scanner import Scanner
@@ -76,6 +78,60 @@ def clumsy_mode_enabled() -> bool:
         return bool(get_settings('clumsy_mode'))
     except Exception:
         return False
+
+
+def clumsy_ics_downstream_prefix() -> str:
+    state = read_clumsy_ics_state()
+    prefix = str(state.get('downstream_prefix') or '').strip()
+    if not prefix:
+        prefix = _ICS_SUBNET_PREFIX
+    if not prefix.endswith('.'):
+        prefix += '.'
+    return prefix
+
+
+def victim_on_clumsy_ics_subnet(victim_ip: str) -> bool:
+    ip = str(victim_ip or '').strip()
+    if not ip:
+        return False
+    return ip.startswith(clumsy_ics_downstream_prefix())
+
+
+def apply_clumsy_ics_router_context(scanner: Scanner, killer, victim_ip: str) -> bool:
+    """
+    On ICS/hotspot, the console's gateway is this PC (e.g. 192.168.137.1), not the home router.
+
+    After sync_iface_for_victim_ip, refresh_local_topology may set router_ip to 192.168.1.1
+    from the wrong route table; ARP MITM then breaks hotspot internet for everyone.
+    """
+    if not clumsy_mode_enabled() or not sys.platform.startswith('win'):
+        return False
+    if not victim_on_clumsy_ics_subnet(victim_ip):
+        return False
+    prefix = clumsy_ics_downstream_prefix()
+    gw = str(read_clumsy_ics_state().get('downstream_ipv4') or '').strip()
+    if not gw or not gw.startswith(prefix.rstrip('.')):
+        gw = prefix.rstrip('.') + '.1'
+    my_mac = good_mac(getattr(scanner.iface, 'mac', None) or GLOBAL_MAC)
+    router = {
+        'ip': gw,
+        'mac': my_mac,
+        'vendor': get_vendor(my_mac),
+        'type': 'Router',
+        'name': '',
+        'admin': True,
+    }
+    scanner.router_ip = gw
+    scanner.router_mac = my_mac
+    scanner.router = router
+    for row in scanner.devices:
+        if row.get('type') == 'Router':
+            row['ip'] = gw
+            row['mac'] = my_mac
+            row['vendor'] = get_vendor(my_mac)
+    killer.router = router
+    killer.iface = scanner.iface
+    return True
 
 
 def maybe_prepare_ics() -> None:

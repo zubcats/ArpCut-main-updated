@@ -48,7 +48,13 @@ from tools.frameless_chrome import (
     setup_frameless_main_window,
     CustomTitleBar,
 )
-from tools.clumsy_inline import sync_clumsy_row, use_windivert_for_advanced_ics_shaping
+from tools.clumsy_inline import (
+    apply_clumsy_ics_router_context,
+    clumsy_mode_enabled,
+    sync_clumsy_row,
+    use_windivert_for_advanced_ics_shaping,
+    victim_on_clumsy_ics_subnet,
+)
 from tools.keybinds import keyseq_from_setting
 from tools.branding import (
     load_application_qicon,
@@ -2678,14 +2684,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             changed = bool(self.scanner.sync_iface_for_victim_ip(device['ip']))
         except Exception:
             pass
-        try:
-            self.scanner.flush_arp()
-        except Exception:
-            pass
+        if not clumsy_mode_enabled():
+            try:
+                self.scanner.flush_arp()
+            except Exception:
+                pass
         try:
             self.scanner.refresh_local_topology()
         except Exception:
             pass
+        if clumsy_mode_enabled():
+            try:
+                apply_clumsy_ics_router_context(self.scanner, self.killer, device['ip'])
+            except Exception:
+                pass
         self.killer.iface = self.scanner.iface
         self.killer.router = self.scanner.router
         self.killer._close_socket()
@@ -2709,6 +2721,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             )
             self.log(
                 f'Using network adapter for {device["ip"]}: {label}',
+                UI_LOG_RESTORE_FG,
+            )
+        elif clumsy_mode_enabled() and victim_on_clumsy_ics_subnet(device['ip']):
+            self.log(
+                f'Clumsy ICS path: gateway {self.scanner.router_ip} for {device["ip"]}',
                 UI_LOG_RESTORE_FG,
             )
         return True

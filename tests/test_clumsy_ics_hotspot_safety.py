@@ -13,6 +13,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from tools import clumsy_ics as ics
+from tools import clumsy_inline as inline
 
 
 class ClumsyHotspotSafetyTests(unittest.TestCase):
@@ -145,6 +146,37 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertEqual(once, twice)
         self.assertEqual(once.count('For PS5 → PC Mobile Hotspot'), 1)
         self.assertEqual(once.count('Connect the PS5'), 1)
+
+    def test_clumsy_ics_subnet_and_gateway(self) -> None:
+        path = ics.clumsy_ics_state_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        had = os.path.isfile(path)
+        old = None
+        try:
+            if had:
+                with open(path, encoding='utf-8') as f:
+                    old = f.read()
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(
+                    '{"downstream_prefix":"192.168.137.","downstream_ipv4":"192.168.137.1"}'
+                )
+            self.assertTrue(inline.victim_on_clumsy_ics_subnet('192.168.137.50'))
+            self.assertFalse(inline.victim_on_clumsy_ics_subnet('192.168.1.50'))
+            self.assertEqual(inline.clumsy_ics_downstream_prefix(), '192.168.137.')
+        finally:
+            if old is not None:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(old)
+            elif not had and os.path.isfile(path):
+                os.remove(path)
+
+    def test_ensure_network_skips_arp_flush_in_clumsy_mode(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'main.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('if not clumsy_mode_enabled():', src)
+        self.assertIn('self.scanner.flush_arp()', src)
+        self.assertIn('apply_clumsy_ics_router_context', src)
 
     def test_read_clumsy_topology_from_state_file(self) -> None:
         path = ics.clumsy_ics_state_path()
