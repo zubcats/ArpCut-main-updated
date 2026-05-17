@@ -23,7 +23,15 @@ try {
     if ($lic) {
         Copy-Item -LiteralPath $lic.FullName -Destination (Join-Path $Dest 'WinDivert-LICENSE.txt') -Force
     }
-    Write-Host "WinDivert $Version x64 copied to $Dest"
+    $DevWindivert = Join-Path $Root 'windivert'
+    New-Item -ItemType Directory -Path $DevWindivert -Force | Out-Null
+    foreach ($name in @('WinDivert.dll', 'WinDivert64.sys', 'WinDivert-LICENSE.txt')) {
+        $from = Join-Path $Dest $name
+        if (Test-Path -LiteralPath $from) {
+            Copy-Item -LiteralPath $from -Destination (Join-Path $DevWindivert $name) -Force
+        }
+    }
+    Write-Host "WinDivert $Version x64 copied to $Dest and $DevWindivert"
 }
 finally {
     Remove-Item -LiteralPath $Tmp -Recurse -Force -ErrorAction SilentlyContinue

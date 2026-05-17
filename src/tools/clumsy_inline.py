@@ -53,14 +53,17 @@ def windivert_driver_installed() -> bool:
     sys_root = os.environ.get('SystemRoot', r'C:\Windows')
     if os.path.isfile(os.path.join(sys_root, 'System32', 'drivers', 'WinDivert64.sys')):
         return True
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.getcwd()
-    sub = os.path.join(base, 'windivert', 'WinDivert64.sys')
-    if os.path.isfile(sub):
-        return True
-    return os.path.isfile(os.path.join(base, 'WinDivert64.sys'))
+    from tools.ics_windivert_shaper import _windivert_search_bases
+
+    for base in _windivert_search_bases():
+        for rel in (
+            os.path.join('windivert', 'WinDivert64.sys'),
+            'WinDivert64.sys',
+            os.path.join('installer', 'windivert', 'WinDivert64.sys'),
+        ):
+            if os.path.isfile(os.path.join(base, rel)):
+                return True
+    return False
 
 
 def clumsy_runtime_ready() -> bool:

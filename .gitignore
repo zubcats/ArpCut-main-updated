@@ -159,6 +159,9 @@ PRN
 installer/windivert/WinDivert.dll
 installer/windivert/WinDivert64.sys
 installer/windivert/WinDivert-LICENSE.txt
+windivert/WinDivert.dll
+windivert/WinDivert64.sys
+windivert/WinDivert-LICENSE.txt
 
 # Build outputs (don't commit binaries - use GitHub Releases)
 ZubCut-macOS.zip

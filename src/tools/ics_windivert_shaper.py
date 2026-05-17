@@ -32,17 +32,44 @@ ADDR_BUF = 256
 MAX_PACKET = 0xFFFF
 
 
+def _windivert_search_bases() -> list[str]:
+    """Directories to look for bundled WinDivert.dll / WinDivert64.sys."""
+    bases: list[str] = []
+    if getattr(sys, 'frozen', False):
+        bases.append(os.path.dirname(sys.executable))
+    else:
+        bases.append(os.getcwd())
+        try:
+            repo = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+            bases.append(repo)
+        except Exception:
+            pass
+    out: list[str] = []
+    seen: set[str] = set()
+    for b in bases:
+        if not b:
+            continue
+        norm = os.path.normcase(os.path.abspath(b))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        out.append(b)
+    return out
+
+
 def _windivert_dll_path() -> Optional[str]:
     if not sys.platform.startswith('win'):
         return None
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.getcwd()
-    for rel in ('windivert\\WinDivert.dll', 'WinDivert.dll'):
-        p = os.path.join(base, rel)
-        if os.path.isfile(p):
-            return p
+    rels = (
+        os.path.join('windivert', 'WinDivert.dll'),
+        'WinDivert.dll',
+        os.path.join('installer', 'windivert', 'WinDivert.dll'),
+    )
+    for base in _windivert_search_bases():
+        for rel in rels:
+            p = os.path.join(base, rel)
+            if os.path.isfile(p):
+                return p
     return None
 
 
