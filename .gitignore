@@ -172,3 +172,8 @@ ZubCut.dmg
 
 # Cloudflare Wrangler local dev cache
 backend/**/.wrangler/
+
+# Local hotspot / ICS debug output (tools scripts)
+tools/_*.txt
+tools/_poll_ics.ps1
+tools/run_hotspot_fix_elevated.ps1

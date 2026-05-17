@@ -1,8 +1,6 @@
 # Enable ICS while Mobile Hotspot stays ON (do not stop icssvc).
 $ErrorActionPreference = 'Continue'
-$log = Join-Path $PSScriptRoot '_enable_ics_result.txt'
-function L([string]$m) { Write-Host $m; $m | Add-Content $log -Encoding UTF8 }
-'' | Set-Content $log -Encoding UTF8
+function L([string]$m) { Write-Host $m }
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)) {

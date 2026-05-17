@@ -7,7 +7,5 @@ echo 3. Window closes when done - read SUCCESS or ERROR
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File \"\"%~dp0enable_hotspot_ics_now.ps1\"\"'"
 echo.
-if exist "%~dp0_enable_ics_result.txt" type "%~dp0_enable_ics_result.txt"
-echo.
-echo Done. Close any other blank PowerShell windows (old stuck runs).
+echo Done. Read SUCCESS or ERROR in the elevated PowerShell window.
 timeout /t 8
