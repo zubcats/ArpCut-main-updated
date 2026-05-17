@@ -44,7 +44,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "clumsymode"; Description: "Clumsy mode (WinDivert for PC Mobile Hotspot lag)"; GroupDescription: "Optional:"; Flags: checked
+; Default is checked (omit Flags: unchecked). "checked" is not a valid [Tasks] flag in Inno Setup.
+Name: "clumsymode"; Description: "Clumsy mode (WinDivert for PC Mobile Hotspot lag)"; GroupDescription: "Optional:"
 
 ; Replace the whole onedir payload on upgrade (avoids stale PyInstaller files beside new builds).
 [InstallDelete]

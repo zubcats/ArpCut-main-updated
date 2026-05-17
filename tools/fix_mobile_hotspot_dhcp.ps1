@@ -23,19 +23,36 @@ Write-Host ('  192.168.137.1 on hotspot adapter: ' + $before.Gateway)
 Write-Host ('  DHCP listening (UDP 67): ' + $before.DhcpListening)
 
 # Do not restart icssvc while Mobile Hotspot is up — it drops tethering and client internet.
+# Never force-restart WlanSvc when running — that disables all Wi-Fi for several seconds.
 $hotspotUp = $before.Gateway
-$svcList = if ($hotspotUp) { @('SharedAccess', 'WlanSvc') } else { @('SharedAccess', 'icssvc', 'WlanSvc') }
+$svcList = if ($hotspotUp) { @('SharedAccess') } else { @('SharedAccess', 'icssvc') }
 foreach ($svc in $svcList) {
     try {
-        if ((Get-Service -Name $svc -ErrorAction Stop).Status -ne 'Running') {
+        $s = Get-Service -Name $svc -ErrorAction Stop
+        if ($s.Status -ne 'Running') {
             Start-Service -Name $svc -ErrorAction Stop
+            Write-Host ('  Started ' + $svc)
         } else {
             Restart-Service -Name $svc -Force -ErrorAction SilentlyContinue
+            Write-Host ('  Restarted ' + $svc)
         }
-        Write-Host ('  Restarted ' + $svc)
     } catch {
         Write-Host ('  WARN: ' + $svc + ' - ' + $_.Exception.Message)
     }
+}
+try {
+    $wl = Get-Service -Name WlanSvc -ErrorAction SilentlyContinue
+    if ($wl) {
+        if ($wl.Status -ne 'Running') {
+            Set-Service -Name WlanSvc -StartupType Automatic -ErrorAction SilentlyContinue
+            Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
+            Write-Host '  Started WlanSvc (was stopped)'
+        } else {
+            Write-Host '  WlanSvc already running (left alone — restarting drops Wi-Fi)'
+        }
+    }
+} catch {
+    Write-Host ('  WARN: WlanSvc - ' + $_.Exception.Message)
 }
 if ($hotspotUp) {
     Write-Host '  (skipped icssvc — hotspot is on; restarting it breaks PS5 internet)'
