@@ -74,12 +74,20 @@ def normalize_clumsy_topology(topology: str | None) -> str:
 
 
 def read_clumsy_topology() -> str:
+    """Last detected console path from Clumsy enable (hotspot vs ethernet)."""
+    state = read_clumsy_ics_state()
+    t = str(state.get('topology') or '').strip().lower()
+    if t in ('hotspot', 'ethernet'):
+        return t
     try:
         from tools.utils_gui import get_settings
 
-        return normalize_clumsy_topology(str(get_settings('clumsy_topology') or 'hotspot'))
+        legacy = str(get_settings('clumsy_topology') or '').strip().lower()
+        if legacy in ('hotspot', 'ethernet'):
+            return normalize_clumsy_topology(legacy)
     except Exception:
-        return 'hotspot'
+        pass
+    return 'hotspot'
 
 
 def _clumsy_error_has_hotspot_hints(detail: str) -> bool:
@@ -97,21 +105,30 @@ def format_clumsy_ics_error(detail: str, *, topology: str | None = None) -> str:
         lines.extend(
             [
                 '',
-                'For PS5 → PC Mobile Hotspot → router:',
+                'For PS5 → PC Mobile Hotspot → internet:',
                 '• Turn ON Mobile hotspot (Settings → Network → Mobile hotspot)',
                 '• Connect the PS5 to your PC hotspot Wi‑Fi (not the router Wi‑Fi)',
-                '• In ZubCut Settings, set Console connects via → PC Mobile Hotspot',
                 '• Run ZubCut as Administrator, then enable Clumsy mode again',
             ]
         )
-        if 'repair hotspot' not in low and 'ethernet' not in low:
-            lines.extend(
-                [
-                    '',
-                    'Try Settings → Repair hotspot / sharing (ZubCut toggles hotspot to apply sharing).',
-                    'Or use Console connects via → Ethernet (PS5 cable to PC LAN port).',
-                ]
-            )
+    if topo == 'ethernet' and 'lan port' not in low and 'ethernet' not in low:
+        lines.extend(
+            [
+                '',
+                'For PS5 → Ethernet cable → this PC:',
+                '• Plug the PS5 into a spare Ethernet port (not the port to your router)',
+                '• Turn OFF Mobile Hotspot if you are using the cable',
+                '• Run ZubCut as Administrator, then enable Clumsy mode again',
+            ]
+        )
+    if 'repair hotspot' not in low and topo not in ('hotspot', 'ethernet'):
+        lines.extend(
+            [
+                '',
+                'Enable Clumsy mode in Settings (run as Administrator). ZubCut auto-detects '
+                'Mobile Hotspot first, otherwise a console on a spare Ethernet port.',
+            ]
+        )
     if '0x80040201' in low or 'abonnenten' in low or 'subscribers' in low:
         if topo == 'ethernet':
             lines.extend(
@@ -143,9 +160,13 @@ def _windows_is_admin() -> bool:
 # Never set WlanSvc to Manual or force-stop it (breaks Wi-Fi network list on Windows).
 _PS_ENSURE_WLAN_HEALTHY = """
 function Ensure-WlanAutoConfigHealthy {
+  # Never Stop/Restart WlanSvc — that drops all Wi-Fi. Only fix when actually broken.
   $fixed = $false
   try {
     $wl = Get-Service -Name WlanSvc -ErrorAction Stop
+    if ($wl.Status -eq 'Running' -and $wl.StartType -in @('Automatic', 'AutomaticDelayedStart')) {
+      return $false
+    }
     if ($wl.StartType -notin @('Automatic', 'AutomaticDelayedStart')) {
       Set-Service -Name WlanSvc -StartupType Automatic -ErrorAction SilentlyContinue
       $fixed = $true
@@ -156,7 +177,12 @@ function Ensure-WlanAutoConfigHealthy {
     }
   } catch {
     try { Set-Service -Name WlanSvc -StartupType Automatic -ErrorAction SilentlyContinue } catch {}
-    try { Start-Service -Name WlanSvc -ErrorAction SilentlyContinue } catch {}
+    try {
+      $wl2 = Get-Service -Name WlanSvc -ErrorAction SilentlyContinue
+      if ($null -eq $wl2 -or $wl2.Status -ne 'Running') {
+        Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
+      }
+    } catch {}
     $fixed = $true
   }
   return $fixed
@@ -164,10 +190,138 @@ function Ensure-WlanAutoConfigHealthy {
 """
 
 # Hotspot: DHCP alone is not enough — PS5 needs ICS (Wi‑Fi public → Wi‑Fi Direct private).
-_PS_HOTSPOT_HELPERS = """
+_PS_HOTSPOT_HELPERS = r"""
 function NormGuidHotspot([object]$g) {
   if ($null -eq $g) { return '' }
   return ($g.ToString().Trim('{','}').ToLowerInvariant())
+}
+function IsVirtualNicLike([string]$name, [string]$desc) {
+  $all = (($name + ' ' + $desc) -as [string]).ToLowerInvariant()
+  return ($all -match 'hyper-v|vethernet|virtual|bluetooth|loopback|tap|vpn|wireguard|vmware|npcap|wi-fi direct|hosted network|mobile hotspot')
+}
+function LikelyEthernetNic($a) {
+  $d = ($a.Name + ' ' + $a.InterfaceDescription)
+  if ($d -match 'Ethernet|Gigabit|GbE|^LAN|USB.*Ethernet|RNDIS|PCIe.*Family|ASIX|AX88179') { return $true }
+  try { if ($a.MediaType -eq '802.3') { return $true } } catch {}
+  return $false
+}
+function IsHotspotDownstreamNic($a) {
+  $all = (($a.Name + ' ' + $a.InterfaceDescription) -as [string]).ToLowerInvariant()
+  return ($all -match 'wi-fi direct|hosted network|mobile hotspot|local area connection\\*|microsoft wi-fi direct')
+}
+function Get-InternetUplinkAdapter {
+  $routes = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+    Sort-Object RouteMetric, InterfaceMetric
+  foreach ($rt in @($routes)) {
+    try {
+      $cand = Get-NetAdapter -InterfaceIndex $rt.InterfaceIndex -ErrorAction Stop
+      if (-not $cand -or $cand.Status -ne 'Up') { continue }
+      if (IsVirtualNicLike $cand.Name $cand.InterfaceDescription) { continue }
+      return $cand
+    } catch {}
+  }
+  return $null
+}
+function Get-GatewayIpForUplink($up) {
+  if ($null -eq $up) { return '' }
+  $rt = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+    Where-Object { $_.InterfaceIndex -eq $up.ifIndex } | Sort-Object RouteMetric, InterfaceMetric | Select-Object -First 1
+  if ($rt -and $rt.NextHop) { return [string]$rt.NextHop }
+  return ''
+}
+function Test-HotspotPathActive {
+  if (Test-TetheringOn) { return $true }
+  if (Test-MobileHotspotGateway) { return $true }
+  return $false
+}
+function Get-HotspotDownstreamAdapter {
+  param([int]$ExcludeIfIndex = -1)
+  $down = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+    $_.Status -eq 'Up' -and $_.ifIndex -ne $ExcludeIfIndex -and (IsHotspotDownstreamNic $_)
+  } | Sort-Object InterfaceMetric, ifIndex | Select-Object -First 1
+  if ($down) { return $down }
+  $gw = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -eq '192.168.137.1' } | Select-Object -First 1
+  if ($gw -and $gw.InterfaceIndex -ne $ExcludeIfIndex) {
+    return Get-NetAdapter -InterfaceIndex $gw.InterfaceIndex -ErrorAction SilentlyContinue
+  }
+  return $null
+}
+function Test-ConsoleOnEthernetAdapter {
+  param($Adapter, [string]$GatewayIp, [string[]]$UplinkIps, [string]$GwPrefix)
+  $neighbors = @(Get-NetNeighbor -InterfaceIndex $Adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.IPAddress -and $_.IPAddress -notlike '169.254.*' -and $_.State -in @('Reachable','Stale','Permanent','Probe','Delay')
+    })
+  foreach ($n in $neighbors) {
+    $nip = [string]$n.IPAddress
+    if ($nip -eq $GatewayIp) { continue }
+    if ($UplinkIps -contains $nip) { continue }
+    if ($nip -match '\.255$') { continue }
+    if ($GwPrefix -and $nip -match '^(\d+\.\d+\.\d+)\.\d+$' -and ($Matches[1] + '.') -eq $GwPrefix) { continue }
+    return $true
+  }
+  return $false
+}
+function Find-EthernetConsoleAdapter {
+  param($Uplink, [string]$GatewayIp)
+  if ($null -eq $Uplink) { return $null }
+  $upIdx = [int]$Uplink.ifIndex
+  $upIps = @(Get-NetIPAddress -InterfaceIndex $upIdx -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -and $_.IPAddress -notlike '169.254.*' } | ForEach-Object { $_.IPAddress })
+  $gwPrefix = ''
+  if ($GatewayIp -match '^(\d+\.\d+\.\d+)\.\d+$') { $gwPrefix = $Matches[1] + '.' }
+  $ethUp = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+    $_.ifIndex -ne $upIdx -and $_.Status -eq 'Up' -and (LikelyEthernetNic $_) -and -not (IsHotspotDownstreamNic $_) -and -not (IsVirtualNicLike $_.Name $_.InterfaceDescription)
+  })
+  foreach ($a in $ethUp) {
+    if (Test-ConsoleOnEthernetAdapter -Adapter $a -GatewayIp $GatewayIp -UplinkIps $upIps -GwPrefix $gwPrefix) {
+      return $a
+    }
+  }
+  return $null
+}
+function Detect-ClumsyConsolePath {
+  $up = Get-InternetUplinkAdapter
+  if (-not $up) {
+    return @{ Ok=$false; Error='No internet adapter found. Connect this PC to your router (Wi-Fi or Ethernet), then try again.' }
+  }
+  $gw = Get-GatewayIpForUplink $up
+  if (Test-HotspotPathActive) {
+    $down = Get-HotspotDownstreamAdapter -ExcludeIfIndex $up.ifIndex
+    if ($down) {
+      return @{ Ok=$true; Path='hotspot'; Up=$up; Down=$down; GatewayIp=$gw }
+    }
+    return @{ Ok=$false; Error='Mobile Hotspot is on but ZubCut could not find the hotspot adapter. Toggle hotspot off and on in Windows Settings, then try Clumsy mode again.' }
+  }
+  $eth = Find-EthernetConsoleAdapter -Uplink $up -GatewayIp $gw
+  if ($eth) {
+    return @{ Ok=$true; Path='ethernet'; Up=$up; Down=$eth; GatewayIp=$gw }
+  }
+  return @{
+    Ok=$false
+    Error='No console path found. Turn ON Mobile Hotspot and connect your console to that Wi-Fi, OR plug a powered-on console into a spare Ethernet port on this PC (not the router cable).'
+  }
+}
+function Test-IcsActiveForPair($pair) {
+  if ($null -eq $pair.Up -or $null -eq $pair.Down) { return $false }
+  $upG = NormGuidHotspot $pair.Up.InterfaceGuid
+  $dnG = NormGuidHotspot $pair.Down.InterfaceGuid
+  $share = New-Object -ComObject HNetCfg.HNetShare
+  $upPublic = $false
+  $dnPrivate = $false
+  foreach ($conn in @($share.EnumEveryConnection())) {
+    try {
+      $props = $share.NetConnectionProps($conn)
+      $g = NormGuidHotspot $props.Guid
+      $cfg = $share.INetSharingConfigurationForINetConnection($conn)
+      if (-not $cfg.SharingEnabled) { continue }
+      $st = SharingTypeNumHotspot $cfg
+      if ($g -eq $upG -and $st -eq 0) { $upPublic = $true }
+      if ($g -eq $dnG -and $st -eq 1) { $dnPrivate = $true }
+    } catch {}
+  }
+  return ($upPublic -and $dnPrivate)
 }
 function SharingTypeNumHotspot($cfg) {
   if ($null -eq $cfg) { return -1 }
@@ -236,13 +390,10 @@ function Test-HotspotIcsActive {
   return ($upPublic -and $dnPrivate)
 }
 function Get-HotspotAdapterPairForIcs {
-  $up = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
-    $_.InterfaceDescription -notmatch 'Direct|Bluetooth|Virtual|Hyper-V|Loopback'
-    -and ($_.Name -eq 'Wi-Fi' -or $_.InterfaceDescription -match 'Wireless LAN|Wi-Fi')
-  } | Sort-Object @{ Expression = { if ($_.Status -eq 'Up') { 0 } else { 1 } } }, InterfaceMetric | Select-Object -First 1
-  $down = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
-    $_.InterfaceDescription -match 'Wi-Fi Direct|Hosted' -or $_.Name -match 'Local Area Connection'
-  } | Sort-Object @{ Expression = { if ($_.Status -eq 'Up') { 0 } else { 1 } } } | Select-Object -First 1
+  $det = Detect-ClumsyConsolePath
+  if ($det.Ok) { return @{ Up=$det.Up; Down=$det.Down } }
+  $up = Get-InternetUplinkAdapter
+  $down = Get-HotspotDownstreamAdapter
   return @{ Up=$up; Down=$down }
 }
 function Apply-HotspotIcsCore($pair) {
@@ -331,8 +482,19 @@ function Apply-HotspotIcsWithTetheringToggle {
   Start-Sleep -Seconds 8
   return (Test-HotspotIcsActive)
 }
+function Apply-MainWifiSharingForHotspot {
+  return (Apply-InternetSharingForClumsy)
+}
+function Apply-InternetSharingForClumsy {
+  $det = Detect-ClumsyConsolePath
+  if (-not $det.Ok) { return $false }
+  $pair = @{ Up = $det.Up; Down = $det.Down }
+  if (Test-IcsActiveForPair $pair) { return $true }
+  return (Apply-HotspotIcsCore $pair)
+}
 function Apply-HotspotIcsAutomated {
   if (Test-HotspotIcsActive) { return $true }
+  if (Apply-MainWifiSharingForHotspot) { return $true }
   if (Apply-HotspotIcs) { return $true }
   return (Apply-HotspotIcsWithTetheringToggle)
 }
@@ -370,6 +532,17 @@ function Ensure-MobileHotspotOn {
     return ((Test-TetheringOn) -and (Test-MobileHotspotGateway))
   } catch {
     return $false
+  }
+}
+function Ensure-SharingServicesLight {
+  # Start ICS/RAS if stopped only — never Restart wcmsvc/NlaSvc/iphlpsvc (drops Wi-Fi / internet).
+  foreach ($svc in @('SharedAccess', 'icssvc', 'RemoteAccess')) {
+    try {
+      $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+      if ($null -ne $s -and $s.Status -ne 'Running') {
+        Start-Service -Name $svc -ErrorAction SilentlyContinue
+      }
+    } catch {}
   }
 }
 function Restart-SharedAccessSafe([bool]$hotspotWasOn) {
@@ -498,9 +671,16 @@ try {{
   Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' -Name 'IPEnableRouter' -Value 1 -Type DWord -Force -EA SilentlyContinue
 }} catch {{}}
 
-foreach ($svc in @('SharedAccess','icssvc','WlanSvc','Dhcp')) {{
-  try {{ Start-Service $svc -ErrorAction SilentlyContinue }} catch {{}}
+foreach ($svc in @('SharedAccess','icssvc','Dhcp')) {{
+  try {{
+    $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+    if ($s -and $s.Status -ne 'Running') {{ Start-Service -Name $svc -ErrorAction SilentlyContinue }}
+  }} catch {{}}
 }}
+try {{
+  $wl = Get-Service -Name WlanSvc -ErrorAction SilentlyContinue
+  if ($wl -and $wl.Status -ne 'Running') {{ Start-Service -Name WlanSvc -ErrorAction SilentlyContinue }}
+}} catch {{}}
 
 $hotspotWasOn = (Test-MobileHotspotGateway) -or (Test-TetheringOn)
 $gw = Get-NetIPAddress -AddressFamily IPv4 -EA SilentlyContinue | Where-Object {{ $_.IPAddress -eq '192.168.137.1' }} | Select-Object -First 1
@@ -529,12 +709,24 @@ if ($dhcp67 -and $icsOk) {{
   exit 0
 }}
 if ($dhcp67 -and -not $icsOk) {{
+  if (Apply-MainWifiSharingForHotspot) {{
+    JsonOut @{{ ok=$true; dhcp67=$true; ics_ok=$true; needs_manual_sharing=$false; message='Enabled internet sharing on main Wi-Fi for Mobile Hotspot.' }}
+    exit 0
+  }}
   if (Apply-HotspotIcsAutomated) {{
     JsonOut @{{ ok=$true; dhcp67=$true; ics_ok=$true; needs_manual_sharing=$false; message='Restored internet sharing (ICS) for Mobile Hotspot.' }}
     exit 0
   }}
 }}
 
+if (Apply-MainWifiSharingForHotspot) {{
+  Restart-SharedAccessSafe $hotspotWasOn
+  Start-Sleep -Seconds 3
+  if ((Test-HotspotDhcp67) -and (Test-HotspotIcsActive)) {{
+    JsonOut @{{ ok=$true; dhcp67=$true; ics_ok=$true; needs_manual_sharing=$false; message='Enabled internet sharing on main Wi-Fi for Mobile Hotspot.' }}
+    exit 0
+  }}
+}}
 Apply-HotspotIcsAutomated | Out-Null
 Restart-SharedAccessSafe $hotspotWasOn
 if ($hotspotWasOn -and -not (Test-TetheringOn)) {{ Ensure-MobileHotspotOn | Out-Null }}
@@ -551,7 +743,7 @@ if ($dhcp67 -and -not $icsOk) {{
     dhcp67=$true
     ics_ok=$false
     needs_manual_sharing=$true
-    error='Hotspot is on but automatic Wi-Fi sharing failed on this adapter. Try Settings -> Repair hotspot / sharing, or use Console connects via -> Ethernet (PS5 cable to PC LAN port).'
+    error='Hotspot is on but automatic Wi-Fi sharing failed on this adapter. Enable Clumsy mode in Settings (Administrator), or use Console connects via -> Ethernet (PS5 cable to PC LAN port).'
   }}
   exit 1
 }}
@@ -560,7 +752,7 @@ JsonOut @{{
   ok=$false
   dhcp67=$false
   needs_manual_sharing=$true
-  error='Could not enable Mobile Hotspot sharing automatically. Turn hotspot ON in Windows Settings, then use Repair hotspot / sharing in ZubCut Settings, or switch to Ethernet topology.'
+  error='Could not enable Mobile Hotspot sharing automatically. Turn hotspot ON in Windows Settings, then enable Clumsy mode in ZubCut Settings (Administrator), or switch to Ethernet topology.'
 }}
 exit 1
 """
@@ -572,7 +764,7 @@ exit 1
             payload.get('error')
             or (
                 'Automatic hotspot sharing could not be enabled. '
-                'Try Repair hotspot / sharing in Settings, or use Ethernet (PS5 → LAN port) in Settings.'
+                'Enable Clumsy mode in Settings (Administrator), or use Ethernet (PS5 → LAN port) in Settings.'
             )
         )
     msg = str(payload.get('error') or '').strip() or raw.strip() or 'Hotspot preparation failed.'
@@ -580,6 +772,8 @@ exit 1
 
 
 def ensure_clumsy_ics_enabled(topology: str | None = None) -> Tuple[bool, str]:
+    """Enable ICS for Clumsy. Console path (hotspot vs ethernet) is auto-detected in PowerShell."""
+    _ = topology  # legacy callers may pass manual topology; detection is automatic
     if os.name != 'nt':
         return True, 'Non-Windows platform; skipping ICS automation.'
     if not _windows_is_admin():
@@ -588,48 +782,19 @@ def ensure_clumsy_ics_enabled(topology: str | None = None) -> Tuple[bool, str]:
             'ZubCut must run as Administrator to enable Internet Connection Sharing. '
             'Close ZubCut, right-click the shortcut, choose Run as administrator, then try again.',
         )
-    topo = normalize_clumsy_topology(topology) if topology else read_clumsy_topology()
-    if topo == 'hotspot':
-        prep_ok, prep_detail = prepare_pc_mobile_hotspot()
-        if not prep_ok:
-            return False, prep_detail
     os.makedirs(DOCUMENTS_PATH, exist_ok=True)
     state_path = _STATE_PATH.replace('\\', '\\\\')
     script = f"""
 $ErrorActionPreference = 'Stop'
-$ZubcutTopology = '{topo}'
 function NormGuid([object]$g) {{
   if ($null -eq $g) {{ return '' }}
   return ($g.ToString().Trim('{{','}}').ToLowerInvariant())
-}}
-function IsVirtualLike([string]$name, [string]$desc) {{
-  $all = (($name + ' ' + $desc) -as [string]).ToLowerInvariant()
-  if ($ZubcutTopology -eq 'hotspot' -and ($all -match 'wi-fi direct|hosted network|mobile hotspot|local area connection\\*')) {{
-    return $false
-  }}
-  return ($all -match 'hyper-v|vethernet|virtual|bluetooth|loopback|tap|vpn|wireguard|vmware|npcap loopback')
-}}
-function IsHotspotLike([string]$name, [string]$desc) {{
-  $all = (($name + ' ' + $desc) -as [string]).ToLowerInvariant()
-  return ($all -match 'wi-fi direct|hosted network|mobile hotspot|local area connection\\*|microsoft wi-fi direct')
-}}
-function LikelyHotspotDownstream($a) {{
-  if (IsHotspotLike $a.Name $a.InterfaceDescription) {{ return $true }}
-  try {{
-    $ips = @(Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
-    foreach ($ip in $ips) {{
-      if ($ip.IPAddress -and $ip.IPAddress -notlike '169.254.*' -and $ip.IPAddress -match '^192\\.168\\.\\d+\\.\\d+$') {{
-        $last = [int]($ip.IPAddress.Split('.')[-1])
-        if ($last -eq 1) {{ return $true }}
-      }}
-    }}
-  }} catch {{}}
-  return $false
 }}
 function JsonOut([hashtable]$o) {{
   $json = $o | ConvertTo-Json -Compress -Depth 8
   Write-Output ('{_MARKER}' + $json)
 }}
+{_PS_HOTSPOT_HELPERS}
 function SharingTypeNum($cfg) {{
   if ($null -eq $cfg) {{ return -1 }}
   try {{
@@ -705,91 +870,20 @@ try {{
     try {{ Start-Service -Name $svc -ErrorAction SilentlyContinue }} catch {{}}
   }}
 
-  # Include USB/LAN adapters; hotspot mode also allows Wi-Fi Direct / Mobile Hotspot NICs.
-  $allAdapters = Get-NetAdapter -ErrorAction Stop | Where-Object {{
-    if ($_.Status -eq 'Disabled') {{ return $false }}
-    if ($ZubcutTopology -eq 'hotspot' -and (LikelyHotspotDownstream $_)) {{ return $true }}
-    if (IsVirtualLike $_.Name $_.InterfaceDescription) {{ return $false }}
-    $virtBad = $false
-    try {{ if ($null -ne $_.Virtual -and $_.Virtual -eq $true) {{ $virtBad = $true }} }} catch {{ }}
-    if ($virtBad) {{ return $false }}
-    if ($_.HardwareInterface -eq $true) {{ return $true }}
-    $d = ($_.Name + ' ' + $_.InterfaceDescription)
-    if ($d -match 'USB|Ethernet|Gigabit|GbE|LAN|RNDIS|ASIX|AX88179|NDIS|Thunderbolt|Wi-Fi|WiFi|Wireless') {{ return $true }}
-    return $false
-  }}
-  if (-not $allAdapters) {{
-    if ($ZubcutTopology -eq 'hotspot') {{
-      throw 'No hotspot adapter found. Turn on Mobile Hotspot, connect the PS5 to that Wi-Fi, then try again.'
-    }}
-    throw 'No usable adapters found for Clumsy sharing.'
-  }}
+  try {{
+    Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' -Name IPEnableRouter -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+  }} catch {{}}
 
-  function LikelyEthernet($a) {{
-    $d = ($a.Name + ' ' + $a.InterfaceDescription)
-    if ($d -match 'Ethernet|Gigabit|GbE|^LAN|USB.*Ethernet|RNDIS|PCIe.*Family|ASIX|AX88179') {{ return $true }}
-    try {{ if ($a.MediaType -eq '802.3') {{ return $true }} }} catch {{}}
-    return $false
+  $detect = Detect-ClumsyConsolePath
+  if (-not $detect.Ok) {{
+    JsonOut @{{ ok=$false; error=$detect.Error }}
+    exit 1
   }}
-
-  if ($ZubcutTopology -eq 'hotspot') {{
-    # Downstream = PC Mobile Hotspot / Wi-Fi Direct (console-facing).
-    $downCandidates = $allAdapters | Where-Object {{
-      (LikelyHotspotDownstream $_) -and $_.Status -eq 'Up'
-    }} | Sort-Object InterfaceMetric, ifIndex
-    if (-not $downCandidates) {{
-      $downCandidates = $allAdapters | Where-Object {{ LikelyHotspotDownstream $_ }} | Sort-Object InterfaceMetric, ifIndex
-    }}
-  }} else {{
-    # Downstream = console Ethernet port.
-    $downCandidates = $allAdapters | Where-Object {{
-      (LikelyEthernet $_) -and $_.Status -eq 'Up'
-    }} | Sort-Object InterfaceMetric, ifIndex
-    if (-not $downCandidates) {{
-      $downCandidates = $allAdapters | Where-Object {{
-        $_.Name -match 'Ethernet' -or $_.InterfaceDescription -match 'Ethernet'
-      }} | Sort-Object InterfaceMetric, ifIndex
-    }}
-  }}
-  if (-not $downCandidates) {{
-    $downCandidates = $allAdapters | Where-Object {{ $_.Status -eq 'Up' }} | Sort-Object InterfaceMetric, ifIndex
-  }}
-  if (-not $downCandidates) {{
-    $downCandidates = $allAdapters | Sort-Object InterfaceMetric, ifIndex
-  }}
-  $down = $downCandidates | Select-Object -First 1
-  if ($null -eq $down) {{
-    if ($ZubcutTopology -eq 'hotspot') {{
-      throw 'Could not find PC hotspot adapter. Turn on Mobile Hotspot in Windows Settings first.'
-    }}
-    throw 'Could not choose downstream adapter.'
-  }}
-  $downGuid = NormGuid($down.InterfaceGuid)
-
-  # Upstream is the internet-facing adapter: default-route owner excluding downstream.
-  $routes = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
-    Sort-Object RouteMetric, InterfaceMetric
-  $up = $null
-  foreach ($rt in @($routes)) {{
-    try {{
-      $cand = Get-NetAdapter -InterfaceIndex $rt.InterfaceIndex -ErrorAction Stop
-      if ($ZubcutTopology -eq 'hotspot' -and (LikelyHotspotDownstream $cand)) {{ continue }}
-      if ($cand -and (NormGuid($cand.InterfaceGuid)) -ne $downGuid -and -not (IsVirtualLike $cand.Name $cand.InterfaceDescription)) {{
-        $up = $cand
-        break
-      }}
-    }} catch {{}}
-  }}
-  if ($null -eq $up) {{
-    $up = $allAdapters | Where-Object {{ (NormGuid($_.InterfaceGuid)) -ne $downGuid -and $_.Status -eq 'Up' }} |
-      Sort-Object InterfaceMetric, ifIndex | Select-Object -First 1
-  }}
-  if ($null -eq $up) {{
-    $up = $allAdapters | Where-Object {{ (NormGuid($_.InterfaceGuid)) -ne $downGuid }} |
-      Sort-Object InterfaceMetric, ifIndex | Select-Object -First 1
-  }}
-  if ($null -eq $up) {{ throw 'Could not choose upstream adapter.' }}
+  $ZubcutTopology = [string]$detect.Path
+  $up = $detect.Up
+  $down = $detect.Down
   $upGuid = NormGuid($up.InterfaceGuid)
+  $downGuid = NormGuid($down.InterfaceGuid)
 
   $share = New-Object -ComObject HNetCfg.HNetShare
   $connMap = @{{}}
@@ -854,18 +948,11 @@ try {{
     if (-not $downIpProbe -or -not $downIpProbe.IPAddress) {{
       throw ('Mobile Hotspot is not active yet. Turn ON Mobile hotspot in Windows Settings, connect the PS5 to your PC hotspot Wi-Fi (not the router), then enable Clumsy mode again.')
     }}
-    $dhcpListen = Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue
-    if ($dhcpListen) {{
-      Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot ready (DHCP active).'
-    }}
-    # Hotspot UI can be On without DHCP (no UDP 67). Enable ICS Wi-Fi -> hotspot like ethernet mode.
-    try {{ Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }} catch {{}}
   }} else {{
-
     try {{ netsh wlan stop hostednetwork 2>$null | Out-Null }} catch {{}}
     try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
     try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
-    try {{ Restart-Service SharedAccess -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }} catch {{}}
+    try {{ Start-Service SharedAccess -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1 }} catch {{}}
   }}
 
   function Apply-ICS([bool]$privateFirst) {{
@@ -897,6 +984,17 @@ try {{
       }} catch {{ continue }}
     }}
     return ($okUp -and $okDn)
+  }}
+
+  if ($ZubcutTopology -eq 'hotspot') {{
+    try {{
+      if (Apply-InternetSharingForClumsy) {{
+        Start-Sleep -Seconds 2
+        if (Verify-ICS) {{
+          Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot ready (internet sharing enabled).'
+        }}
+      }}
+    }} catch {{}}
   }}
 
   if (Verify-ICS) {{
@@ -983,7 +1081,7 @@ try {{
   if ($ZubcutTopology -eq 'hotspot' -and -not $dhcpOk) {{
     throw 'Mobile Hotspot is on but DHCP is not running. Toggle hotspot OFF then ON in Windows Settings, run ZubCut as Administrator, or use tools\\enable_hotspot_ics_now.ps1'
   }}
-  $doneMsg = if ($ZubcutTopology -eq 'hotspot') {{ 'PC Mobile Hotspot ICS enabled (DHCP for PS5).' }} else {{ 'ICS sharing enabled.' }}
+  $doneMsg = if ($ZubcutTopology -eq 'hotspot') {{ 'Clumsy: Mobile Hotspot path (internet sharing + DHCP).' }} else {{ 'Clumsy: Ethernet console path (ICS enabled).' }}
   Write-ClumsyState $up $down $snapshot $doneMsg
 }}
 catch {{
@@ -996,15 +1094,19 @@ catch {{
     if ok:
         return True, str(payload.get('message') or 'ICS sharing enabled.')
     msg = str(payload.get('error') or '').strip() or raw.strip() or 'ICS enable failed.'
+    try:
+        repair_clumsy_network_sharing()
+    except Exception:
+        pass
     return False, msg
 
 
 def repair_clumsy_network_sharing() -> Tuple[bool, str]:
     """
-    Undo Clumsy ICS changes and restart Wi‑Fi / sharing services.
+    Restore Mobile Hotspot / ICS sharing without restarting Wi‑Fi stack services.
 
-    Use when Mobile Hotspot stopped working after an older Clumsy enable attempt
-    (those builds ran ``netsh wlan stop hostednetwork`` and reset ICS).
+    When hotspot is on: does not wipe ICS or restart wcmsvc/NlaSvc (avoids killing PC internet).
+    When hotspot is off: may reset saved ICS snapshot only.
     """
     if os.name != 'nt':
         return True, 'Non-Windows platform; skipping repair.'
@@ -1067,33 +1169,6 @@ function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
 }}
 {_PS_ENSURE_WLAN_HEALTHY}
 {_PS_HOTSPOT_HELPERS}
-function Restart-NetworkSharingServicesSafe([bool]$preserveHotspot) {{
-  $svcs = @('RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')
-  if (-not $preserveHotspot) {{
-    $svcs = @('icssvc', 'SharedAccess') + $svcs
-  }}
-  foreach ($svc in $svcs) {{
-    try {{
-      $s = Get-Service -Name $svc -ErrorAction Stop
-      if ($s.Status -eq 'Running') {{
-        Restart-Service -Name $svc -Force -ErrorAction SilentlyContinue
-      }} else {{
-        Start-Service -Name $svc -ErrorAction SilentlyContinue
-      }}
-    }} catch {{}}
-  }}
-  if ($preserveHotspot) {{
-    foreach ($svc in @('SharedAccess', 'icssvc')) {{
-      try {{
-        $s = Get-Service -Name $svc -ErrorAction Stop
-        if ($s.Status -ne 'Running') {{
-          Start-Service -Name $svc -ErrorAction SilentlyContinue
-        }}
-      }} catch {{}}
-    }}
-  }}
-  Ensure-WlanAutoConfigHealthy | Out-Null
-}}
 try {{
   $snapshot = @()
   if (Test-Path "{state_path}") {{
@@ -1105,8 +1180,8 @@ try {{
 
   $hotspotWasOn = (Test-MobileHotspotGateway) -or (Test-TetheringOn)
 
-  Restart-NetworkSharingServicesSafe $hotspotWasOn
-  Start-Sleep -Seconds 2
+  Ensure-SharingServicesLight
+  Start-Sleep -Seconds 1
 
   # Never wipe ICS while Mobile Hotspot was on — PS5 gets Wi‑Fi but loses internet/NAT.
   $skipIcsReset = $hotspotWasOn
@@ -1165,7 +1240,9 @@ try {{
 
     if ($hotspotWasOn) {{
     if (-not (Test-HotspotIcsActive)) {{
-      Apply-HotspotIcsAutomated | Out-Null
+      if (-not (Apply-MainWifiSharingForHotspot)) {{
+        Apply-HotspotIcsAutomated | Out-Null
+      }}
       Start-Sleep -Seconds 2
     }}
     if (-not (Test-TetheringOn)) {{
@@ -1187,7 +1264,7 @@ try {{
     }} elseif ($dhcp67 -and -not $icsOk) {{
       $msg = @(
         'Mobile Hotspot DHCP is up but internet sharing (ICS) could not be enabled automatically.'
-        'Try Repair hotspot / sharing again, or set Console connects via -> Ethernet (PS5 cable to PC LAN port).'
+        'Turn Clumsy mode off and on in Settings (Administrator), or set Console connects via -> Ethernet (PS5 cable to PC LAN port).'
       ) -join ' '
     }} else {{
       $msg = @(
@@ -1197,9 +1274,8 @@ try {{
     }}
   }} else {{
     $msg = @(
-      'Reset Internet Connection Sharing and restarted Wi-Fi / hotspot services.'
-      'In Windows Settings: turn Mobile hotspot OFF, wait 10 seconds, turn it ON again.'
-      'Then reconnect the PS5 to the PC hotspot Wi-Fi.'
+      'Reset saved Internet Connection Sharing settings.'
+      'Turn Mobile hotspot ON in Windows Settings, then reconnect the PS5 to the PC hotspot Wi-Fi.'
     ) -join ' '
   }}
   JsonOut @{{ ok=$true; message=$msg }}
@@ -1216,6 +1292,39 @@ catch {{
         return True, str(payload.get('message') or 'Network sharing repair completed.')
     msg = str(payload.get('error') or '').strip() or raw.strip() or 'Repair failed.'
     return False, msg
+
+
+def _wlan_autoconfig_needs_heal() -> bool:
+    """True only when WlanSvc is stopped or not set to start automatically."""
+    if os.name != 'nt':
+        return False
+    try:
+        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        q = subprocess.run(
+            ['sc', 'query', 'WlanSvc'],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            creationflags=flags,
+        )
+        out = ((q.stdout or '') + (q.stderr or '')).upper()
+        if 'RUNNING' not in out:
+            return True
+        c = subprocess.run(
+            ['sc', 'qc', 'WlanSvc'],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            creationflags=flags,
+        )
+        cfg = ((c.stdout or '') + (c.stderr or '')).upper()
+        if 'AUTO_START' in cfg or 'DELAYED_AUTO_START' in cfg:
+            return False
+        if 'DEMAND_START' in cfg or 'DISABLED' in cfg:
+            return True
+        return False
+    except Exception:
+        return False
 
 
 def ensure_wlan_autoconfig_healthy() -> Tuple[bool, str]:
@@ -1267,8 +1376,13 @@ exit 0
 
 
 def maybe_ensure_wlan_autoconfig_on_startup() -> None:
-    """Every launch (admin): undo WlanSvc damage from older ZubCut builds without full ICS repair."""
+    """
+    Undo WlanSvc damage from older ZubCut builds only when the service is actually broken.
+    Does not run on every launch when Wi-Fi is already healthy (avoids touching WlanSvc).
+    """
     if os.name != 'nt' or not _windows_is_admin():
+        return
+    if not _wlan_autoconfig_needs_heal():
         return
     try:
         ensure_wlan_autoconfig_healthy()

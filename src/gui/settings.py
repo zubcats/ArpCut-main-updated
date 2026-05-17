@@ -59,7 +59,7 @@ from tools.clumsy_inline import clumsy_bundle_offered, windivert_driver_installe
 from tools.clumsy_ics import (
     ensure_clumsy_ics_enabled,
     format_clumsy_ics_error,
-    prepare_pc_mobile_hotspot,
+    read_clumsy_topology,
     repair_clumsy_network_sharing,
     rollback_clumsy_ics,
 )
@@ -202,41 +202,30 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _install_clumsy_controls(self):
         self.chkClumsy = QCheckBox('Clumsy Mode', self.gridLayoutWidget_2)
         self.chkClumsy.setToolTip(
-            'Shapes traffic for a console on this PC\'s network path. '
-            'Hotspot: PS5 joins the PC\'s Mobile Hotspot; PC uses Wi‑Fi/Ethernet to the router. '
-            'Ethernet: console plugs into the PC LAN port (ICS). '
-            'Clumsy turns off automatically when you quit ZubCut — re-enable after hotspot or wiring changes.'
+            'Shapes traffic for a console on this PC\'s network path. ZubCut auto-detects: '
+            'Mobile Hotspot first (turn it on in Windows, connect the PS5 to that Wi‑Fi), '
+            'otherwise a console on a spare Ethernet port (not the router cable). '
+            'Clumsy turns off when you quit ZubCut — re-enable after hotspot or wiring changes.'
         )
-        self.lblClumsyTopology = QLabel('Console connects via:', self.gridLayoutWidget_2)
-        self.cmbClumsyTopology = _WheelSafeComboBox(self.gridLayoutWidget_2)
-        self.cmbClumsyTopology.addItem('Mobile Hotspot (PS5 → PC → router)', 'hotspot')
-        self.cmbClumsyTopology.addItem('Ethernet cable (PS5 → LAN port)', 'ethernet')
-        self.cmbClumsyTopology.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.cmbClumsyTopology.setToolTip(
-            'Match how the console reaches this PC. Hotspot: turn on Windows Mobile Hotspot first, '
-            'then connect the PS5 to that Wi‑Fi name (not the router Wi‑Fi).'
+        self.lblClumsyPath = QLabel('Clumsy path: auto-detect when enabled', self.gridLayoutWidget_2)
+        self.lblClumsyPath.setWordWrap(True)
+        self.lblClumsyPath.setToolTip(
+            'On enable: sharing is turned on for this PC\'s internet adapter. '
+            'If Mobile Hotspot is on, that path is used. Otherwise ZubCut looks for a console '
+            'on a spare Ethernet port (excluding the router uplink).'
         )
         self.btnClumsyInstall = QPushButton('Install Clumsy mode…', self.gridLayoutWidget_2)
         self.btnClumsyInstall.setToolTip(
             'Downloads the latest experimental installer (includes optional WinDivert setup).'
         )
-        self.btnClumsyRepair = QPushButton('Repair hotspot / sharing…', self.gridLayoutWidget_2)
-        self.btnClumsyRepair.setToolTip(
-            'Fix Mobile Hotspot after a broken Clumsy setup: resets ICS, restarts Wi‑Fi services, '
-            'then turn hotspot off and on in Windows Settings.'
-        )
         self.gridLayout_3.addWidget(self.chkClumsy, 2, 0, 1, 2)
         self.gridLayout_3.addWidget(self.btnClumsyInstall, 2, 2, 1, 2)
-        self.gridLayout_3.addWidget(self.lblClumsyTopology, 3, 0, 1, 4)
-        self.gridLayout_3.addWidget(self.cmbClumsyTopology, 4, 0, 1, 4)
-        self.gridLayout_3.addWidget(self.btnClumsyRepair, 5, 0, 1, 4)
+        self.gridLayout_3.addWidget(self.lblClumsyPath, 3, 0, 1, 4)
         self._relayout_misc_group()
         self.groupBox_keys.setMinimumHeight(140)
         self._clumsy_toggle_guard = False
         self.chkClumsy.stateChanged.connect(self._on_clumsy_checkbox_changed)
-        self.cmbClumsyTopology.currentIndexChanged.connect(self._on_clumsy_topology_changed)
         self.btnClumsyInstall.clicked.connect(self._on_clumsy_install_clicked)
-        self.btnClumsyRepair.clicked.connect(self._on_clumsy_repair_clicked)
 
     def _relayout_misc_group(self) -> None:
         """Misc. group was a fixed-size child widget in ui_settings; expand for Clumsy rows."""
@@ -272,75 +261,28 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not sys.platform.startswith('win'):
             self.chkClumsy.hide()
             self.btnClumsyInstall.hide()
-            self.lblClumsyTopology.hide()
-            self.cmbClumsyTopology.hide()
-            self.btnClumsyRepair.hide()
+            self.lblClumsyPath.hide()
             return
-        self.btnClumsyRepair.show()
         bundle = clumsy_bundle_offered()
         driver_ok = windivert_driver_installed()
         if bundle and driver_ok:
             self.btnClumsyInstall.hide()
             self.chkClumsy.show()
-            self.lblClumsyTopology.show()
-            self.cmbClumsyTopology.show()
+            self.lblClumsyPath.show()
+            self._update_clumsy_path_label()
         else:
             self.chkClumsy.hide()
             self.btnClumsyInstall.show()
-            self.lblClumsyTopology.hide()
-            self.cmbClumsyTopology.hide()
+            self.lblClumsyPath.hide()
 
-    def _on_clumsy_repair_clicked(self):
-        if MsgType.WARN(
-            self,
-            'Repair hotspot / sharing',
-            'Keeps Mobile Hotspot on when possible and turns it back on automatically if Windows '
-            'disables it during repair. Restores internet sharing (ICS) for PS5 clients.\n\n'
-            'Continue?',
-            Buttons.YES | Buttons.NO,
-        ) == Buttons.NO:
-            return
-        ok, detail = repair_clumsy_network_sharing()
-        if ok:
-            prep_ok, prep_detail = prepare_pc_mobile_hotspot()
-            body = detail or 'Repair finished.'
-            if prep_detail and prep_detail not in body:
-                body += '\n\n' + prep_detail
-            if not prep_ok:
-                body += (
-                    '\n\nIf the PS5 still has no internet, run Repair again or switch to '
-                    'Console connects via → Ethernet (PS5 cable to the PC LAN port).'
-                )
-            else:
-                body += (
-                    '\n\nIf the PS5 still has no internet: forget the hotspot on the PS5 and reconnect, '
-                    'or use manual IP 192.168.137.2, gateway 192.168.137.1, DNS 8.8.8.8.'
-                )
-            MsgType.INFO(
-                self,
-                'Repair complete',
-                body,
-                Buttons.OK,
-            )
+    def _update_clumsy_path_label(self) -> None:
+        topo = read_clumsy_topology()
+        if topo == 'ethernet':
+            self.lblClumsyPath.setText('Last detected path: Ethernet (console on LAN port)')
+        elif topo == 'hotspot':
+            self.lblClumsyPath.setText('Last detected path: Mobile Hotspot')
         else:
-            MsgType.ERROR(
-                self,
-                'Repair failed',
-                (detail or 'Unknown error.')
-                + '\n\nRun ZubCut as Administrator, or use tools\\Repair-Clumsy-Hotspot.cmd '
-                'from the install folder (right-click → Run as administrator).',
-                Buttons.OK,
-            )
-
-    def _selected_clumsy_topology(self) -> str:
-        data = self.cmbClumsyTopology.currentData()
-        return str(data or 'hotspot').strip().lower()
-
-    def _on_clumsy_topology_changed(self, _index: int = 0) -> None:
-        try:
-            set_settings('clumsy_topology', self._selected_clumsy_topology())
-        except Exception:
-            pass
+            self.lblClumsyPath.setText('Clumsy path: auto-detect when enabled')
 
     def _on_clumsy_checkbox_changed(self, _state):
         if self._clumsy_toggle_guard:
@@ -365,26 +307,27 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._clumsy_toggle_guard = False
             return
         if new_v:
-            topo = self._selected_clumsy_topology()
-            set_settings('clumsy_topology', topo)
-            ok, detail = ensure_clumsy_ics_enabled(topo)
+            ok, detail = ensure_clumsy_ics_enabled()
             if not ok:
-                detail = format_clumsy_ics_error(detail or 'Unknown error.', topology=topo)
-                if (
-                    MsgType.WARN(
-                        self,
-                        'Clumsy Mode',
-                        'Could not enable console sharing automatically.\n\n'
-                        + detail
-                        + '\n\nEnable Clumsy mode anyway?',
-                        Buttons.YES | Buttons.NO,
-                    )
-                    == Buttons.NO
-                ):
-                    self._clumsy_toggle_guard = True
-                    self.chkClumsy.setChecked(old_v)
-                    self._clumsy_toggle_guard = False
-                    return
+                detail = format_clumsy_ics_error(
+                    detail or 'Unknown error.',
+                    topology=read_clumsy_topology(),
+                )
+                MsgType.WARN(
+                    self,
+                    'Clumsy Mode',
+                    'Could not enable Clumsy mode.\n\n' + detail,
+                    Buttons.OK,
+                )
+                self._clumsy_toggle_guard = True
+                self.chkClumsy.setChecked(False)
+                self._clumsy_toggle_guard = False
+                try:
+                    set_settings('clumsy_mode', False)
+                except Exception:
+                    pass
+                return
+            self._update_clumsy_path_label()
             try:
                 cur = (get_settings('iface') or '').strip()
             except Exception:
@@ -496,10 +439,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        for combo in (getattr(self, 'cmbClumsyTopology', None), self.comboInterface):
-            if combo is not None:
-                combo.clearFocus()
-                combo.hidePopup()
+        self.comboInterface.clearFocus()
+        self.comboInterface.hidePopup()
         self.refresh_update_banner()
         el = getattr(self, 'elmocut', None)
         if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
@@ -752,17 +693,6 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._clumsy_toggle_guard = True
         self.chkClumsy.setChecked(clumsy_mode)
         self._clumsy_toggle_guard = False
-        try:
-            topo = str(s.get('clumsy_topology') or 'hotspot').strip().lower()
-        except Exception:
-            topo = 'hotspot'
-        idx_topo = self.cmbClumsyTopology.findData(topo)
-        if idx_topo < 0:
-            idx_topo = self.cmbClumsyTopology.findData('hotspot')
-        if idx_topo >= 0:
-            self.cmbClumsyTopology.blockSignals(True)
-            self.cmbClumsyTopology.setCurrentIndex(idx_topo)
-            self.cmbClumsyTopology.blockSignals(False)
         self._refresh_clumsy_settings_widgets()
 
         self._apply_keybind_section_fonts()

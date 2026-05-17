@@ -116,7 +116,7 @@ class UpdaterCoreTest(unittest.TestCase):
 
         err = OSError(None, 'host unreachable', None, 10065)
         msg = uc.format_updater_error_message(err)
-        self.assertIn('Repair hotspot', msg)
+        self.assertIn('Mobile hotspot', msg)
         self.assertIn('github.com', msg)
 
 

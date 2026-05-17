@@ -110,7 +110,7 @@ SETTINGS_KEYS = [
     'show_scan_mac_column', 'show_scan_vendor_column',
     'traffic_percent',
     'clumsy_mode',
-    'clumsy_topology',  # 'hotspot' (PS5 → PC Mobile Hotspot → router) or 'ethernet'
+    'clumsy_topology',  # legacy; last path is stored in clumsy ICS state file on enable
     'mitm_delay_up_ms',
     'mitm_delay_down_ms',
     'mitm_cap_up_mbps',

@@ -61,7 +61,7 @@ if (-not $after.DhcpListening) {
     Write-Host 'DHCP still not running. Try:'
     Write-Host '  1. Reboot the PC'
     Write-Host '  2. Settings -> Network -> Advanced network settings -> Network reset (last resort)'
-    Write-Host '  3. Do NOT run ZubCut Repair hotspot while testing — it clears ICS sharing'
+    Write-Host '  3. Use Settings → enable Clumsy mode (Administrator) to apply Wi-Fi sharing — do not wipe ICS manually'
     exit 1
 }
 

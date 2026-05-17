@@ -25,6 +25,9 @@ function Ensure-WlanAutoConfigHealthy {
     $fixed = $false
     try {
         $wl = Get-Service -Name WlanSvc -ErrorAction Stop
+        if ($wl.Status -eq 'Running' -and $wl.StartType -in @('Automatic', 'AutomaticDelayedStart')) {
+            return $false
+        }
         if ($wl.StartType -notin @('Automatic', 'AutomaticDelayedStart')) {
             Set-Service -Name WlanSvc -StartupType Automatic -ErrorAction SilentlyContinue
             $fixed = $true
@@ -35,29 +38,31 @@ function Ensure-WlanAutoConfigHealthy {
         }
     } catch {
         try { Set-Service -Name WlanSvc -StartupType Automatic -ErrorAction SilentlyContinue } catch {}
-        try { Start-Service -Name WlanSvc -ErrorAction SilentlyContinue } catch {}
+        try {
+            $wl2 = Get-Service -Name WlanSvc -ErrorAction SilentlyContinue
+            if ($null -eq $wl2 -or $wl2.Status -ne 'Running') {
+                Start-Service -Name WlanSvc -ErrorAction SilentlyContinue
+            }
+        } catch {}
         $fixed = $true
     }
     return $fixed
 }
 
-function Restart-NetworkSharingServicesSafe {
-    foreach ($svc in @('SharedAccess', 'icssvc', 'RemoteAccess', 'NlaSvc', 'iphlpsvc', 'wcmsvc')) {
+function Ensure-SharingServicesLight {
+    foreach ($svc in @('SharedAccess', 'icssvc', 'RemoteAccess')) {
         try {
-            $s = Get-Service -Name $svc -ErrorAction Stop
-            if ($s.Status -eq 'Running') {
-                Restart-Service -Name $svc -Force -ErrorAction SilentlyContinue
-            } else {
+            $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+            if ($null -ne $s -and $s.Status -ne 'Running') {
                 Start-Service -Name $svc -ErrorAction SilentlyContinue
             }
         } catch {}
     }
-    Ensure-WlanAutoConfigHealthy | Out-Null
 }
 
-Write-Host 'Restarting SharedAccess, WlanSvc, RemoteAccess (preserving WLAN AutoConfig)...'
-Restart-NetworkSharingServicesSafe
-Start-Sleep -Seconds 2
+Write-Host 'Starting sharing services if stopped (does not restart the Wi-Fi connection manager)...'
+Ensure-SharingServicesLight
+Start-Sleep -Seconds 1
 
 $mobileHotspotActive = $false
 try {
