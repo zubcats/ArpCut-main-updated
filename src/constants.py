@@ -110,6 +110,7 @@ SETTINGS_KEYS = [
     'show_scan_mac_column', 'show_scan_vendor_column',
     'traffic_percent',
     'clumsy_mode',
+    'clumsy_persist_across_restart',  # internal: keep clumsy_mode after Settings-driven restart
     'clumsy_topology',  # legacy; last path is stored in clumsy ICS state file on enable
     'mitm_delay_up_ms',
     'mitm_delay_down_ms',
@@ -162,7 +163,7 @@ SETTINGS_KEYS = [
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
-# clumsy_mode default False; cleared on each app start (session-only; requires restart to enable).
+# clumsy_mode default False; cleared on cold start (quit + relaunch), not after Settings restart.
 # iface_before_clumsy: last Settings iface before enabling Clumsy; restored when Clumsy is turned off.
 # nickname_last_ip: MAC -> last known IPv4 for nicknamed devices (fills table when host is missing from scan).
 # mitm_*: legacy Advanced Lag keys; mitm_adv_* clumsy-style rows (caps in Mbps).
@@ -185,6 +186,7 @@ SETTINGS_VALS = [
     False,
     False,
     50,
+    False,
     False,
     'hotspot',
     0,

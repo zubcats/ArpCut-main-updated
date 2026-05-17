@@ -1396,14 +1396,19 @@ def rollback_clumsy_ics() -> Tuple[bool, str]:
 
 def reset_clumsy_mode_on_startup() -> None:
     """
-    Clumsy changes ICS/sharing. Do not stay enabled across restarts — hotspot, Ethernet,
-    or uplink may have changed while ZubCut was closed. User re-enables in Settings when ready.
+    Clumsy is session-only across quit/relaunch: clear clumsy_mode on cold start.
+
+    Settings enables ICS then restarts ZubCut; clumsy_persist_across_restart skips this
+    once so the checkbox stays on after that intentional restart.
     """
     if os.name != 'nt':
         return
     try:
         from tools.utils_gui import get_settings, set_settings
 
+        if bool(get_settings('clumsy_persist_across_restart')):
+            set_settings('clumsy_persist_across_restart', False)
+            return
         if bool(get_settings('clumsy_mode')):
             set_settings('clumsy_mode', False)
     except Exception:

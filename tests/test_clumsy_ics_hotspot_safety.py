@@ -176,12 +176,26 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
     def test_reset_clumsy_mode_on_startup_clears_setting(self) -> None:
         from unittest.mock import patch
 
-        with patch('tools.utils_gui.get_settings', return_value=True) as gs, patch(
+        def _get(key):
+            return key == 'clumsy_mode'
+
+        with patch('tools.utils_gui.get_settings', side_effect=_get), patch(
             'tools.utils_gui.set_settings'
         ) as ss:
             ics.reset_clumsy_mode_on_startup()
-        gs.assert_called_once_with('clumsy_mode')
         ss.assert_called_once_with('clumsy_mode', False)
+
+    def test_reset_clumsy_mode_skips_when_persist_flag_set(self) -> None:
+        from unittest.mock import patch
+
+        def _get(key):
+            return key == 'clumsy_persist_across_restart'
+
+        with patch('tools.utils_gui.get_settings', side_effect=_get), patch(
+            'tools.utils_gui.set_settings'
+        ) as ss:
+            ics.reset_clumsy_mode_on_startup()
+        ss.assert_called_once_with('clumsy_persist_across_restart', False)
 
     def test_maybe_repair_skips_when_no_state_file(self) -> None:
         path = ics.clumsy_ics_state_path()

@@ -372,6 +372,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if prev:
                 set_settings('iface', prev)
             set_settings('iface_before_clumsy', '')
+        try:
+            set_settings('clumsy_persist_across_restart', True)
+        except Exception:
+            pass
         set_settings('clumsy_mode', new_v)
         restart_zubcut(self.elmocut)
 
