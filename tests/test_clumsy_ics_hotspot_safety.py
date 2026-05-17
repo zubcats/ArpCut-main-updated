@@ -69,6 +69,14 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('Ensure-MobileHotspotOn', src)
         self.assertIn('Restart-SharedAccessSafe', src)
 
+    def test_hotspot_helpers_use_winrt_await_not_2ghz_band(self) -> None:
+        helpers = ics._PS_HOTSPOT_HELPERS
+        self.assertIn('Initialize-WinRtAwaitHelpers', helpers)
+        self.assertIn('Wait-TetheringAsync', helpers)
+        self.assertNotIn('Ensure-MobileHotspot2GhzBand', helpers)
+        src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
+        self.assertNotIn('Ensure-MobileHotspot2GhzBand', src)
+
     def test_prepare_automates_sharing_with_hotspot_toggle(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
         self.assertIn('Apply-HotspotIcsAutomated', helpers)
@@ -170,8 +178,8 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
             elif not had and os.path.isfile(path):
                 os.remove(path)
 
-    def test_clumsy_ics_lag_prefers_windivert_gate(self) -> None:
-        self.assertIn('clumsy_ics_lag_can_use_windivert', inline.__dict__)
+    def test_clumsy_ics_block_uses_arp_for_game_disconnect(self) -> None:
+        self.assertIn('apply_ics_victim_arp_block', inline.__dict__)
         self.assertIn('IcsWinDivertLagGate', inspect.getsource(
             __import__('tools.ics_windivert_shaper', fromlist=['IcsWinDivertLagGate'])
         ))
@@ -179,12 +187,14 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         with open(main_py, encoding='utf-8') as f:
             src = f.read()
         self.assertIn('def _apply_ics_client_block', src)
-        self.assertIn('_ensure_ics_lag_gate', src)
-        self.assertIn('self._ics_lag_gate.set_blocking(True)', src)
-        block_idx = src.index('def _apply_victim_block')
-        ics_idx = src.index('def _apply_ics_client_block')
-        kill_idx = src.index('self.killer.kill(device)', block_idx)
-        self.assertLess(ics_idx, kill_idx)
+        self.assertIn('apply_ics_victim_arp_block', src)
+        self.assertIn('heal_ics_client_after_mitm', src)
+        ics_block = src[src.index('def _apply_ics_client_block'):src.index('def _clear_ics_client_block')]
+        self.assertIn('apply_ics_victim_arp_block', ics_block)
+        self.assertLess(
+            ics_block.index('apply_ics_victim_arp_block'),
+            ics_block.index('_ensure_ics_lag_gate'),
+        )
 
     def test_ensure_network_skips_arp_flush_in_clumsy_mode(self) -> None:
         path = os.path.join(_SRC, 'gui', 'main.py')

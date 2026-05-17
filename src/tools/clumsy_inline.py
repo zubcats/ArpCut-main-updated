@@ -111,6 +111,7 @@ def clumsy_ics_use_firewall_only(device) -> bool:
 
 
 def clumsy_ics_lag_can_use_windivert(device) -> bool:
+    """WinDivert lag gate is fallback when ARP kill is unavailable."""
     if not clumsy_ics_use_firewall_only(device):
         return False
     if not clumsy_runtime_ready():
@@ -118,6 +119,39 @@ def clumsy_ics_lag_can_use_windivert(device) -> bool:
     from tools.ics_windivert_shaper import _windivert_dll_path
 
     return bool(_windivert_dll_path())
+
+
+def apply_ics_victim_arp_block(scanner: Scanner, killer, device) -> bool:
+    """
+    Hotspot kill/lag: ARP toward the console only (same red Wi‑Fi icon as normal ZubCut).
+
+    Uses gateway 192.168.137.1 — not home-router ARP MITM. Skips flush_arp (Clumsy mode).
+    """
+    if not clumsy_ics_use_firewall_only(device):
+        return False
+    if not isinstance(device, dict):
+        return False
+    ip = str(device.get('ip') or '').strip()
+    mac = str(device.get('mac') or '').strip()
+    if not ip or not mac:
+        return False
+    try:
+        scanner.sync_iface_for_victim_ip(ip)
+    except Exception:
+        pass
+    apply_clumsy_ics_router_context(scanner, killer, ip)
+    killer.iface = scanner.iface
+    killer.router = scanner.router
+    try:
+        killer._close_socket()
+    except Exception:
+        pass
+    try:
+        killer.disable_percent_cut(mac)
+        killer.kill(device)
+        return True
+    except Exception:
+        return False
 
 
 def apply_clumsy_ics_router_context(scanner: Scanner, killer, victim_ip: str) -> bool:

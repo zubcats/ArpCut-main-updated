@@ -498,17 +498,54 @@ function Apply-HotspotIcsAutomated {
   if (Apply-HotspotIcs) { return $true }
   return (Apply-HotspotIcsWithTetheringToggle)
 }
-function Wait-TetheringAsync($op, [string]$label) {
-  $deadline = (Get-Date).AddSeconds(25)
-  while ($op.Status -eq 'Started') {
-    if ((Get-Date) -gt $deadline) { return $false }
-    Start-Sleep -Milliseconds 250
+function Initialize-WinRtAwaitHelpers {
+  if ($script:ZubcutWinRtAwaitReady) { return $true }
+  try {
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime -ErrorAction Stop
+    $script:ZubcutAsTaskMethod = [System.WindowsRuntimeSystemExtensions].GetMethods() |
+      Where-Object { $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Length -eq 1 } |
+      Select-Object -First 1
+    $script:ZubcutWinRtAwaitReady = ($null -ne $script:ZubcutAsTaskMethod)
+    return $script:ZubcutWinRtAwaitReady
+  } catch { return $false }
+}
+function Get-WinRtAsyncResultType([object]$asyncOp) {
+  if ($null -eq $asyncOp) { return $null }
+  foreach ($iface in $asyncOp.GetType().GetInterfaces()) {
+    if ($iface.IsGenericType -and $iface.GetGenericTypeDefinition().FullName -eq 'Windows.Foundation.IAsyncOperation`1') {
+      return $iface.GetGenericArguments()[0]
+    }
   }
-  return ($op.Status -ne 'Error')
+  return $null
+}
+function Complete-WinRtAsync($asyncOp, [string]$label, [int]$timeoutSec) {
+  if ($null -eq $asyncOp) { return $null }
+  if (-not (Initialize-WinRtAwaitHelpers)) { return $null }
+  $resultType = Get-WinRtAsyncResultType $asyncOp
+  if ($null -eq $resultType) { return $null }
+  try {
+    $asTask = $script:ZubcutAsTaskMethod.MakeGenericMethod(@($resultType)).Invoke($null, @($asyncOp))
+    if (-not $asTask.Wait($timeoutSec * 1000)) { return $null }
+    if ($asTask.IsFaulted) { return $null }
+    return $asTask.Result
+  } catch { return $null }
+}
+function Wait-TetheringAsync($op, [string]$label) {
+  return ($null -ne (Complete-WinRtAsync $op $label 30))
+}
+function Ensure-TetheringWinRTLoaded {
+  try {
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime -ErrorAction SilentlyContinue
+    [void][Windows.Networking.Connectivity.NetworkInformation, Windows.Networking.Connectivity, ContentType = WindowsRuntime]
+    [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager, Windows.Networking.NetworkOperators, ContentType = WindowsRuntime]
+  } catch {
+    return $false
+  }
+  return $true
 }
 function Get-TetheringManager {
   try {
-    [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager, Windows.Networking.NetworkOperators, ContentType = WindowsRuntime]
+    if (-not (Ensure-TetheringWinRTLoaded)) { return $null }
     $profile = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
     if (-not $profile) { return $null }
     return [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)

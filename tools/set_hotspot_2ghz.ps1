@@ -1,6 +1,12 @@
-# Force Mobile Hotspot to 2.4 GHz (when Settings has no band option).
+# Optional local tool — NOT part of ZubCut.
+# Sets Mobile Hotspot to 2.4 GHz only, then puts PC Wi-Fi back on 5 GHz when possible.
+#
+# Recommended: Ethernet cable PC -> router for internet; USB Wi-Fi only for hotspot.
+# On a single-radio USB adapter, 5 GHz PC + 2.4 GHz hotspot together is often not possible
+# unless internet uses Ethernet (see tools\set_hotspot_2ghz_ethernet.ps1).
+
 $ErrorActionPreference = 'Continue'
-Write-Host '=== Set hotspot to 2.4 GHz ==='
+Write-Host '=== Hotspot 2.4 GHz (PC Wi-Fi stays on 5 GHz when possible) ==='
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -9,70 +15,51 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     exit 1
 }
 
-# Registry (works on some builds)
-$regPaths = @(
-    'HKLM:\SYSTEM\CurrentControlSet\Services\icssvc\Settings',
-    'HKCU:\Software\Microsoft\WCM\Tethering\Settings'
-)
-foreach ($rp in $regPaths) {
-    if (-not (Test-Path $rp)) {
-        try { New-Item -Path $rp -Force | Out-Null } catch {}
-    }
-    foreach ($name in @('TetheringBand', 'WiFiBand', 'PreferredBand')) {
-        try {
-            Set-ItemProperty -Path $rp -Name $name -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-            Write-Host "Set $rp\$name = 1 (2.4 GHz)"
-        } catch {}
-    }
+. (Join-Path $PSScriptRoot '_hotspot_2ghz_apply.ps1')
+
+if (Test-EthernetInternetUplink) {
+    Write-Host 'Internet uplink: Ethernet (good — Wi-Fi can stay on 5 GHz while hotspot uses 2.4 GHz).'
+} else {
+    Write-Host 'Internet uplink: Wi-Fi (single USB radio may not do 5 GHz PC + 2.4 GHz hotspot at once).'
+    Write-Host 'For best results use Ethernet to the router: tools\set_hotspot_2ghz_ethernet.ps1'
 }
 
-# WinRT API (preferred when available)
-try {
-    Add-Type -AssemblyName System.Runtime.WindowsRuntime
-    [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager, Windows.Networking.NetworkOperators, ContentType = WindowsRuntime]
-    [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringWiFiBand, Windows.Networking.NetworkOperators, ContentType = WindowsRuntime]
+$ok = Ensure-MobileHotspot2GhzBand
+# Leave hotspot OFF so PC Wi-Fi can use 5 GHz on a single USB radio (turn hotspot ON when PS5 needs it).
+Stop-MobileHotspotIfOn | Out-Null
+Start-Sleep -Seconds 2
 
-    $profile = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
-    if (-not $profile) { throw 'PC not connected to internet (Wi-Fi).' }
-
-    $mgr = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
-    $wasOn = ($mgr.TetheringOperationalState.ToString() -eq 'On')
-    if ($wasOn) {
-        Write-Host 'Stopping hotspot...'
-        $stop = $mgr.StopTetheringAsync()
-        $deadline = (Get-Date).AddSeconds(20)
-        while ([int]$stop.Status -eq 0 -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
-    }
-
-    $cfg = $mgr.GetCurrentAccessPointConfiguration()
-    if (-not $cfg.Ssid) { $cfg.Ssid = 'osps' }
-    if (-not $cfg.Passphrase) { $cfg.Passphrase = 'Blacklist67' }
-    $cfg.Band = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringWiFiBand]::TwoPointFourGigahertz
-    Write-Host "Configuring SSID=$($cfg.Ssid) Band=2.4GHz..."
-
-    $conf = $mgr.ConfigureAccessPointAsync($cfg)
-    $deadline = (Get-Date).AddSeconds(25)
-    while ([int]$conf.Status -eq 0 -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
-    if ([int]$conf.Status -eq 1) {
-        $r = $conf.GetResults()
-        Write-Host "ConfigureAccessPoint: $r"
+if (-not (Test-EthernetInternetUplink)) {
+    Write-Host 'Restoring PC Wi-Fi to 5 GHz (router connection)...'
+    if (Connect-WifiUplinkTo5Ghz) {
+        Write-Host 'PC Wi-Fi reconnected on 5 GHz.'
     } else {
-        Write-Host "ConfigureAccessPoint status=$($conf.Status)"
+        Write-Host 'Could not auto-connect to 5 GHz — in Settings connect Wifi1 to the 5 GHz band, or use Ethernet + set_hotspot_2ghz_ethernet.ps1'
     }
-
-    Write-Host 'Starting hotspot...'
-    $start = $mgr.StartTetheringAsync()
-    $deadline = (Get-Date).AddSeconds(25)
-    while ([int]$start.Status -eq 0 -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
-    if ([int]$start.Status -eq 1) { Write-Host "StartTethering: $($start.GetResults())" }
-
-    $mgr2 = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
-    Write-Host "Now: State=$($mgr2.TetheringOperationalState) Band=$($mgr2.Configuration.Band) SSID=$($mgr2.Configuration.SsidPrefix)"
-} catch {
-    Write-Host "API: $($_.Exception.Message)"
+} else {
+    Write-Host 'With Ethernet internet you can turn Mobile hotspot ON anytime (stays 2.4 GHz for clients).'
+    if ($ok) { Start-MobileHotspotAfter2GhzConfig | Out-Null }
 }
 
-Write-Host ''
-Write-Host 'Toggle hotspot OFF/ON in Settings if PS5 still cannot see osps.'
-Write-Host 'If no 2.4 GHz option exists, move PS5 within 3 feet of the USB Wi-Fi dongle.'
+$mgr = Get-TetheringManager
+if ($mgr) {
+    Write-Host "Hotspot: state=$($mgr.TetheringOperationalState) band=$(Get-MobileHotspotBandLabel $mgr) ssid=$($mgr.Configuration.SsidPrefix)"
+}
+$ch = Get-WifiUplinkChannel
+if ($ch -gt 0) {
+    $bandLabel = if ($ch -le 14) { '2.4 GHz' } else { '5 GHz' }
+    Write-Host "PC Wi-Fi channel: $ch ($bandLabel)"
+}
+
+if ($ok) {
+    Write-Host ''
+    Write-Host 'Done:'
+    Write-Host '  • Hotspot is set to 2.4 GHz (for PS5).'
+    Write-Host '  • PC Wi-Fi should stay on 5 GHz for everyday use.'
+    Write-Host '  • When you need the PS5: Settings -> Mobile hotspot -> ON'
+    Write-Host '  • When done: hotspot OFF to get fastest 5 GHz back on Wi-Fi-only setups'
+    exit 0
+}
+Write-Host 'FAILED: Could not set hotspot to 2.4 GHz.'
 Read-Host 'Press Enter'
+exit 1

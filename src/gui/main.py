@@ -50,8 +50,10 @@ from tools.frameless_chrome import (
 )
 from tools.clumsy_inline import (
     apply_clumsy_ics_router_context,
+    apply_ics_victim_arp_block,
     clumsy_ics_lag_can_use_windivert,
     clumsy_ics_use_firewall_only,
+    heal_ics_client_after_mitm,
     clumsy_mode_enabled,
     sync_clumsy_row,
     use_windivert_for_advanced_ics_shaping,
@@ -2766,11 +2768,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return True
 
     def _apply_ics_client_block(self, device, direction) -> bool:
-        """WinDivert lag/kill on hotspot client, else firewall-only. Returns True if handled."""
+        """Hotspot kill/lag: ARP to console (red Wi‑Fi in-game), else WinDivert/firewall."""
         if not clumsy_ics_use_firewall_only(device):
             return False
+        self._stop_ics_lag_gate()
         self.killer.disable_percent_cut(device['mac'])
-        self._clear_stale_ics_mitm(device)
+        if apply_ics_victim_arp_block(self.scanner, self.killer, device):
+            self._sync_killed_devices()
+            self._refresh_table_row_for_mac(device['mac'])
+            self._updateKillButtonState()
+            return True
         if self._ensure_ics_lag_gate(device, direction):
             self._ics_lag_gate.set_blocking(True)
             self._sync_killed_devices()
@@ -2787,19 +2794,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _clear_ics_client_block(self, device) -> bool:
         if not clumsy_ics_use_firewall_only(device):
             return False
-        gate = getattr(self, '_ics_lag_gate', None)
-        if gate is not None and gate.victim_ip == str(device.get('ip') or '').strip():
-            gate.set_blocking(False)
-            self._clear_stale_ics_mitm(device)
-            self._sync_killed_devices()
-            self._refresh_table_row_for_mac(device['mac'])
-            self._updateKillButtonState()
-            return True
+        self._stop_ics_lag_gate()
+        victim = self._victim_record_for_mac(device['mac']) or device
+        try:
+            apply_clumsy_ics_router_context(self.scanner, self.killer, victim.get('ip') or '')
+            self.killer.iface = self.scanner.iface
+            self.killer.router = self.scanner.router
+            if device['mac'] in self.killer.killed:
+                self.killer.unkill(victim)
+            else:
+                self.killer.reinforce_restore(victim)
+            heal_ics_client_after_mitm(self.scanner, self.killer, victim)
+        except Exception:
+            pass
         try:
             unblock_ip(device['ip'])
         except Exception:
             pass
-        self._clear_stale_ics_mitm(device)
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
