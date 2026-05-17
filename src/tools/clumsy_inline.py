@@ -134,6 +134,58 @@ def apply_clumsy_ics_router_context(scanner: Scanner, killer, victim_ip: str) ->
     return True
 
 
+def heal_ics_client_after_mitm(scanner: Scanner, killer, victim: dict) -> bool:
+    """
+    After lag/kill on a hotspot client, the console may keep a stale ARP entry for the
+    gateway (192.168.137.1). PS5 "automatic IP" fix is DHCP renew; gratuitous ARP helps
+    relearn the gateway MAC without user action.
+    """
+    if not sys.platform.startswith('win'):
+        return False
+    ip = str((victim or {}).get('ip') or '').strip()
+    if not victim_on_clumsy_ics_subnet(ip):
+        return False
+    apply_clumsy_ics_router_context(scanner, killer, ip)
+    vic_mac = good_mac((victim or {}).get('mac'))
+    if not vic_mac:
+        return False
+    gw = str(scanner.router_ip or '').strip()
+    pc_mac = good_mac(scanner.router_mac or getattr(scanner.iface, 'mac', None))
+    if not gw or not pc_mac:
+        return False
+    try:
+        from scapy.all import ARP, Ether
+    except Exception:
+        return False
+    unicast = (
+        Ether(dst=vic_mac)
+        / ARP(
+            op=2,
+            psrc=gw,
+            hwsrc=pc_mac,
+            pdst=ip,
+            hwdst=vic_mac,
+        )
+    )
+    gratuitous = (
+        Ether(dst='ff:ff:ff:ff:ff:ff')
+        / ARP(
+            op=2,
+            psrc=gw,
+            hwsrc=pc_mac,
+            pdst=gw,
+            hwdst='ff:ff:ff:ff:ff:ff',
+        )
+    )
+    for _ in range(6):
+        try:
+            killer._send_packet(unicast)
+            killer._send_packet(gratuitous)
+        except Exception:
+            pass
+    return True
+
+
 def maybe_prepare_ics() -> None:
     if not sys.platform.startswith('win'):
         return

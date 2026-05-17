@@ -170,6 +170,12 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
             elif not had and os.path.isfile(path):
                 os.remove(path)
 
+    def test_heal_ics_client_sends_gratuitous_arp(self) -> None:
+        src = inspect.getsource(inline.heal_ics_client_after_mitm)
+        self.assertIn("dst='ff:ff:ff:ff:ff:ff'", src)
+        self.assertIn('psrc=gw', src)
+        self.assertIn('hwsrc=pc_mac', src)
+
     def test_ensure_network_skips_arp_flush_in_clumsy_mode(self) -> None:
         path = os.path.join(_SRC, 'gui', 'main.py')
         with open(path, encoding='utf-8') as f:

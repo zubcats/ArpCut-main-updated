@@ -51,6 +51,7 @@ from tools.frameless_chrome import (
 from tools.clumsy_inline import (
     apply_clumsy_ics_router_context,
     clumsy_mode_enabled,
+    heal_ics_client_after_mitm,
     sync_clumsy_row,
     use_windivert_for_advanced_ics_shaping,
     victim_on_clumsy_ics_subnet,
@@ -2756,6 +2757,29 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
+        try:
+            victim = self._victim_record_for_mac(device['mac']) or device
+            heal_ics_client_after_mitm(self.scanner, self.killer, victim)
+        except Exception:
+            pass
+
+    def _heal_ics_client_connectivity(self, device, *, log_hint: bool = False) -> None:
+        if not device or not device.get('ip'):
+            return
+        if not victim_on_clumsy_ics_subnet(device['ip']):
+            return
+        try:
+            self._ensure_network_context_for_victim(device)
+            victim = self._victim_record_for_mac(device['mac']) or device
+            if heal_ics_client_after_mitm(self.scanner, self.killer, victim):
+                if log_hint:
+                    self.log(
+                        'Refreshed hotspot gateway ARP for the console. If internet is still '
+                        'down: PS5 → Settings → Network → set IP to Automatic, then Test.',
+                        UI_LOG_RESTORE_FG,
+                    )
+        except Exception:
+            pass
 
     def _pump_gui_until(self, pred, timeout_ms: int) -> bool:
         """
@@ -3253,6 +3277,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 try:
                     self.killer.unkill(victim)
                     self.killer.reinforce_restore(victim)
+                    self._heal_ics_client_connectivity(victim, log_hint=True)
                     lag_off_seq = self._bump_flow_off_intent('lag', prev_mac)
                     self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 25, victim)
                     self._schedule_flow_off_reinforce('lag', prev_mac, lag_off_seq, 100, victim)
