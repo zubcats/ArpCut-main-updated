@@ -1150,6 +1150,49 @@ def is_admin():
     # On macOS/Linux, assume current user context (no UAC)
     return True
 
+
+def _elevate_skip_requested() -> bool:
+    v = os.environ.get('ZUBCUT_SKIP_ELEVATE', '').strip().lower()
+    return v in ('1', 'true', 'yes', 'on')
+
+
+def ensure_windows_elevated() -> bool:
+    """
+    On Windows, re-launch this process with UAC elevation when not already Admin.
+    Returns True if the current process may continue (already elevated or non-Windows).
+    Returns False if elevation was declined or failed.
+    """
+    if not sys.platform.startswith('win'):
+        return True
+    if _elevate_skip_requested() or is_admin():
+        return True
+
+    from subprocess import list2cmdline
+
+    exe = sys.executable
+    params = list2cmdline(sys.argv[1:]) if len(sys.argv) > 1 else ''
+    ret = ctypes.windll.shell32.ShellExecuteW(
+        None,
+        'runas',
+        exe,
+        params,
+        None,
+        1,  # SW_SHOWNORMAL
+    )
+    if int(ret) <= 32:
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                f'{APP_DISPLAY_NAME} must run as Administrator for network tools and Clumsy mode.\n\n'
+                'Click Yes on the UAC prompt, or right-click the app and choose Run as administrator.',
+                f'{APP_DISPLAY_NAME} — Administrator required',
+                0x10,  # MB_ICONERROR
+            )
+        except Exception:
+            pass
+        return False
+    sys.exit(0)
+
 def npcap_exists():
     """
     Check for Npcap driver (Windows only)

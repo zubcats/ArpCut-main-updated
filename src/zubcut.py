@@ -6,7 +6,13 @@ from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 
 from tools.utils import goto
 from tools.crash_feedback import install_crash_feedback
-from tools.utils_gui import npcap_exists, duplicate_zubcut, repair_settings, migrate_settings_file
+from tools.utils_gui import (
+    npcap_exists,
+    duplicate_zubcut,
+    repair_settings,
+    migrate_settings_file,
+    ensure_windows_elevated,
+)
 from tools.license_offline import load_and_validate_installed_license
 from tools.license_remote_signin import effective_signin_url
 from tools.branding import load_shell_window_icon, qicon_is_empty
@@ -232,6 +238,9 @@ def _run_license_crypto_self_test_and_exit() -> None:
 if __name__ == "__main__":
     if '--verify-license-crypto' in argv:
         _run_license_crypto_self_test_and_exit()
+
+    if _sys.platform == 'win32' and not ensure_windows_elevated():
+        exit(1)
 
     # Before QApplication: real per-monitor DPI so Win32 icon loads + GetDpiForWindow match the display.
     if _sys.platform == 'win32':

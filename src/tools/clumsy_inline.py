@@ -67,11 +67,11 @@ def windivert_bundled_next_to_app() -> bool:
 
 
 def windivert_bundle_complete() -> bool:
-    """WinDivert.dll and WinDivert64.sys in the same folder (Clumsy layout)."""
+    """WinDivert.dll and WinDivert64.sys under {app}\\windivert (installer layout)."""
     try:
-        from tools.ics_windivert_shaper import _windivert_bundle_paths
+        from tools.ics_windivert_shaper import _windivert_install_paths
 
-        dll, sys_p = _windivert_bundle_paths()
+        dll, sys_p = _windivert_install_paths()
         return bool(dll and sys_p)
     except Exception:
         return windivert_bundled_next_to_app()

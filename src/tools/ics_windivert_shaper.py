@@ -14,6 +14,7 @@ import heapq
 import math
 import os
 import random
+import shutil
 import sys
 import threading
 import time
@@ -62,11 +63,21 @@ def _windivert_dll_path() -> Optional[str]:
     return dll
 
 
-def _windivert_bundle_paths() -> tuple[Optional[str], Optional[str]]:
-    """Full paths to WinDivert.dll and WinDivert64.sys (same directory, like Clumsy)."""
+def _windivert_local_cache_dir() -> str:
+    """No spaces — avoids WinDivertOpen PATH_NOT_FOUND (code 3) from Program Files paths."""
+    base = os.environ.get('LOCALAPPDATA', '').strip()
+    if not base:
+        base = os.path.join(os.path.expanduser('~'), 'AppData', 'Local')
+    path = os.path.join(base, 'ZubCut', 'windivert')
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _windivert_install_paths() -> tuple[Optional[str], Optional[str]]:
+    """WinDivert.dll + WinDivert64.sys under the ZubCut install directory."""
     if not sys.platform.startswith('win'):
         return None, None
-    rel_dirs = ('windivert', '.', os.path.join('installer', 'windivert'))
+    rel_dirs = (os.path.join('windivert'),)
     names = ('WinDivert.dll', 'WinDivert64.sys')
     for base in _windivert_search_bases():
         for rel_dir in rel_dirs:
@@ -75,6 +86,42 @@ def _windivert_bundle_paths() -> tuple[Optional[str], Optional[str]]:
             if os.path.isfile(dll) and os.path.isfile(sys_p):
                 return os.path.abspath(dll), os.path.abspath(sys_p)
     return None, None
+
+
+def _windivert_materialize_paths() -> tuple[Optional[str], Optional[str]]:
+    """
+    Load WinDivert from %LOCALAPPDATA%\\ZubCut\\windivert (Clumsy-style colocated dll+sys).
+
+    Copy from {app}\\windivert so the driver path is short and has no spaces.
+    """
+    src_dll, src_sys = _windivert_install_paths()
+    if not src_dll or not src_sys:
+        return None, None
+    cache = _windivert_local_cache_dir()
+    dst_dll = os.path.join(cache, 'WinDivert.dll')
+    dst_sys = os.path.join(cache, 'WinDivert64.sys')
+    try:
+        for src, dst in ((src_dll, dst_dll), (src_sys, dst_sys)):
+            if not os.path.isfile(dst):
+                shutil.copy2(src, dst)
+                continue
+            try:
+                if os.path.getsize(dst) != os.path.getsize(src):
+                    shutil.copy2(src, dst)
+                elif os.path.getmtime(dst) < os.path.getmtime(src):
+                    shutil.copy2(src, dst)
+            except OSError:
+                shutil.copy2(src, dst)
+    except OSError:
+        return None, None
+    if not (os.path.isfile(dst_dll) and os.path.isfile(dst_sys)):
+        return None, None
+    return os.path.abspath(dst_dll), os.path.abspath(dst_sys)
+
+
+def _windivert_bundle_paths() -> tuple[Optional[str], Optional[str]]:
+    """Runtime paths used for WinDivertOpen (materialized local cache)."""
+    return _windivert_materialize_paths()
 
 
 def _windivert_last_error_message() -> str:
@@ -97,7 +144,7 @@ def _windivert_last_error_message() -> str:
 
 
 def _windivert_prepare_dll_dir(dll_path: str) -> None:
-    """WinDivert64.sys must load from the same directory as WinDivert.dll (Clumsy layout)."""
+    """WinDivert64.sys loads from the same directory as WinDivert.dll (do not SetDllDirectory)."""
     dll_dir = os.path.dirname(os.path.abspath(dll_path))
     if not dll_dir:
         return
@@ -106,11 +153,6 @@ def _windivert_prepare_dll_dir(dll_path: str) -> None:
             os.add_dll_directory(dll_dir)
         except OSError:
             pass
-    try:
-        kernel32 = ctypes.windll.kernel32
-        kernel32.SetDllDirectoryW(dll_dir)
-    except Exception:
-        pass
 
 
 def _windivert_load_dll(dll_path: str) -> ctypes.WinDLL:
@@ -222,11 +264,15 @@ def probe_windivert_for_victim(victim_ip: str) -> tuple[bool, str]:
     vip = _ipv4_quad(victim_ip)
     if not vip:
         return False, 'no victim IP'
-    dll_path, sys_path = _windivert_bundle_paths()
-    if not dll_path:
-        return False, 'WinDivert.dll not found (reinstall with Clumsy mode)'
-    if not sys_path:
-        return False, 'WinDivert64.sys missing next to WinDivert.dll'
+    dll_path, sys_path = _windivert_materialize_paths()
+    if not dll_path or not sys_path:
+        inst_dll, inst_sys = _windivert_install_paths()
+        if not inst_dll or not inst_sys:
+            return (
+                False,
+                'WinDivert not installed — reinstall ZubCut with "Clumsy mode" checked',
+            )
+        return False, 'could not copy WinDivert to local cache (check disk permissions)'
     try:
         dll = _windivert_load_dll(dll_path)
         _bind_windivert_api(dll)
@@ -248,7 +294,10 @@ def probe_windivert_for_victim(victim_ip: str) -> tuple[bool, str]:
                     pass
                 return True, f'ok (layer {layer})'
             last_err = _windivert_last_error_message()
-    return False, last_err or 'WinDivertOpen failed'
+    return False, (
+        f'{last_err or "WinDivertOpen failed"} '
+        f'[dll={dll_path} sys={sys_path}]'
+    )
 
 
 def _parse_ipv4_src_dst(packet: bytes) -> Optional[Tuple[str, str]]:
@@ -343,11 +392,15 @@ class IcsWinDivertLagGate:
                 self._direction = 'both'
             self._blocking = False
             self._discard_heap = False
-        dll_path, sys_path = _windivert_bundle_paths()
-        if not dll_path:
-            raise OSError('WinDivert.dll not found (expected in ZubCut\\windivert\\).')
-        if not sys_path:
-            raise OSError('WinDivert64.sys missing next to WinDivert.dll — reinstall Clumsy mode.')
+        dll_path, sys_path = _windivert_materialize_paths()
+        if not dll_path or not sys_path:
+            inst_dll, inst_sys = _windivert_install_paths()
+            if not inst_dll or not inst_sys:
+                raise OSError(
+                    'WinDivert not installed under ZubCut\\windivert — '
+                    'reinstall with Clumsy mode checked.'
+                )
+            raise OSError('WinDivert could not be copied to %LOCALAPPDATA%\\ZubCut\\windivert')
         self._dll = _windivert_load_dll(dll_path)
         _bind_windivert_api(self._dll)
         vip = self._victim

@@ -18,6 +18,13 @@ foreach ($p in $wd) {
     if (Test-Path $p) { Write-Host "OK  $p" -ForegroundColor Green }
     else { Write-Host "MISSING $p" -ForegroundColor Red }
 }
+$cache = Join-Path $env:LOCALAPPDATA "ZubCut\windivert"
+Write-Host "`n--- Local cache (runtime copy, like Clumsy portable) ---"
+foreach ($name in @('WinDivert.dll', 'WinDivert64.sys')) {
+    $p = Join-Path $cache $name
+    if (Test-Path $p) { Write-Host "OK  $p" -ForegroundColor Green }
+    else { Write-Host "MISSING $p (created on first Kill/Dupe as Admin)" -ForegroundColor Yellow }
+}
 
 $flag = "${env:ProgramFiles}\ZubCut\clumsy_mode_bundle.flag"
 if (Test-Path $flag) { Write-Host "OK  clumsy_mode_bundle.flag" -ForegroundColor Green }
