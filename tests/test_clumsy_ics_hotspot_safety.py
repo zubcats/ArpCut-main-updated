@@ -98,7 +98,18 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         with open(zubcut, encoding='utf-8') as f:
             src = f.read()
         self.assertIn('maybe_ensure_wlan_autoconfig_on_startup', src)
+        self.assertIn('reset_clumsy_mode_on_startup', src)
         self.assertIn('ensure_wlan_autoconfig_healthy', inspect.getsource(ics))
+
+    def test_reset_clumsy_mode_on_startup_clears_setting(self) -> None:
+        from unittest.mock import patch
+
+        with patch('tools.utils_gui.get_settings', return_value=True) as gs, patch(
+            'tools.utils_gui.set_settings'
+        ) as ss:
+            ics.reset_clumsy_mode_on_startup()
+        gs.assert_called_once_with('clumsy_mode')
+        ss.assert_called_once_with('clumsy_mode', False)
 
     def test_maybe_repair_skips_when_no_state_file(self) -> None:
         path = ics.clumsy_ics_state_path()

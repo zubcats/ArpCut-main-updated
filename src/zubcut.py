@@ -290,8 +290,10 @@ if __name__ == "__main__":
             from tools.clumsy_ics import (
                 maybe_ensure_wlan_autoconfig_on_startup,
                 maybe_repair_stale_clumsy_ics_on_startup,
+                reset_clumsy_mode_on_startup,
             )
 
+            reset_clumsy_mode_on_startup()
             maybe_ensure_wlan_autoconfig_on_startup()
             maybe_repair_stale_clumsy_ics_on_startup()
         except Exception:

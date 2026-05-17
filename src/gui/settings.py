@@ -204,7 +204,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.chkClumsy.setToolTip(
             'Shapes traffic for a console on this PC\'s network path. '
             'Hotspot: PS5 joins the PC\'s Mobile Hotspot; PC uses Wi‑Fi/Ethernet to the router. '
-            'Ethernet: console plugs into the PC LAN port (ICS). Turn off and restart if you change wiring.'
+            'Ethernet: console plugs into the PC LAN port (ICS). '
+            'Clumsy turns off automatically when you quit ZubCut — re-enable after hotspot or wiring changes.'
         )
         self.lblClumsyTopology = QLabel('Console connects via:', self.gridLayoutWidget_2)
         self.cmbClumsyTopology = _WheelSafeComboBox(self.gridLayoutWidget_2)

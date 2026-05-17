@@ -1280,6 +1280,22 @@ def rollback_clumsy_ics() -> Tuple[bool, str]:
     return repair_clumsy_network_sharing()
 
 
+def reset_clumsy_mode_on_startup() -> None:
+    """
+    Clumsy changes ICS/sharing. Do not stay enabled across restarts — hotspot, Ethernet,
+    or uplink may have changed while ZubCut was closed. User re-enables in Settings when ready.
+    """
+    if os.name != 'nt':
+        return
+    try:
+        from tools.utils_gui import get_settings, set_settings
+
+        if bool(get_settings('clumsy_mode')):
+            set_settings('clumsy_mode', False)
+    except Exception:
+        pass
+
+
 def maybe_repair_stale_clumsy_ics_on_startup() -> None:
     """
     If Clumsy left a state file but mode is off, undo ICS changes automatically once at launch.
