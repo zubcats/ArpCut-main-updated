@@ -233,6 +233,8 @@ def clumsy_windivert_unavailable_reason(device) -> str:
 
 def clumsy_windivert_probe_detail(victim_ip: str) -> str:
     """Live WinDivertOpen test — use in error logs after a failed kill/dupe."""
+    if not _process_is_elevated():
+        return 'run ZubCut as Administrator (WinDivert requires elevation)'
     try:
         from tools.ics_windivert_shaper import probe_windivert_for_victim
 

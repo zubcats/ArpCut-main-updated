@@ -58,6 +58,14 @@ class TestNicknameProfiles(unittest.TestCase):
         mac, prefix = parse_nickname_profile_key('aa:bb:cc:dd:ee:ff|192.168.1')
         self.assertEqual(prefix, '192.168.1')
 
+    def test_kill_profile_keys_differ_by_subnet(self) -> None:
+        mac = 'aa:bb:cc:dd:ee:ff'
+        home = nickname_profile_key(mac, '192.168.1.165')
+        hotspot = nickname_profile_key(mac, '192.168.137.50')
+        self.assertNotEqual(home, hotspot)
+        self.assertEqual(home, 'AA:BB:CC:DD:EE:FF|192.168.1')
+        self.assertEqual(hotspot, 'AA:BB:CC:DD:EE:FF|192.168.137')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -7,6 +7,12 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     exit 1
 }
 
+$repairWd = Join-Path $PSScriptRoot '_repair_windivert_service.ps1'
+if (Test-Path $repairWd) {
+    Write-Host '--- WinDivert driver service (fixes Kill error code 3) ---'
+    & $repairWd
+}
+
 $statePath = Join-Path $env:APPDATA 'ZubCut\clumsy_ics_state.json'
 $snapshot = @()
 if (Test-Path $statePath) {

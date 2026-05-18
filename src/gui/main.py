@@ -31,6 +31,7 @@ from .traffic import Traffic
 
 from networking.scanner import Scanner
 from networking.killer import Killer
+from networking.nicknames import nickname_profile_key, parse_nickname_profile_key
 
 from tools.qtools import colored_item, MsgType, Buttons, clickable, TableRowNoCellFocusDelegate
 from tools.utils_gui import (
@@ -792,7 +793,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Main Props
         self.scanner = Scanner()
         self.killer = Killer()
-        self.killed_devices = {}  # MAC -> bool kill toggle state
+        self.killed_devices = {}  # profile key (mac|subnet) -> explicit Kill toggle state
         # Per-MAC intent generation for kill toggle; delayed OFF reinforcement only runs
         # when generation still matches (prevents stale delayed actions from reapplying).
         self._kill_intent_seq = {}
@@ -800,10 +801,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._flow_off_intent_seq = {}
         # Explicit Kill OFF in flight: ignore killer.killed fallback until _run_kill_command finishes.
         self._kill_teardown_mac = None
+        self._kill_teardown_ip = None
         self.lag_active = False
         self.lag_block_ms = 9000
         self.lag_release_ms = 100
         self.lag_device_mac = None
+        self.lag_device_ip = None
         self.lag_direction = 'both'  # 'both', 'in', or 'out'
         self.lag_timer = QTimer(self)
         self.lag_timer.setSingleShot(True)
@@ -818,6 +821,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.dupe_active = False
         self.dupe_device_mac = None
+        self.dupe_device_ip = None
         self.dupe_direction = 'both'
         self.dupe_duration_ms = 5000
         self.percent_cut_active = False
@@ -1721,22 +1725,61 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Selection model can commit after our slot; repaint next tick so brushes match."""
         QTimer.singleShot(0, self._repaint_all_table_rows_for_hover)
 
+    def _device_profile_key(self, device) -> str:
+        if not device:
+            return ''
+        return nickname_profile_key(device.get('mac', ''), device.get('ip', ''))
+
+    def _killed_profile_key(self, device) -> str:
+        pk = self._device_profile_key(device)
+        if pk:
+            return pk
+        return str(device.get('mac') or '').strip()
+
+    def _flow_matches_row(self, device, flow_mac, flow_ip=None) -> bool:
+        if not device or not flow_mac or device.get('mac') != flow_mac:
+            return False
+        if flow_ip:
+            return (str(device.get('ip') or '').strip() == str(flow_ip).strip())
+        return True
+
+    def _killed_profile_on(self, device) -> bool:
+        pk = self._killed_profile_key(device)
+        return bool(pk and self.killed_devices.get(pk, False))
+
+    def _set_killed_profile(self, device, on: bool) -> None:
+        pk = self._killed_profile_key(device)
+        if pk:
+            self.killed_devices[pk] = bool(on)
+
+    def _device_for_kill_profile(self, profile_key: str):
+        for d in self.scanner.devices:
+            if self._killed_profile_key(d) == profile_key:
+                return d
+        mac, _prefix = parse_nickname_profile_key(profile_key)
+        if mac:
+            return self._victim_record_for_mac(mac)
+        return None
+
     def _device_row_blocked_chrome(self, device):
         """
-        Kill-row styling: active lag/dupe victim, or explicit Kill ON for a MAC still held
-        in killer. Do not key off killer alone — lag/dupe teardown can lag behind unkill(),
-        which made rows (and perceived state) stick red after timers/buttons went OFF.
+        Kill-row styling: active lag/dupe victim, or explicit Kill ON for this subnet row.
+        Same MAC on home LAN vs hotspot are separate profiles — do not paint all rows red.
         """
         if not device or device.get('admin'):
             return False
         mac = device['mac']
-        if getattr(self, 'lag_active', False) and self.lag_device_mac == mac:
+        if getattr(self, 'lag_active', False) and self._flow_matches_row(
+            device, self.lag_device_mac, getattr(self, 'lag_device_ip', None)
+        ):
             return True
-        if getattr(self, 'dupe_active', False) and self.dupe_device_mac == mac:
+        if getattr(self, 'dupe_active', False) and self._flow_matches_row(
+            device, self.dupe_device_mac, getattr(self, 'dupe_device_ip', None)
+        ):
             return True
         if mac not in self.killer.killed:
             return False
-        return bool(self.killed_devices.get(mac, False))
+        return self._killed_profile_on(device)
 
     def _table_hover_cell_palette(self, row, device):
         """
@@ -1909,8 +1952,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.killer.kill(rem_device)
 
         # Killer holds ARP for lag/dupe too; Kill button tracks explicit kill / restore only.
-        for mac in self.killer.killed:
-            self.killed_devices[mac] = True
+        for mac, victim in self.killer.killed.items():
+            pk = nickname_profile_key(mac, victim.get('ip', ''))
+            if pk:
+                self.killed_devices[pk] = True
         self._sync_killed_devices()
 
         # clear old database
@@ -1948,7 +1993,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if clumsy_ics_use_firewall_only(device, self.scanner):
             if not self._apply_victim_block(device, 'both'):
                 return
-            self.killed_devices[device['mac']] = True
+            self._set_killed_profile(device, True)
         else:
             self._ensure_network_context_for_victim(device)
             self.killer.kill(device)
@@ -1957,7 +2002,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 block_ip(iface, device['ip'], 'both')
             except Exception:
                 pass
-            self.killed_devices[device['mac']] = True
+            self._set_killed_profile(device, True)
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
         self.log('Killed ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
@@ -1998,7 +2043,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
             self.killer.unkill(victim)
-        self.killed_devices[device['mac']] = False
+        self._set_killed_profile(device, False)
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
         self.log('Unkilled ' + device['ip'], UI_LOG_RESTORE_FG)
@@ -2025,7 +2070,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 continue
             if clumsy_ics_use_firewall_only(d, self.scanner):
                 self._apply_victim_block(d, 'both')
-                self.killed_devices[d['mac']] = True
+                self._set_killed_profile(d, True)
             else:
                 self.killer.kill(d)
                 try:
@@ -2033,7 +2078,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     block_ip(iface, d['ip'], 'both')
                 except Exception:
                     pass
-                self.killed_devices[d['mac']] = True
+                self._set_killed_profile(d, True)
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
         self.log('Killed All devices', UI_LOG_VICTIM_BLOCK_FG)
@@ -2630,6 +2675,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self.lag_active:
             self.stopLagSwitch(refresh_dialog=False)
         self.lag_device_mac = device['mac']
+        self.lag_device_ip = device.get('ip')
         self._lag_device_snapshot = dict(device)
         self.lag_active = True
         self._refresh_lag_timing_from_dialog()
@@ -2698,15 +2744,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
-    def _refresh_table_row_for_mac(self, mac):
-        """Update table row colors for one MAC without rebuilding the whole table."""
+    def _refresh_table_row_for_mac(self, mac, ip=None):
+        """Update table row colors for one MAC (all subnet rows unless ip is set)."""
         if not mac:
             return
+        want_ip = (ip or '').strip()
         for row, d in enumerate(self.scanner.devices):
-            if d['mac'] == mac:
-                self.fillTableRow(row, d)
-                self._repaint_table_row_for_hover(row)
-                break
+            if d['mac'] != mac:
+                continue
+            if want_ip and (d.get('ip') or '').strip() != want_ip:
+                continue
+            self.fillTableRow(row, d)
+            self._repaint_table_row_for_hover(row)
+            if want_ip:
+                return
 
     def _ensure_network_context_for_victim(self, device) -> bool:
         """
@@ -2796,8 +2847,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self.mitm_shaping_active and (mac is None or self.mitm_shaping_mac == mac):
             return True
         if mac is not None:
-            return self._kill_ui_shows_on(mac)
-        return any(self._kill_ui_shows_on(m) for m in list(self.killed_devices.keys()))
+            for d in self.scanner.devices:
+                if d.get('mac') == mac and self._kill_ui_shows_on(mac, d.get('ip'), d):
+                    return True
+            return False
+        return any(bool(v) for v in self.killed_devices.values())
 
     def _stop_ics_lag_gate(self, join_timeout: float = 0.12) -> None:
         gate = getattr(self, '_ics_lag_gate', None)
@@ -2846,7 +2900,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
         if mac:
             self.killer.killed.pop(mac, None)
-            self.killed_devices[mac] = False
+            self._set_killed_profile(device, False)
         self._stop_ics_lag_gate(join_timeout=0.35)
         if heal and resolved_ip:
             victim = dict(device)
@@ -2960,9 +3014,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._ics_lag_gate.set_blocking(True, mode='pause')
                     if not for_dupe:
                         self.killer.killed[device['mac']] = device
-                        self.killed_devices[device['mac']] = True
+                        self._set_killed_profile(device, True)
                         self._sync_killed_devices()
-                        self._refresh_table_row_for_mac(device['mac'])
+                        self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
                         self._updateKillButtonState()
                     layers = gate.active_layers if gate is not None else ()
                     self.log(
@@ -3526,6 +3580,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Tear down active state first so any concurrent timer tick becomes a no-op.
         self.lag_active = False
         self.lag_device_mac = None
+        self.lag_device_ip = None
         self._lag_in_allow_phase = False
         self.lag_timer.stop()
         self._lag_device_snapshot = None
@@ -3613,6 +3668,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except TypeError:
             pass
         self.dupe_device_mac = device['mac']
+        self.dupe_device_ip = device.get('ip')
         self.dupe_direction = direction
         self.dupe_duration_ms = duration_ms
         self._dupe_end_mono = None
@@ -3686,6 +3742,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_arm_device = None
         was_active = self.dupe_active
         prev_mac = self.dupe_device_mac
+        prev_ip = getattr(self, 'dupe_device_ip', None)
         self._dupe_countdown_timer.stop()
         self.dupe_timer.stop()
         self._dupe_end_mono = None
@@ -3695,12 +3752,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         self._dupe_restoring_after_stop = True
         self._dupe_restoring_mac = prev_mac
+        self._dupe_restoring_ip = prev_ip
         # Idle chrome immediately; firewall/ARP finish asynchronously (_do_deferred_dupe_clear).
         self.lblDupeCountdownMain.setVisible(False)
         self.lblDupeCountdownMain.setText('')
         # Mark inactive after timers are stopped so _tick cannot race with teardown.
         self.dupe_active = False
         self.dupe_device_mac = None
+        self.dupe_device_ip = None
         self.btnDupe.setText('Dupe')
         self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         if log:
@@ -3876,12 +3935,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def toggleKill(self, source='unknown'):
         if not self.connected():
             return
-        active_explicit = [m for m, on in self.killed_devices.items() if bool(on)]
+        active_explicit = [pk for pk, on in self.killed_devices.items() if bool(on)]
         device = self._get_selected_device()
         # If one victim is currently Kill-ON and table selection moved, pressing Kill should
         # still turn that victim OFF instead of accidentally turning ON another device.
         if device is None and len(active_explicit) == 1:
-            device = self._get_device_by_mac(active_explicit[0]) or self._victim_record_for_mac(active_explicit[0])
+            device = self._device_for_kill_profile(active_explicit[0])
         if not device:
             self.log('No device selected', 'red')
             return
@@ -3890,14 +3949,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         mac = device['mac']
-        current_ui_on = self._kill_ui_shows_on(mac)
-        if not current_ui_on and len(active_explicit) == 1 and active_explicit[0] != mac:
+        row_pk = self._killed_profile_key(device)
+        current_ui_on = self._kill_ui_shows_on(mac, device.get('ip'), device)
+        if not current_ui_on and len(active_explicit) == 1 and active_explicit[0] != row_pk:
             # Selection drifted to a different row while one kill victim is active.
-            mac = active_explicit[0]
-            victim = self._get_device_by_mac(mac) or self._victim_record_for_mac(mac)
+            victim = self._device_for_kill_profile(active_explicit[0])
             if victim:
                 device = victim
-            current_ui_on = self._kill_ui_shows_on(mac)
+                mac = device['mac']
+            current_ui_on = self._kill_ui_shows_on(mac, device.get('ip'), device)
         next_state = not current_ui_on
         if next_state and self._toggle_start_blocked('kill'):
             return
@@ -3911,7 +3971,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     'red',
                 )
                 return
-        self.killed_devices[mac] = next_state
+        self._set_killed_profile(device, next_state)
         self._updateKillButtonState()
         self._repaint_all_table_rows_for_hover()
         try:
@@ -3949,7 +4009,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if self.dupe_active and self.dupe_device_mac == mac:
                 self.stopDupe(log=False)
                 self._flush_pending_dupe_clear_sync()
-            if self._kill_ui_shows_on(mac):
+            if self._kill_ui_shows_on(mac, device.get('ip'), device):
                 dev = dict(device)
                 self._run_kill_command(mac, dev, turn_on=False, source='pctcut_auto_off_kill')
             pct = self._clamp_percent(self.spinPercentCutMain.value())
@@ -4276,7 +4336,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.mitm_shaping_active = True
         self.mitm_shaping_mac = mac
-        self.killed_devices[mac] = True
+        self._set_killed_profile(device, True)
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
         parts = []
@@ -4340,8 +4400,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         mac = prev_mac or None
         if was_windivert and not self._ics_windivert_busy(mac):
             self._stop_ics_lag_gate()
-        if mac:
-            self.killed_devices[mac] = False
+        if isinstance(victim_snap, dict):
+            self._set_killed_profile(victim_snap, False)
+        elif mac:
+            self._set_killed_profile({'mac': mac, 'ip': log_ip or ''}, False)
         self._sync_killed_devices()
         set_settings('killed', list(self.killer.killed) * self.remember)
         if (
@@ -4446,8 +4508,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if turn_on:
             if getattr(self, '_kill_teardown_mac', None) == mac:
                 self._kill_teardown_mac = None
+                self._kill_teardown_ip = None
         else:
             self._kill_teardown_mac = mac
+            self._kill_teardown_ip = device.get('ip')
         teardown_off = not turn_on
         try:
             snapshot_map = getattr(self, '_kill_device_snapshot', None)
@@ -4518,12 +4582,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._schedule_kill_off_reinforce(mac, next_seq, 25)
                     self._schedule_kill_off_reinforce(mac, next_seq, 100)
 
-            self.killed_devices[mac] = bool(kill_applied) if turn_on else False
+            self._set_killed_profile(device, bool(kill_applied) if turn_on else False)
             self._sync_killed_devices()
             set_settings('killed', list(self.killer.killed) * self.remember)
             self._updateKillButtonState()
             self._update_scan_count_status()
-            self._refresh_table_row_for_mac(mac)
+            self._refresh_table_row_for_mac(mac, device.get('ip'))
             self._repaint_all_table_rows_for_hover()
             try:
                 app = QApplication.instance()
@@ -4534,16 +4598,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         finally:
             if teardown_off and getattr(self, '_kill_teardown_mac', None) == mac:
                 self._kill_teardown_mac = None
+                self._kill_teardown_ip = None
 
     def _schedule_kill_off_reinforce(self, mac, intent_seq, delay_ms):
         """Delayed OFF reinforcement that self-cancels if intent changed."""
         def _cb():
             current_seq = int(self._kill_intent_seq.get(mac, 0))
-            ui_on = bool(self.killed_devices.get(mac, False))
-            if current_seq != int(intent_seq) or ui_on:
-                return
             snapshot = (getattr(self, '_kill_device_snapshot', None) or {}).get(mac)
             victim = self._victim_record_for_mac(mac) or snapshot
+            ui_on = self._killed_profile_on(victim) if victim else False
+            if current_seq != int(intent_seq) or ui_on:
+                return
             if not victim:
                 return
             try:
@@ -4609,22 +4674,29 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         QTimer.singleShot(max(0, int(delay_ms)), _cb)
 
-    def _kill_ui_shows_on(self, mac):
-        """Kill button / bookkeeping: visual state is authoritative for toggle UX."""
-        if (
-            getattr(self, '_dupe_restoring_after_stop', False)
-            and getattr(self, '_dupe_restoring_mac', None) == mac
+    def _kill_ui_shows_on(self, mac, ip=None, device=None):
+        """Kill button state for this table row (subnet profile), not every row with same MAC."""
+        if device is None:
+            device = self._get_device_by_mac(mac, ip) or {'mac': mac, 'ip': ip or ''}
+        if getattr(self, '_dupe_restoring_after_stop', False) and self._flow_matches_row(
+            device,
+            getattr(self, '_dupe_restoring_mac', None),
+            getattr(self, '_dupe_restoring_ip', None),
         ):
-            # Dupe uses killer.killed for ARP without setting killed_devices; unkill lags briefly.
-            return bool(self.killed_devices.get(mac, False))
-        if (
-            getattr(self, '_lag_restoring_after_stop', False)
-            and getattr(self, '_lag_restoring_mac', None) == mac
+            return self._killed_profile_on(device)
+        if getattr(self, '_lag_restoring_after_stop', False) and self._flow_matches_row(
+            device,
+            getattr(self, '_lag_restoring_mac', None),
+            getattr(self, '_lag_restoring_ip', None),
         ):
-            return bool(self.killed_devices.get(mac, False))
+            return self._killed_profile_on(device)
         if getattr(self, '_kill_teardown_mac', None) == mac:
-            return bool(self.killed_devices.get(mac, False))
-        return bool(self.killed_devices.get(mac, mac in self.killer.killed))
+            if not self._flow_matches_row(
+                device, mac, getattr(self, '_kill_teardown_ip', None)
+            ):
+                return False
+            return self._killed_profile_on(device)
+        return self._killed_profile_on(device)
 
     def _get_selected_device(self):
         """Current table row device (toolbar clicks clear selection; currentRow still identifies victim)."""
@@ -4635,20 +4707,40 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _sync_killed_devices(self):
         """
-        Drop Kill-toggle bookkeeping when a MAC is no longer in killer.killed.
-        Do not set True for every killer victim — lag/dupe also use killer.killed for ARP.
+        Drop Kill-toggle bookkeeping when killer no longer holds this subnet profile.
+        Lag/dupe also use killer.killed for ARP — do not mirror that onto every nickname row.
         """
         active_macs = set(self.killer.killed.keys())
-        preserve = set()
+        preserve_profiles = set()
         if (
             getattr(self, '_mitm_shaping_backend', None) == 'windivert'
             and self.mitm_shaping_active
             and self.mitm_shaping_mac
         ):
-            preserve.add(self.mitm_shaping_mac)
-        for mac in list(self.killed_devices.keys()):
-            if mac not in active_macs and mac not in preserve:
-                self.killed_devices[mac] = False
+            dev = self._get_device_by_mac(
+                self.mitm_shaping_mac,
+                getattr(self, 'mitm_shaping_ip', None),
+            )
+            if dev:
+                preserve_profiles.add(self._killed_profile_key(dev))
+        for pk in list(self.killed_devices.keys()):
+            if pk in preserve_profiles:
+                continue
+            mac, _pfx = parse_nickname_profile_key(pk)
+            if not mac and '|' not in pk:
+                mac = pk
+            if not mac:
+                self.killed_devices.pop(pk, None)
+                continue
+            if mac not in active_macs:
+                self.killed_devices[pk] = False
+                continue
+            if '|' in pk:
+                victim = self.killer.killed.get(mac)
+                if victim:
+                    vpk = nickname_profile_key(mac, victim.get('ip', ''))
+                    if pk != vpk:
+                        self.killed_devices[pk] = False
 
     def _set_kill_button_idle_look(self):
         """Icon + compact width for Kill: OFF (matches Lag/Dupe footprint)."""
@@ -4676,7 +4768,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         mac = device['mac']
         base_tip = getattr(self, '_btn_kill_tooltip_static', None)
-        if self.lag_active and self.lag_device_mac == mac:
+        if self.lag_active and self._flow_matches_row(
+            device, self.lag_device_mac, getattr(self, 'lag_device_ip', None)
+        ):
             lag_key = getattr(self, '_shortcut_label_lag', 'M')
             self._set_kill_button_active_look()
             self.btnKill.setText(f'■ LAGGING\n(Press {lag_key} to turn off)')
@@ -4687,7 +4781,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     + ' While lag switch is running for this device, this stops lag and restores traffic (it does not turn Kill on).'
                 )
             return
-        if self.dupe_active and self.dupe_device_mac == mac:
+        if self.dupe_active and self._flow_matches_row(
+            device, self.dupe_device_mac, getattr(self, 'dupe_device_ip', None)
+        ):
             dupe_key = getattr(self, '_shortcut_label_dupe', 'P')
             self._set_kill_button_active_look()
             self.btnKill.setText(f'■ DUPE\n(Press {dupe_key} to turn off)')
@@ -4700,7 +4796,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if base_tip:
             self.btnKill.setToolTip(base_tip)
-        is_active = self._kill_ui_shows_on(mac)
+        is_active = self._kill_ui_shows_on(mac, device.get('ip'), device)
         if is_active:
             kill_key = getattr(self, '_shortcut_label_kill', 'L')
             self._set_kill_button_active_look()
@@ -4737,7 +4833,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _enqueue_kill_off_only(self, mac, device):
         """After lag/dupe stop: execute an explicit OFF command immediately."""
-        self.killed_devices[mac] = False
+        self._set_killed_profile(device, False)
         self._updateKillButtonState()
         dev = dict(device)
         self._run_kill_command(mac, dev, turn_on=False, source='enqueue_off_only')

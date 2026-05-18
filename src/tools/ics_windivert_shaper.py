@@ -15,11 +15,17 @@ import math
 import os
 import random
 import shutil
+import subprocess
 import sys
 import threading
 import time
 from ctypes import wintypes
 from typing import Optional, Tuple
+
+try:
+    import winreg
+except ImportError:
+    winreg = None
 
 WINDIVERT_LAYER_NETWORK = 0
 WINDIVERT_LAYER_NETWORK_FORWARD = 1
@@ -155,9 +161,85 @@ def _windivert_prepare_dll_dir(dll_path: str) -> None:
             pass
 
 
-def _windivert_load_dll(dll_path: str) -> ctypes.WinDLL:
+def _windivert_normalized_path(path: str) -> str:
+    p = (path or '').strip()
+    low = p.lower()
+    if low.startswith('\\??\\'):
+        p = p[4:]
+    elif low.startswith('\\\\?\\'):
+        p = p[4:]
+    if not p:
+        return ''
+    return os.path.normcase(os.path.abspath(p))
+
+
+def _windivert_service_image_path() -> str:
+    if not sys.platform.startswith('win') or winreg is None:
+        return ''
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r'SYSTEM\CurrentControlSet\Services\WinDivert',
+        ) as key:
+            image, _ = winreg.QueryValueEx(key, 'ImagePath')
+            return _windivert_normalized_path(str(image))
+    except OSError:
+        return ''
+
+
+def _windivert_sc_stop_and_delete() -> None:
+    for args in (['sc.exe', 'stop', 'WinDivert'], ['sc.exe', 'delete', 'WinDivert']):
+        try:
+            subprocess.run(
+                args,
+                capture_output=True,
+                timeout=15,
+                check=False,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+        except Exception:
+            pass
+
+
+def _windivert_repair_stale_service(sys_path: str) -> tuple[bool, str]:
+    """
+    WinDivertOpen error 3 often means the WinDivert kernel service still points at a
+    deleted .sys path (e.g. an old WinRAR temp folder). Remove the stale service so
+    the next WinDivertOpen registers WinDivert64.sys next to our DLL.
+    """
+    want = _windivert_normalized_path(sys_path)
+    if not want or not os.path.isfile(want):
+        return False, 'WinDivert64.sys missing'
+    current = _windivert_service_image_path()
+    if not current:
+        return True, 'no service (will install on open)'
+    if current == want:
+        return True, 'service path ok'
+    if os.path.isfile(current):
+        return True, 'service uses another valid driver path'
+    _windivert_sc_stop_and_delete()
+    return True, f'removed stale WinDivert service (was {current})'
+
+
+def _windivert_load_dll(dll_path: str, sys_path: Optional[str] = None) -> ctypes.WinDLL:
+    sys_p = sys_path or os.path.join(os.path.dirname(os.path.abspath(dll_path)), 'WinDivert64.sys')
+    _windivert_repair_stale_service(sys_p)
     _windivert_prepare_dll_dir(dll_path)
-    return ctypes.WinDLL(dll_path)
+    old_cwd = os.getcwd()
+    dll_dir = os.path.dirname(os.path.abspath(dll_path))
+    try:
+        if dll_dir:
+            os.chdir(dll_dir)
+    except OSError:
+        dll_dir = ''
+    try:
+        return ctypes.WinDLL(dll_path)
+    finally:
+        if dll_dir:
+            try:
+                os.chdir(old_cwd)
+            except OSError:
+                pass
 
 
 def _ics_clumsy_victim_filter(victim_ip: str) -> str:
@@ -273,8 +355,11 @@ def probe_windivert_for_victim(victim_ip: str) -> tuple[bool, str]:
                 'WinDivert not installed — reinstall ZubCut with "Clumsy mode" checked',
             )
         return False, 'could not copy WinDivert to local cache (check disk permissions)'
+    repaired, repair_note = _windivert_repair_stale_service(sys_path)
+    if not repaired:
+        return False, repair_note
     try:
-        dll = _windivert_load_dll(dll_path)
+        dll = _windivert_load_dll(dll_path, sys_path)
         _bind_windivert_api(dll)
     except OSError as exc:
         return False, f'failed to load WinDivert.dll: {exc}'
@@ -294,9 +379,15 @@ def probe_windivert_for_victim(victim_ip: str) -> tuple[bool, str]:
                     pass
                 return True, f'ok (layer {layer})'
             last_err = _windivert_last_error_message()
+    hint = ''
+    if 'code 3' in (last_err or '').lower() or '(code 3)' in (last_err or ''):
+        hint = (
+            ' Stale WinDivert driver service may remain — run tools\\Repair-WinDivert-Service.cmd '
+            'as Administrator, then try Kill again.'
+        )
     return False, (
         f'{last_err or "WinDivertOpen failed"} '
-        f'[dll={dll_path} sys={sys_path}]'
+        f'[dll={dll_path} sys={sys_path}]{hint}'
     )
 
 
@@ -401,7 +492,10 @@ class IcsWinDivertLagGate:
                     'reinstall with Clumsy mode checked.'
                 )
             raise OSError('WinDivert could not be copied to %LOCALAPPDATA%\\ZubCut\\windivert')
-        self._dll = _windivert_load_dll(dll_path)
+        repaired, _repair_note = _windivert_repair_stale_service(sys_path)
+        if not repaired:
+            raise OSError(_repair_note)
+        self._dll = _windivert_load_dll(dll_path, sys_path)
         _bind_windivert_api(self._dll)
         vip = self._victim
         try:
