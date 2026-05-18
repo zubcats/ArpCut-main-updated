@@ -25,6 +25,8 @@ class ClumsyPsComposeTests(unittest.TestCase):
         self.assertIn("NormGuidHotspot", script)
         self.assertIn("Trim('{','}')", script)
         self.assertIn("@{ Up = $det.Up; Down = $det.Down }", script)
+        self.assertNotIn("\u2014", ics._PS_HOTSPOT_HELPERS)  # em dash breaks PS 5.1 ANSI parse
+        self.assertIn("port - PC internet on", ics._PS_HOTSPOT_HELPERS)
 
     def test_enable_script_uses_compose_not_inline_fstring_helpers(self) -> None:
         import inspect
