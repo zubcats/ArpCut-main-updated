@@ -54,9 +54,20 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         src = inspect.getsource(ics.repair_clumsy_network_sharing)
         self.assertIn('$skipIcsReset = $hotspotWasOn', src)
         self.assertIn('Apply-MainWifiSharingForHotspot', src)
+        self.assertIn('Repair-HotspotAdapterForConsole', src)
+        self.assertIn('Clear-HotspotStaleArpEntries', src)
         self.assertIn('Ensure-SharingServicesLight', src)
         self.assertNotIn('Restart-NetworkSharingServicesSafe', src)
         self.assertNotIn('Restart-Service -Name $svc', src)
+        repair_hotspot_block = src.split('if ($hotspotWasOn) {', 1)[1].split('} else {', 1)[0]
+        self.assertNotIn('Apply-HotspotIcsAutomated', repair_hotspot_block)
+
+    def test_hotspot_repair_reenables_ipv6_binding(self) -> None:
+        helpers = ics._PS_HOTSPOT_HELPERS
+        self.assertIn('Repair-HotspotAdapterForConsole', helpers)
+        self.assertIn('Enable-NetAdapterBinding', helpers)
+        self.assertIn('ms_tcpip6', helpers)
+        self.assertNotIn('Disable-NetAdapterBinding', helpers)
 
     def test_repair_reenables_mobile_hotspot(self) -> None:
         src = inspect.getsource(ics.repair_clumsy_network_sharing)

@@ -527,6 +527,8 @@ function Apply-HotspotIcsAutomated {
   if (Test-HotspotIcsActive) { return $true }
   if (Apply-MainWifiSharingForHotspot) { return $true }
   if (Apply-HotspotIcs) { return $true }
+  # Do not toggle tethering while hotspot is up with DHCP — drops PS5 association.
+  if ((Test-MobileHotspotGateway) -and (Test-HotspotDhcp67)) { return $false }
   return (Apply-HotspotIcsWithTetheringToggle)
 }
 function Initialize-WinRtAwaitHelpers {
@@ -626,14 +628,37 @@ function Restart-SharedAccessSafe([bool]$hotspotWasOn) {
     Restart-Service -Name SharedAccess -Force -ErrorAction SilentlyContinue
   } catch {}
 }
-function Disable-HotspotIpv6ForConsole($downAdapter) {
-  # PS5 reports "IPv6 only" when the hotspot adapter advertises global IPv6 without usable IPv4 DHCP.
+function Repair-HotspotAdapterForConsole($downAdapter) {
+  # Prefer IPv4 for consoles without disabling IPv6 (disabling ms_tcpip6 breaks PS5 DHCP on many adapters).
   if ($null -eq $downAdapter) { return }
   try {
-    Disable-NetAdapterBinding -Name $downAdapter.Name -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
+    $v6 = Get-NetAdapterBinding -Name $downAdapter.Name -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
+    if ($v6 -and -not $v6.Enabled) {
+      Enable-NetAdapterBinding -Name $downAdapter.Name -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
+    }
     Set-NetIPInterface -InterfaceIndex $downAdapter.ifIndex -AddressFamily IPv4 -InterfaceMetric 10 -EA SilentlyContinue
-    Set-NetIPInterface -InterfaceIndex $downAdapter.ifIndex -AddressFamily IPv6 -InterfaceMetric 9999 -EA SilentlyContinue
-    netsh interface ipv6 set interface "$($downAdapter.ifIndex)" routerdiscovery=disabled store=active 2>$null | Out-Null
+    Set-NetIPInterface -InterfaceIndex $downAdapter.ifIndex -AddressFamily IPv6 -InterfaceMetric 50 -EA SilentlyContinue
+    Get-NetIPAddress -InterfaceIndex $downAdapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object { $_.IPAddress -like '169.254.*' } |
+      ForEach-Object {
+        Remove-NetIPAddress -IPAddress $_.IPAddress -InterfaceIndex $_.InterfaceIndex -Confirm:$false -ErrorAction SilentlyContinue
+      }
+    $hasGw = Get-NetIPAddress -InterfaceIndex $downAdapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object { $_.IPAddress -eq '192.168.137.1' }
+    if (-not $hasGw) {
+      New-NetIPAddress -InterfaceIndex $downAdapter.ifIndex -IPAddress 192.168.137.1 -PrefixLength 24 -ErrorAction SilentlyContinue | Out-Null
+    }
+  } catch {}
+}
+function Clear-HotspotStaleArpEntries([string]$prefix) {
+  # Stale static ARP from lag/kill MITM leaves Wi-Fi "connected" with no real traffic.
+  if (-not $prefix) { return }
+  try {
+    foreach ($line in @(arp -a)) {
+      if ($line -match "(($([regex]::Escape($prefix))\\d+))\\s+([0-9a-fA-F\\-]+)\\s+static") {
+        arp -d $Matches[1] 2>$null | Out-Null
+      }
+    }
   } catch {}
 }
 """
@@ -779,7 +804,8 @@ $down = Get-NetAdapter -EA SilentlyContinue | Where-Object {{ $_.InterfaceDescri
 if (-not $down) {{
   $down = Get-NetAdapter -InterfaceIndex $gw.InterfaceIndex -EA SilentlyContinue
 }}
-Disable-HotspotIpv6ForConsole $down
+Repair-HotspotAdapterForConsole $down
+Clear-HotspotStaleArpEntries '192.168.137.'
 
 $dhcp67 = Test-HotspotDhcp67
 $icsOk = Test-HotspotIcsActive
@@ -1087,6 +1113,8 @@ try {{
     if (-not $dhcpOk) {{
       throw 'Mobile Hotspot is on but DHCP is not running. Toggle hotspot OFF then ON in Windows Settings, run ZubCut as Administrator, or use tools\\enable_hotspot_ics_now.ps1'
     }}
+    Repair-HotspotAdapterForConsole $down
+    Clear-HotspotStaleArpEntries '192.168.137.'
     Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot ready (main Wi-Fi internet sharing enabled).'
   }} else {{
     if (Verify-ICS) {{
@@ -1343,10 +1371,11 @@ try {{
   $mobileHotspotActive = (Test-MobileHotspotGateway) -or (Test-TetheringOn)
 
     if ($hotspotWasOn) {{
+    $pair = Get-HotspotAdapterPair
+    Repair-HotspotAdapterForConsole $pair.Down
+    Clear-HotspotStaleArpEntries '192.168.137.'
     if (-not (Test-HotspotIcsActive)) {{
-      if (-not (Apply-MainWifiSharingForHotspot)) {{
-        Apply-HotspotIcsAutomated | Out-Null
-      }}
+      Apply-MainWifiSharingForHotspot | Out-Null
       Start-Sleep -Seconds 2
     }}
     if (-not (Test-TetheringOn)) {{
