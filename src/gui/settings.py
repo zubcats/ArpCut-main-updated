@@ -208,16 +208,16 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _install_clumsy_controls(self):
         self.chkClumsy = QCheckBox('Clumsy Mode', self.gridLayoutWidget_2)
         self.chkClumsy.setToolTip(
-            'Same idea as Clumsy + manual hotspot sharing, but automated. '
-            'ZubCut starts Mobile Hotspot if needed, enables internet sharing (Ethernet → hotspot or Wi‑Fi → hotspot), '
-            'then you use lag/kill/dupe on the console. Run ZubCut as Administrator. '
-            'Connect the console to the PC hotspot Wi‑Fi (not your router).'
+            'Automates manual Clumsy-style sharing when your setup is already correct. '
+            'Detects: console on spare Ethernet (PC on Wi‑Fi or Ethernet to router), or console on PC Mobile Hotspot '
+            '(hotspot must already be ON). Enables sharing only if missing — does not turn hotspot on/off. '
+            'Run ZubCut as Administrator.'
         )
         self.lblClumsyPath = QLabel('Clumsy path: auto-detect when enabled', self.gridLayoutWidget_2)
         self.lblClumsyPath.setWordWrap(True)
         self.lblClumsyPath.setToolTip(
-            'On enable ZubCut detects Ethernet uplink + hotspot, or a console on a spare Ethernet port. '
-            'No manual sharing checkbox in Windows — ZubCut applies it for you.'
+            'On enable ZubCut picks the intended path (Ethernet console or Mobile Hotspot) and applies ICS '
+            'only when needed. If nothing valid is configured, Clumsy mode fails with setup hints.'
         )
         self.btnClumsyInstall = QPushButton('Install Clumsy mode…', self.gridLayoutWidget_2)
         self.btnClumsyInstall.setToolTip(

@@ -141,6 +141,8 @@ def read_clumsy_topology() -> str:
 
 def _clumsy_error_has_hotspot_hints(detail: str) -> bool:
     low = (detail or '').lower()
+    if 'valid hotspot path for clumsy mode' in low:
+        return True
     return (
         ('connect the ps5' in low or 'connect your console' in low)
         and ('mobile hotspot' in low or 'clumsy mode does' in low)
@@ -157,10 +159,11 @@ def format_clumsy_ics_error(detail: str, *, topology: str | None = None) -> str:
         lines.extend(
             [
                 '',
-                'Clumsy mode does the same as manual Clumsy setup (automated):',
-                '• Starts Mobile Hotspot if needed and enables internet sharing to it',
-                '• Connect your console to the PC hotspot Wi‑Fi (not your home router)',
-                '• Run ZubCut as Administrator, enable Clumsy mode, then use lag/kill as usual',
+                'Valid hotspot path for Clumsy mode:',
+                '• PC has internet on Wi‑Fi or Ethernet to your router',
+                '• Mobile Hotspot is ON; console on PC hotspot Wi‑Fi (not home router)',
+                '• Internet sharing: router adapter → hotspot adapter (ZubCut enables if missing)',
+                '• Run ZubCut as Administrator, then enable Clumsy mode',
             ]
         )
     if topo == 'ethernet' and 'lan port' not in low and 'ethernet' not in low:
@@ -177,8 +180,8 @@ def format_clumsy_ics_error(detail: str, *, topology: str | None = None) -> str:
         lines.extend(
             [
                 '',
-                'Enable Clumsy mode in Settings (run as Administrator). ZubCut auto-detects '
-                'Mobile Hotspot first, otherwise a console on a spare Ethernet port.',
+                'Enable Clumsy mode in Settings (run as Administrator). ZubCut auto-detects a '
+                'valid path: console on spare Ethernet, or console on PC Mobile Hotspot.',
             ]
         )
     if '0x80040201' in low or 'abonnenten' in low or 'subscribers' in low:
@@ -331,6 +334,8 @@ function Find-EthernetConsoleAdapter {
   $ethUp = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
     $_.ifIndex -ne $upIdx -and $_.Status -eq 'Up' -and (LikelyEthernetNic $_) -and -not (IsHotspotDownstreamNic $_) -and -not (IsVirtualNicLike $_.Name $_.InterfaceDescription)
   })
+  # One spare Ethernet port (not the router uplink) — console cable path even before ARP shows a neighbor.
+  if ($ethUp.Count -eq 1) { return $ethUp[0] }
   foreach ($a in $ethUp) {
     if (Test-ConsoleOnEthernetAdapter -Adapter $a -GatewayIp $GatewayIp -UplinkIps $upIps -GwPrefix $gwPrefix) {
       return $a
@@ -406,8 +411,9 @@ function Prepare-ClumsyHotspotConsole {
     Ensure-EthernetPreferredRouting
   }
   if (-not (Test-MobileHotspotGateway)) {
-    if (-not (Ensure-MobileHotspotOn)) {
-      return @{ ok = $false; error = 'Could not start Mobile Hotspot. Check Wi-Fi is enabled, then try Clumsy mode again.' }
+    return @{
+      ok = $false
+      error = 'Mobile Hotspot is not active. Turn it on in Windows Settings, then enable Clumsy mode again.'
     }
   }
   $down = Get-HotspotDownstreamAdapter
@@ -439,9 +445,14 @@ function Detect-ClumsyConsolePath {
     }
     return @{ Ok=$false; Error='Mobile Hotspot is on but ZubCut could not find the hotspot adapter. Toggle hotspot off and on in Windows Settings, then try Clumsy mode again.' }
   }
+  $uplinkHint = if ($uplinkKind -eq 'ethernet') { 'Ethernet to router' } else { 'Wi-Fi to router' }
   return @{
     Ok=$false
-    Error='No console path found. Enable Clumsy mode (Administrator) — ZubCut will start Mobile Hotspot and sharing automatically. Or plug the console into a spare Ethernet port on this PC.'
+    Error=(
+      'No valid console path detected. Set up one of these first, then enable Clumsy mode (Administrator):' +
+      " (A) Console on a spare Ethernet port — PC internet on $uplinkHint; or" +
+      ' (B) Mobile Hotspot ON — console on PC hotspot Wi-Fi, sharing from your internet adapter to the hotspot adapter.'
+    )
   }
 }
 function Test-IcsActiveForPair($pair) {
@@ -1018,16 +1029,6 @@ try {{
 
   $detect = Detect-ClumsyConsolePath
   if (-not $detect.Ok) {{
-    if (-not (Test-HotspotConsoleReady)) {{
-      $prepTry = Prepare-ClumsyHotspotConsole
-      if ($prepTry.ok) {{
-        $detect = Detect-ClumsyConsolePath
-      }}
-    }} else {{
-      $detect = Detect-ClumsyConsolePath
-    }}
-  }}
-  if (-not $detect.Ok) {{
     JsonOut @{{ ok=$false; error=$detect.Error }}
     exit 1
   }}
@@ -1141,17 +1142,23 @@ try {{
     Ensure-HotspotDhcpFirewall
     $shareMsg = 'Clumsy mode ready (hotspot sharing already active). Connect your console to the PC hotspot Wi-Fi.'
   }} else {{
-    $prep = Prepare-ClumsyHotspotConsole
-    if (-not $prep.ok) {{ throw $prep.error }}
+    if (-not (Test-MobileHotspotGateway)) {{
+      throw 'Mobile Hotspot is not active. Turn it on in Windows Settings, then enable Clumsy mode again.'
+    }}
+    Ensure-HotspotDhcpFirewall
+    if ($ZubcutUplinkKind -eq 'ethernet') {{
+      Disconnect-WifiClientWhenEthernetUplink
+      Ensure-EthernetPreferredRouting
+    }}
     if (-not (Test-IcsActiveForPair $pair)) {{
       if (-not (Apply-HotspotIcsCore $pair)) {{
-        throw 'Could not enable internet sharing to Mobile Hotspot. Run ZubCut as Administrator and try Clumsy mode again.'
+        throw 'Could not enable internet sharing to Mobile Hotspot. Check sharing points from your internet adapter to the hotspot adapter, then try Clumsy mode again.'
       }}
     }}
     if (-not (Verify-ICS)) {{
       Start-Sleep -Seconds 2
       if (-not (Apply-HotspotIcsCore $pair)) {{
-        throw 'Internet sharing to Mobile Hotspot could not be verified. Toggle hotspot OFF 15 sec ON, then enable Clumsy mode again.'
+        throw 'Internet sharing to Mobile Hotspot could not be verified. Fix sharing in Network Connections, then enable Clumsy mode again.'
       }}
     }}
     for ($w = 0; $w -lt 10; $w++) {{
@@ -1166,86 +1173,35 @@ try {{
   }}
     Write-ClumsyState $up $down $snapshot $shareMsg
   }} else {{
-    if (Verify-ICS) {{
-      Write-ClumsyState $up $down $snapshot 'ICS sharing already active.'
-    }}
-
-    try {{
-      try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
-      try {{ Enable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
-      $applied = $false
-      foreach ($privFirst in @($false, $true)) {{
-        try {{
-          Apply-ICS $privFirst
-          Start-Sleep -Seconds 2
-          if (Verify-ICS) {{ $applied = $true; break }}
-        }} catch {{
-          foreach ($row in @($snapshot)) {{
-            $g = NormGuid($row.guid)
-            if (-not $connMap.ContainsKey($g)) {{ continue }}
-            try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
-            if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
-            EnableSharingSafe $connMap[$g].cfg $kind
-          }}
-          if ($privFirst -eq $true) {{ throw }}
+    try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
+    try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
+    $ethPair = @{{ Up=$up; Down=$down }}
+    if (Test-IcsActiveForPair $ethPair) {{
+      Write-ClumsyState $up $down $snapshot 'Clumsy: Ethernet console path (ICS already active).'
+    }} else {{
+      try {{
+        try {{ Enable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
+        if (-not (Apply-HotspotIcsCore $ethPair)) {{
+          throw 'Could not enable Internet Connection Sharing for the Ethernet console path.'
         }}
-      }}
-      if (-not $applied) {{
-        try {{
-          try {{
-            Disable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 1
-            Enable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 3
-          }} catch {{}}
-          $share3 = New-Object -ComObject HNetCfg.HNetShare
-          $connMap = @{{}}
-          foreach ($conn in @($share3.EnumEveryConnection())) {{
-            try {{
-              $props = $share3.NetConnectionProps($conn)
-              $guid = NormGuid($props.Guid)
-              $cfg = $share3.INetSharingConfigurationForINetConnection($conn)
-              $connMap[$guid] = @{{ conn=$conn; cfg=$cfg; name=$props.Name }}
-            }} catch {{ continue }}
-          }}
-          $upKey = Resolve-ConnGuid $upGuid $up.Name
-          $dnKey = Resolve-ConnGuid $downGuid $down.Name
-          if (-not $upKey -or -not $dnKey) {{ throw 'Sharing manager lost adapter mapping after adapter reset.' }}
-          Apply-ICS $false
+        if (-not (Verify-ICS)) {{
           Start-Sleep -Seconds 2
-          if (-not (Verify-ICS)) {{
-            throw 'ICS could not be verified after adapter reset (run ZubCut as Administrator and check adapters).'
+          if (-not (Apply-HotspotIcsCore $ethPair)) {{
+            throw 'ICS for the Ethernet console path could not be verified. Check sharing on the router adapter and console port, then try again.'
           }}
-          $applied = $true
-        }} catch {{
-          foreach ($row in @($snapshot)) {{
-            $g = NormGuid($row.guid)
-            if (-not $connMap.ContainsKey($g)) {{ continue }}
-            try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
-            if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
-            EnableSharingSafe $connMap[$g].cfg $kind
-          }}
-          throw
         }}
+      }} catch {{
+        foreach ($row in @($snapshot)) {{
+          $g = NormGuid($row.guid)
+          if (-not $connMap.ContainsKey($g)) {{ continue }}
+          try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
+          if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
+          EnableSharingSafe $connMap[$g].cfg $kind
+        }}
+        throw
       }}
+      Write-ClumsyState $up $down $snapshot 'Clumsy: Ethernet console path (ICS enabled).'
     }}
-    catch {{
-      foreach ($row in @($snapshot)) {{
-        $g = NormGuid($row.guid)
-        if (-not $connMap.ContainsKey($g)) {{ continue }}
-        try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
-        if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
-        EnableSharingSafe $connMap[$g].cfg $kind
-      }}
-      throw
-    }}
-
-    if (-not (Verify-ICS)) {{
-      throw 'Could not enable Internet Connection Sharing for the Ethernet console path.'
-    }}
-
-    Start-Sleep -Seconds 2
-    Write-ClumsyState $up $down $snapshot 'Clumsy: Ethernet console path (ICS enabled).'
   }}
 }}
 catch {{
@@ -1276,14 +1232,13 @@ catch {{
 
 
 def _retry_main_wifi_sharing_for_hotspot() -> None:
-    """Best-effort: re-run automated hotspot prep after a failed enable."""
+    """Best-effort: apply ICS for detected path only (does not start Mobile Hotspot)."""
     if os.name != 'nt':
         return
     script = f"""
 $ErrorActionPreference = 'Continue'
 {_PS_HOTSPOT_HELPERS}
 try {{
-  Prepare-ClumsyHotspotConsole | Out-Null
   Apply-InternetSharingForClumsy | Out-Null
 }} catch {{}}
 """
