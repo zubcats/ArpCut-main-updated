@@ -50,6 +50,28 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         stop = src[src.index('def stopLagSwitch'): src.index('def startDupe', src.index('def stopLagSwitch'))]
         self.assertNotIn('lag_timer', stop)
 
+    def test_stop_lag_switch_releases_instantly_like_dupe(self) -> None:
+        src = self._main_py()
+        stop = src[src.index('def stopLagSwitch'): src.index('def startDupe', src.index('def stopLagSwitch'))]
+        self.assertIn('_ics_emergency_release', stop)
+        self.assertIn('_lag_ics_force_unpause', stop)
+        self.assertIn('_cancel_lag_block_reassert', stop)
+        self.assertNotIn('QTimer.singleShot(0, _lag_teardown)', stop)
+        self.assertNotIn('_schedule_flow_off_reinforce', stop)
+
+    def test_lag_allow_phase_resumes_windivert(self) -> None:
+        src = self._main_py()
+        self.assertIn('_lag_ics_resume_allow_phase', src)
+        self.assertIn('_flow_stable_victim_ip', src)
+        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_phase_deadline_poll')]
+        self.assertIn('_lag_ics_resume_allow_phase', allow)
+        self.assertIn('_cancel_lag_block_reassert', allow)
+
+    def test_release_windivert_unpauses_without_gate_match(self) -> None:
+        src = self._main_py()
+        rel = src[src.index('def _release_ics_windivert_block'): src.index('def _schedule_ics_hotspot_heal')]
+        self.assertNotIn('self._ics_gate_matches_device(device)', rel)
+
 
 if __name__ == '__main__':
     unittest.main()

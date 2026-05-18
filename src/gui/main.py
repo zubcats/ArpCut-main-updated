@@ -45,6 +45,17 @@ from tools.utils_gui import (
     table_row_hover_chrome,
     table_row_selection_chrome,
 )
+def format_countdown_ms(left_ms):
+    """Human-readable countdown (matches Dupe / Lag Switch inline labels)."""
+    left_ms = max(0, int(left_ms))
+    sec = left_ms / 1000.0
+    if sec >= 60:
+        whole = int(sec)
+        m, s = divmod(whole, 60)
+        return f'Time left: {m}:{s:02d}'
+    return f'Time left: {sec:.1f} s'
+
+
 from tools.frameless_chrome import (
     FramelessResizableMixin,
     setup_frameless_main_window,
@@ -301,6 +312,16 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
 
         layout.addWidget(self.timing_group)
 
+        self.lblLagCountdown = QLabel(body)
+        self.lblLagCountdown.setAlignment(Qt.AlignCenter)
+        self.lblLagCountdown.setWordWrap(True)
+        cd_font = QFont(self.lblLagCountdown.font())
+        cd_font.setPointSize(13)
+        cd_font.setBold(True)
+        self.lblLagCountdown.setFont(cd_font)
+        self.lblLagCountdown.setVisible(False)
+        layout.addWidget(self.lblLagCountdown)
+
         info = QLabel(
             'Cycle: Lag time (top) = block + MITM on. Normal time (bottom) = full allow '
             '(firewall off and ARP restored so traffic bypasses this PC). Then repeat.',
@@ -423,6 +444,20 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
             self.btnLagStartStop.setStyleSheet(main.BUTTON_NORMAL_STYLE)
         self.btnLagStartStop.blockSignals(False)
         self._set_timing_controls_enabled(not on)
+        if on and getattr(main, 'lag_active', False):
+            self.set_lag_countdown(main.lag_remaining_ms(), main._lag_in_allow_phase)
+        else:
+            self.set_lag_countdown(None, False)
+
+    def set_lag_countdown(self, left_ms, allow_phase: bool = False):
+        """Show remaining time for the current lag or normal phase; None when idle."""
+        if left_ms is None or left_ms <= 0:
+            self.lblLagCountdown.setVisible(False)
+            self.lblLagCountdown.setText('')
+            return
+        phase = 'Normal' if allow_phase else 'Lag'
+        self.lblLagCountdown.setVisible(True)
+        self.lblLagCountdown.setText(f'{phase} — {format_countdown_ms(left_ms)}')
 
     def _reject_enable(self):
         self.refresh_toggle_state()
@@ -808,14 +843,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._kill_teardown_ip = None
         self.lag_active = False
         self.lag_block_ms = 9000
-        self.lag_release_ms = 100
+        self.lag_release_ms = 1500
+        self._lag_reassert_gen = 0
         self.lag_device_mac = None
         self.lag_device_ip = None
         self.lag_direction = 'both'  # 'both', 'in', or 'out'
         self._lag_phase_deadline_timer = QTimer(self)
         self._lag_phase_deadline_timer.setInterval(25)
+        self._lag_phase_deadline_timer.setTimerType(Qt.PreciseTimer)
         self._lag_phase_deadline_timer.timeout.connect(self._lag_phase_deadline_poll)
         self._lag_phase_deadline = 0.0
+        self._lag_countdown_timer = QTimer(self)
+        self._lag_countdown_timer.setInterval(50)
+        self._lag_countdown_timer.setTimerType(Qt.PreciseTimer)
+        self._lag_countdown_timer.timeout.connect(self._tick_lag_countdown)
+        self._lag_dlg_refresh_mono = 0.0
         # False: block phase (Lag ms). True: allow phase (Normal ms).
         self._lag_in_allow_phase = False
         self._ics_wd_traffic_warn_session = None
@@ -1005,7 +1047,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.normalSpinMain = QSpinBox(self.groupLagInline)
         self.normalSpinMain.setRange(25, 2147483647)
         self.normalSpinMain.setSingleStep(25)
-        self.normalSpinMain.setValue(100)
+        self.normalSpinMain.setValue(1500)
         self.normalSpinMain.setSuffix(' ms')
         self.lagTimingRow.addWidget(self.normalSpinMain)
         self.groupLagInlineLayout.addLayout(self.lagTimingRow)
@@ -1033,6 +1075,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lagDirRow.addWidget(self.lagDirIncoming)
         self.lagDirRow.addWidget(self.lagDirOutgoing)
         self.groupLagInlineLayout.addLayout(self.lagDirRow)
+        self.lblLagCountdownMain = QLabel('', self.groupLagInline)
+        self.lblLagCountdownMain.setObjectName('lblLagCountdownMain')
+        self.lblLagCountdownMain.setVisible(False)
+        self.groupLagInlineLayout.addWidget(self.lblLagCountdownMain)
         self.gridLayout.addWidget(self.groupLagInline, 6, 1, 1, 4)
 
         self.groupDupeInline = QGroupBox('Dupe Controls', self.centralwidget)
@@ -2622,6 +2668,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_block_ms = block_ms
         self.lag_release_ms = release_ms
         self.lag_direction = direction
+        if self.lag_active:
+            dur = release_ms if getattr(self, '_lag_in_allow_phase', False) else block_ms
+            self._lag_phase_deadline = time.monotonic() + max(1, int(dur)) / 1000.0
+            self._tick_lag_countdown()
 
     def _refresh_lag_timing_from_dialog(self):
         """Keep lag settings in sync with always-visible inline controls."""
@@ -2717,7 +2767,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'QGroupBox#groupLagInline QSpinBox::down-arrow, QGroupBox#groupDupeInline QSpinBox::down-arrow {'
             ' image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDAgTDQuNSA2IEw5IDAgWiIvPjwvc3ZnPg==);'
             ' border: none; width: 9px; height: 6px; margin: 1px 1px 0 1px; }'
-            f'QLabel#lblDupeCountdownMain {{ color: {sel_bg}; font-weight: bold; }}'
+            f'QLabel#lblDupeCountdownMain, QLabel#lblLagCountdownMain {{ color: {sel_bg}; font-weight: bold; }}'
         )
         self.groupLagInline.setStyleSheet(panel_style)
         self.groupDupeInline.setStyleSheet(panel_style)
@@ -2795,7 +2845,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _schedule_lag_start_reassert(self, mac):
         """Quick ON reasserts so lag takes effect immediately despite ARP/firewall race timing."""
+        gen = int(getattr(self, '_lag_reassert_gen', 0)) + 1
+        self._lag_reassert_gen = gen
+
         def _reassert():
+            if int(getattr(self, '_lag_reassert_gen', 0)) != gen:
+                return
             if not self.lag_active or self.lag_device_mac != mac or self._lag_in_allow_phase:
                 return
             dev = self._lag_resolved_victim()
@@ -2957,18 +3012,26 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         gate = getattr(self, '_ics_lag_gate', None)
         if gate is None or not isinstance(device, dict):
             return False
-        resolved = clumsy_ics_resolve_victim_ip(device, self.scanner)
+        resolved = self._flow_stable_victim_ip(
+            device,
+            lag=getattr(self, 'lag_active', False),
+            dupe=getattr(self, 'dupe_active', False),
+        )
+        if not resolved:
+            resolved = clumsy_ics_resolve_victim_ip(device, self.scanner)
         table_ip = str(device.get('ip') or '').strip()
         return gate.victim_ip in (resolved, table_ip)
 
     def _ics_unpause_victim(self, device) -> None:
         """Instantly resume live traffic; discard held pause packets (no replay burst)."""
-        if not isinstance(device, dict):
-            return
+        _ = device
         gate = getattr(self, '_ics_lag_gate', None)
-        if gate is not None and self._ics_gate_matches_device(device):
+        if gate is not None:
             try:
-                gate.set_blocking(False)
+                if hasattr(gate, 'resume_from_pause'):
+                    gate.resume_from_pause()
+                else:
+                    gate.set_blocking(False)
             except Exception:
                 pass
 
@@ -2977,9 +3040,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not isinstance(device, dict):
             return
         mac = str(device.get('mac') or '').strip()
-        resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
+        resolved_ip = self._flow_stable_victim_ip(
+            device,
+            lag=getattr(self, 'lag_active', False),
+            dupe=getattr(self, 'dupe_active', False),
+        )
+        if not resolved_ip:
+            resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
         gate = getattr(self, '_ics_lag_gate', None)
-        if gate is not None and self._ics_gate_matches_device(device):
+        if gate is not None:
             try:
                 gate.set_blocking(False)
                 gate.clear_shaping()
@@ -3042,9 +3111,49 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self._ics_windivert_busy(mac):
             self._stop_ics_lag_gate()
 
-    def _schedule_ics_windivert_traffic_check(self, victim_ip: str) -> None:
-        """Once per new gate: hint if WinDivert sees no traffic while actively blocking."""
+    def _ics_victim_impairment_active(self, victim_ip: str) -> bool:
+        """True when ZubCut is intentionally pausing this hotspot client (Kill/Dupe/Lag/etc.)."""
         ip = str(victim_ip or '').strip()
+        if not ip:
+            return False
+        if getattr(self, 'lag_active', False):
+            lip = (getattr(self, 'lag_device_ip', None) or '').strip()
+            if not lip or lip == ip:
+                return True
+        if getattr(self, 'dupe_active', False):
+            dip = (getattr(self, 'dupe_device_ip', None) or '').strip()
+            if not dip or dip == ip:
+                return True
+        if getattr(self, 'percent_cut_active', False):
+            dev = self._get_device_by_mac(getattr(self, 'percent_cut_device_mac', None) or '')
+            if dev:
+                dip = self._flow_stable_victim_ip(dev) or str(dev.get('ip') or '').strip()
+                if dip == ip:
+                    return True
+        if getattr(self, 'mitm_shaping_active', False):
+            dev = self._get_device_by_mac(getattr(self, 'mitm_shaping_mac', None) or '')
+            if dev:
+                dip = self._flow_stable_victim_ip(dev) or str(dev.get('ip') or '').strip()
+                if dip == ip:
+                    return True
+        for _mac, dev in (getattr(self.killer, 'killed', None) or {}).items():
+            if not isinstance(dev, dict):
+                continue
+            dip = clumsy_ics_resolve_victim_ip(dev, self.scanner) or str(dev.get('ip') or '')
+            if str(dip).strip() == ip:
+                return True
+        return False
+
+    def _schedule_ics_windivert_traffic_check(self, victim_ip: str) -> None:
+        """
+        Once per new gate: hint if WinDivert never sees traffic for the filter IP.
+
+        Not used while Kill/Dupe/Lag (or other flows) are pausing the victim — zero packets
+        then usually means the pause worked, not that the PS5 is offline.
+        """
+        ip = str(victim_ip or '').strip()
+        if self._ics_victim_impairment_active(ip):
+            return
         gate = getattr(self, '_ics_lag_gate', None)
         if gate is None or gate.victim_ip != ip:
             return
@@ -3057,9 +3166,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             gate = getattr(self, '_ics_lag_gate', None)
             if gate is None or gate.victim_ip != ip or not gate.is_running():
                 return
-            if getattr(self, 'lag_active', False):
-                return
-            if not gate.is_blocking:
+            if self._ics_victim_impairment_active(ip):
                 return
             if gate.packets_matched > 0 or gate.packets_seen > 0:
                 return
@@ -3069,17 +3176,36 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log(
                 f'WinDivert is open but no packets yet for {ip} '
                 f'(layers {layers}, seen {gate.packets_seen}). '
-                'Generate traffic on the PS5 (game, store, or connection test), then try again. '
-                'If Kill/Dupe already work, you can ignore this until the console is online.',
+                'Generate traffic on the PS5 (game, store, or connection test), then try again.',
                 'red',
             )
 
         QTimer.singleShot(5000, _check)
 
+    def _flow_stable_victim_ip(self, device, *, lag: bool = False, dupe: bool = False) -> str:
+        """Pinned IP while lag/dupe runs — avoids gate churn when the table rescans."""
+        if lag and getattr(self, 'lag_active', False):
+            ip = (getattr(self, 'lag_device_ip', None) or '').strip()
+            if ip:
+                return ip
+        if dupe and getattr(self, 'dupe_active', False):
+            ip = (getattr(self, 'dupe_device_ip', None) or '').strip()
+            if ip:
+                return ip
+        if isinstance(device, dict):
+            return clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
+                device.get('ip') or ''
+            ).strip()
+        return ''
+
     def _ensure_ics_lag_gate(self, device, direction: str) -> bool:
         if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
             return False
-        ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
+        ip = self._flow_stable_victim_ip(
+            device,
+            lag=getattr(self, 'lag_active', False),
+            dupe=getattr(self, 'dupe_active', False),
+        )
         if not ip:
             return False
         from tools.ics_windivert_shaper import IcsWinDivertLagGate
@@ -3617,9 +3743,81 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if gate is None:
             return
         try:
-            gate.set_blocking(False)
+            if hasattr(gate, 'resume_from_pause'):
+                gate.resume_from_pause()
+            else:
+                gate.set_blocking(False)
         except Exception:
             pass
+
+    def _lag_ics_resume_allow_phase(self, device) -> None:
+        """Allow window: unpause WinDivert and clear any stray firewall rules for this victim."""
+        self._lag_ics_force_unpause()
+        if not isinstance(device, dict):
+            return
+        if self._lag_ics_windivert_active(device):
+            self._lag_ics_set_paused(device, False)
+            return
+        if clumsy_ics_use_firewall_only(device, self.scanner):
+            self._clear_ics_client_block(device, pause_only=True)
+            ip = self._flow_stable_victim_ip(device, lag=True) or str(device.get('ip') or '')
+            if ip:
+                try:
+                    unblock_ip(ip)
+                except Exception:
+                    pass
+            return
+        self._clear_victim_block(device)
+
+    def _cancel_lag_block_reassert(self) -> None:
+        self._lag_reassert_gen = int(getattr(self, '_lag_reassert_gen', 0)) + 1
+
+    def lag_remaining_ms(self):
+        if not self.lag_active:
+            return None
+        return max(0, int((self._lag_phase_deadline - time.monotonic()) * 1000))
+
+    def _arm_lag_phase_countdown(self) -> None:
+        self._lag_countdown_timer.start()
+        self._tick_lag_countdown()
+
+    def _stop_lag_countdown(self) -> None:
+        self._lag_countdown_timer.stop()
+        self.lblLagCountdownMain.setVisible(False)
+        self.lblLagCountdownMain.setText('')
+        dlg = getattr(self, 'lag_switch_dialog', None)
+        if dlg is not None:
+            try:
+                dlg.set_lag_countdown(None, False)
+            except Exception:
+                pass
+
+    def _tick_lag_countdown(self) -> None:
+        if not self.lag_active:
+            self._stop_lag_countdown()
+            return
+        rem = self.lag_remaining_ms()
+        if rem is None:
+            self.lblLagCountdownMain.setVisible(False)
+            self.lblLagCountdownMain.setText('')
+            return
+        allow = bool(getattr(self, '_lag_in_allow_phase', False))
+        phase = 'Normal' if allow else 'Lag'
+        if rem <= 0:
+            self.lblLagCountdownMain.setVisible(True)
+            self.lblLagCountdownMain.setText(f'{phase} — Time left: 0.0 s')
+        else:
+            self.lblLagCountdownMain.setVisible(True)
+            self.lblLagCountdownMain.setText(f'{phase} — {format_countdown_ms(rem)}')
+        dlg = getattr(self, 'lag_switch_dialog', None)
+        if dlg is not None and dlg.isVisible():
+            now = time.monotonic()
+            if now - getattr(self, '_lag_dlg_refresh_mono', 0.0) >= 0.15:
+                self._lag_dlg_refresh_mono = now
+                try:
+                    dlg.set_lag_countdown(rem, allow)
+                except Exception:
+                    pass
 
     def _lag_phase_begin_block(self, device) -> None:
         if not self.lag_active or not isinstance(device, dict):
@@ -3628,13 +3826,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_in_allow_phase = False
         block_ms = max(1, int(self.lag_block_ms))
         self._lag_phase_deadline = time.monotonic() + block_ms / 1000.0
+        self._arm_lag_phase_countdown()
         try:
             self._lag_apply_block(device)
         except Exception:
             pass
+        mac = str(device.get('mac') or '').strip()
+        if mac:
+            self._schedule_lag_start_reassert(mac)
         if self.lag_active:
             self._lag_phase_deadline_timer.start()
-        mac = str(device.get('mac') or '').strip()
         if mac:
             self._refresh_table_row_for_mac(mac, device.get('ip'))
             self._repaint_all_table_rows_for_hover()
@@ -3642,19 +3843,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _lag_phase_begin_allow(self, device) -> None:
         if not self.lag_active or not isinstance(device, dict):
             return
+        self._cancel_lag_block_reassert()
         self._refresh_lag_timing_from_dialog()
         self._lag_in_allow_phase = True
         allow_ms = max(1, int(self.lag_release_ms))
         self._lag_phase_deadline = time.monotonic() + allow_ms / 1000.0
-        self._lag_ics_force_unpause()
+        self._arm_lag_phase_countdown()
         try:
-            if not self._lag_ics_windivert_active(device):
-                if clumsy_ics_use_firewall_only(device, self.scanner):
-                    self._clear_ics_client_block(device, pause_only=True)
-                else:
-                    self._clear_victim_block(device)
-            elif not self._lag_ics_set_paused(device, False):
-                self._lag_ics_force_unpause()
+            self._lag_ics_resume_allow_phase(device)
         except Exception:
             self._lag_ics_force_unpause()
         mac = str(device.get('mac') or '').strip()
@@ -3715,15 +3911,46 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         prev_mac = self.lag_device_mac
         snap = getattr(self, '_lag_device_snapshot', None)
-        # Tear down active state first so any concurrent timer tick becomes a no-op.
+        # Stop phase timer before clearing lag_active so a tick cannot re-block.
+        self._lag_phase_deadline_timer.stop()
+        self._stop_lag_countdown()
+        self._cancel_lag_block_reassert()
+        device = self._lag_resolved_victim()
+
+        # Instant resume (same path as Kill/Dupe OFF) — do not defer with QTimer.singleShot.
+        self._lag_ics_force_unpause()
+        if device:
+            try:
+                if clumsy_ics_use_firewall_only(device, self.scanner):
+                    self._ics_emergency_release(device, heal=True)
+                else:
+                    self._lag_ics_set_paused(device, False)
+                    self._clear_ics_client_block(device, pause_only=True)
+                    ip = (device.get('ip') or '').strip()
+                    if ip and _is_valid_ip(ip):
+                        try:
+                            unblock_ip(ip)
+                        except Exception:
+                            pass
+                    victim = self._victim_record_for_mac(device.get('mac') or '') or device
+                    if victim and victim.get('mac') not in self.killer.killed:
+                        try:
+                            self.killer.unkill(victim)
+                        except Exception:
+                            pass
+            except Exception:
+                self._lag_ics_force_unpause()
+        else:
+            self._ics_teardown_gate_if_idle(prev_mac)
+
         self.lag_active = False
         self.lag_device_mac = None
         self.lag_device_ip = None
         self._lag_in_allow_phase = False
-        self._lag_phase_deadline_timer.stop()
         self._lag_device_snapshot = None
         self._lag_restoring_after_stop = False
         self._lag_restoring_mac = None
+        self._ics_teardown_gate_if_idle(prev_mac)
         self._sync_killed_devices()
         self.btnLagSwitch.setText('Lag Switch')
         self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
@@ -3740,55 +3967,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 dlg_lag.refresh_toggle_state()
             except Exception:
                 pass
-
-        def _lag_teardown():
-            live = self._get_device_by_mac(prev_mac) if prev_mac else None
-            snap_ok = snap if (isinstance(snap, dict) and snap.get('mac') == prev_mac) else None
-            if not live and snap_ok:
-                device = dict(snap_ok)
-            elif live and snap_ok:
-                device = dict(live)
-                lip = (live.get('ip') or '').strip()
-                sip = (snap_ok.get('ip') or '').strip()
-                if (not lip) and sip:
-                    device['ip'] = sip
-            elif live:
-                device = dict(live)
-            else:
-                device = None
-            if not device or device.get('mac') != prev_mac:
-                self._ics_teardown_gate_if_idle(prev_mac)
-                return
-            victim = self._victim_record_for_mac(prev_mac) or device
-            try:
-                if clumsy_ics_use_firewall_only(device, self.scanner):
-                    self._ics_emergency_release(device, heal=True)
-                else:
-                    for cand in (device, snap_ok):
-                        if isinstance(cand, dict):
-                            ip = (cand.get('ip') or '').strip()
-                            if ip and _is_valid_ip(ip):
-                                try:
-                                    unblock_ip(ip)
-                                except Exception:
-                                    pass
-                    if victim:
-                        self._clear_ics_client_block(victim)
-                        if not clumsy_ics_use_firewall_only(victim, self.scanner):
-                            self.killer.unkill(victim)
-                            self.killer.reinforce_restore(victim)
-                            lag_off_seq = self._bump_flow_off_intent('lag', prev_mac)
-                            self._schedule_flow_off_reinforce(
-                                'lag', prev_mac, lag_off_seq, 25, victim
-                            )
-                            self._schedule_flow_off_reinforce(
-                                'lag', prev_mac, lag_off_seq, 100, victim
-                            )
-            except Exception:
-                pass
-            self._sync_killed_devices()
-
-        QTimer.singleShot(0, _lag_teardown)
 
     def startDupe(self, device, duration_ms, direction):
         if not _is_valid_ip(device.get('ip') or ''):

@@ -602,6 +602,11 @@ class IcsWinDivertLagGate:
             self._cap_out_bps = max(0.0, float(max_kbps_out)) * 1000.0 / 8.0
             self._cap_in_bps = max(0.0, float(max_kbps_in)) * 1000.0 / 8.0
 
+    def resume_from_pause(self) -> None:
+        """End pause/hold without stopping the gate thread (lag allow phase / unpause)."""
+        self.clear_shaping()
+        self.set_blocking(False)
+
     def clear_shaping(self) -> None:
         with self._lock:
             self._delay_out_ms = 0
