@@ -381,7 +381,7 @@ function Test-HotspotConsoleReady {
   $det = Detect-ClumsyConsolePath
   if (-not $det.Ok -or [string]$det.Path -ne 'hotspot') { return $false }
   $pair = @{ Up = $det.Up; Down = $det.Down }
-  return (Test-IcsActiveForPair $pair)
+  return (Test-ClumsyHotspotPathReady $pair)
 }
 function Prepare-ClumsyHotspotConsole {
   <#
@@ -519,6 +519,20 @@ function Get-HotspotAdapterPair {
 }
 function Test-HotspotDhcp67 {
   return [bool](Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue)
+}
+function Test-MobileHotspotOperational {
+  # Mobile Hotspot often NATs via icssvc without classic HNetCfg Sharing tab showing on.
+  if (-not (Test-MobileHotspotGateway)) { return $false }
+  if (-not (Test-TetheringOn)) { return $false }
+  if (-not (Test-HotspotDhcp67)) { return $false }
+  $up = Get-InternetUplinkAdapter
+  if (-not $up) { return $false }
+  return $true
+}
+function Test-ClumsyHotspotPathReady($pair) {
+  if ($null -eq $pair -or $null -eq $pair.Up -or $null -eq $pair.Down) { return $false }
+  if (Test-IcsActiveForPair $pair) { return $true }
+  return (Test-MobileHotspotOperational)
 }
 function Test-HotspotIcsActive {
   $det = Detect-ClumsyConsolePath
@@ -1150,10 +1164,14 @@ try {{
     try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
     try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
     $pair = @{{ Up=$up; Down=$down }}
-  $alreadyOk = (Test-MobileHotspotGateway) -and (Test-IcsActiveForPair $pair)
+  $alreadyOk = (Test-MobileHotspotGateway) -and (Test-ClumsyHotspotPathReady $pair)
   if ($alreadyOk) {{
     Ensure-HotspotDhcpFirewall
-    $shareMsg = 'Clumsy mode ready (hotspot sharing already active). Connect your console to the PC hotspot Wi-Fi.'
+    if (Test-IcsActiveForPair $pair) {{
+      $shareMsg = 'Clumsy mode ready (hotspot sharing already active). Connect your console to the PC hotspot Wi-Fi.'
+    }} else {{
+      $shareMsg = 'Clumsy mode ready (Mobile Hotspot NAT active). Connect your console to the PC hotspot Wi-Fi.'
+    }}
   }} else {{
     if (-not (Test-MobileHotspotGateway)) {{
       throw 'Mobile Hotspot is not active. Turn it on in Windows Settings, then enable Clumsy mode again.'
@@ -1163,25 +1181,37 @@ try {{
       Disconnect-WifiClientWhenEthernetUplink
       Ensure-EthernetPreferredRouting
     }}
-    if (-not (Test-IcsActiveForPair $pair)) {{
-      if (-not (Apply-HotspotIcsCore $pair)) {{
-        throw 'Could not enable internet sharing to Mobile Hotspot. Check sharing points from your internet adapter to the hotspot adapter, then try Clumsy mode again.'
+    $icsOk = Test-IcsActiveForPair $pair
+    if (-not $icsOk) {{
+      Apply-HotspotIcsCore $pair | Out-Null
+      $icsOk = (Test-IcsActiveForPair $pair)
+    }}
+    if (-not $icsOk) {{
+      if (-not (Verify-ICS)) {{
+        Start-Sleep -Seconds 2
+        Apply-HotspotIcsCore $pair | Out-Null
+        $icsOk = (Verify-ICS)
       }}
     }}
-    if (-not (Verify-ICS)) {{
-      Start-Sleep -Seconds 2
-      if (-not (Apply-HotspotIcsCore $pair)) {{
-        throw 'Internet sharing to Mobile Hotspot could not be verified. Fix sharing in Network Connections, then enable Clumsy mode again.'
-      }}
+    if (-not $icsOk -and -not (Test-MobileHotspotOperational)) {{
+      throw 'Could not enable internet sharing to Mobile Hotspot. Turn hotspot ON, confirm the PS5 has internet, then try Clumsy mode again. Or set sharing manually: Ethernet -> Local Area Connection* 12.'
     }}
     for ($w = 0; $w -lt 10; $w++) {{
       if (Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue) {{ break }}
       Start-Sleep -Seconds 1
     }}
-    $shareMsg = if ($ZubcutUplinkKind -eq 'ethernet') {{
-      'Clumsy mode ready: Ethernet -> Mobile Hotspot. Connect your console to the PC hotspot Wi-Fi.'
+    if ($icsOk) {{
+      $shareMsg = if ($ZubcutUplinkKind -eq 'ethernet') {{
+        'Clumsy mode ready: Ethernet -> Mobile Hotspot. Connect your console to the PC hotspot Wi-Fi.'
+      }} else {{
+        'Clumsy mode ready: Wi-Fi -> Mobile Hotspot. Connect your console to the PC hotspot Wi-Fi.'
+      }}
     }} else {{
-      'Clumsy mode ready: Wi-Fi -> Mobile Hotspot. Connect your console to the PC hotspot Wi-Fi.'
+      $shareMsg = if ($ZubcutUplinkKind -eq 'ethernet') {{
+        'Clumsy mode ready: Ethernet uplink + Mobile Hotspot NAT (classic Sharing tab may stay off).'
+      }} else {{
+        'Clumsy mode ready: Wi-Fi uplink + Mobile Hotspot NAT (classic Sharing tab may stay off).'
+      }}
     }}
   }}
     Write-ClumsyState $up $down $snapshot $shareMsg
