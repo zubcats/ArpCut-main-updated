@@ -818,6 +818,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_timer.timeout.connect(self._lag_phase_tick)
         # False: firewall block is active (victim is in "lag" phase). True: allow window (rules cleared).
         self._lag_in_allow_phase = False
+        self._ics_wd_traffic_warn_session = None
         # Last started lag target; used on stop if the device row is missing from the scan list.
         self._lag_device_snapshot = None
         self._lag_restoring_after_stop = False
@@ -2705,6 +2706,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self._dupe_pending_clear or getattr(self, '_dupe_clear_future', None):
             self._flush_pending_dupe_clear_sync(max_wait_ms=400)
         self._drop_dupe_restoring_banner()
+        self.stop_mitm_shaping(log=False)
         if self.lag_active:
             self.stopLagSwitch(refresh_dialog=False)
         self.lag_device_mac = device['mac']
@@ -3000,27 +3002,38 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._stop_ics_lag_gate()
 
     def _schedule_ics_windivert_traffic_check(self, victim_ip: str) -> None:
-        """Warn when WinDivert is open but no hotspot packets matched after a short wait."""
+        """Once per new gate: hint if WinDivert sees no traffic while actively blocking."""
         ip = str(victim_ip or '').strip()
+        gate = getattr(self, '_ics_lag_gate', None)
+        if gate is None or gate.victim_ip != ip:
+            return
+        session = id(gate)
+        if getattr(self, '_ics_wd_traffic_warn_session', None) == session:
+            return
+        self._ics_wd_traffic_warn_session = session
 
         def _check() -> None:
             gate = getattr(self, '_ics_lag_gate', None)
             if gate is None or gate.victim_ip != ip or not gate.is_running():
                 return
+            if getattr(self, 'lag_active', False) and getattr(self, '_lag_in_allow_phase', False):
+                return
+            if not gate.is_blocking:
+                return
             if gate.packets_matched > 0 or gate.packets_seen > 0:
                 return
-            if getattr(gate, 'packets_held', 0) > 0:
+            if gate.packets_held > 0:
                 return
             layers = gate.active_layers or ()
             self.log(
                 f'WinDivert is open but no packets yet for {ip} '
                 f'(layers {layers}, seen {gate.packets_seen}). '
-                'Use the PS5 on PC Mobile Hotspot (192.168.137.x), open a game or store, then try again. '
-                'If it persists, run tools\\Repair-WinDivert-Service.cmd as Administrator.',
+                'Generate traffic on the PS5 (game, store, or connection test), then try again. '
+                'If Kill/Dupe already work, you can ignore this until the console is online.',
                 'red',
             )
 
-        QTimer.singleShot(2500, _check)
+        QTimer.singleShot(5000, _check)
 
     def _ensure_ics_lag_gate(self, device, direction: str) -> bool:
         if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
@@ -3039,6 +3052,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         gate = IcsWinDivertLagGate(ip)
         gate.start(direction=direction)
         self._ics_lag_gate = gate
+        self._schedule_ics_windivert_traffic_check(ip)
         return True
 
     def _apply_ics_client_block(
@@ -3079,7 +3093,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                             f'Hotspot pause on {ip} (WinDivert layers {layers})',
                             UI_LOG_VICTIM_BLOCK_FG,
                         )
-                    self._schedule_ics_windivert_traffic_check(ip)
                     return True
             except OSError as exc:
                 detail = clumsy_windivert_probe_detail(ip)
@@ -3530,13 +3543,41 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
 
+    def _lag_ics_windivert_active(self, device) -> bool:
+        return bool(
+            isinstance(device, dict)
+            and clumsy_ics_use_firewall_only(device, self.scanner)
+            and clumsy_ics_lag_can_use_windivert(device, self.scanner)
+        )
+
+    def _lag_ics_set_paused(self, device, paused: bool) -> bool:
+        """Lag Switch on hotspot: toggle WinDivert pause only (no Kill bookkeeping)."""
+        if not self._lag_ics_windivert_active(device):
+            return False
+        try:
+            if not self._ensure_ics_lag_gate(device, self.lag_direction):
+                return False
+            gate = self._ics_lag_gate
+            if gate is None:
+                return False
+            if paused:
+                gate.clear_shaping()
+                gate.set_blocking(True, mode='pause')
+            else:
+                gate.set_blocking(False)
+            return True
+        except Exception:
+            return False
+
     def _lag_enter_allow_phase(self, device):
         """
         Allow window (bottom spin): unpause WinDivert (discard held packets, live traffic passes).
         On ICS/hotspot the gate stays open — no ARP MITM or firewall rules.
         """
         try:
-            if clumsy_ics_use_firewall_only(device, self.scanner):
+            if self._lag_ics_set_paused(device, False):
+                pass
+            elif clumsy_ics_use_firewall_only(device, self.scanner):
                 self._clear_ics_client_block(device, pause_only=True)
             else:
                 self._clear_victim_block(device)
@@ -3548,7 +3589,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._repaint_all_table_rows_for_hover()
 
     def _lag_apply_block(self, device):
-        self._apply_victim_block(device, self.lag_direction, for_dupe=False, for_lag=True)
+        if not self._lag_ics_set_paused(device, True):
+            self._apply_victim_block(device, self.lag_direction, for_dupe=False, for_lag=True)
 
     def _lag_resolved_victim(self):
         """
@@ -4164,6 +4206,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not getattr(self, 'mitm_shaping_active', False):
             self._stop_mitm_adv_schedule()
             return
+        if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
+            return
         from tools import mitm_adv_sched
 
         now = mitm_adv_sched.monotonic_now()
@@ -4283,6 +4327,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             and self._ics_lag_gate is not None
         ):
             if use_wd:
+                if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
+                    self._refresh_advanced_lag_mitm_if_visible()
+                    return
                 self._ics_lag_gate.set_blocking(False)
                 self._ics_lag_gate.apply_shaping_params(
                     du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps

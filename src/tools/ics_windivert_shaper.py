@@ -477,6 +477,11 @@ class IcsWinDivertLagGate:
         return int(self._packets_held)
 
     @property
+    def is_blocking(self) -> bool:
+        with self._lock:
+            return bool(self._blocking)
+
+    @property
     def active_layers(self) -> tuple[int, ...]:
         return tuple(self._open_layers)
 

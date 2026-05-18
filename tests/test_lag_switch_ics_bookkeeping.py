@@ -33,6 +33,7 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
 
     def test_lag_apply_block_passes_for_lag(self) -> None:
         src = self._main_py()
+        self.assertIn('_lag_ics_set_paused', src)
         self.assertIn('for_lag=True', src)
 
     def test_row_chrome_respects_allow_phase(self) -> None:
