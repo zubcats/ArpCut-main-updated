@@ -26,6 +26,18 @@ class TestIcsWinDivertFilter(unittest.TestCase):
         filt = wd._ics_windivert_filter('10.0.0.8', '192.168.137.')
         self.assertIn('10.0.0.8', filt)
 
+    def test_hotspot_client_packet_match_subnet(self) -> None:
+        self.assertTrue(
+            wd._packet_matches_hotspot_client(
+                '192.168.137.194', '8.8.8.8', '192.168.137.194', '192.168.137.'
+            )
+        )
+        self.assertFalse(
+            wd._packet_matches_hotspot_client(
+                '192.168.1.165', '8.8.8.8', '192.168.137.194', '192.168.137.'
+            )
+        )
+
     def test_resolve_victim_ip_from_arp_table(self) -> None:
         device = {'ip': '192.168.1.99', 'mac': 'aa:bb:cc:dd:ee:ff'}
         cache = (

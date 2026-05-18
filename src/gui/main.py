@@ -38,6 +38,7 @@ from tools.utils_gui import (
     set_settings,
     get_settings,
     import_settings,
+    is_admin,
     apply_app_global_dark_stylesheet,
     sync_translucent_chrome,
     register_window_surface_effects,
@@ -399,7 +400,9 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         if not main or not main.lag_active or not main.lag_device_mac:
             return
         dev = main._get_selected_device()
-        if not dev or dev.get('mac') != main.lag_device_mac:
+        if not dev or not main._flow_matches_active_row(
+            dev, main.lag_device_mac, getattr(main, 'lag_device_ip', None)
+        ):
             return
         lag_ms, normal_ms, direction = self.values()
         main.applyLagSwitchSettings(lag_ms, normal_ms, direction)
@@ -738,7 +741,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.setWindowIcon(self.shell_icon)
         self.setupUi(self)
-        self.setWindowTitle(APP_DISPLAY_NAME)
+        self._admin_elevated = bool(sys.platform == 'win32' and is_admin())
+        self.setWindowTitle(self._app_window_title())
         apply_app_global_dark_stylesheet()
         self.setStyleSheet('')
         # Rebalance top toolbar row so right-side empty space is used more evenly.
@@ -1202,7 +1206,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         # Windows: caption uses shell_icon so title strip + DWM hover match the .exe/.ico (UI crop looks thin).
         _caption_icon = self.shell_icon if sys.platform == 'win32' else self.icon
-        setup_frameless_main_window(self, APP_DISPLAY_NAME, _caption_icon, maximizable=True)
+        setup_frameless_main_window(self, self._app_window_title(), _caption_icon, maximizable=True)
         _chrome_windows = [
             self,
             self.settings_window,
@@ -1612,6 +1616,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         event.accept()
 
+    def _app_window_title(self) -> str:
+        if getattr(self, '_admin_elevated', False):
+            return f'{APP_DISPLAY_NAME} — Administrator'
+        return APP_DISPLAY_NAME
+
     def current_index(self):
         return self.scanner.devices[self.tableScan.currentRow()]
     
@@ -1739,9 +1748,33 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _flow_matches_row(self, device, flow_mac, flow_ip=None) -> bool:
         if not device or not flow_mac or device.get('mac') != flow_mac:
             return False
+        want = (flow_ip or '').strip()
+        if not want:
+            # Same MAC on home LAN + hotspot: never highlight every nickname row.
+            peers = [
+                d
+                for d in self.scanner.devices
+                if d.get('mac') == flow_mac and not d.get('admin')
+            ]
+            return len(peers) <= 1
+        return (str(device.get('ip') or '').strip() == want)
+
+    def _flow_matches_active_row(self, device, flow_mac, flow_ip=None) -> bool:
+        """Match lag/dupe/kill flows to one table row (MAC + IP)."""
         if flow_ip:
-            return (str(device.get('ip') or '').strip() == str(flow_ip).strip())
-        return True
+            return self._flow_matches_row(device, flow_mac, flow_ip)
+        snap_ip = ''
+        if getattr(self, 'lag_active', False) and flow_mac == getattr(self, 'lag_device_mac', None):
+            snap = getattr(self, '_lag_device_snapshot', None)
+            if isinstance(snap, dict):
+                snap_ip = str(snap.get('ip') or '').strip()
+        if getattr(self, 'dupe_active', False) and flow_mac == getattr(self, 'dupe_device_mac', None):
+            snap = getattr(self, '_dupe_arm_device', None)
+            if isinstance(snap, dict):
+                snap_ip = str(snap.get('ip') or '').strip()
+        if snap_ip:
+            return self._flow_matches_row(device, flow_mac, snap_ip)
+        return self._flow_matches_row(device, flow_mac, flow_ip)
 
     def _killed_profile_on(self, device) -> bool:
         pk = self._killed_profile_key(device)
@@ -1769,17 +1802,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not device or device.get('admin'):
             return False
         mac = device['mac']
-        if getattr(self, 'lag_active', False) and self._flow_matches_row(
+        if getattr(self, 'lag_active', False) and self._flow_matches_active_row(
             device, self.lag_device_mac, getattr(self, 'lag_device_ip', None)
         ):
             return True
-        if getattr(self, 'dupe_active', False) and self._flow_matches_row(
+        if getattr(self, 'dupe_active', False) and self._flow_matches_active_row(
             device, self.dupe_device_mac, getattr(self, 'dupe_device_ip', None)
         ):
             return True
-        if mac not in self.killer.killed:
+        if not self._killed_profile_on(device):
             return False
-        return self._killed_profile_on(device)
+        return mac in self.killer.killed
 
     def _table_hover_cell_palette(self, row, device):
         """
@@ -2675,8 +2708,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self.lag_active:
             self.stopLagSwitch(refresh_dialog=False)
         self.lag_device_mac = device['mac']
-        self.lag_device_ip = device.get('ip')
-        self._lag_device_snapshot = dict(device)
+        resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
+        self.lag_device_ip = resolved_ip or device.get('ip')
+        snap = dict(device)
+        if resolved_ip:
+            snap['ip'] = resolved_ip
+        self._lag_device_snapshot = snap
         self.lag_active = True
         self._refresh_lag_timing_from_dialog()
         self.btnLagSwitch.setText('■ LAGGING')
@@ -2838,10 +2875,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _ics_windivert_busy(self, mac: str | None = None) -> bool:
         """True if any flow still uses the shared ICS WinDivert gate for this MAC (or any)."""
-        if self.lag_active and (mac is None or self.lag_device_mac == mac):
+        if self.lag_active and mac is None:
             return True
-        if self.dupe_active and (mac is None or self.dupe_device_mac == mac):
+        if self.lag_active and mac is not None:
+            dev = self._get_device_by_mac(mac, getattr(self, 'lag_device_ip', None))
+            if dev and self._flow_matches_active_row(dev, self.lag_device_mac, self.lag_device_ip):
+                return True
+        if self.dupe_active and mac is None:
             return True
+        if self.dupe_active and mac is not None:
+            dev = self._get_device_by_mac(mac, getattr(self, 'dupe_device_ip', None))
+            if dev and self._flow_matches_active_row(dev, self.dupe_device_mac, self.dupe_device_ip):
+                return True
         if self.percent_cut_active and (mac is None or self.percent_cut_device_mac == mac):
             return True
         if self.mitm_shaping_active and (mac is None or self.mitm_shaping_mac == mac):
@@ -2955,24 +3000,27 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._stop_ics_lag_gate()
 
     def _schedule_ics_windivert_traffic_check(self, victim_ip: str) -> None:
-        """Warn when WinDivert is open but no hotspot packets matched the console IP."""
+        """Warn when WinDivert is open but no hotspot packets matched after a short wait."""
         ip = str(victim_ip or '').strip()
 
         def _check() -> None:
             gate = getattr(self, '_ics_lag_gate', None)
             if gate is None or gate.victim_ip != ip or not gate.is_running():
                 return
-            if gate.packets_matched > 0:
+            if gate.packets_matched > 0 or gate.packets_seen > 0:
+                return
+            if getattr(gate, 'packets_held', 0) > 0:
                 return
             layers = gate.active_layers or ()
             self.log(
-                f'WinDivert is open but saw no traffic for {ip} '
-                f'(layers {layers}, raw {gate.packets_seen} pkts). '
-                'PS5 must use the PC hotspot (192.168.137.x), Clumsy mode on, ZubCut as Administrator.',
+                f'WinDivert is open but no packets yet for {ip} '
+                f'(layers {layers}, seen {gate.packets_seen}). '
+                'Use the PS5 on PC Mobile Hotspot (192.168.137.x), open a game or store, then try again. '
+                'If it persists, run tools\\Repair-WinDivert-Service.cmd as Administrator.',
                 'red',
             )
 
-        QTimer.singleShot(700, _check)
+        QTimer.singleShot(2500, _check)
 
     def _ensure_ics_lag_gate(self, device, direction: str) -> bool:
         if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
@@ -3494,7 +3542,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         mac = getattr(self, 'lag_device_mac', None)
         if not mac:
             return None
-        live = self._get_device_by_mac(mac)
+        live = self._get_device_by_mac(mac, getattr(self, 'lag_device_ip', None))
         snap = getattr(self, '_lag_device_snapshot', None)
         if snap is not None and snap.get('mac') != mac:
             snap = None
@@ -4768,7 +4816,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         mac = device['mac']
         base_tip = getattr(self, '_btn_kill_tooltip_static', None)
-        if self.lag_active and self._flow_matches_row(
+        if self.lag_active and self._flow_matches_active_row(
             device, self.lag_device_mac, getattr(self, 'lag_device_ip', None)
         ):
             lag_key = getattr(self, '_shortcut_label_lag', 'M')
@@ -4781,7 +4829,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     + ' While lag switch is running for this device, this stops lag and restores traffic (it does not turn Kill on).'
                 )
             return
-        if self.dupe_active and self._flow_matches_row(
+        if self.dupe_active and self._flow_matches_active_row(
             device, self.dupe_device_mac, getattr(self, 'dupe_device_ip', None)
         ):
             dupe_key = getattr(self, '_shortcut_label_dupe', 'P')

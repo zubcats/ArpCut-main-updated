@@ -329,6 +329,17 @@ if __name__ == "__main__":
         GUI.scanner.iface = get_default_iface()
         GUI.scanner.init()
 
+    if _sys.platform == 'win32':
+        from tools.utils_gui import is_admin as _is_admin
+
+        if _is_admin():
+            GUI.log('Running as Administrator (required for Kill / Clumsy hotspot).', _UI_LOG_RESTORE_FG)
+        else:
+            GUI.log(
+                'Not running as Administrator — approve UAC on launch or reinstall from latest build.',
+                'red',
+            )
+
     # Ensure "Me" and "Router" are added immediately
     try:
         GUI.scanner.add_me()

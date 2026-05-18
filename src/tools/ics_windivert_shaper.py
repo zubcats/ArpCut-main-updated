@@ -285,6 +285,18 @@ def _packet_involves_victim(src: str, dst: str, victim: str) -> bool:
     return src == victim or dst == victim
 
 
+def _packet_matches_hotspot_client(
+    src: str, dst: str, victim: str, downstream_prefix: str
+) -> bool:
+    if _packet_involves_victim(src, dst, victim):
+        return True
+    quad = _ics_subnet_quad_prefix(downstream_prefix)
+    if not quad:
+        return False
+    needle = quad + '.'
+    return src.startswith(needle) or dst.startswith(needle)
+
+
 def _ipv4_bytes(b: bytes) -> str:
     return '.'.join(str(x) for x in b)
 
@@ -446,6 +458,7 @@ class IcsWinDivertLagGate:
         self._packets_matched = 0
         self._packets_held = 0
         self._open_layers: list[int] = []
+        self._downstream_prefix = '192.168.137.'
 
     @property
     def victim_ip(self) -> str:
@@ -458,6 +471,10 @@ class IcsWinDivertLagGate:
     @property
     def packets_matched(self) -> int:
         return int(self._packets_matched)
+
+    @property
+    def packets_held(self) -> int:
+        return int(self._packets_held)
 
     @property
     def active_layers(self) -> tuple[int, ...]:
@@ -504,23 +521,27 @@ class IcsWinDivertLagGate:
             prefix = clumsy_ics_downstream_prefix()
         except Exception:
             prefix = '192.168.137.'
+        self._downstream_prefix = prefix
         filters = (
-            _ics_clumsy_victim_filter(vip),
             _ics_windivert_filter(vip, prefix),
+            _ics_clumsy_victim_filter(vip),
         )
         layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
         handles: list[int] = []
         opened_layers: list[int] = []
         last_err = ''
         for filt in filters:
+            opened_any = False
             for layer in layers:
                 hrv = _open_windivert_handle(self._dll, filt, layer)
                 if hrv >= 0:
                     handles.append(hrv)
-                    opened_layers.append(layer)
-                    break
-                last_err = _windivert_last_error_message()
-            if handles:
+                    if layer not in opened_layers:
+                        opened_layers.append(layer)
+                    opened_any = True
+                else:
+                    last_err = _windivert_last_error_message()
+            if opened_any:
                 break
         if not handles:
             hint = 'Run ZubCut as Administrator.'
@@ -700,6 +721,7 @@ class IcsWinDivertLagGate:
         send_len = ctypes.c_uint(0)
         kernel32 = ctypes.windll.kernel32
         victim = self._victim
+        subnet_prefix = getattr(self, '_downstream_prefix', '192.168.137.')
         heap: list[Tuple[float, bytes, bytes, int]] = []
         from tools.mitm_compound_loss import CAP_OVERFLOW_LOSS_PCT, should_drop_compounded
 
@@ -760,7 +782,7 @@ class IcsWinDivertLagGate:
                     continue
 
                 src, dst = parsed
-                if not _packet_involves_victim(src, dst, victim):
+                if not _packet_matches_hotspot_client(src, dst, victim, subnet_prefix):
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
                 self._packets_matched += 1
