@@ -64,9 +64,10 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         self.assertIn('_lag_ics_resume_allow_phase', src)
         self.assertIn('_flow_stable_victim_ip', src)
         allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
-        self.assertIn('_lag_phase_apply_allow_net', allow)
+        self.assertIn('_lag_apply_allow_phase_sync', allow)
         self.assertIn('_cancel_lag_block_reassert', allow)
         self.assertIn('_lag_schedule_phase', allow)
+        self.assertNotIn('_run_on_flow_net_thread', allow)
 
     def test_release_windivert_unpauses_without_gate_match(self) -> None:
         src = self._main_py()

@@ -847,6 +847,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_block_ms = 9000
         self.lag_release_ms = 1500
         self._lag_reassert_gen = 0
+        self._lag_phase_seq = 0
         self.lag_device_mac = None
         self.lag_device_ip = None
         self.lag_direction = 'both'  # 'both', 'in', or 'out'
@@ -2682,10 +2683,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if allow:
                 dev = self._lag_resolved_victim()
                 if dev:
-                    try:
-                        self._lag_ics_resume_allow_phase(dev)
-                    except Exception:
-                        self._lag_ics_force_unpause()
+                    self._lag_apply_allow_phase_sync(dev)
             self._tick_lag_countdown()
 
     def _refresh_lag_timing_from_dialog(self):
@@ -2871,8 +2869,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             dev = self._lag_resolved_victim()
             if not dev:
                 return
-            snap = dict(dev)
-            self._run_on_flow_net_thread(partial(self._lag_phase_apply_block_net, snap))
+            try:
+                self._lag_apply_block(dev)
+            except Exception:
+                pass
 
         QTimer.singleShot(0, _reassert)
         QTimer.singleShot(40, _reassert)
@@ -3855,6 +3855,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
+    def _lag_bump_phase_seq(self) -> int:
+        self._lag_phase_seq = int(getattr(self, '_lag_phase_seq', 0)) + 1
+        return self._lag_phase_seq
+
     def _lag_ics_resume_allow_phase(self, device) -> None:
         """Allow window: unpause WinDivert only — do not recreate the gate or re-block."""
         if not isinstance(device, dict):
@@ -3874,6 +3878,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 except Exception:
                     pass
 
+    def _lag_apply_allow_phase_sync(self, device) -> None:
+        """Main-thread allow: must run immediately so a queued block job cannot skip unpause."""
+        if not self.lag_active or not isinstance(device, dict):
+            return
+        self._lag_bump_phase_seq()
+        try:
+            self._lag_ics_resume_allow_phase(device)
+        except Exception:
+            self._lag_ics_force_unpause()
+
     def _lag_schedule_phase(self, duration_ms: int) -> None:
         """Single-shot phase timer (block or allow) — same precision model as Dupe."""
         ms = max(1, int(duration_ms))
@@ -3886,35 +3900,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         device = self._lag_resolved_victim()
         if not device:
-            QTimer.singleShot(0, self.stopLagSwitch)
+            self.stopLagSwitch()
             return
         self._lag_device_snapshot = dict(device)
-        was_allow = bool(self._lag_in_allow_phase)
-        QTimer.singleShot(0, partial(self._lag_phase_end_transition, dict(device), was_allow))
-
-    def _lag_phase_end_transition(self, device_snap: dict, was_allow: bool) -> None:
-        if not self.lag_active:
-            return
-        if was_allow:
-            self._lag_phase_begin_block(device_snap)
+        if self._lag_in_allow_phase:
+            self._lag_phase_begin_block(device)
         else:
-            self._lag_phase_begin_allow(device_snap)
-
-    def _lag_phase_apply_block_net(self, device_snap: dict) -> None:
-        if not self.lag_active or getattr(self, '_lag_in_allow_phase', False):
-            return
-        if self._lag_ics_windivert_active(device_snap):
-            self._lag_ics_set_paused(device_snap, True)
-        else:
-            self.flow_net_main_done.emit(partial(self._lag_apply_block, device_snap))
-
-    def _lag_phase_apply_allow_net(self, device_snap: dict) -> None:
-        if not self.lag_active or not getattr(self, '_lag_in_allow_phase', False):
-            return
-        try:
-            self._lag_ics_resume_allow_phase(device_snap)
-        except Exception:
-            self._lag_ics_force_unpause()
+            self._lag_phase_begin_allow(device)
 
     def _cancel_lag_block_reassert(self) -> None:
         self._lag_reassert_gen = int(getattr(self, '_lag_reassert_gen', 0)) + 1
@@ -3967,6 +3959,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._set_countdown_label(
             self.lblLagCountdownMain, self._lag_countdown_label(allow, rem)
         )
+        if allow:
+            dev = self._lag_resolved_victim()
+            if dev:
+                self._lag_ics_force_unpause()
         dlg = getattr(self, 'lag_switch_dialog', None)
         if dlg is not None and dlg.isVisible():
             try:
@@ -3977,25 +3973,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _lag_phase_begin_block(self, device) -> None:
         if not self.lag_active or not isinstance(device, dict):
             return
+        self._cancel_lag_block_reassert()
         self._refresh_lag_timing_from_dialog()
+        self._lag_bump_phase_seq()
         self._lag_in_allow_phase = False
         block_ms = max(1, int(self.lag_block_ms))
         self._lag_schedule_phase(block_ms)
         self._arm_lag_phase_countdown()
-        snap = dict(device)
+        try:
+            self._lag_apply_block(device)
+        except Exception:
+            pass
         mac = str(device.get('mac') or '').strip()
-
-        def _after_block() -> None:
-            if not self.lag_active or self._lag_in_allow_phase:
-                return
-            if mac:
-                self._schedule_lag_start_reassert(mac)
-                self._refresh_table_row_for_mac(mac, snap.get('ip'))
-
-        self._run_on_flow_net_thread(
-            partial(self._lag_phase_apply_block_net, snap),
-            main_after=_after_block,
-        )
+        if mac:
+            self._schedule_lag_start_reassert(mac)
+            self._refresh_table_row_for_mac(mac, device.get('ip'))
 
     def _lag_phase_begin_allow(self, device) -> None:
         if not self.lag_active or not isinstance(device, dict):
@@ -4006,19 +3998,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         allow_ms = max(1, int(self.lag_release_ms))
         self._lag_schedule_phase(allow_ms)
         self._arm_lag_phase_countdown()
-        snap = dict(device)
+        self._lag_apply_allow_phase_sync(device)
         mac = str(device.get('mac') or '').strip()
-
-        def _after_allow() -> None:
-            if not self.lag_active or not self._lag_in_allow_phase:
-                return
-            if mac:
-                self._refresh_table_row_for_mac(mac, snap.get('ip'))
-
-        self._run_on_flow_net_thread(
-            partial(self._lag_phase_apply_allow_net, snap),
-            main_after=_after_allow,
-        )
+        if mac:
+            self._refresh_table_row_for_mac(mac, device.get('ip'))
 
     def _lag_apply_block(self, device):
         if not self._lag_ics_set_paused(device, True):
