@@ -707,14 +707,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
             self.lblDupeCountdown.setText('')
             return
         self.lblDupeCountdown.setVisible(True)
-        left_ms = max(0, int(left_ms))
-        sec = left_ms / 1000.0
-        if sec >= 60:
-            whole = int(sec)
-            m, s = divmod(whole, 60)
-            self.lblDupeCountdown.setText(f'Time left: {m}:{s:02d}')
-        else:
-            self.lblDupeCountdown.setText(f'Time left: {sec:.1f} s')
+        self.lblDupeCountdown.setText(format_countdown_ms(left_ms))
 
     def values(self):
         direction = 'both'
@@ -862,7 +855,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_phase_deadline = 0.0
         self._lag_countdown_timer = QTimer(self)
         self._lag_countdown_timer.setInterval(50)
-        self._lag_countdown_timer.setTimerType(Qt.PreciseTimer)
+        # CoarseTimer keeps the label smooth; PreciseTimer on phase end handles block/allow timing.
+        self._lag_countdown_timer.setTimerType(Qt.CoarseTimer)
         self._lag_countdown_timer.timeout.connect(self._tick_lag_countdown)
         self._lag_dlg_refresh_mono = 0.0
         # False: block phase (Lag ms). True: allow phase (Normal ms).
@@ -901,8 +895,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_elapsed = QElapsedTimer()
         self._dupe_countdown_timer = QTimer(self)
         self._dupe_countdown_timer.setInterval(50)
-        self._dupe_countdown_timer.setTimerType(Qt.PreciseTimer)
+        self._dupe_countdown_timer.setTimerType(Qt.CoarseTimer)
         self._dupe_countdown_timer.timeout.connect(self._tick_dupe_countdown)
+        self._dupe_finish_from_countdown_pending = False
         self._dupe_arm_timer = QTimer(self)
         self._dupe_arm_timer.setSingleShot(True)
         self._dupe_deferred_clear_timer = QTimer(self)
@@ -3346,15 +3341,57 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateKillButtonState()
         return True
 
-    def _finish_dupe_ics_teardown(self, device, prev_mac: str | None) -> bool:
-        """Fast dupe OFF on hotspot: WinDivert + any stray ARP/firewall, then heal gateway."""
+    def _pump_ui_light(self) -> None:
+        """Let countdown labels repaint before heavy WinDivert / firewall work."""
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents, 6)
+        except Exception:
+            pass
+
+    def _run_on_flow_net_thread(self, fn, *, main_after=None) -> None:
+        """Run WinDivert/firewall work off the GUI thread (shared dupe_net pool)."""
+        ex = getattr(self, '_dupe_net_executor', None)
+        if ex is None:
+            try:
+                fn()
+            except Exception:
+                pass
+            if main_after is not None:
+                QTimer.singleShot(0, main_after)
+            return
+
+        def _wrapped() -> None:
+            try:
+                fn()
+            except Exception:
+                pass
+
+        fut = ex.submit(_wrapped)
+        if main_after is not None:
+            fut.add_done_callback(lambda _f: QTimer.singleShot(0, main_after))
+
+    def _finish_dupe_ics_teardown_net(self, device) -> bool:
         if not isinstance(device, dict) or not clumsy_ics_use_firewall_only(device, self.scanner):
             return False
         self._ics_emergency_release(device, heal=True)
+        return True
+
+    def _finish_dupe_ics_teardown_ui(self, device) -> None:
+        mac = str(device.get('mac') or '').strip() if isinstance(device, dict) else ''
         self._sync_killed_devices()
-        self._refresh_table_row_for_mac(device.get('mac') or '')
+        if mac:
+            self._refresh_table_row_for_mac(mac, device.get('ip'))
         self._updateKillButtonState()
         self._drop_dupe_restoring_banner()
+
+    def _finish_dupe_ics_teardown(self, device, prev_mac: str | None) -> bool:
+        """Fast dupe OFF on hotspot: WinDivert + any stray ARP/firewall, then heal gateway."""
+        del prev_mac
+        if not self._finish_dupe_ics_teardown_net(device):
+            return False
+        self._finish_dupe_ics_teardown_ui(device)
         return True
 
     def _apply_victim_block(self, device, direction, **ics_block_kw) -> bool:
@@ -3543,7 +3580,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._sync_killed_devices()
             self._drop_dupe_restoring_banner()
             return
-        if self._finish_dupe_ics_teardown(device, prev_mac):
+        if clumsy_ics_use_firewall_only(device, self.scanner):
+            snap = dict(device)
+
+            def _ics_teardown_done() -> None:
+                if snap.get('mac') != prev_mac:
+                    self._drop_dupe_restoring_banner()
+                    return
+                self._finish_dupe_ics_teardown_ui(snap)
+
+            self._run_on_flow_net_thread(
+                lambda: self._finish_dupe_ics_teardown_net(snap),
+                main_after=_ics_teardown_done,
+            )
             return
         ip = device.get('ip') or ''
         ex = getattr(self, '_dupe_net_executor', None)
@@ -3578,10 +3627,24 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._sync_killed_devices()
             self._drop_dupe_restoring_banner()
             return
+        snap = dict(device)
+
+        def _ics_teardown_done() -> None:
+            if snap.get('mac') != prev_mac:
+                self._drop_dupe_restoring_banner()
+                return
+            self._finish_dupe_ics_teardown_ui(snap)
+
         try:
-            if not self._finish_dupe_ics_teardown(device, prev_mac):
-                self._clear_victim_block(device)
-                self._schedule_dupe_off_reinforce(prev_mac, device)
+            if clumsy_ics_use_firewall_only(snap, self.scanner):
+                self._run_on_flow_net_thread(
+                    lambda: self._finish_dupe_ics_teardown_net(snap),
+                    main_after=_ics_teardown_done,
+                )
+                return
+            if not self._finish_dupe_ics_teardown(snap, prev_mac):
+                self._clear_victim_block(snap)
+                self._schedule_dupe_off_reinforce(prev_mac, snap)
         except Exception:
             pass
         self._sync_killed_devices()
@@ -3820,13 +3883,38 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         device = self._lag_resolved_victim()
         if not device:
-            self.stopLagSwitch()
+            QTimer.singleShot(0, self.stopLagSwitch)
             return
         self._lag_device_snapshot = dict(device)
-        if self._lag_in_allow_phase:
-            self._lag_phase_begin_block(device)
+        was_allow = bool(self._lag_in_allow_phase)
+        QTimer.singleShot(0, partial(self._lag_phase_end_transition, dict(device), was_allow))
+
+    def _lag_phase_end_transition(self, device_snap: dict, was_allow: bool) -> None:
+        if not self.lag_active:
+            return
+        if was_allow:
+            self._lag_phase_begin_block(device_snap)
         else:
-            self._lag_phase_begin_allow(device)
+            self._lag_phase_begin_allow(device_snap)
+
+    def _lag_phase_apply_block_net(self, device_snap: dict) -> None:
+        if not self.lag_active or getattr(self, '_lag_in_allow_phase', False):
+            return
+        if self._lag_ics_windivert_active(device_snap):
+            self._lag_ics_set_paused(device_snap, True)
+        else:
+            QTimer.singleShot(
+                0,
+                partial(self._lag_apply_block, device_snap),
+            )
+
+    def _lag_phase_apply_allow_net(self, device_snap: dict) -> None:
+        if not self.lag_active or not getattr(self, '_lag_in_allow_phase', False):
+            return
+        try:
+            self._lag_ics_resume_allow_phase(device_snap)
+        except Exception:
+            self._lag_ics_force_unpause()
 
     def _cancel_lag_block_reassert(self) -> None:
         self._lag_reassert_gen = int(getattr(self, '_lag_reassert_gen', 0)) + 1
@@ -3872,6 +3960,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         self.lblLagCountdownMain.setVisible(True)
         self.lblLagCountdownMain.setText(self._lag_countdown_label(allow, rem))
+        self._pump_ui_light()
         dlg = getattr(self, 'lag_switch_dialog', None)
         if dlg is not None and dlg.isVisible():
             now = time.monotonic()
@@ -3890,16 +3979,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         block_ms = max(1, int(self.lag_block_ms))
         self._lag_schedule_phase(block_ms)
         self._arm_lag_phase_countdown()
-        try:
-            self._lag_apply_block(device)
-        except Exception:
-            pass
+        snap = dict(device)
         mac = str(device.get('mac') or '').strip()
-        if mac:
-            self._schedule_lag_start_reassert(mac)
-        if mac:
-            self._refresh_table_row_for_mac(mac, device.get('ip'))
-            self._repaint_all_table_rows_for_hover()
+
+        def _after_block() -> None:
+            if not self.lag_active or self._lag_in_allow_phase:
+                return
+            if mac:
+                self._schedule_lag_start_reassert(mac)
+                self._refresh_table_row_for_mac(mac, snap.get('ip'))
+
+        self._run_on_flow_net_thread(
+            partial(self._lag_phase_apply_block_net, snap),
+            main_after=_after_block,
+        )
 
     def _lag_phase_begin_allow(self, device) -> None:
         if not self.lag_active or not isinstance(device, dict):
@@ -3910,14 +4003,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         allow_ms = max(1, int(self.lag_release_ms))
         self._lag_schedule_phase(allow_ms)
         self._arm_lag_phase_countdown()
-        try:
-            self._lag_ics_resume_allow_phase(device)
-        except Exception:
-            self._lag_ics_force_unpause()
+        snap = dict(device)
         mac = str(device.get('mac') or '').strip()
-        if mac:
-            self._refresh_table_row_for_mac(mac, device.get('ip'))
-            self._repaint_all_table_rows_for_hover()
+
+        def _after_allow() -> None:
+            if not self.lag_active or not self._lag_in_allow_phase:
+                return
+            if mac:
+                self._refresh_table_row_for_mac(mac, snap.get('ip'))
+
+        self._run_on_flow_net_thread(
+            partial(self._lag_phase_apply_allow_net, snap),
+            main_after=_after_allow,
+        )
 
     def _lag_apply_block(self, device):
         if not self._lag_ics_set_paused(device, True):
@@ -4061,21 +4159,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Finish as soon as elapsed time says so; avoids showing "0.0 s" until the
         # coarse single-shot dupe_timer fires (can lag tens–100+ ms behind).
         if rem is not None and rem <= 0:
-            self._dupe_countdown_timer.stop()
-            QTimer.singleShot(0, partial(self.stopDupe, True, True, 'Dupe finished'))
+            self.lblDupeCountdownMain.setVisible(True)
+            self.lblDupeCountdownMain.setText('Time left: 0.0 s')
+            self._pump_ui_light()
+            if not getattr(self, '_dupe_finish_from_countdown_pending', False):
+                self._dupe_finish_from_countdown_pending = True
+                QTimer.singleShot(0, partial(self._dupe_finish_from_countdown))
             return
         if rem is None or rem <= 0:
             self.lblDupeCountdownMain.setVisible(False)
             self.lblDupeCountdownMain.setText('')
         else:
-            sec = rem / 1000.0
             self.lblDupeCountdownMain.setVisible(True)
-            if sec >= 60:
-                whole = int(sec)
-                m, s = divmod(whole, 60)
-                self.lblDupeCountdownMain.setText(f'Time left: {m}:{s:02d}')
-            else:
-                self.lblDupeCountdownMain.setText(f'Time left: {sec:.1f} s')
+            self.lblDupeCountdownMain.setText(format_countdown_ms(rem))
+        self._pump_ui_light()
         dlg = getattr(self, 'dupe_switch_dialog', None)
         if dlg is not None and dlg.isVisible():
             now = time.monotonic()
@@ -4087,7 +4184,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     pass
 
     def _dupe_timer_fired(self):
-        QTimer.singleShot(0, partial(self.stopDupe, True, True, 'Dupe finished'))
+        QTimer.singleShot(0, partial(self._dupe_finish_from_countdown, 'Dupe finished'))
+
+    def _dupe_finish_from_countdown(self, log_message='Dupe finished'):
+        self._dupe_countdown_timer.stop()
+        self.stopDupe(True, True, log_message)
 
     def stopDupe(self, refresh_dialog=True, log=True, log_message='Dupe stopped'):
         arm_snap = None
@@ -4105,6 +4206,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_countdown_timer.stop()
         self.dupe_timer.stop()
         self._dupe_end_mono = None
+        self._dupe_finish_from_countdown_pending = False
         if not was_active:
             self.lblDupeCountdownMain.setVisible(False)
             self.lblDupeCountdownMain.setText('')
@@ -4157,8 +4259,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             snap = None
         if snap and clumsy_ics_use_firewall_only(snap, self.scanner):
-            self._dupe_pending_clear = None
-            self._finish_dupe_ics_teardown(snap, prev_mac)
+            self._dupe_pending_clear = (prev_mac, snap)
+            try:
+                self._dupe_deferred_clear_timer.timeout.disconnect()
+            except TypeError:
+                pass
+            self._dupe_deferred_clear_timer.timeout.connect(
+                self._do_deferred_dupe_clear, Qt.UniqueConnection
+            )
+            self._dupe_deferred_clear_timer.start(0)
             return
         self._dupe_pending_clear = (prev_mac, snap)
         try:

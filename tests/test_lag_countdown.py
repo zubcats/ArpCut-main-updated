@@ -26,6 +26,12 @@ class TestLagCountdown(unittest.TestCase):
     def test_format_countdown_minutes(self) -> None:
         self.assertEqual(format_countdown_ms(125000), 'Time left: 2:05')
 
+    def test_countdown_uses_background_net(self) -> None:
+        src = self._main_py()
+        self.assertIn('def _run_on_flow_net_thread', src)
+        self.assertIn('Qt.CoarseTimer', src)
+        self.assertIn('_pump_ui_light', src)
+
     def test_lag_countdown_wired(self) -> None:
         src = self._main_py()
         self.assertIn('lblLagCountdownMain', src)
@@ -36,7 +42,7 @@ class TestLagCountdown(unittest.TestCase):
         self.assertIn('_arm_lag_phase_countdown', block)
         allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
         self.assertIn('_lag_schedule_phase', allow)
-        self.assertIn('_lag_ics_resume_allow_phase', allow)
+        self.assertIn('_lag_phase_apply_allow_net', allow)
         self.assertIn('_arm_lag_phase_countdown', allow)
 
     def test_allow_phase_shows_dash(self) -> None:
