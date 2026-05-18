@@ -17,8 +17,17 @@ from tools import pfctl
 class PfctlPurgeTests(unittest.TestCase):
     def test_purge_function_exists(self) -> None:
         self.assertTrue(callable(pfctl.windows_purge_all_zubcut_ip_block_rules))
+        self.assertTrue(callable(pfctl.teardown_all_zubcut_network_attacks))
 
     def test_purge_non_windows_returns_zero(self) -> None:
         if sys.platform.startswith('win'):
             return
         self.assertEqual(pfctl.windows_purge_all_zubcut_ip_block_rules(), 0)
+
+    def test_attack_rule_detection(self) -> None:
+        self.assertTrue(pfctl._zubcut_rule_is_attack('zubcut_ip_192_168_1_1_in'))
+        self.assertTrue(pfctl._zubcut_rule_is_attack('zubcut_port_443_tcp_in'))
+        self.assertTrue(pfctl._zubcut_rule_is_attack('zubcut_10_0_0_1_to_8_8_8_8'))
+        self.assertFalse(pfctl._zubcut_rule_is_attack('ZubCut-DHCP-In'))
+        self.assertFalse(pfctl._zubcut_rule_is_attack('ZubCut-ICS-DHCP-Subnet-In'))
+        self.assertFalse(pfctl._zubcut_rule_is_attack('ZubCut-Hotspot-Subnet-In'))

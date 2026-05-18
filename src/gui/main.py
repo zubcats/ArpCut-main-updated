@@ -1478,23 +1478,85 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.settings_window.hide()
         self.about_window.hide()
 
-    def quit_all(self):
-        """
-        Unkill any killed device on exit from tray icon
-        """
-        _q_ips = [v.get('ip') for v in self.killer.killed.values() if v.get('ip')]
-        self.killer.unkill_all()
-        for _ip in _q_ips:
-            try:
-                unblock_ip(_ip)
-            except Exception:
-                pass
+    def _teardown_all_attacks(self, *, log: bool = False) -> dict:
+        """Stop lag/kill/dupe/MITM and remove all ZubCut firewall blocks (exit + startup)."""
+        extra_ips: list = []
+        for v in self.killer.killed.values():
+            if isinstance(v, dict) and v.get('ip'):
+                extra_ips.append(v['ip'])
+        for ip in (getattr(self, 'lag_device_ip', None), getattr(self, 'dupe_device_ip', None)):
+            if ip and _is_valid_ip(str(ip)):
+                extra_ips.append(str(ip))
+        if getattr(self, 'percent_cut_device_mac', None):
+            dev = self._get_device_by_mac(self.percent_cut_device_mac)
+            if dev and dev.get('ip'):
+                extra_ips.append(dev['ip'])
+        if getattr(self, 'mitm_shaping_mac', None):
+            dev = self._get_device_by_mac(self.mitm_shaping_mac)
+            if dev and dev.get('ip'):
+                extra_ips.append(dev['ip'])
+
         self.stopLagSwitch()
         self.stopDupe(log=False)
         self._flush_pending_dupe_clear_sync()
         self.stopPercentCut(log=False)
         self.stop_mitm_shaping(log=False)
         self._await_mitm_teardown_thread()
+        self._stop_ics_lag_gate(join_timeout=0.5)
+        self.killer.unkill_all()
+
+        from tools.pfctl import teardown_all_zubcut_network_attacks
+
+        summary = teardown_all_zubcut_network_attacks(extra_ips=extra_ips)
+        self.killed_devices.clear()
+        self._sync_killed_devices()
+        self.lag_active = False
+        self.lag_device_mac = None
+        self.lag_device_ip = None
+        self.dupe_active = False
+        self.dupe_device_mac = None
+        self.dupe_device_ip = None
+        self.percent_cut_active = False
+        self.percent_cut_device_mac = None
+        self.mitm_shaping_active = False
+        self.mitm_shaping_mac = None
+
+        if log:
+            removed = int(summary.get('firewall_rules_removed') or 0)
+            ips = summary.get('unblocked_ips') or []
+            if removed or ips:
+                parts = ['Cleared active attacks on exit.']
+                if removed:
+                    parts.append(f'{removed} firewall rule(s)')
+                if ips:
+                    parts.append(f'unblocked {len(ips)} IP(s)')
+                self.log(' '.join(parts), _UI_LOG_RESTORE_FG)
+        return summary
+
+    def _ensure_clean_network_on_startup(self) -> None:
+        """Remove leftover Kill/Dupe/Lag blocks from a prior session before the user acts."""
+        from tools.pfctl import list_blocked_ips
+
+        pre = list_blocked_ips()
+        self.killer.killed.clear()
+        if hasattr(self.killer, 'pf_blocks'):
+            self.killer.pf_blocks.clear()
+        summary = self._teardown_all_attacks(log=False)
+        removed = int(summary.get('firewall_rules_removed') or 0)
+        ips = summary.get('unblocked_ips') or []
+        if removed or ips or pre:
+            msg = 'Removed leftover attack state from a previous session.'
+            if removed:
+                msg += f' ({removed} firewall rule(s))'
+            if ips:
+                msg += f' ({len(ips)} IP unblocked)'
+            self.log(msg, _UI_LOG_RESTORE_FG)
+
+    def quit_all(self):
+        """
+        Unkill any killed device on exit from tray icon
+        """
+        self._teardown_all_attacks(log=True)
         self.settings_window.close()
         self.about_window.close()
         hide_all_system_tray_icons()
@@ -1585,9 +1647,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Always exit on window close to avoid background instances blocking reinstalls.
         Use explicit tray Hide to keep app running in background.
         """
-        self.stopLagSwitch()
-        self.stopDupe(log=False)
-        self._flush_pending_dupe_clear_sync()
         try:
             self._dupe_net_executor.shutdown(wait=False, cancel_futures=False)
         except TypeError:
@@ -1600,15 +1659,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             event.accept()
             return
 
-        # Close button path: unkill all and shutdown.
-        _x_ips = [v.get('ip') for v in self.killer.killed.values() if v.get('ip')]
-        self.killer.unkill_all()
-        for _ip in _x_ips:
-            try:
-                unblock_ip(_ip)
-            except Exception:
-                pass
-        self._sync_killed_devices()
+        # Close button path: tear down all attacks then exit.
+        self._teardown_all_attacks(log=False)
         self.settings_window.close()
         self.about_window.close()
 

@@ -350,11 +350,59 @@ def _win_ip_block_rule_suffixes():
     )
 
 
+def _zubcut_rule_is_attack(name: str) -> bool:
+    """True for Kill/Dupe/MITM firewall rules; false for hotspot DHCP allow helpers."""
+    nl = (name or '').strip().lower()
+    if not nl.startswith('zubcut'):
+        return False
+    keep_prefixes = (
+        'zubcut-dhcp',
+        'zubcut-ics-dhcp',
+        'zubcut-hotspot-subnet',
+    )
+    if any(nl.startswith(p) for p in keep_prefixes):
+        return False
+    if nl.startswith('zubcut_ip_') or nl.startswith('zubcut_block_') or nl.startswith('zubcut_port_'):
+        return True
+    if nl.startswith('zubcut_') and '_to_' in nl:
+        return True
+    return False
+
+
+def _collect_zubcut_attack_rule_names() -> set[str]:
+    import re
+
+    if sys.platform.startswith('win'):
+        res = _exec('netsh advfirewall firewall show rule name=all')
+        if res.returncode != 0:
+            return set()
+        names: set[str] = set()
+        for line in (res.stdout or '').splitlines():
+            m = re.match(r'^\s*Rule Name:\s+(.+)$', line.strip())
+            if m and _zubcut_rule_is_attack(m.group(1)):
+                names.add(m.group(1).strip())
+        return names
+    return set()
+
+
+def _delete_windows_rules_by_names(names: set[str]) -> int:
+    removed = 0
+    for name in sorted(names):
+        del_res = _exec(f'netsh advfirewall firewall delete rule name="{name}"')
+        if del_res.returncode == 0:
+            removed += 1
+    return removed
+
+
+def windows_purge_all_zubcut_attack_rules() -> int:
+    """Remove all ZubCut attack firewall rules (Kill/Dupe/port/dst blocks)."""
+    if not sys.platform.startswith('win'):
+        return 0
+    return _delete_windows_rules_by_names(_collect_zubcut_attack_rule_names())
+
+
 def windows_purge_all_zubcut_ip_block_rules() -> int:
-    """
-    Remove leftover Kill/Dupe firewall block rules (zubcut_ip_*).
-    These can prevent hotspot clients (e.g. PS5) from completing DHCP or using their lease.
-    """
+    """Remove leftover Kill/Dupe IP block rules (zubcut_ip_*)."""
     if not sys.platform.startswith('win'):
         return 0
     import re
@@ -367,12 +415,66 @@ def windows_purge_all_zubcut_ip_block_rules() -> int:
         m = re.match(r'^\s*Rule Name:\s+(zubcut_ip_.+)$', line.strip(), re.IGNORECASE)
         if m:
             names.add(m.group(1).strip())
-    removed = 0
-    for name in sorted(names):
-        del_res = _exec(f'netsh advfirewall firewall delete rule name="{name}"')
-        if del_res.returncode == 0:
-            removed += 1
-    return removed
+    return _delete_windows_rules_by_names(names)
+
+
+def _clear_macos_zubcut_block_rules() -> bool:
+    if sys.platform != 'darwin':
+        return False
+    try:
+        path = _anchor_file()
+        with open(path, encoding='utf-8') as f:
+            lines = f.readlines()
+        with open(path, 'w', encoding='utf-8') as f:
+            for line in lines:
+                if 'block drop quick' not in line:
+                    f.write(line)
+        _exec(f'pfctl -a {ANCHOR} -f {path}')
+        return True
+    except Exception:
+        return False
+
+
+def teardown_all_zubcut_network_attacks(extra_ips=None) -> dict:
+    """
+    Stop all ZubCut network attacks: firewall blocks, port blocks, and legacy rules.
+    Safe to call on exit and on startup (idempotent).
+    """
+    from typing import Iterable
+
+    summary: dict = {
+        'firewall_rules_removed': 0,
+        'unblocked_ips': [],
+        'ports_cleared': False,
+    }
+    ips: set[str] = set()
+    for ip, _dir in list_blocked_ips():
+        if ip and _is_valid_ip(ip):
+            ips.add(ip)
+    if extra_ips:
+        for ip in extra_ips:
+            if ip and _is_valid_ip(str(ip).strip()):
+                ips.add(str(ip).strip())
+    for ip in sorted(ips):
+        try:
+            unblock_ip(ip)
+        except Exception:
+            pass
+        try:
+            unblock_all_for(ip)
+        except Exception:
+            pass
+    summary['unblocked_ips'] = sorted(ips)
+
+    if sys.platform.startswith('win'):
+        summary['firewall_rules_removed'] = windows_purge_all_zubcut_attack_rules()
+        try:
+            summary['ports_cleared'] = bool(clear_all_port_blocks())
+        except Exception:
+            summary['ports_cleared'] = False
+    elif sys.platform == 'darwin':
+        summary['ports_cleared'] = _clear_macos_zubcut_block_rules()
+    return summary
 
 
 def windows_delete_zubcut_ip_rules(ip: str) -> bool:

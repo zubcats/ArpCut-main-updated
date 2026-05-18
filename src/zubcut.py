@@ -296,7 +296,6 @@ if __name__ == "__main__":
     if _sys.platform.startswith('win'):
         try:
             from tools.clumsy_ics import (
-                _windows_is_admin,
                 maybe_ensure_wlan_autoconfig_on_startup,
                 maybe_repair_stale_clumsy_ics_on_startup,
                 reset_clumsy_mode_on_startup,
@@ -305,15 +304,6 @@ if __name__ == "__main__":
             reset_clumsy_mode_on_startup()
             maybe_ensure_wlan_autoconfig_on_startup()
             maybe_repair_stale_clumsy_ics_on_startup()
-            try:
-                from tools.pfctl import windows_purge_all_zubcut_ip_block_rules
-
-                if _windows_is_admin():
-                    n = windows_purge_all_zubcut_ip_block_rules()
-                    if n:
-                        print(f'Removed {n} leftover ZubCut firewall block rule(s).')
-            except Exception:
-                pass
         except Exception:
             pass
     repair_settings()
@@ -323,6 +313,10 @@ if __name__ == "__main__":
     GUI.show()
     GUI._apply_scan_table_column_layout()
     GUI._apply_status_strip_elide()
+    try:
+        GUI._ensure_clean_network_on_startup()
+    except Exception:
+        pass
 
     # Initialize scanner and ensure interface is valid
     GUI.scanner.init()
