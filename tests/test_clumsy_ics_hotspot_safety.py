@@ -25,11 +25,9 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('Get-InternetUplinkAdapter', helpers)
         self.assertIn('Detect-ClumsyConsolePath', src)
         self.assertIn('Get-NetUDPEndpoint -LocalPort 67', src)
-        self.assertIn('Apply-MainWifiSharingForHotspot', src)
-        self.assertNotIn('prepare_pc_mobile_hotspot', src)
-        hotspot_idx = src.index("if ($ZubcutTopology -eq 'hotspot')")
-        netsh_idx = src.index('netsh wlan stop hostednetwork', hotspot_idx)
-        self.assertGreater(netsh_idx, hotspot_idx)
+        self.assertIn('Prepare-ClumsyHotspotConsole', src)
+        self.assertIn('purge_clumsy_stale_attack_blocks', inspect.getsource(ics.ensure_clumsy_ics_enabled))
+        self.assertIn('netsh wlan stop hostednetwork', src)
 
     def test_repair_does_not_demote_wlansvc_to_manual(self) -> None:
         src = inspect.getsource(ics.repair_clumsy_network_sharing)
@@ -53,26 +51,28 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
     def test_repair_preserves_ics_when_hotspot_active(self) -> None:
         src = inspect.getsource(ics.repair_clumsy_network_sharing)
         self.assertIn('$skipIcsReset = $hotspotWasOn', src)
-        self.assertIn('Apply-MainWifiSharingForHotspot', src)
+        self.assertIn('Test-HotspotConsoleReady', src)
+        self.assertIn('Apply-HotspotIcsCore', src)
         self.assertIn('Ensure-SharingServicesLight', src)
         self.assertNotIn('Restart-NetworkSharingServicesSafe', src)
         self.assertNotIn('Restart-Service -Name $svc', src)
         repair_hotspot_block = src.split('if ($hotspotWasOn) {', 1)[1].split('} else {', 1)[0]
         self.assertNotIn('Apply-HotspotIcsAutomated', repair_hotspot_block)
-        self.assertNotIn('Ensure-MobileHotspotOn', repair_hotspot_block)
         self.assertNotIn('Repair-HotspotAdapterForConsole', src)
 
-    def test_startup_repair_skips_hotspot_topology(self) -> None:
+    def test_startup_does_not_reprep_hotspot_when_clumsy_on(self) -> None:
         src = inspect.getsource(ics.maybe_repair_stale_clumsy_ics_on_startup)
-        self.assertIn("== 'hotspot'", src)
-        self.assertIn('os.remove(_STATE_PATH)', src)
+        self.assertIn('clumsy_mode_enabled', src)
+        self.assertNotIn('prepare_pc_mobile_hotspot', src)
+        self.assertIn('Do not re-run hotspot prep', src)
 
-    def test_prepare_does_not_toggle_hotspot(self) -> None:
+    def test_prepare_skips_when_hotspot_already_ready(self) -> None:
         src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
-        self.assertIn('Apply-MainWifiSharingForHotspot', src)
-        self.assertNotIn('Apply-HotspotIcsAutomated', src)
-        self.assertNotIn('Stop-MobileHotspotIfOn', src)
-        self.assertNotIn('Ensure-MobileHotspotOn', src)
+        helpers = ics._PS_HOTSPOT_HELPERS
+        self.assertIn('Test-HotspotConsoleReady', helpers)
+        self.assertIn('Test-HotspotConsoleReady', src)
+        self.assertIn('Prepare-ClumsyHotspotConsole', helpers)
+        self.assertIn('unchanged', helpers)
 
     def test_hotspot_helpers_use_winrt_await_not_2ghz_band(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
@@ -111,33 +111,41 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertNotIn('Stop-Service icssvc', src.replace(' ', ''))
         self.assertNotIn('Disable-NetAdapterBinding', src)
 
-    def test_autodetect_prefers_hotspot_when_active(self) -> None:
+    def test_autodetect_checks_ethernet_console_before_hotspot(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
         self.assertIn('Test-HotspotPathActive', helpers)
         detect_idx = helpers.index('function Detect-ClumsyConsolePath')
-        hotspot_check = helpers.index('Test-HotspotPathActive', detect_idx)
         eth_idx = helpers.index('Find-EthernetConsoleAdapter', detect_idx)
-        self.assertLess(hotspot_check, eth_idx)
+        hotspot_check = helpers.index('Test-HotspotPathActive', detect_idx)
+        self.assertLess(eth_idx, hotspot_check)
+
+    def test_autodetect_tracks_uplink_kind(self) -> None:
+        helpers = ics._PS_HOTSPOT_HELPERS
+        self.assertIn('Get-UplinkKindLabel', helpers)
+        self.assertIn('UplinkKind', helpers)
+        self.assertIn('LikelyEthernetNic $_', helpers)
+        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        self.assertIn('uplink_kind', src)
+        self.assertIn('Disconnect-WifiClientWhenEthernetUplink', helpers)
+        self.assertIn('Prepare-ClumsyHotspotConsole', src)
 
     def test_ethernet_requires_connected_console_neighbor(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
         self.assertIn('Test-ConsoleOnEthernetAdapter', helpers)
         self.assertNotIn('if ($ethUp.Count -eq 1)', helpers)
 
-    def test_hotspot_enable_only_main_wifi_sharing_no_toggle(self) -> None:
+    def test_hotspot_enable_skips_disrupt_when_already_ok(self) -> None:
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
-        fn_idx = src.index('function Ensure-MainWifiSharingForClumsy')
-        fn_end = src.index('if (-not (Ensure-MainWifiSharingForClumsy))', fn_idx)
-        ensure_fn = src[fn_idx:fn_end]
-        self.assertIn('Apply-MainWifiSharingForHotspot', ensure_fn)
-        self.assertNotIn('Apply-HotspotIcsWithTetheringToggle', ensure_fn)
-        self.assertNotIn('Apply-ICS', ensure_fn)
-        hotspot_idx = fn_end
+        helpers = ics._PS_HOTSPOT_HELPERS
+        self.assertIn('Test-HotspotConsoleReady', helpers)
+        hotspot_idx = src.index("if ($ZubcutTopology -eq 'hotspot')")
         eth_idx = src.index('} else {', hotspot_idx)
         hotspot_block = src[hotspot_idx:eth_idx]
-        self.assertIn('Ensure-MainWifiSharingForClumsy', hotspot_block)
+        self.assertIn('$alreadyOk', hotspot_block)
+        self.assertIn('sharing already active', hotspot_block)
+        self.assertIn('Apply-HotspotIcsCore', src)
         self.assertNotIn('Apply-HotspotIcsWithTetheringToggle', hotspot_block)
-        self.assertNotIn('Apply-ICS', hotspot_block)
+        self.assertNotIn('Ensure-MainWifiSharingForClumsy', hotspot_block)
 
     def test_apply_hotspot_ics_core_skips_when_already_active(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
@@ -157,8 +165,8 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
 
     def test_hotspot_enable_internet_sharing_without_dhcp_only_exit(self) -> None:
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
-        self.assertIn('Apply-MainWifiSharingForHotspot', src)
-        self.assertIn('main Wi-Fi internet sharing enabled', src)
+        self.assertIn('Apply-HotspotIcsCore', src)
+        self.assertIn('Clumsy mode ready', src)
         self.assertNotIn("Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot ready (DHCP active).'", src)
 
     def test_format_clumsy_ics_error_not_duplicated(self) -> None:
@@ -166,8 +174,8 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         once = ics.format_clumsy_ics_error(raw, topology='hotspot')
         twice = ics.format_clumsy_ics_error(once, topology='hotspot')
         self.assertEqual(once, twice)
-        self.assertEqual(once.count('For PS5 → PC Mobile Hotspot'), 1)
-        self.assertEqual(once.count('Connect the PS5'), 1)
+        self.assertEqual(once.count('Clumsy mode does the same as manual Clumsy'), 1)
+        self.assertEqual(once.count('Connect your console'), 1)
 
     def test_clumsy_ics_subnet_and_gateway(self) -> None:
         path = ics.clumsy_ics_state_path()

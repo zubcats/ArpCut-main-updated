@@ -1587,8 +1587,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _ensure_clean_network_on_startup(self) -> None:
         """Remove leftover Kill/Dupe/Lag blocks from a prior session before the user acts."""
+        from tools.clumsy_ics import purge_clumsy_stale_attack_blocks
         from tools.pfctl import list_blocked_ips
 
+        purge_clumsy_stale_attack_blocks()
         pre = list_blocked_ips()
         self.killer.killed.clear()
         if hasattr(self.killer, 'pf_blocks'):
