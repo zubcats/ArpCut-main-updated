@@ -17,6 +17,12 @@ from tools import clumsy_inline as inline
 
 
 class ClumsyHotspotSafetyTests(unittest.TestCase):
+    def test_purge_stale_attack_blocks_does_not_raise(self) -> None:
+        # Regression ZC-KPU5PP: purge used sys without importing it.
+        result = ics.purge_clumsy_stale_attack_blocks()
+        self.assertIsInstance(result, dict)
+        self.assertIn('firewall_rules_removed', result)
+
     def test_enable_script_autodetects_console_path(self) -> None:
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
         helpers = ics._PS_HOTSPOT_HELPERS
