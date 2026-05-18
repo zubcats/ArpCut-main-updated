@@ -40,14 +40,22 @@ function Resolve-HotspotAdapters {
         $down = Get-HotspotGatewayAdapter
     }
     $up = $null
-    $routes = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -EA SilentlyContinue |
-        Sort-Object RouteMetric, InterfaceMetric
-    foreach ($rt in @($routes)) {
-        $cand = Get-NetAdapter -InterfaceIndex $rt.InterfaceIndex -EA SilentlyContinue
-        if ($cand -and $cand.Status -eq 'Up' -and (-not $down -or $cand.ifIndex -ne $down.ifIndex)) {
-            if ($cand.InterfaceDescription -notmatch 'Direct|Bluetooth|Virtual|Hyper-V') {
-                $up = $cand
-                break
+    if (Test-Path (Join-Path $PSScriptRoot '_hotspot_2ghz_apply.ps1')) {
+        . (Join-Path $PSScriptRoot '_hotspot_2ghz_apply.ps1')
+        if (Test-EthernetInternetUplink) {
+            $up = Get-EthernetUplinkAdapter
+        }
+    }
+    if (-not $up) {
+        $routes = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -EA SilentlyContinue |
+            Sort-Object RouteMetric, InterfaceMetric
+        foreach ($rt in @($routes)) {
+            $cand = Get-NetAdapter -InterfaceIndex $rt.InterfaceIndex -EA SilentlyContinue
+            if ($cand -and $cand.Status -eq 'Up' -and (-not $down -or $cand.ifIndex -ne $down.ifIndex)) {
+                if ($cand.InterfaceDescription -notmatch 'Direct|Bluetooth|Virtual|Hyper-V') {
+                    $up = $cand
+                    break
+                }
             }
         }
     }
@@ -162,7 +170,8 @@ if (-not $dnK) {
 
 $icsOk = $false
 if ($upK -and $dnK) {
-    L 'Enabling ICS (Wi-Fi public -> hotspot private)...'
+    $upLabel = if ($up.InterfaceDescription -match 'Ethernet|Gigabit|GbE') { 'Ethernet public -> hotspot private' } else { 'Wi-Fi public -> hotspot private' }
+    L "Enabling ICS ($upLabel)..."
     $icsOk = (EnableShare $connMap[$upK].cfg 0) -and (EnableShare $connMap[$dnK].cfg 1)
     if (-not $icsOk) {
         L 'Trying reverse order...'
@@ -189,9 +198,15 @@ if (Test-Dhcp67) {
 L ''
 L 'Automatic ICS failed on this driver (normal for Realtek USB Wi-Fi).'
 L 'Opening Network Connections - do this ONCE:'
-L '  1. Right-click Wi-Fi -> Properties -> Sharing tab'
-L '  2. Check "Allow other network users..."'
-L '  3. Home network: pick "Local Area Connection*" (Wi-Fi Direct)'
+if ($up -and $up.InterfaceDescription -match 'Ethernet|Gigabit|GbE') {
+    L '  1. Right-click ETHERNET -> Properties -> Sharing tab'
+    L '  2. Check "Allow other network users..."'
+    L "  3. Home network: pick ""$($down.Name)"" (Wi-Fi Direct / hotspot)"
+} else {
+    L '  1. Right-click Wi-Fi -> Properties -> Sharing tab'
+    L '  2. Check "Allow other network users..."'
+    L '  3. Home network: pick "Local Area Connection*" (Wi-Fi Direct)'
+}
 L '  4. OK'
 L '  5. Mobile hotspot OFF 15 sec ON, reconnect PS5'
 Start-Process 'ncpa.cpl'

@@ -208,17 +208,16 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _install_clumsy_controls(self):
         self.chkClumsy = QCheckBox('Clumsy Mode', self.gridLayoutWidget_2)
         self.chkClumsy.setToolTip(
-            'Shapes traffic for a console on this PC\'s network path. ZubCut auto-detects: '
-            'Mobile Hotspot first (turn it on in Windows, connect the PS5 to that Wi‑Fi), '
-            'otherwise a console on a spare Ethernet port (not the router cable). '
-            'Clumsy turns off when you quit ZubCut — re-enable after hotspot or wiring changes.'
+            'Same idea as Clumsy + manual hotspot sharing, but automated. '
+            'ZubCut starts Mobile Hotspot if needed, enables internet sharing (Ethernet → hotspot or Wi‑Fi → hotspot), '
+            'then you use lag/kill/dupe on the console. Run ZubCut as Administrator. '
+            'Connect the console to the PC hotspot Wi‑Fi (not your router).'
         )
         self.lblClumsyPath = QLabel('Clumsy path: auto-detect when enabled', self.gridLayoutWidget_2)
         self.lblClumsyPath.setWordWrap(True)
         self.lblClumsyPath.setToolTip(
-            'On enable: sharing is turned on for this PC\'s internet adapter. '
-            'If Mobile Hotspot is on, that path is used. Otherwise ZubCut looks for a console '
-            'on a spare Ethernet port (excluding the router uplink).'
+            'On enable ZubCut detects Ethernet uplink + hotspot, or a console on a spare Ethernet port. '
+            'No manual sharing checkbox in Windows — ZubCut applies it for you.'
         )
         self.btnClumsyInstall = QPushButton('Install Clumsy mode…', self.gridLayoutWidget_2)
         self.btnClumsyInstall.setToolTip(
@@ -289,13 +288,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.lblClumsyPath.hide()
 
     def _update_clumsy_path_label(self) -> None:
-        topo = read_clumsy_topology()
-        if topo == 'ethernet':
-            self.lblClumsyPath.setText('Last detected path: Ethernet (console on LAN port)')
-        elif topo == 'hotspot':
-            self.lblClumsyPath.setText('Last detected path: Mobile Hotspot')
-        else:
-            self.lblClumsyPath.setText('Clumsy path: auto-detect when enabled')
+        from tools.clumsy_ics import describe_clumsy_console_path
+
+        self.lblClumsyPath.setText(describe_clumsy_console_path())
 
     def _on_clumsy_checkbox_changed(self, _state):
         if self._clumsy_toggle_guard:
