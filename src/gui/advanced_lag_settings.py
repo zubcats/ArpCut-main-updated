@@ -444,7 +444,20 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             self._refresh_mitm_status()
             return
         main._mitm_adv_schedule_tick()
+        main._start_mitm_adv_schedule()
         self._refresh_mitm_status()
+
+    def _on_mitm_timer_schedule_changed(self, *_args) -> None:
+        """Timer column edits restart the per-row schedule from now."""
+        if self._mitm_sync_guard:
+            return
+        main = self.elmocut
+        if main is not None and getattr(main, 'mitm_shaping_active', False):
+            try:
+                main._reset_mitm_adv_sched_clock()
+            except Exception:
+                pass
+        self._on_mitm_field_changed(*_args)
 
     def _on_mitm_field_changed(self, *_args) -> None:
         if self._mitm_sync_guard:
@@ -775,7 +788,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             c.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             c.setFixedWidth(22)
             c.setAttribute(Qt.WA_StyledBackground, True)
-            c.stateChanged.connect(self._on_mitm_field_changed)
+            c.stateChanged.connect(self._on_mitm_timer_schedule_changed)
             return c
 
         def _mk_timer_repeat_chk(key: str, default: bool, tip: str) -> QCheckBox:
@@ -787,7 +800,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             c.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             c.setMinimumWidth(72)
             c.setAttribute(Qt.WA_StyledBackground, True)
-            c.stateChanged.connect(self._on_mitm_field_changed)
+            c.stateChanged.connect(self._on_mitm_timer_schedule_changed)
             return c
 
         def _mk_timer_lag_spin(key: str, default: int) -> QSpinBox:
@@ -797,7 +810,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             s.setSuffix(' ms')
             s.setValue(_int_setting(key, default))
             s.setToolTip('Duration this row applies at full strength (matches your Lag / cap / loss values).')
-            s.valueChanged.connect(self._on_mitm_field_changed)
+            s.valueChanged.connect(self._on_mitm_timer_schedule_changed)
             return s
 
         def _mk_timer_pause_spin(key: str, default: int) -> QSpinBox:
@@ -810,7 +823,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
                 'Duration this row contributes nothing extra (0 Mbps cap = no cap, 0 ms delay = no added delay) '
                 'before the next lag phase.'
             )
-            s.valueChanged.connect(self._on_mitm_field_changed)
+            s.valueChanged.connect(self._on_mitm_timer_schedule_changed)
             return s
 
         def _mk_timer_runs_spin(key: str, default: int) -> QSpinBox:
@@ -831,7 +844,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
             s.valueChanged.connect(_sync_runs_suffix)
             _sync_runs_suffix()
-            s.valueChanged.connect(self._on_mitm_field_changed)
+            s.valueChanged.connect(self._on_mitm_timer_schedule_changed)
             return s
 
         r = 0
