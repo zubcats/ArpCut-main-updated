@@ -25,7 +25,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('Get-InternetUplinkAdapter', helpers)
         self.assertIn('Detect-ClumsyConsolePath', src)
         self.assertIn('Get-NetUDPEndpoint -LocalPort 67', src)
-        self.assertIn('Apply-InternetSharingForClumsy', src)
+        self.assertIn('Apply-MainWifiSharingForHotspot', src)
         self.assertNotIn('prepare_pc_mobile_hotspot', src)
         hotspot_idx = src.index("if ($ZubcutTopology -eq 'hotspot')")
         netsh_idx = src.index('netsh wlan stop hostednetwork', hotspot_idx)
@@ -123,9 +123,31 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('Test-ConsoleOnEthernetAdapter', helpers)
         self.assertNotIn('if ($ethUp.Count -eq 1)', helpers)
 
+    def test_hotspot_enable_only_main_wifi_sharing_no_toggle(self) -> None:
+        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        fn_idx = src.index('function Ensure-MainWifiSharingForClumsy')
+        fn_end = src.index('if (-not (Ensure-MainWifiSharingForClumsy))', fn_idx)
+        ensure_fn = src[fn_idx:fn_end]
+        self.assertIn('Apply-MainWifiSharingForHotspot', ensure_fn)
+        self.assertNotIn('Apply-HotspotIcsWithTetheringToggle', ensure_fn)
+        self.assertNotIn('Apply-ICS', ensure_fn)
+        hotspot_idx = fn_end
+        eth_idx = src.index('} else {', hotspot_idx)
+        hotspot_block = src[hotspot_idx:eth_idx]
+        self.assertIn('Ensure-MainWifiSharingForClumsy', hotspot_block)
+        self.assertNotIn('Apply-HotspotIcsWithTetheringToggle', hotspot_block)
+        self.assertNotIn('Apply-ICS', hotspot_block)
+
+    def test_apply_hotspot_ics_core_skips_when_already_active(self) -> None:
+        helpers = ics._PS_HOTSPOT_HELPERS
+        core_idx = helpers.index('function Apply-HotspotIcsCore')
+        next_fn = helpers.index('function Apply-HotspotIcs', core_idx + 1)
+        core = helpers[core_idx:next_fn]
+        self.assertIn('Test-IcsActiveForPair', core)
+
     def test_enable_failure_rolls_back_and_settings_stay_off(self) -> None:
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
-        self.assertIn('repair_clumsy_network_sharing', src)
+        self.assertIn('_retry_main_wifi_sharing_for_hotspot', src)
         settings = os.path.join(_ROOT, 'src', 'gui', 'settings.py')
         with open(settings, encoding='utf-8') as f:
             st = f.read()
@@ -134,8 +156,8 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
 
     def test_hotspot_enable_internet_sharing_without_dhcp_only_exit(self) -> None:
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
-        self.assertIn('Apply-InternetSharingForClumsy', src)
-        self.assertIn('internet sharing enabled', src)
+        self.assertIn('Apply-MainWifiSharingForHotspot', src)
+        self.assertIn('main Wi-Fi internet sharing enabled', src)
         self.assertNotIn("Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot ready (DHCP active).'", src)
 
     def test_prepare_enables_main_wifi_before_hotspot_toggle(self) -> None:

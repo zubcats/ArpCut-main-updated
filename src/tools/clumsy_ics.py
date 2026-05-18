@@ -428,6 +428,7 @@ function Get-HotspotAdapterPairForIcs {
 }
 function Apply-HotspotIcsCore($pair) {
   if ($null -eq $pair.Up -or $null -eq $pair.Down) { return $false }
+  if (Test-IcsActiveForPair $pair) { return $true }
   $share = New-Object -ComObject HNetCfg.HNetShare
   $connMap = @{}
   foreach ($conn in @($share.EnumEveryConnection())) {
@@ -1053,105 +1054,118 @@ try {{
     return ($okUp -and $okDn)
   }}
 
-  if ($ZubcutTopology -eq 'hotspot') {{
+  function Ensure-MainWifiSharingForClumsy {{
+    # Hotspot path: main Wi-Fi public + hotspot private. Idempotent — never toggle if already correct.
+    if ($ZubcutTopology -ne 'hotspot') {{ return (Verify-ICS) }}
+    if (Verify-ICS) {{ return $true }}
     try {{
-      if (Apply-InternetSharingForClumsy) {{
+      if (Apply-MainWifiSharingForHotspot) {{
         Start-Sleep -Seconds 2
-        if (Verify-ICS) {{
-          Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot ready (internet sharing enabled).'
-        }}
+        return (Verify-ICS)
       }}
     }} catch {{}}
+    return (Verify-ICS)
   }}
 
-  if (Verify-ICS) {{
-    Write-ClumsyState $up $down $snapshot 'ICS sharing already active.'
-  }}
-
-  try {{
-    try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
-    try {{ Enable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
-    $applied = $false
-    foreach ($privFirst in @($false, $true)) {{
-      try {{
-        Apply-ICS $privFirst
-        Start-Sleep -Seconds 2
-        if (Verify-ICS) {{ $applied = $true; break }}
-      }} catch {{
-        foreach ($k in $connMap.Keys) {{ DisableSharingSafe $connMap[$k].cfg }}
-        foreach ($row in @($snapshot)) {{
-          $g = NormGuid($row.guid)
-          if (-not $connMap.ContainsKey($g)) {{ continue }}
-          try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
-          if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
-          EnableSharingSafe $connMap[$g].cfg $kind
-        }}
-        if ($privFirst -eq $true) {{ throw }}
-      }}
+  if ($ZubcutTopology -eq 'hotspot') {{
+    if (-not (Ensure-MainWifiSharingForClumsy)) {{
+      throw 'Could not enable internet sharing on main Wi-Fi for Mobile Hotspot. Turn hotspot ON in Windows Settings, run ZubCut as Administrator, then try Clumsy mode again.'
     }}
-    if (-not $applied) {{
-      try {{
-        if ($ZubcutTopology -ne 'hotspot') {{
+    Start-Sleep -Seconds 2
+    $dhcpOk = Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue
+    if (-not $dhcpOk) {{
+      throw 'Mobile Hotspot is on but DHCP is not running. Toggle hotspot OFF then ON in Windows Settings, run ZubCut as Administrator, or use tools\\enable_hotspot_ics_now.ps1'
+    }}
+    Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot ready (main Wi-Fi internet sharing enabled).'
+  }} else {{
+    if (Verify-ICS) {{
+      Write-ClumsyState $up $down $snapshot 'ICS sharing already active.'
+    }}
+
+    try {{
+      try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
+      try {{ Enable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}
+      $applied = $false
+      foreach ($privFirst in @($false, $true)) {{
+        try {{
+          Apply-ICS $privFirst
+          Start-Sleep -Seconds 2
+          if (Verify-ICS) {{ $applied = $true; break }}
+        }} catch {{
+          foreach ($row in @($snapshot)) {{
+            $g = NormGuid($row.guid)
+            if (-not $connMap.ContainsKey($g)) {{ continue }}
+            try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
+            if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
+            EnableSharingSafe $connMap[$g].cfg $kind
+          }}
+          if ($privFirst -eq $true) {{ throw }}
+        }}
+      }}
+      if (-not $applied) {{
+        try {{
           try {{
             Disable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             Enable-NetAdapter -Name $down.Name -Confirm:$false -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 3
           }} catch {{}}
+          $share3 = New-Object -ComObject HNetCfg.HNetShare
+          $connMap = @{{}}
+          foreach ($conn in @($share3.EnumEveryConnection())) {{
+            try {{
+              $props = $share3.NetConnectionProps($conn)
+              $guid = NormGuid($props.Guid)
+              $cfg = $share3.INetSharingConfigurationForINetConnection($conn)
+              $connMap[$guid] = @{{ conn=$conn; cfg=$cfg; name=$props.Name }}
+            }} catch {{ continue }}
+          }}
+          $upKey = Resolve-ConnGuid $upGuid $up.Name
+          $dnKey = Resolve-ConnGuid $downGuid $down.Name
+          if (-not $upKey -or -not $dnKey) {{ throw 'Sharing manager lost adapter mapping after adapter reset.' }}
+          Apply-ICS $false
+          Start-Sleep -Seconds 2
+          if (-not (Verify-ICS)) {{
+            throw 'ICS could not be verified after adapter reset (run ZubCut as Administrator and check adapters).'
+          }}
+          $applied = $true
+        }} catch {{
+          foreach ($row in @($snapshot)) {{
+            $g = NormGuid($row.guid)
+            if (-not $connMap.ContainsKey($g)) {{ continue }}
+            try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
+            if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
+            EnableSharingSafe $connMap[$g].cfg $kind
+          }}
+          throw
         }}
-        $share3 = New-Object -ComObject HNetCfg.HNetShare
-        $connMap = @{{}}
-        foreach ($conn in @($share3.EnumEveryConnection())) {{
-          try {{
-            $props = $share3.NetConnectionProps($conn)
-            $guid = NormGuid($props.Guid)
-            $cfg = $share3.INetSharingConfigurationForINetConnection($conn)
-            $connMap[$guid] = @{{ conn=$conn; cfg=$cfg; name=$props.Name }}
-          }} catch {{ continue }}
-        }}
-        $upKey = Resolve-ConnGuid $upGuid $up.Name
-        $dnKey = Resolve-ConnGuid $downGuid $down.Name
-        if (-not $upKey -or -not $dnKey) {{ throw 'Sharing manager lost adapter mapping after adapter reset.' }}
-        Apply-ICS $false
-        Start-Sleep -Seconds 2
-        if (-not (Verify-ICS)) {{
-          throw 'ICS could not be verified after adapter reset (run ZubCut as Administrator and check adapters).'
-        }}
-        $applied = $true
-      }} catch {{
-        foreach ($k in $connMap.Keys) {{ DisableSharingSafe $connMap[$k].cfg }}
-        foreach ($row in @($snapshot)) {{
-          $g = NormGuid($row.guid)
-          if (-not $connMap.ContainsKey($g)) {{ continue }}
-          try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
-          if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
-          EnableSharingSafe $connMap[$g].cfg $kind
-        }}
-        throw
       }}
     }}
-  }}
-  catch {{
-    foreach ($k in $connMap.Keys) {{ DisableSharingSafe $connMap[$k].cfg }}
-    foreach ($row in @($snapshot)) {{
-      $g = NormGuid($row.guid)
-      if (-not $connMap.ContainsKey($g)) {{ continue }}
-      try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
-      if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
-      EnableSharingSafe $connMap[$g].cfg $kind
+    catch {{
+      foreach ($row in @($snapshot)) {{
+        $g = NormGuid($row.guid)
+        if (-not $connMap.ContainsKey($g)) {{ continue }}
+        try {{ $kind = [System.Convert]::ToInt32($row.type) }} catch {{ continue }}
+        if ($kind -ne 0 -and $kind -ne 1) {{ continue }}
+        EnableSharingSafe $connMap[$g].cfg $kind
+      }}
+      throw
     }}
-    throw
-  }}
 
-  Start-Sleep -Seconds 2
-  $dhcpOk = Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue
-  if ($ZubcutTopology -eq 'hotspot' -and -not $dhcpOk) {{
-    throw 'Mobile Hotspot is on but DHCP is not running. Toggle hotspot OFF then ON in Windows Settings, run ZubCut as Administrator, or use tools\\enable_hotspot_ics_now.ps1'
+    if (-not (Verify-ICS)) {{
+      throw 'Could not enable Internet Connection Sharing for the Ethernet console path.'
+    }}
+
+    Start-Sleep -Seconds 2
+    Write-ClumsyState $up $down $snapshot 'Clumsy: Ethernet console path (ICS enabled).'
   }}
-  $doneMsg = if ($ZubcutTopology -eq 'hotspot') {{ 'Clumsy: Mobile Hotspot path (internet sharing + DHCP).' }} else {{ 'Clumsy: Ethernet console path (ICS enabled).' }}
-  Write-ClumsyState $up $down $snapshot $doneMsg
 }}
 catch {{
+  try {{
+    if ($ZubcutTopology -eq 'hotspot') {{
+      Apply-MainWifiSharingForHotspot | Out-Null
+    }}
+  }} catch {{}}
   $em = if ($null -ne $_.Exception) {{ $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }} else {{ $_ | Out-String }}
   JsonOut @{{ ok=$false; error=$em }}
   exit 1
@@ -1161,11 +1175,23 @@ catch {{
     if ok:
         return True, str(payload.get('message') or 'ICS sharing enabled.')
     msg = str(payload.get('error') or '').strip() or raw.strip() or 'ICS enable failed.'
+    _retry_main_wifi_sharing_for_hotspot()
+    return False, msg
+
+
+def _retry_main_wifi_sharing_for_hotspot() -> None:
+    """Best-effort: enable main Wi-Fi ICS only (no disable-all / hotspot tether toggle)."""
+    if os.name != 'nt':
+        return
+    script = f"""
+$ErrorActionPreference = 'Continue'
+{_PS_HOTSPOT_HELPERS}
+try {{ Apply-MainWifiSharingForHotspot | Out-Null }} catch {{}}
+"""
     try:
-        repair_clumsy_network_sharing()
+        _run_powershell(script)
     except Exception:
         pass
-    return False, msg
 
 
 def repair_clumsy_network_sharing() -> Tuple[bool, str]:
