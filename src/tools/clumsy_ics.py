@@ -548,6 +548,10 @@ function Enable-MobileHotspotNatPath {
     [object]$Downstream
   )
   # Windows Mobile Hotspot NAT (icssvc) - same path that works when classic HNetCfg Sharing cannot enable.
+  if (Test-MobileHotspotOperational) {
+    Ensure-HotspotDhcpFirewall
+    return $true
+  }
   Ensure-SharingServicesLight
   Set-HotspotDhcpRegistry
   try {
@@ -1253,8 +1257,15 @@ try {{
       if (-not $icsOk) {{ $icsOk = (Verify-ICS) }}
     }}
     $natEnabled = $false
+    $natAlready = $false
     if (-not $icsOk) {{
-      $natEnabled = Enable-MobileHotspotNatPath -Uplink $up -Downstream $down
+      $natAlready = Test-MobileHotspotOperational
+      if ($natAlready) {{
+        Ensure-HotspotDhcpFirewall
+        $natEnabled = $true
+      }} else {{
+        $natEnabled = Enable-MobileHotspotNatPath -Uplink $up -Downstream $down
+      }}
     }}
     if (-not $icsOk -and -not $natEnabled) {{
       throw 'Could not enable internet to Mobile Hotspot (classic Sharing or hotspot NAT). Turn hotspot ON in Settings, wait for 192.168.137.1, then try Clumsy mode again.'
@@ -1265,6 +1276,8 @@ try {{
       }} else {{
         'Clumsy mode ready: Wi-Fi -> Mobile Hotspot (Sharing enabled).'
       }}
+    }} elseif ($natAlready) {{
+      $shareMsg = 'Clumsy mode ready (Mobile Hotspot NAT already active). Connect your console to the PC hotspot Wi-Fi.'
     }} else {{
       $shareMsg = if ($ZubcutUplinkKind -eq 'ethernet') {{
         'Clumsy mode ready: ZubCut enabled Mobile Hotspot NAT (Ethernet uplink). Classic Sharing was not available on this PC.'
