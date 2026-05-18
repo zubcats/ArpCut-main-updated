@@ -37,6 +37,12 @@ class TestLagCountdown(unittest.TestCase):
         allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_phase_deadline_poll')]
         self.assertIn('_arm_lag_phase_countdown', allow)
 
+    def test_allow_phase_shows_dash(self) -> None:
+        from gui.main import ElmoCut
+
+        self.assertEqual(ElmoCut._lag_countdown_label(True, 1500), 'Time left: -')
+        self.assertEqual(ElmoCut._lag_countdown_label(False, 9000), 'Time left: 9.0 s')
+
 
 if __name__ == '__main__':
     unittest.main()

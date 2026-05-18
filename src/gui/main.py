@@ -450,14 +450,21 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
             self.set_lag_countdown(None, False)
 
     def set_lag_countdown(self, left_ms, allow_phase: bool = False):
-        """Show remaining time for the current lag or normal phase; None when idle."""
+        """Show lag-phase countdown, or '-' during allow (normal) phase; None when idle."""
+        if left_ms is None and not allow_phase:
+            self.lblLagCountdown.setVisible(False)
+            self.lblLagCountdown.setText('')
+            return
+        if allow_phase:
+            self.lblLagCountdown.setVisible(True)
+            self.lblLagCountdown.setText('Time left: -')
+            return
         if left_ms is None or left_ms <= 0:
             self.lblLagCountdown.setVisible(False)
             self.lblLagCountdown.setText('')
             return
-        phase = 'Normal' if allow_phase else 'Lag'
         self.lblLagCountdown.setVisible(True)
-        self.lblLagCountdown.setText(f'{phase} — {format_countdown_ms(left_ms)}')
+        self.lblLagCountdown.setText(format_countdown_ms(left_ms))
 
     def _reject_enable(self):
         self.refresh_toggle_state()
@@ -3777,6 +3784,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return None
         return max(0, int((self._lag_phase_deadline - time.monotonic()) * 1000))
 
+    @staticmethod
+    def _lag_countdown_label(allow_phase: bool, rem_ms) -> str:
+        """Allow phase shows '-' only; lag phase uses the same countdown format as Dupe."""
+        if allow_phase:
+            return 'Time left: -'
+        if rem_ms is None or rem_ms <= 0:
+            return 'Time left: 0.0 s'
+        return format_countdown_ms(rem_ms)
+
     def _arm_lag_phase_countdown(self) -> None:
         self._lag_countdown_timer.start()
         self._tick_lag_countdown()
@@ -3797,18 +3813,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._stop_lag_countdown()
             return
         rem = self.lag_remaining_ms()
-        if rem is None:
+        allow = bool(getattr(self, '_lag_in_allow_phase', False))
+        if rem is None and not allow:
             self.lblLagCountdownMain.setVisible(False)
             self.lblLagCountdownMain.setText('')
             return
-        allow = bool(getattr(self, '_lag_in_allow_phase', False))
-        phase = 'Normal' if allow else 'Lag'
-        if rem <= 0:
-            self.lblLagCountdownMain.setVisible(True)
-            self.lblLagCountdownMain.setText(f'{phase} — Time left: 0.0 s')
-        else:
-            self.lblLagCountdownMain.setVisible(True)
-            self.lblLagCountdownMain.setText(f'{phase} — {format_countdown_ms(rem)}')
+        self.lblLagCountdownMain.setVisible(True)
+        self.lblLagCountdownMain.setText(self._lag_countdown_label(allow, rem))
         dlg = getattr(self, 'lag_switch_dialog', None)
         if dlg is not None and dlg.isVisible():
             now = time.monotonic()
