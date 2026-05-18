@@ -615,6 +615,23 @@ function Ensure-SharingServicesLight {
     } catch {}
   }
 }
+function Ensure-HotspotDhcpFirewall {
+  # ICS DHCP server (svchost SharedAccess on 192.168.137.1:67) — not covered by client DHCP rules.
+  foreach ($r in @(
+    @{N='ZubCut-ICS-DHCP-In';D='in';LP='67';RP='';RIP=''},
+    @{N='ZubCut-ICS-DHCP-Out';D='out';LP='67';RP='';RIP=''},
+    @{N='ZubCut-ICS-DHCP-Subnet-In';D='in';LP='67';RP='';RIP='192.168.137.0/24'},
+    @{N='ZubCut-ICS-DHCP-Subnet-Out';D='out';LP='67,68';RP='';RIP='192.168.137.0/24'},
+    @{N='ZubCut-ICS-DHCP-Client-In';D='in';LP='68';RP='';RIP='192.168.137.0/24'}
+  )) {
+    netsh advfirewall firewall delete rule name="$($r.N)" 2>$null | Out-Null
+    $cmd = "netsh advfirewall firewall add rule name=`"$($r.N)`" dir=$($r.D) action=allow protocol=UDP enable=yes"
+    if ($r.LP) { $cmd += " localport=$($r.LP)" }
+    if ($r.RP) { $cmd += " remoteport=$($r.RP)" }
+    if ($r.RIP) { $cmd += " remoteip=$($r.RIP)" }
+    cmd /c $cmd 2>$null | Out-Null
+  }
+}
 function Restart-SharedAccessSafe([bool]$hotspotWasOn) {
   try {
     $sa = Get-Service -Name SharedAccess -ErrorAction Stop
@@ -990,6 +1007,7 @@ try {{
     }}
     Start-Sleep -Seconds 2
     $dhcpOk = Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue
+    Ensure-HotspotDhcpFirewall
     Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot ready (main Wi-Fi internet sharing enabled).'
   }} else {{
     if (Verify-ICS) {{

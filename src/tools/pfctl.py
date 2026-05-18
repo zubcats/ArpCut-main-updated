@@ -350,6 +350,31 @@ def _win_ip_block_rule_suffixes():
     )
 
 
+def windows_purge_all_zubcut_ip_block_rules() -> int:
+    """
+    Remove leftover Kill/Dupe firewall block rules (zubcut_ip_*).
+    These can prevent hotspot clients (e.g. PS5) from completing DHCP or using their lease.
+    """
+    if not sys.platform.startswith('win'):
+        return 0
+    import re
+
+    res = _exec('netsh advfirewall firewall show rule name=all')
+    if res.returncode != 0:
+        return 0
+    names: set[str] = set()
+    for line in (res.stdout or '').splitlines():
+        m = re.match(r'^\s*Rule Name:\s+(zubcut_ip_.+)$', line.strip(), re.IGNORECASE)
+        if m:
+            names.add(m.group(1).strip())
+    removed = 0
+    for name in sorted(names):
+        del_res = _exec(f'netsh advfirewall firewall delete rule name="{name}"')
+        if del_res.returncode == 0:
+            removed += 1
+    return removed
+
+
 def windows_delete_zubcut_ip_rules(ip: str) -> bool:
     """
     Remove all ZubCut firewall rules for this remote IP (best-effort; missing rules OK).
