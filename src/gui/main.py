@@ -3668,7 +3668,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_device_mac = None
         self.lag_device_ip = None
         self._lag_in_allow_phase = False
-        self.lag_timer.stop()
         self._lag_phase_deadline_timer.stop()
         self._lag_device_snapshot = None
         self._lag_restoring_after_stop = False

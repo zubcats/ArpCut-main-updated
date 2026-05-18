@@ -45,6 +45,11 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         self.assertIn('_lag_phase_deadline_poll', src)
         self.assertIn('_lag_ics_force_unpause', src)
 
+    def test_stop_lag_switch_does_not_use_removed_lag_timer(self) -> None:
+        src = self._main_py()
+        stop = src[src.index('def stopLagSwitch'): src.index('def startDupe', src.index('def stopLagSwitch'))]
+        self.assertNotIn('lag_timer', stop)
+
 
 if __name__ == '__main__':
     unittest.main()
