@@ -885,6 +885,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._mitm_teardown_thread = None
         self._mitm_adv_sched_timer = QTimer(self)
         self._mitm_adv_sched_timer.setInterval(100)
+        self._mitm_adv_sched_timer.setTimerType(Qt.PreciseTimer)
         self._mitm_adv_sched_timer.timeout.connect(self._mitm_adv_schedule_tick)
         self._mitm_adv_sched_t0 = 0.0
         self._mitm_adv_last_sched = None
@@ -4560,6 +4561,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, g
         )
 
+    def _reset_mitm_adv_sched_clock(self) -> None:
+        """Restart per-row timer phases (Advanced Lag schedule origin)."""
+        from tools import mitm_adv_sched
+
+        self._mitm_adv_sched_t0 = mitm_adv_sched.monotonic_now()
+        self._mitm_adv_last_sched = None
+
     def _start_mitm_adv_schedule(self):
         t = getattr(self, '_mitm_adv_sched_timer', None)
         if t is not None and getattr(self, 'mitm_shaping_active', False) and not t.isActive():
@@ -4577,6 +4585,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
             return
+        t0 = float(getattr(self, '_mitm_adv_sched_t0', 0.0) or 0.0)
+        if t0 <= 0.0:
+            self._reset_mitm_adv_sched_clock()
         from tools import mitm_adv_sched
 
         now = mitm_adv_sched.monotonic_now()
@@ -4593,6 +4604,75 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.start_mitm_shaping_from_advanced(
             du, dd, ju, jd, cu, cd, lu, ld, sched_tick=True
         )
+
+    def _mitm_adv_apply_sched_tick(
+        self,
+        device,
+        mac: str,
+        *,
+        du: int,
+        dd: int,
+        ju: int,
+        jd: int,
+        cu_mbps: float,
+        cd_mbps: float,
+        lu: int,
+        ld: int,
+        adv_gates,
+        use_wd: bool,
+    ) -> bool:
+        """Apply one scheduler tick without full MITM restart. Returns True if handled."""
+        if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
+            self._refresh_advanced_lag_mitm_if_visible()
+            return True
+        backend = getattr(self, '_mitm_shaping_backend', None)
+        if backend == 'windivert' and use_wd and self._ics_lag_gate is not None:
+            self._ics_lag_gate.set_blocking(False)
+            self._ics_lag_gate.apply_shaping_params(
+                du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps
+            )
+            self._ics_windivert_shaper = self._ics_lag_gate
+            self._mitm_adv_sched_record(
+                du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates
+            )
+            self._start_mitm_adv_schedule()
+            self._refresh_advanced_lag_mitm_if_visible()
+            return True
+        if backend == 'windivert' and not use_wd and self._ics_lag_gate is not None:
+            try:
+                self._ics_lag_gate.clear_shaping()
+                self._ics_lag_gate.prepare_stop()
+                self._stop_ics_lag_gate()
+            except Exception:
+                pass
+            self._ics_windivert_shaper = None
+            self._mitm_shaping_backend = 'forwarder'
+            backend = 'forwarder'
+        if backend == 'forwarder':
+            try:
+                self._ensure_network_context_for_victim(device)
+                self.killer.apply_link_shaping(
+                    device,
+                    delay_ms_out=du,
+                    delay_ms_in=dd,
+                    jitter_ms_out=ju,
+                    jitter_ms_in=jd,
+                    loss_pct_out=lu,
+                    loss_pct_in=ld,
+                    max_kbps_out=cu_mbps * 1000.0,
+                    max_kbps_in=cd_mbps * 1000.0,
+                )
+            except Exception as exc:
+                self.log(f'MITM shaping update failed: {exc}', 'red')
+                self._refresh_advanced_lag_mitm_if_visible()
+                return True
+            self._mitm_adv_sched_record(
+                du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates
+            )
+            self._start_mitm_adv_schedule()
+            self._refresh_advanced_lag_mitm_if_visible()
+            return True
+        return False
 
     def start_mitm_shaping_from_advanced(
         self,
@@ -4655,7 +4735,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         prev_active = self.mitm_shaping_active
         prev_sm = self.mitm_shaping_mac
         if not prev_active or prev_sm != mac:
-            self._mitm_adv_sched_t0 = mitm_adv_sched.monotonic_now()
+            self._reset_mitm_adv_sched_clock()
         du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates = mitm_adv_sched.gated_mitm_params(
             mitm_adv_sched.monotonic_now(), self._mitm_adv_sched_t0, get_settings
         )
@@ -4688,60 +4768,39 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         use_wd = use_windivert_for_advanced_ics_shaping(self.scanner, device)
+        if sched_tick and self.mitm_shaping_active and prev_sm == mac and shaping_mac == mac:
+            if self._mitm_adv_apply_sched_tick(
+                device,
+                mac,
+                du=du,
+                dd=dd,
+                ju=ju,
+                jd=jd,
+                cu_mbps=cu_mbps,
+                cd_mbps=cd_mbps,
+                lu=lu,
+                ld=ld,
+                adv_gates=adv_gates,
+                use_wd=use_wd,
+            ):
+                return
+
         if (
             shaping_mac
             and shaping_mac == mac
             and self.mitm_shaping_active
             and getattr(self, '_mitm_shaping_backend', None) == 'windivert'
             and self._ics_lag_gate is not None
+            and use_wd
         ):
-            if use_wd:
-                if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
-                    self._refresh_advanced_lag_mitm_if_visible()
-                    return
-                self._ics_lag_gate.set_blocking(False)
-                self._ics_lag_gate.apply_shaping_params(
-                    du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps
-                )
-                self._ics_windivert_shaper = self._ics_lag_gate
-                self._mitm_adv_sched_record(
-                    du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates
-                )
-                self._start_mitm_adv_schedule()
+            if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
                 self._refresh_advanced_lag_mitm_if_visible()
                 return
-            try:
-                self._ics_lag_gate.clear_shaping()
-                self._ics_lag_gate.prepare_stop()
-                self._stop_ics_lag_gate()
-            except Exception:
-                pass
-            self._ics_windivert_shaper = None
-            self._mitm_shaping_backend = None
-
-        if (
-            sched_tick
-            and self.mitm_shaping_active
-            and prev_sm == mac
-            and getattr(self, '_mitm_shaping_backend', None) == 'forwarder'
-        ):
-            try:
-                self._ensure_network_context_for_victim(device)
-                self.killer.apply_link_shaping(
-                    device,
-                    delay_ms_out=du,
-                    delay_ms_in=dd,
-                    jitter_ms_out=ju,
-                    jitter_ms_in=jd,
-                    loss_pct_out=lu,
-                    loss_pct_in=ld,
-                    max_kbps_out=cu_mbps * 1000.0,
-                    max_kbps_in=cd_mbps * 1000.0,
-                )
-            except Exception as exc:
-                self.log(f'MITM shaping update failed: {exc}', 'red')
-                self._refresh_advanced_lag_mitm_if_visible()
-                return
+            self._ics_lag_gate.set_blocking(False)
+            self._ics_lag_gate.apply_shaping_params(
+                du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps
+            )
+            self._ics_windivert_shaper = self._ics_lag_gate
             self._mitm_adv_sched_record(
                 du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates
             )
@@ -4841,7 +4900,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 f'Advanced lag ON ({path_note}) — {detail} — for ' + str(device.get('ip', '')),
                 UI_LOG_VICTIM_BLOCK_FG,
             )
-        self._mitm_adv_sched_record(du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld)
+        self._mitm_adv_sched_record(
+            du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates
+        )
         self._start_mitm_adv_schedule()
         self._refresh_flow_toggle_ui()
         self._refresh_advanced_lag_mitm_if_visible()
