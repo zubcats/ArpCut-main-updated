@@ -163,8 +163,12 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('function Set-HotspotDhcpRegistry', helpers)
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
         self.assertIn('Enable-MobileHotspotNatPath', src)
+        self.assertIn('$natAlready', src)
         self.assertIn('ZubCut enabled Mobile Hotspot NAT', src)
-        self.assertIn('Mobile Hotspot NAT active', src)
+        self.assertIn('NAT already active', src)
+        helpers_block = helpers[helpers.index('function Enable-MobileHotspotNatPath'):helpers.index('function Test-HotspotIcsActive')]
+        self.assertIn('if (Test-MobileHotspotOperational)', helpers_block)
+        self.assertIn('return $true', helpers_block)
 
     def test_hotspot_enable_skips_disrupt_when_already_ok(self) -> None:
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
