@@ -20,6 +20,12 @@ class TestIcsWinDivertResume(unittest.TestCase):
         gate.resume_from_pause()
         self.assertFalse(gate.is_blocking)
 
+    def test_pause_connection_sets_blocking(self) -> None:
+        gate = IcsWinDivertLagGate('192.168.137.50')
+        gate.resume_from_pause()
+        gate.pause_connection()
+        self.assertTrue(gate.is_blocking)
+
 
 if __name__ == '__main__':
     unittest.main()

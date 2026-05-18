@@ -302,7 +302,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         timing_layout.addRow('Lag duration (block time)', self.lagSpin)
 
         self.normalSpin = QSpinBox(self.timing_group)
-        self.normalSpin.setRange(25, 2147483647)
+        self.normalSpin.setRange(1, 2147483647)
         self.normalSpin.setSingleStep(25)
         self.normalSpin.setValue(1500)
         self.normalSpin.setSuffix(' ms')
@@ -855,10 +855,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_device_mac = None
         self.lag_device_ip = None
         self.lag_direction = 'both'  # 'both', 'in', or 'out'
-        self._lag_phase_deadline_timer = QTimer(self)
-        self._lag_phase_deadline_timer.setInterval(25)
-        self._lag_phase_deadline_timer.setTimerType(Qt.PreciseTimer)
-        self._lag_phase_deadline_timer.timeout.connect(self._lag_phase_deadline_poll)
+        self._lag_phase_end_timer = QTimer(self)
+        self._lag_phase_end_timer.setSingleShot(True)
+        self._lag_phase_end_timer.setTimerType(Qt.PreciseTimer)
+        self._lag_phase_end_timer.timeout.connect(self._lag_phase_end_timer_fired)
         self._lag_phase_deadline = 0.0
         self._lag_countdown_timer = QTimer(self)
         self._lag_countdown_timer.setInterval(50)
@@ -1052,7 +1052,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lagTimingRow.addSpacing(20)
         self.lagTimingRow.addWidget(QLabel('Normal', self.groupLagInline))
         self.normalSpinMain = QSpinBox(self.groupLagInline)
-        self.normalSpinMain.setRange(25, 2147483647)
+        self.normalSpinMain.setRange(1, 2147483647)
         self.normalSpinMain.setSingleStep(25)
         self.normalSpinMain.setValue(1500)
         self.normalSpinMain.setSuffix(' ms')
@@ -2676,8 +2676,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_release_ms = release_ms
         self.lag_direction = direction
         if self.lag_active:
-            dur = release_ms if getattr(self, '_lag_in_allow_phase', False) else block_ms
-            self._lag_phase_deadline = time.monotonic() + max(1, int(dur)) / 1000.0
+            allow = getattr(self, '_lag_in_allow_phase', False)
+            dur = release_ms if allow else block_ms
+            self._lag_schedule_phase(dur)
+            if allow:
+                dev = self._lag_resolved_victim()
+                if dev:
+                    try:
+                        self._lag_ics_resume_allow_phase(dev)
+                    except Exception:
+                        self._lag_ics_force_unpause()
             self._tick_lag_countdown()
 
     def _refresh_lag_timing_from_dialog(self):
@@ -3218,9 +3226,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         from tools.ics_windivert_shaper import IcsWinDivertLagGate
 
         gate = getattr(self, '_ics_lag_gate', None)
-        if gate is not None and gate.victim_ip == ip and gate.is_running():
-            gate.set_direction(direction)
-            return True
+        if gate is not None and gate.victim_ip == ip:
+            if gate.is_running():
+                gate.set_direction(direction)
+                return True
+            if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
+                try:
+                    self._stop_ics_lag_gate(join_timeout=0.08)
+                except Exception:
+                    pass
+                gate = IcsWinDivertLagGate(ip)
+                gate.start(direction=direction)
+                self._ics_lag_gate = gate
+                return True
         if gate is not None:
             self._stop_ics_lag_gate()
         gate = IcsWinDivertLagGate(ip)
@@ -3730,17 +3748,31 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self._lag_ics_windivert_active(device):
             return False
         try:
-            if not self._ensure_ics_lag_gate(device, self.lag_direction):
-                return False
-            gate = self._ics_lag_gate
-            if gate is None:
-                return False
             if paused:
-                gate.clear_shaping()
-                gate.set_blocking(True, mode='pause')
-            else:
-                gate.set_blocking(False)
-            return True
+                if not self._ensure_ics_lag_gate(device, self.lag_direction):
+                    return False
+                gate = self._ics_lag_gate
+                if gate is None:
+                    return False
+                gate.set_direction(self.lag_direction)
+                if hasattr(gate, 'pause_connection'):
+                    gate.pause_connection()
+                else:
+                    gate.clear_shaping()
+                    gate.set_blocking(True, mode='pause')
+                return True
+            gate = getattr(self, '_ics_lag_gate', None)
+            if gate is not None:
+                try:
+                    gate.set_direction(self.lag_direction)
+                    if hasattr(gate, 'resume_from_pause'):
+                        gate.resume_from_pause()
+                    else:
+                        gate.set_blocking(False)
+                except Exception:
+                    pass
+                return True
+            return False
         except Exception:
             return False
 
@@ -3758,23 +3790,43 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             pass
 
     def _lag_ics_resume_allow_phase(self, device) -> None:
-        """Allow window: unpause WinDivert and clear any stray firewall rules for this victim."""
-        self._lag_ics_force_unpause()
+        """Allow window: unpause WinDivert only — do not recreate the gate or re-block."""
         if not isinstance(device, dict):
             return
         if self._lag_ics_windivert_active(device):
             self._lag_ics_set_paused(device, False)
-            return
-        if clumsy_ics_use_firewall_only(device, self.scanner):
+            self._lag_ics_force_unpause()
+        elif clumsy_ics_use_firewall_only(device, self.scanner):
             self._clear_ics_client_block(device, pause_only=True)
+        else:
+            self._clear_victim_block(device)
+        if clumsy_ics_use_firewall_only(device, self.scanner):
             ip = self._flow_stable_victim_ip(device, lag=True) or str(device.get('ip') or '')
             if ip:
                 try:
                     unblock_ip(ip)
                 except Exception:
                     pass
+
+    def _lag_schedule_phase(self, duration_ms: int) -> None:
+        """Single-shot phase timer (block or allow) — same precision model as Dupe."""
+        ms = max(1, int(duration_ms))
+        self._lag_phase_deadline = time.monotonic() + ms / 1000.0
+        self._lag_phase_end_timer.stop()
+        self._lag_phase_end_timer.start(ms)
+
+    def _lag_phase_end_timer_fired(self) -> None:
+        if not self.lag_active:
             return
-        self._clear_victim_block(device)
+        device = self._lag_resolved_victim()
+        if not device:
+            self.stopLagSwitch()
+            return
+        self._lag_device_snapshot = dict(device)
+        if self._lag_in_allow_phase:
+            self._lag_phase_begin_block(device)
+        else:
+            self._lag_phase_begin_allow(device)
 
     def _cancel_lag_block_reassert(self) -> None:
         self._lag_reassert_gen = int(getattr(self, '_lag_reassert_gen', 0)) + 1
@@ -3836,7 +3888,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._refresh_lag_timing_from_dialog()
         self._lag_in_allow_phase = False
         block_ms = max(1, int(self.lag_block_ms))
-        self._lag_phase_deadline = time.monotonic() + block_ms / 1000.0
+        self._lag_schedule_phase(block_ms)
         self._arm_lag_phase_countdown()
         try:
             self._lag_apply_block(device)
@@ -3845,8 +3897,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         mac = str(device.get('mac') or '').strip()
         if mac:
             self._schedule_lag_start_reassert(mac)
-        if self.lag_active:
-            self._lag_phase_deadline_timer.start()
         if mac:
             self._refresh_table_row_for_mac(mac, device.get('ip'))
             self._repaint_all_table_rows_for_hover()
@@ -3858,7 +3908,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._refresh_lag_timing_from_dialog()
         self._lag_in_allow_phase = True
         allow_ms = max(1, int(self.lag_release_ms))
-        self._lag_phase_deadline = time.monotonic() + allow_ms / 1000.0
+        self._lag_schedule_phase(allow_ms)
         self._arm_lag_phase_countdown()
         try:
             self._lag_ics_resume_allow_phase(device)
@@ -3868,24 +3918,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if mac:
             self._refresh_table_row_for_mac(mac, device.get('ip'))
             self._repaint_all_table_rows_for_hover()
-        if self.lag_active:
-            self._lag_phase_deadline_timer.start()
-
-    def _lag_phase_deadline_poll(self) -> None:
-        if not self.lag_active:
-            self._lag_phase_deadline_timer.stop()
-            return
-        if time.monotonic() < self._lag_phase_deadline:
-            return
-        device = self._lag_resolved_victim()
-        if not device:
-            self.stopLagSwitch()
-            return
-        self._lag_device_snapshot = dict(device)
-        if self._lag_in_allow_phase:
-            self._lag_phase_begin_block(device)
-        else:
-            self._lag_phase_begin_allow(device)
 
     def _lag_apply_block(self, device):
         if not self._lag_ics_set_paused(device, True):
@@ -3923,7 +3955,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         prev_mac = self.lag_device_mac
         snap = getattr(self, '_lag_device_snapshot', None)
         # Stop phase timer before clearing lag_active so a tick cannot re-block.
-        self._lag_phase_deadline_timer.stop()
+        self._lag_phase_end_timer.stop()
         self._stop_lag_countdown()
         self._cancel_lag_block_reassert()
         device = self._lag_resolved_victim()

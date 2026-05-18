@@ -40,9 +40,9 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         src = self._main_py()
         self.assertIn('_lag_in_allow_phase', src)
 
-    def test_lag_uses_deadline_poll_not_single_shot_only(self) -> None:
+    def test_lag_uses_single_shot_phase_timer(self) -> None:
         src = self._main_py()
-        self.assertIn('_lag_phase_deadline_poll', src)
+        self.assertIn('_lag_phase_end_timer_fired', src)
         self.assertIn('_lag_ics_force_unpause', src)
 
     def test_stop_lag_switch_does_not_use_removed_lag_timer(self) -> None:
@@ -63,9 +63,10 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         src = self._main_py()
         self.assertIn('_lag_ics_resume_allow_phase', src)
         self.assertIn('_flow_stable_victim_ip', src)
-        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_phase_deadline_poll')]
+        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
         self.assertIn('_lag_ics_resume_allow_phase', allow)
         self.assertIn('_cancel_lag_block_reassert', allow)
+        self.assertIn('_lag_schedule_phase', allow)
 
     def test_release_windivert_unpauses_without_gate_match(self) -> None:
         src = self._main_py()

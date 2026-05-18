@@ -34,7 +34,9 @@ class TestLagCountdown(unittest.TestCase):
         self.assertIn('_arm_lag_phase_countdown', src)
         block = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
         self.assertIn('_arm_lag_phase_countdown', block)
-        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_phase_deadline_poll')]
+        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
+        self.assertIn('_lag_schedule_phase', allow)
+        self.assertIn('_lag_ics_resume_allow_phase', allow)
         self.assertIn('_arm_lag_phase_countdown', allow)
 
     def test_allow_phase_shows_dash(self) -> None:

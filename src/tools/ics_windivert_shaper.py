@@ -602,10 +602,39 @@ class IcsWinDivertLagGate:
             self._cap_out_bps = max(0.0, float(max_kbps_out)) * 1000.0 / 8.0
             self._cap_in_bps = max(0.0, float(max_kbps_in)) * 1000.0 / 8.0
 
+    def pause_connection(self) -> None:
+        """Hold all shaped victim traffic (lag/kill/dupe block phase)."""
+        with self._lock:
+            self._delay_out_ms = 0
+            self._delay_in_ms = 0
+            self._jitter_out_ms = 0
+            self._jitter_in_ms = 0
+            self._loss_out = 0
+            self._loss_in = 0
+            self._cap_out_bps = 0.0
+            self._cap_in_bps = 0.0
+            self._blocking = True
+            self._hold_pause = True
+            self._delay_ms = 0
+            self._loss_pct = 0
+            self._discard_heap = False
+
     def resume_from_pause(self) -> None:
         """End pause/hold without stopping the gate thread (lag allow phase / unpause)."""
-        self.clear_shaping()
-        self.set_blocking(False)
+        with self._lock:
+            self._delay_out_ms = 0
+            self._delay_in_ms = 0
+            self._jitter_out_ms = 0
+            self._jitter_in_ms = 0
+            self._loss_out = 0
+            self._loss_in = 0
+            self._cap_out_bps = 0.0
+            self._cap_in_bps = 0.0
+            self._blocking = False
+            self._hold_pause = True
+            self._delay_ms = 0
+            self._loss_pct = 0
+            self._discard_heap = True
 
     def clear_shaping(self) -> None:
         with self._lock:
