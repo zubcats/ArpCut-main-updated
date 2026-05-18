@@ -76,8 +76,9 @@ try {
         Where-Object { $_.IPAddress -eq '192.168.137.1' } | Select-Object -First 1)
 } catch {}
 
-if ($mobileHotspotActive -and $snapshot.Count -eq 0) {
-    Write-Host 'Mobile Hotspot is active — skipping ICS reset (clearing it breaks client DHCP).'
+# Never wipe ICS while the hotspot gateway is up — PS5 shows "connected" but gets no IP/internet.
+if ($mobileHotspotActive) {
+    Write-Host 'Mobile Hotspot is active — skipping ICS reset (wiping breaks PS5 DHCP).'
 } else {
     Write-Host 'Clearing Internet Connection Sharing on all adapters...'
     $share = New-Object -ComObject HNetCfg.HNetShare
@@ -107,6 +108,80 @@ if ($mobileHotspotActive -and $snapshot.Count -eq 0) {
         }
     }
 }
+
+# Re-enable IPv6 on hotspot NIC, remove APIPA, ensure gateway (undo bad IPv6-disable scripts).
+$down = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+    $_.Status -eq 'Up' -and ($_.InterfaceDescription -match 'Wi-Fi Direct|Hosted' -or $_.Name -match 'Local Area Connection')
+} | Select-Object -First 1
+if ($down) {
+    $v6 = Get-NetAdapterBinding -Name $down.Name -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
+    if ($v6 -and -not $v6.Enabled) {
+        Enable-NetAdapterBinding -Name $down.Name -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
+        Write-Host "Re-enabled IPv6 on $($down.Name)"
+    }
+    Get-NetIPAddress -InterfaceIndex $down.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -like '169.254.*' } |
+        ForEach-Object {
+            Remove-NetIPAddress -IPAddress $_.IPAddress -InterfaceIndex $_.InterfaceIndex -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    if (-not (Get-NetIPAddress -InterfaceIndex $down.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -eq '192.168.137.1' })) {
+        New-NetIPAddress -InterfaceIndex $down.ifIndex -IPAddress 192.168.137.1 -PrefixLength 24 -ErrorAction SilentlyContinue | Out-Null
+    }
+    foreach ($line in @(arp -a)) {
+        if ($line -match '(192\.168\.137\.\d+)\s+([0-9a-fA-F\-]+)\s+static' -and $Matches[1] -ne '192.168.137.1' -and $Matches[1] -ne '192.168.137.255') {
+            arp -d $Matches[1] 2>$null | Out-Null
+        }
+    }
+}
+
+$saParams = 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters'
+foreach ($n in @('ScopeAddress', 'ScopeAddressBackup', 'StandaloneDhcpAddress')) {
+    Set-ItemProperty -Path $saParams -Name $n -Value '192.168.137.1' -Type String -Force -ErrorAction SilentlyContinue
+}
+
+# Wi-Fi public -> hotspot private if missing
+$up = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+    $_.Status -eq 'Up' -and ($_.Name -eq 'Wi-Fi' -or $_.InterfaceDescription -match 'Wireless LAN|Wi-Fi')
+    $_.InterfaceDescription -notmatch 'Direct|Virtual|Bluetooth'
+} | Select-Object -First 1
+if ($up -and $down) {
+    $share2 = New-Object -ComObject HNetCfg.HNetShare
+    $cm = @{}
+    foreach ($conn in @($share2.EnumEveryConnection())) {
+        try {
+            $p = $share2.NetConnectionProps($conn)
+            $cm[(NormGuid $p.Guid)] = $share2.INetSharingConfigurationForINetConnection($conn)
+        } catch {}
+    }
+    $upG = NormGuid $up.InterfaceGuid
+    $dnG = NormGuid $down.InterfaceGuid
+    if ($cm.ContainsKey($upG) -and $cm.ContainsKey($dnG)) {
+        $uc = $cm[$upG]; $dc = $cm[$dnG]
+        $icsOk = $false
+        try {
+            $icsOk = $uc.SharingEnabled -and $dc.SharingEnabled -and [int]$uc.SharingConnectionType -eq 0 -and [int]$dc.SharingConnectionType -eq 1
+        } catch {}
+        if (-not $icsOk) {
+            Write-Host 'Applying Wi-Fi -> hotspot internet sharing...'
+            foreach ($k in $cm.Keys) {
+                try { if ($cm[$k].SharingEnabled) { $cm[$k].DisableSharing() } } catch {}
+            }
+            Start-Sleep -Seconds 1
+            try {
+                $cm[$upG].EnableSharing(0)
+                $cm[$dnG].EnableSharing(1)
+            } catch {}
+            Start-Sleep -Seconds 3
+        }
+    }
+}
+
+$dhcp67 = [bool](Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue)
+$gw137 = [bool](Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq '192.168.137.1' })
+Write-Host ''
+Write-Host "Gateway 192.168.137.1: $gw137"
+Write-Host "DHCP listening (UDP 67): $dhcp67"
 
 Write-Host 'Re-enabling disabled Wi-Fi / hotspot adapters...'
 Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
