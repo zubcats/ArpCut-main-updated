@@ -31,10 +31,12 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
             r'elif for_lag:\s*\n\s*self\._refresh_table_row_for_mac',
         )
 
-    def test_lag_apply_block_passes_for_lag(self) -> None:
+    def test_lag_apply_block_uses_kill_on_hotspot_path(self) -> None:
         src = self._main_py()
-        self.assertIn('_lag_ics_set_paused', src)
-        self.assertIn('for_lag=True', src)
+        block = src[src.index('def _lag_apply_block'): src.index('def _lag_resolved_victim')]
+        self.assertIn('_apply_ics_client_block', block)
+        self.assertIn('for_lag=True', block)
+        self.assertNotIn('_lag_ics_set_paused', block)
 
     def test_row_chrome_respects_allow_phase(self) -> None:
         src = self._main_py()
@@ -43,7 +45,6 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
     def test_lag_uses_single_shot_phase_timer(self) -> None:
         src = self._main_py()
         self.assertIn('_lag_phase_end_timer_fired', src)
-        self.assertIn('_lag_ics_force_unpause', src)
 
     def test_stop_lag_switch_does_not_use_removed_lag_timer(self) -> None:
         src = self._main_py()
@@ -54,20 +55,24 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         src = self._main_py()
         stop = src[src.index('def stopLagSwitch'): src.index('def startDupe', src.index('def stopLagSwitch'))]
         self.assertIn('_ics_emergency_release', stop)
-        self.assertIn('_lag_ics_force_unpause', stop)
         self.assertIn('_cancel_lag_block_reassert', stop)
         self.assertNotIn('QTimer.singleShot(0, _lag_teardown)', stop)
         self.assertNotIn('_schedule_flow_off_reinforce', stop)
 
-    def test_lag_allow_phase_resumes_windivert(self) -> None:
+    def test_lag_allow_phase_stops_gate_like_kill_off(self) -> None:
         src = self._main_py()
-        self.assertIn('_lag_ics_resume_allow_phase', src)
-        self.assertIn('_flow_stable_victim_ip', src)
+        self.assertIn('_ics_hotspot_pause_release', src)
+        resume = src[src.index('def _lag_ics_resume_allow_phase'): src.index('def _lag_apply_allow_phase_sync')]
+        self.assertIn('_ics_hotspot_pause_release', resume)
+        self.assertNotIn('_lag_ics_set_paused(device, False)', resume)
+        self.assertNotIn('_lag_ics_force_unpause', resume)
         allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
         self.assertIn('_lag_apply_allow_phase_sync', allow)
         self.assertIn('_cancel_lag_block_reassert', allow)
         self.assertIn('_lag_schedule_phase', allow)
         self.assertNotIn('_run_on_flow_net_thread', allow)
+        tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
+        self.assertNotIn('_lag_ics_force_unpause', tick)
 
     def test_release_windivert_unpauses_without_gate_match(self) -> None:
         src = self._main_py()

@@ -3048,11 +3048,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
 
-    def _release_ics_windivert_block(self, device, *, heal: bool = True) -> None:
-        """Full WinDivert OFF: unpause, stop gate, clear killer bookkeeping, heal PS5 gateway ARP."""
+    def _ics_hotspot_windivert_teardown(self, device, *, heal: bool = False) -> None:
+        """
+        Stop the ICS WinDivert gate so traffic bypasses ZubCut (same packet path as Kill OFF).
+        Does not change Kill UI state — use _release_ics_windivert_block for full Kill teardown.
+        """
         if not isinstance(device, dict):
             return
-        mac = str(device.get('mac') or '').strip()
         resolved_ip = self._flow_stable_victim_ip(
             device,
             lag=getattr(self, 'lag_active', False),
@@ -3068,15 +3070,40 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 gate.prepare_stop()
             except Exception:
                 pass
-        if mac:
-            self.killer.killed.pop(mac, None)
-            self._set_killed_profile(device, False)
         self._stop_ics_lag_gate(join_timeout=0.35)
         if heal and resolved_ip:
             victim = dict(device)
-            if resolved_ip:
-                victim['ip'] = resolved_ip
+            victim['ip'] = resolved_ip
             self._schedule_ics_hotspot_heal(victim)
+
+    def _ics_hotspot_pause_release(self, device, *, heal: bool = False) -> None:
+        """
+        Hotspot lag allow / traffic resume: Kill-OFF-equivalent (stop gate + unblock IP).
+        Leaves killer.killed / killed_devices unchanged when lag was not mirroring Kill.
+        """
+        if not isinstance(device, dict) or not clumsy_ics_use_firewall_only(device, self.scanner):
+            return
+        self._ics_hotspot_windivert_teardown(device, heal=heal)
+        ip = (
+            self._flow_stable_victim_ip(device, lag=True)
+            or clumsy_ics_resolve_victim_ip(device, self.scanner)
+            or str(device.get('ip') or '').strip()
+        )
+        if ip:
+            try:
+                unblock_ip(ip)
+            except Exception:
+                pass
+
+    def _release_ics_windivert_block(self, device, *, heal: bool = True) -> None:
+        """Full WinDivert OFF: unpause, stop gate, clear killer bookkeeping, heal PS5 gateway ARP."""
+        if not isinstance(device, dict):
+            return
+        mac = str(device.get('mac') or '').strip()
+        self._ics_hotspot_windivert_teardown(device, heal=heal)
+        if mac:
+            self.killer.killed.pop(mac, None)
+            self._set_killed_profile(device, False)
 
     def _schedule_ics_hotspot_heal(self, device) -> None:
         """Clumsy does not need ARP heal; hotspot + our ARP path needs repeated gateway refresh."""
@@ -3860,33 +3887,24 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return self._lag_phase_seq
 
     def _lag_ics_resume_allow_phase(self, device) -> None:
-        """Allow window: unpause WinDivert only — do not recreate the gate or re-block."""
+        """Allow window: same hotspot path as Kill OFF (stop WinDivert gate, unblock victim IP)."""
         if not isinstance(device, dict):
             return
-        if self._lag_ics_windivert_active(device):
-            self._lag_ics_set_paused(device, False)
-            self._lag_ics_force_unpause()
-        elif clumsy_ics_use_firewall_only(device, self.scanner):
-            self._clear_ics_client_block(device, pause_only=True)
+        if clumsy_ics_use_firewall_only(device, self.scanner):
+            self._ics_hotspot_pause_release(device, heal=False)
         else:
             self._clear_victim_block(device)
-        if clumsy_ics_use_firewall_only(device, self.scanner):
-            ip = self._flow_stable_victim_ip(device, lag=True) or str(device.get('ip') or '')
-            if ip:
-                try:
-                    unblock_ip(ip)
-                except Exception:
-                    pass
 
     def _lag_apply_allow_phase_sync(self, device) -> None:
-        """Main-thread allow: must run immediately so a queued block job cannot skip unpause."""
+        """Main-thread allow: must run immediately so a queued block job cannot skip release."""
         if not self.lag_active or not isinstance(device, dict):
             return
         self._lag_bump_phase_seq()
         try:
             self._lag_ics_resume_allow_phase(device)
         except Exception:
-            self._lag_ics_force_unpause()
+            if clumsy_ics_use_firewall_only(device, self.scanner):
+                self._ics_hotspot_pause_release(device, heal=False)
 
     def _lag_schedule_phase(self, duration_ms: int) -> None:
         """Single-shot phase timer (block or allow) — same precision model as Dupe."""
@@ -3959,10 +3977,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._set_countdown_label(
             self.lblLagCountdownMain, self._lag_countdown_label(allow, rem)
         )
-        if allow:
-            dev = self._lag_resolved_victim()
-            if dev:
-                self._lag_ics_force_unpause()
         dlg = getattr(self, 'lag_switch_dialog', None)
         if dlg is not None and dlg.isVisible():
             try:
@@ -4004,8 +4018,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._refresh_table_row_for_mac(mac, device.get('ip'))
 
     def _lag_apply_block(self, device):
-        if not self._lag_ics_set_paused(device, True):
-            self._apply_victim_block(device, self.lag_direction, for_dupe=False, for_lag=True)
+        """Block phase: same hotspot path as Kill ON (WinDivert pause, no killer.killed for lag)."""
+        if clumsy_ics_use_firewall_only(device, self.scanner):
+            self._apply_ics_client_block(device, self.lag_direction, for_lag=True)
+        else:
+            self._apply_victim_block(device, self.lag_direction, for_lag=True)
 
     def _lag_resolved_victim(self):
         """
@@ -4045,7 +4062,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         device = self._lag_resolved_victim()
 
         # Instant resume (same path as Kill/Dupe OFF) — do not defer with QTimer.singleShot.
-        self._lag_ics_force_unpause()
         if device:
             try:
                 if clumsy_ics_use_firewall_only(device, self.scanner):
