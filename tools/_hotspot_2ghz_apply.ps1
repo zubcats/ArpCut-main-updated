@@ -175,16 +175,32 @@ function Ensure-EthernetPreferredRouting {
 
 function Disconnect-WifiClientForEthernetHotspot {
     <#
-    Realtek USB: PC Wi-Fi client on 5 GHz + hotspot makes Settings show "5 GHz" and can block PS5.
-    With Ethernet internet, disconnect Wi-Fi client so the radio hosts a 2.4 GHz AP only.
+    Realtek USB: never disable the Wi-Fi adapter (kills hotspot). Disconnect router Wi-Fi only.
+    With Ethernet internet, disconnect Wi-Fi client so the radio hosts hotspot on 2.4 GHz.
     #>
     if (-not (Test-EthernetInternetUplink)) { return $false }
+    $wifi = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+        $_.InterfaceDescription -match 'Wireless LAN|802\.11|Wi-Fi' -and
+        $_.InterfaceDescription -notmatch 'Direct|Hosted|Virtual'
+    } | Select-Object -First 1
+    if ($wifi -and $wifi.Status -eq 'Disabled') {
+        Enable-NetAdapter -Name $wifi.Name -Confirm:$false -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
+    }
     $iface = Get-WifiClientInterfaceName
     $out = netsh wlan show interfaces 2>$null | Out-String
-    if ($out -notmatch 'State\s*:\s*connected') { return $true }
+    if ($out -notmatch 'State\s*:\s*connected') {
+        if ($wifi) {
+            Set-NetIPInterface -InterfaceIndex $wifi.ifIndex -AddressFamily IPv4 -InterfaceMetric 8000 -ErrorAction SilentlyContinue
+        }
+        return $true
+    }
     Save-WifiClientStateForHotspot
     netsh wlan disconnect interface="$iface" 2>$null | Out-Null
     Start-Sleep -Seconds 3
+    if ($wifi) {
+        Set-NetIPInterface -InterfaceIndex $wifi.ifIndex -AddressFamily IPv4 -InterfaceMetric 8000 -ErrorAction SilentlyContinue
+    }
     return $true
 }
 
@@ -321,8 +337,10 @@ function Enable-EthernetHotspotIcs {
     <#
     Internet Connection Sharing: Ethernet (public/WAN) -> Mobile hotspot / Wi-Fi Direct (private/LAN).
     Required for PS5 when PC internet is on cable — Mobile Hotspot alone does not bridge Ethernet.
+
+    Use -ManualIcsOnly when sharing was set in Control Panel — skips HNetCfg reset (avoids freezes).
     #>
-    param([switch]$Quiet)
+    param([switch]$Quiet, [switch]$ManualIcsOnly)
 
     foreach ($svc in @('SharedAccess', 'icssvc', 'WlanSvc', 'Dhcp')) {
         try { Start-Service $svc -ErrorAction SilentlyContinue } catch {}
@@ -368,6 +386,12 @@ function Enable-EthernetHotspotIcs {
         if (-not $Quiet) { Write-Host 'ICS already active (DHCP + sharing).' }
         return $true
     }
+    if ($ManualIcsOnly -and (Test-HotspotDhcpListening) -and (Test-MobileHotspotGateway)) {
+        if (-not $Quiet) {
+            Write-Host 'DHCP + 192.168.137.1 OK — leaving ICS as set in Control Panel (no COM reset).'
+        }
+        return $true
+    }
 
     function NormGuid($g) {
         if ($null -eq $g) { return '' }
@@ -388,11 +412,6 @@ function Enable-EthernetHotspotIcs {
             }
         } catch {}
     }
-    foreach ($k in $connMap.Keys) {
-        try { if ($connMap[$k].cfg.SharingEnabled) { $connMap[$k].cfg.DisableSharing() } } catch {}
-    }
-    Start-Sleep -Seconds 1
-
     $ethLive = Get-NetAdapter -InterfaceIndex $eth.ifIndex -ErrorAction SilentlyContinue
     $apLive = Get-NetAdapter -InterfaceIndex $ap.ifIndex -ErrorAction SilentlyContinue
     if (-not $ethLive -or -not $apLive) { return $false }
@@ -420,6 +439,14 @@ function Enable-EthernetHotspotIcs {
         if (-not $Quiet) { Write-Host "ERROR: Could not map adapters for ICS (eth=$ethK ap=$apK)." }
         return $false
     }
+
+    # Only reset sharing on the Ethernet + hotspot pair (mass DisableSharing freezes ncpa.cpl).
+    foreach ($k in @($ethK, $apK)) {
+        try {
+            if ($connMap[$k].cfg.SharingEnabled) { $connMap[$k].cfg.DisableSharing() }
+        } catch {}
+    }
+    Start-Sleep -Seconds 1
 
     if (-not $Quiet) { Write-Host 'Enabling Internet Connection Sharing...' }
     $ok = (EnableShare $connMap[$ethK].cfg 0) -and (EnableShare $connMap[$apK].cfg 1)

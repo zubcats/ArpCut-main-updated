@@ -153,6 +153,13 @@ class Scanner():
         """
         Flush ARP cache
         """
+        try:
+            from tools.clumsy_inline import hotspot_arp_cache_sensitive
+
+            if hotspot_arp_cache_sensitive(self):
+                return
+        except Exception:
+            pass
         if sys.platform.startswith('win'):
             arp_cmd = terminal('arp -d *')
             if arp_cmd and 'The parameter is incorrect' in arp_cmd:

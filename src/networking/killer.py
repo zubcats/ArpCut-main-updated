@@ -418,13 +418,39 @@ class Killer:
                 self._sync_iface_for_victim(device)
                 self.kill(device)
 
-    def unkill_all(self):
+    def unkill_all(self, scanner=None):
         """
         Safely unkill all devices killed previously
         """
+        try:
+            from tools.clumsy_inline import (
+                apply_clumsy_ics_router_context,
+                heal_ics_client_after_mitm,
+                victim_on_clumsy_ics_subnet,
+            )
+        except Exception:
+            apply_clumsy_ics_router_context = None
+            heal_ics_client_after_mitm = None
+            victim_on_clumsy_ics_subnet = lambda _ip: False
+
         victims = list(self.killed.values())
         for victim in victims:
-            self._sync_iface_for_victim(victim)
+            ip = str((victim or {}).get('ip') or '').strip()
+            ics = victim_on_clumsy_ics_subnet(ip)
+            if ics and scanner is not None and apply_clumsy_ics_router_context:
+                try:
+                    apply_clumsy_ics_router_context(scanner, self, ip)
+                except Exception:
+                    pass
+            self._sync_iface_for_victim(victim, refresh_router=not ics)
+            if ics:
+                self.unkill(victim, ics_mode=True)
+                if scanner is not None and heal_ics_client_after_mitm:
+                    try:
+                        heal_ics_client_after_mitm(scanner, self, victim)
+                    except Exception:
+                        pass
+                continue
             mac = victim['mac']
             seq = self._next_op_seq(mac)
             self.killed.pop(mac, None)

@@ -144,7 +144,7 @@ def _start_license_runtime_validation(gui, icon) -> None:
             except Exception:
                 pass
             try:
-                gui.killer.unkill_all()
+                gui.killer.unkill_all(getattr(gui, 'scanner', None))
             except Exception:
                 pass
             try:
@@ -352,7 +352,13 @@ if __name__ == "__main__":
     except Exception as e:
         GUI.log(f'Warning: Could not initialize local devices: {e}', _UI_LOG_VICTIM_BLOCK_FG)
 
-    GUI.scanner.flush_arp()
+    try:
+        from tools.clumsy_inline import hotspot_arp_cache_sensitive
+
+        if not hotspot_arp_cache_sensitive(GUI.scanner):
+            GUI.scanner.flush_arp()
+    except Exception:
+        GUI.scanner.flush_arp()
 
     # On macOS/Linux when not root, avoid ARP scan (requires /dev/bpf) and use Ping scan
     try:
