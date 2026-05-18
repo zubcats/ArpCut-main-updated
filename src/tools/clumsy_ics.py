@@ -626,6 +626,16 @@ function Restart-SharedAccessSafe([bool]$hotspotWasOn) {
     Restart-Service -Name SharedAccess -Force -ErrorAction SilentlyContinue
   } catch {}
 }
+function Disable-HotspotIpv6ForConsole($downAdapter) {
+  # PS5 reports "IPv6 only" when the hotspot adapter advertises global IPv6 without usable IPv4 DHCP.
+  if ($null -eq $downAdapter) { return }
+  try {
+    Disable-NetAdapterBinding -Name $downAdapter.Name -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue
+    Set-NetIPInterface -InterfaceIndex $downAdapter.ifIndex -AddressFamily IPv4 -InterfaceMetric 10 -EA SilentlyContinue
+    Set-NetIPInterface -InterfaceIndex $downAdapter.ifIndex -AddressFamily IPv6 -InterfaceMetric 9999 -EA SilentlyContinue
+    netsh interface ipv6 set interface "$($downAdapter.ifIndex)" routerdiscovery=disabled store=active 2>$null | Out-Null
+  } catch {}
+}
 """
 
 
@@ -769,6 +779,7 @@ $down = Get-NetAdapter -EA SilentlyContinue | Where-Object {{ $_.InterfaceDescri
 if (-not $down) {{
   $down = Get-NetAdapter -InterfaceIndex $gw.InterfaceIndex -EA SilentlyContinue
 }}
+Disable-HotspotIpv6ForConsole $down
 
 $dhcp67 = Test-HotspotDhcp67
 $icsOk = Test-HotspotIcsActive
