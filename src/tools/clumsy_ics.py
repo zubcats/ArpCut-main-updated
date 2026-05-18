@@ -215,7 +215,7 @@ def _windows_is_admin() -> bool:
 # Never set WlanSvc to Manual or force-stop it (breaks Wi-Fi network list on Windows).
 _PS_ENSURE_WLAN_HEALTHY = """
 function Ensure-WlanAutoConfigHealthy {
-  # Never Stop/Restart WlanSvc — that drops all Wi-Fi. Only fix when actually broken.
+  # Never Stop/Restart WlanSvc - that drops all Wi-Fi. Only fix when actually broken.
   $fixed = $false
   try {
     $wl = Get-Service -Name WlanSvc -ErrorAction Stop
@@ -244,7 +244,7 @@ function Ensure-WlanAutoConfigHealthy {
 }
 """
 
-# Hotspot: DHCP alone is not enough — PS5 needs ICS (Wi‑Fi public → Wi‑Fi Direct private).
+# Hotspot: DHCP alone is not enough - PS5 needs ICS (Wi-Fi public -> Wi-Fi Direct private).
 _PS_HOTSPOT_HELPERS = r"""
 function NormGuidHotspot([object]$g) {
   if ($null -eq $g) { return '' }
@@ -334,7 +334,7 @@ function Find-EthernetConsoleAdapter {
   $ethUp = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
     $_.ifIndex -ne $upIdx -and $_.Status -eq 'Up' -and (LikelyEthernetNic $_) -and -not (IsHotspotDownstreamNic $_) -and -not (IsVirtualNicLike $_.Name $_.InterfaceDescription)
   })
-  # One spare Ethernet port (not the router uplink) — console cable path even before ARP shows a neighbor.
+  # One spare Ethernet port (not the router uplink) - console cable path even before ARP shows a neighbor.
   if ($ethUp.Count -eq 1) { return $ethUp[0] }
   foreach ($a in $ethUp) {
     if (Test-ConsoleOnEthernetAdapter -Adapter $a -GatewayIp $GatewayIp -UplinkIps $upIps -GwPrefix $gwPrefix) {
@@ -433,7 +433,7 @@ function Detect-ClumsyConsolePath {
   }
   $gw = Get-GatewayIpForUplink $up
   $uplinkKind = Get-UplinkKindLabel $up
-  # PS5 on spare Ethernet port (not router WAN) — prefer over hotspot when a console is on the cable.
+  # PS5 on spare Ethernet port (not router WAN) - prefer over hotspot when a console is on the cable.
   $eth = Find-EthernetConsoleAdapter -Uplink $up -GatewayIp $gw
   if ($eth) {
     return @{ Ok=$true; Path='ethernet'; Up=$up; Down=$eth; GatewayIp=$gw; UplinkKind=$uplinkKind }
@@ -450,8 +450,8 @@ function Detect-ClumsyConsolePath {
     Ok=$false
     Error=(
       'No valid console path detected. Set up one of these first, then enable Clumsy mode (Administrator):' +
-      " (A) Console on a spare Ethernet port — PC internet on $uplinkHint; or" +
-      ' (B) Mobile Hotspot ON — console on PC hotspot Wi-Fi, sharing from your internet adapter to the hotspot adapter.'
+      ' (A) Console on a spare Ethernet port - PC internet on ' + $uplinkHint + '; or' +
+      ' (B) Mobile Hotspot ON - console on PC hotspot Wi-Fi, sharing from your internet adapter to the hotspot adapter.'
     )
   }
 }
@@ -575,7 +575,7 @@ function Apply-HotspotIcsCore($pair) {
     if (-not $map.ContainsKey($g)) { return }
     try { if ($map[$g].SharingEnabled) { $map[$g].DisableSharing() } } catch {}
   }
-  # Only touch the detected uplink + hotspot pair — never wipe ICS on other adapters.
+  # Only touch the detected uplink + hotspot pair - never wipe ICS on other adapters.
   DisableSharingOnGuid $connMap $upG
   DisableSharingOnGuid $connMap $dnG
   Start-Sleep -Milliseconds 400
@@ -715,7 +715,7 @@ function Ensure-MobileHotspotOn {
   }
 }
 function Ensure-SharingServicesLight {
-  # Start ICS/RAS if stopped only — never Restart wcmsvc/NlaSvc/iphlpsvc (drops Wi-Fi / internet).
+  # Start ICS/RAS if stopped only - never Restart wcmsvc/NlaSvc/iphlpsvc (drops Wi-Fi / internet).
   foreach ($svc in @('SharedAccess', 'icssvc', 'RemoteAccess')) {
     try {
       $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
@@ -726,7 +726,7 @@ function Ensure-SharingServicesLight {
   }
 }
 function Ensure-HotspotDhcpFirewall {
-  # ICS DHCP server (svchost SharedAccess on 192.168.137.1:67) — not covered by client DHCP rules.
+  # ICS DHCP server (svchost SharedAccess on 192.168.137.1:67) - not covered by client DHCP rules.
   foreach ($r in @(
     @{N='ZubCut-ICS-DHCP-In';D='in';LP='67';RP='';RIP=''},
     @{N='ZubCut-ICS-DHCP-Out';D='out';LP='67';RP='';RIP=''},
@@ -770,7 +770,8 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
     except Exception:
         pass
     try:
-        with open(path, 'w', encoding='utf-8') as f:
+        # UTF-8 BOM so Windows PowerShell 5.1 parses non-ASCII safely if any remain.
+        with open(path, 'w', encoding='utf-8-sig') as f:
             f.write(script_body)
         system_root = os.environ.get('SystemRoot', r'C:\Windows')
         explicit_ps = os.path.join(system_root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
@@ -1348,7 +1349,7 @@ try {{
   Ensure-SharingServicesLight
   Start-Sleep -Seconds 1
 
-  # Never wipe ICS while Mobile Hotspot was on — PS5 gets Wi‑Fi but loses internet/NAT.
+  # Never wipe ICS while Mobile Hotspot was on - PS5 gets Wi-Fi but loses internet/NAT.
   $skipIcsReset = $hotspotWasOn
   if (-not $skipIcsReset) {{
     $share = New-Object -ComObject HNetCfg.HNetShare
