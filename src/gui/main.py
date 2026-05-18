@@ -1805,7 +1805,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if getattr(self, 'lag_active', False) and self._flow_matches_active_row(
             device, self.lag_device_mac, getattr(self, 'lag_device_ip', None)
         ):
-            return True
+            return not getattr(self, '_lag_in_allow_phase', False)
         if getattr(self, 'dupe_active', False) and self._flow_matches_active_row(
             device, self.dupe_device_mac, getattr(self, 'dupe_device_ip', None)
         ):
@@ -3041,17 +3041,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._ics_lag_gate = gate
         return True
 
-    def _apply_ics_client_block(self, device, direction, *, for_dupe: bool = False) -> bool:
+    def _apply_ics_client_block(
+        self, device, direction, *, for_dupe: bool = False, for_lag: bool = False
+    ) -> bool:
         """
         ICS client impairment (all lag methods): pause connection in WinDivert.
 
         Used for Kill, Dupe, Lag Switch block phase, and firewall fallback avoidance — not ARP MITM.
+        Lag Switch uses WinDivert pause only — do not mirror Kill into killer.killed / killed_devices.
         """
         if not clumsy_ics_use_firewall_only(device, self.scanner):
             return False
         ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
         self.killer.disable_percent_cut(device['mac'])
-        if device['mac'] in self.killer.killed:
+        if device['mac'] in self.killer.killed and not for_dupe and not for_lag:
             release_ics_victim_block(self.scanner, self.killer, device)
         if clumsy_ics_lag_can_use_windivert(device, self.scanner):
             try:
@@ -3060,17 +3063,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if gate is not None:
                         gate.clear_shaping()
                     self._ics_lag_gate.set_blocking(True, mode='pause')
-                    if not for_dupe:
+                    if for_dupe:
+                        pass
+                    elif for_lag:
+                        self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
+                    else:
                         self.killer.killed[device['mac']] = device
                         self._set_killed_profile(device, True)
                         self._sync_killed_devices()
                         self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
                         self._updateKillButtonState()
-                    layers = gate.active_layers if gate is not None else ()
-                    self.log(
-                        f'Hotspot pause on {ip} (WinDivert layers {layers})',
-                        UI_LOG_VICTIM_BLOCK_FG,
-                    )
+                    if not for_lag:
+                        layers = gate.active_layers if gate is not None else ()
+                        self.log(
+                            f'Hotspot pause on {ip} (WinDivert layers {layers})',
+                            UI_LOG_VICTIM_BLOCK_FG,
+                        )
                     self._schedule_ics_windivert_traffic_check(ip)
                     return True
             except OSError as exc:
@@ -3119,9 +3127,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     pass
                 self._ics_teardown_gate_if_idle(mac)
         if pause_only:
-            self._sync_killed_devices()
-            self._refresh_table_row_for_mac(mac)
-            self._updateKillButtonState()
+            if getattr(self, 'lag_active', False):
+                self._refresh_table_row_for_mac(mac)
+                self._repaint_all_table_rows_for_hover()
+            else:
+                self._sync_killed_devices()
+                self._refresh_table_row_for_mac(mac)
+                self._updateKillButtonState()
             return True
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(mac)
@@ -3530,9 +3542,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._clear_victim_block(device)
         except Exception:
             pass
+        mac = str(device.get('mac') or '').strip() if isinstance(device, dict) else ''
+        if mac:
+            self._refresh_table_row_for_mac(mac)
+            self._repaint_all_table_rows_for_hover()
 
     def _lag_apply_block(self, device):
-        self._apply_victim_block(device, self.lag_direction, for_dupe=False)
+        self._apply_victim_block(device, self.lag_direction, for_dupe=False, for_lag=True)
 
     def _lag_resolved_victim(self):
         """
@@ -4125,16 +4141,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
 
-    def _mitm_adv_sched_record(self, du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld):
-        self._mitm_adv_last_sched = (
-            int(du),
-            int(dd),
-            int(ju),
-            int(jd),
-            round(float(cu_mbps), 3),
-            round(float(cd_mbps), 3),
-            int(lu),
-            int(ld),
+    def _mitm_adv_sched_record(self, du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, gates=None):
+        from tools import mitm_adv_sched
+
+        g = gates if gates is not None else (1.0, 1.0, 1.0, 1.0)
+        self._mitm_adv_last_sched = mitm_adv_sched.sched_apply_tuple(
+            du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, g
         )
 
     def _start_mitm_adv_schedule(self):
@@ -4156,19 +4168,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         now = mitm_adv_sched.monotonic_now()
         t0 = float(getattr(self, '_mitm_adv_sched_t0', 0.0) or 0.0)
-        du, dd, ju, jd, cu, cd, lu, ld, _gates = mitm_adv_sched.gated_mitm_params(
+        du, dd, ju, jd, cu, cd, lu, ld, gates = mitm_adv_sched.gated_mitm_params(
             now, t0, get_settings
         )
         prev = getattr(self, '_mitm_adv_last_sched', None)
-        cur_tuple = (
-            int(du),
-            int(dd),
-            int(ju),
-            int(jd),
-            round(float(cu), 3),
-            round(float(cd), 3),
-            int(lu),
-            int(ld),
+        cur_tuple = mitm_adv_sched.sched_apply_tuple(
+            du, dd, ju, jd, cu, cd, lu, ld, gates
         )
         if prev == cur_tuple:
             return
@@ -4238,7 +4243,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         prev_sm = self.mitm_shaping_mac
         if not prev_active or prev_sm != mac:
             self._mitm_adv_sched_t0 = mitm_adv_sched.monotonic_now()
-        du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, _gates = mitm_adv_sched.gated_mitm_params(
+        du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates = mitm_adv_sched.gated_mitm_params(
             mitm_adv_sched.monotonic_now(), self._mitm_adv_sched_t0, get_settings
         )
         du = max(0, int(du))
@@ -4283,7 +4288,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps
                 )
                 self._ics_windivert_shaper = self._ics_lag_gate
-                self._mitm_adv_sched_record(du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld)
+                self._mitm_adv_sched_record(
+                    du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates
+                )
                 self._start_mitm_adv_schedule()
                 self._refresh_advanced_lag_mitm_if_visible()
                 return
@@ -4319,7 +4326,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.log(f'MITM shaping update failed: {exc}', 'red')
                 self._refresh_advanced_lag_mitm_if_visible()
                 return
-            self._mitm_adv_sched_record(du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld)
+            self._mitm_adv_sched_record(
+                du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates
+            )
             self._start_mitm_adv_schedule()
             self._refresh_advanced_lag_mitm_if_visible()
             return
@@ -4384,9 +4393,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.mitm_shaping_active = True
         self.mitm_shaping_mac = mac
-        self._set_killed_profile(device, True)
-        self._sync_killed_devices()
-        set_settings('killed', list(self.killer.killed) * self.remember)
+        if self._mitm_shaping_backend == 'forwarder':
+            self._set_killed_profile(device, True)
+            self._sync_killed_devices()
+            set_settings('killed', list(self.killer.killed) * self.remember)
         parts = []
         if du > 0:
             parts.append(f'out delay {du}ms')
@@ -4760,17 +4770,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         active_macs = set(self.killer.killed.keys())
         preserve_profiles = set()
-        if (
-            getattr(self, '_mitm_shaping_backend', None) == 'windivert'
-            and self.mitm_shaping_active
-            and self.mitm_shaping_mac
-        ):
-            dev = self._get_device_by_mac(
-                self.mitm_shaping_mac,
-                getattr(self, 'mitm_shaping_ip', None),
-            )
-            if dev:
-                preserve_profiles.add(self._killed_profile_key(dev))
         for pk in list(self.killed_devices.keys()):
             if pk in preserve_profiles:
                 continue

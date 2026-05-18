@@ -82,6 +82,11 @@ class MitmAdvSchedTest(unittest.TestCase):
         )
         self.assertEqual(mitm_adv_sched.gate_for_row(0.0, 0.0, get, 'mitm_adv_delay'), 0.0)
 
+    def test_sched_apply_tuple_includes_gates(self):
+        base = mitm_adv_sched.sched_apply_tuple(0, 0, 0, 0, 0.0, 0.0, 0, 0, (1.0, 1.0, 1.0, 1.0))
+        gated = mitm_adv_sched.sched_apply_tuple(0, 0, 0, 0, 0.0, 0.0, 0, 0, (0.0, 1.0, 1.0, 1.0))
+        self.assertNotEqual(base, gated)
+
 
 if __name__ == '__main__':
     unittest.main()

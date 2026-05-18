@@ -155,3 +155,28 @@ def gated_mitm_params(
 
 def monotonic_now() -> float:
     return time.monotonic()
+
+
+def sched_apply_tuple(
+    du: int,
+    dd: int,
+    ju: int,
+    jd: int,
+    cu: float,
+    cd: float,
+    lu: int,
+    ld: int,
+    gates: Tuple[float, float, float, float],
+) -> Tuple:
+    """Comparable signature for Advanced Lag scheduler ticks (params + timer gates)."""
+    return (
+        int(du),
+        int(dd),
+        int(ju),
+        int(jd),
+        round(float(cu), 3),
+        round(float(cd), 3),
+        int(lu),
+        int(ld),
+        tuple(round(float(g), 4) for g in gates),
+    )
