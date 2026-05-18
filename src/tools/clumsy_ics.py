@@ -534,6 +534,70 @@ function Test-ClumsyHotspotPathReady($pair) {
   if (Test-IcsActiveForPair $pair) { return $true }
   return (Test-MobileHotspotOperational)
 }
+function Set-HotspotDhcpRegistry {
+  $saParams = 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters'
+  foreach ($name in @('ScopeAddress', 'ScopeAddressBackup', 'StandaloneDhcpAddress')) {
+    try {
+      Set-ItemProperty -Path $saParams -Name $name -Value '192.168.137.1' -Type String -Force -ErrorAction SilentlyContinue
+    } catch {}
+  }
+}
+function Enable-MobileHotspotNatPath {
+  param(
+    [object]$Uplink,
+    [object]$Downstream
+  )
+  # Windows Mobile Hotspot NAT (icssvc) - same path that works when classic HNetCfg Sharing cannot enable.
+  Ensure-SharingServicesLight
+  Set-HotspotDhcpRegistry
+  try {
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name IPEnableRouter -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+  } catch {}
+  if ($Uplink) {
+    try { Set-NetConnectionProfile -InterfaceIndex $Uplink.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue } catch {}
+    if (LikelyEthernetNic $Uplink) {
+      Disconnect-WifiClientWhenEthernetUplink
+      Ensure-EthernetPreferredRouting
+    }
+  }
+  if ($Downstream) {
+    try { Set-NetConnectionProfile -InterfaceIndex $Downstream.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue } catch {}
+    try { Disable-NetAdapterBinding -Name $Downstream.Name -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue } catch {}
+  }
+  $wasOn = Test-TetheringOn
+  if (-not $wasOn) {
+    if (-not (Ensure-MobileHotspotOn)) { return $false }
+  }
+  if (-not (Test-MobileHotspotGateway)) {
+    Start-Sleep -Seconds 4
+    if (-not (Test-MobileHotspotGateway) -and -not (Ensure-MobileHotspotOn)) { return $false }
+  }
+  $downNic = $Downstream
+  if (-not $downNic) { $downNic = Get-HotspotDownstreamAdapter }
+  if ($downNic) {
+    $gw = Get-NetIPAddress -InterfaceIndex $downNic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object { $_.IPAddress -eq '192.168.137.1' } | Select-Object -First 1
+    if (-not $gw) {
+      try {
+        New-NetIPAddress -InterfaceIndex $downNic.ifIndex -IPAddress 192.168.137.1 -PrefixLength 24 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+    }
+  }
+  Ensure-HotspotDhcpFirewall
+  if ($wasOn -and -not (Test-HotspotDhcp67)) {
+    try {
+      Restart-Service icssvc -Force -ErrorAction SilentlyContinue
+      Start-Sleep -Seconds 4
+      Start-Service SharedAccess -ErrorAction SilentlyContinue
+      Start-Sleep -Seconds 2
+    } catch {}
+  }
+  for ($w = 0; $w -lt 12; $w++) {
+    if (Test-MobileHotspotOperational) { return $true }
+    Start-Sleep -Seconds 1
+  }
+  return (Test-MobileHotspotOperational)
+}
 function Test-HotspotIcsActive {
   $det = Detect-ClumsyConsolePath
   if ($det.Ok) {
@@ -1184,33 +1248,28 @@ try {{
     $icsOk = Test-IcsActiveForPair $pair
     if (-not $icsOk) {{
       Apply-HotspotIcsCore $pair | Out-Null
+      Start-Sleep -Seconds 2
       $icsOk = (Test-IcsActiveForPair $pair)
+      if (-not $icsOk) {{ $icsOk = (Verify-ICS) }}
     }}
+    $natEnabled = $false
     if (-not $icsOk) {{
-      if (-not (Verify-ICS)) {{
-        Start-Sleep -Seconds 2
-        Apply-HotspotIcsCore $pair | Out-Null
-        $icsOk = (Verify-ICS)
-      }}
+      $natEnabled = Enable-MobileHotspotNatPath -Uplink $up -Downstream $down
     }}
-    if (-not $icsOk -and -not (Test-MobileHotspotOperational)) {{
-      throw 'Could not enable internet sharing to Mobile Hotspot. Turn hotspot ON, confirm the PS5 has internet, then try Clumsy mode again. Or set sharing manually: Ethernet -> Local Area Connection* 12.'
-    }}
-    for ($w = 0; $w -lt 10; $w++) {{
-      if (Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue) {{ break }}
-      Start-Sleep -Seconds 1
+    if (-not $icsOk -and -not $natEnabled) {{
+      throw 'Could not enable internet to Mobile Hotspot (classic Sharing or hotspot NAT). Turn hotspot ON in Settings, wait for 192.168.137.1, then try Clumsy mode again.'
     }}
     if ($icsOk) {{
       $shareMsg = if ($ZubcutUplinkKind -eq 'ethernet') {{
-        'Clumsy mode ready: Ethernet -> Mobile Hotspot. Connect your console to the PC hotspot Wi-Fi.'
+        'Clumsy mode ready: Ethernet -> Mobile Hotspot (Sharing enabled).'
       }} else {{
-        'Clumsy mode ready: Wi-Fi -> Mobile Hotspot. Connect your console to the PC hotspot Wi-Fi.'
+        'Clumsy mode ready: Wi-Fi -> Mobile Hotspot (Sharing enabled).'
       }}
     }} else {{
       $shareMsg = if ($ZubcutUplinkKind -eq 'ethernet') {{
-        'Clumsy mode ready: Ethernet uplink + Mobile Hotspot NAT (classic Sharing tab may stay off).'
+        'Clumsy mode ready: ZubCut enabled Mobile Hotspot NAT (Ethernet uplink). Classic Sharing was not available on this PC.'
       }} else {{
-        'Clumsy mode ready: Wi-Fi uplink + Mobile Hotspot NAT (classic Sharing tab may stay off).'
+        'Clumsy mode ready: ZubCut enabled Mobile Hotspot NAT (Wi-Fi uplink). Classic Sharing was not available on this PC.'
       }}
     }}
   }}
