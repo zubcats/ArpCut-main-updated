@@ -1555,7 +1555,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.stop_mitm_shaping(log=False)
         self._await_mitm_teardown_thread()
         self._stop_ics_lag_gate(join_timeout=0.5)
-        self.killer.unkill_all()
+        self.killer.unkill_all(self.scanner)
 
         from tools.pfctl import teardown_all_zubcut_network_attacks
 
@@ -1592,10 +1592,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         purge_clumsy_stale_attack_blocks()
         pre = list_blocked_ips()
-        self.killer.killed.clear()
-        if hasattr(self.killer, 'pf_blocks'):
-            self.killer.pf_blocks.clear()
         summary = self._teardown_all_attacks(log=False)
+        try:
+            from tools.clumsy_inline import heal_all_hotspot_arp_clients
+
+            healed = heal_all_hotspot_arp_clients(self.scanner, self.killer)
+            if healed:
+                self.log(
+                    f'Restored hotspot gateway ARP for {healed} console(s).',
+                    _UI_LOG_RESTORE_FG,
+                )
+        except Exception:
+            pass
         removed = int(summary.get('firewall_rules_removed') or 0)
         ips = summary.get('unblocked_ips') or []
         if removed or ips or pre:
@@ -2255,7 +2263,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 unblock_ip(v.get('ip') or '')
             except Exception:
                 pass
-        self.killer.unkill_all()
+        self.killer.unkill_all(self.scanner)
         for victim in victims_before:
             mac = victim.get('mac')
             if not mac:
@@ -2307,7 +2315,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killer.store()
         
         _pre_scan_ips = [v.get('ip') for v in self.killer.killed.values() if v.get('ip')]
-        self.killer.unkill_all()
+        self.killer.unkill_all(self.scanner)
         for _ip in _pre_scan_ips:
             try:
                 unblock_ip(_ip)

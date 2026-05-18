@@ -128,6 +128,29 @@ def victim_on_clumsy_ics_subnet(victim_ip: str) -> bool:
     return ip.startswith(clumsy_ics_downstream_prefix())
 
 
+def hotspot_arp_cache_sensitive(scanner: Optional['Scanner'] = None) -> bool:
+    """
+    True when flushing the whole ARP cache can break PS5/hotspot gateway reachability.
+
+    Clumsy mode and active ICS (192.168.137.x host) both qualify.
+    """
+    if clumsy_mode_enabled():
+        return True
+    prefix = clumsy_ics_downstream_prefix()
+    if scanner is not None:
+        my_ip = str(getattr(scanner, 'my_ip', None) or '').strip()
+        if my_ip.startswith(prefix):
+            return True
+    try:
+        state = read_clumsy_ics_state()
+        gw = str(state.get('downstream_ipv4') or '').strip()
+        if gw.startswith(prefix.rstrip('.')):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def clumsy_ics_resolve_victim_ip(device, scanner: Optional['Scanner'] = None) -> str:
     """
     Best IPv4 for ICS lag when the device table still shows the home LAN (e.g. 192.168.1.x)
@@ -393,6 +416,49 @@ def heal_ics_client_after_mitm(scanner: Scanner, killer, victim: dict, *, repeat
     return True
 
 
+def heal_all_hotspot_arp_clients(
+    scanner: 'Scanner',
+    killer,
+    *,
+    allow_subnet_ping: bool = False,
+    repeats: int = 3,
+) -> int:
+    """
+    Re-teach hotspot clients the PC gateway MAC without ``arp -d *``.
+
+    Use after teardown, startup, or a crashed session that left poisoned ARP on the PS5.
+    """
+    if not sys.platform.startswith('win'):
+        return 0
+    prefix = clumsy_ics_downstream_prefix()
+    if not prefix.endswith('.'):
+        prefix += '.'
+    gw = str(read_clumsy_ics_state().get('downstream_ipv4') or '').strip()
+    if not gw or not gw.startswith(prefix.rstrip('.')):
+        gw = prefix.rstrip('.') + '.1'
+    try:
+        apply_clumsy_ics_router_context(scanner, killer, gw)
+    except Exception:
+        pass
+    my_ip = (getattr(scanner, 'my_ip', None) or '').strip()
+    router_ip = (getattr(scanner, 'router_ip', None) or gw).strip()
+    host_ip = gw
+    text = _arp_lines_for_scanner(scanner)
+    entries = _parse_ics_arp_entries(text, my_ip, router_ip, prefix, host_ip)
+    if not entries and allow_subnet_ping:
+        _maybe_refresh_ics_clients_via_ping(prefix, my_ip, router_ip, host_ip)
+        text = _arp_lines_for_scanner(scanner)
+        entries = _parse_ics_arp_entries(text, my_ip, router_ip, prefix, host_ip)
+    healed = 0
+    for vic in entries:
+        try:
+            if heal_ics_client_after_mitm(scanner, killer, vic, repeats=repeats):
+                healed += 1
+        except Exception:
+            pass
+    return healed
+
+
 def restore_ics_hotspot_connectivity(
     scanner: 'Scanner',
     killer,
@@ -444,10 +510,29 @@ def _parse_ics_clients(
     subnet_prefix: str,
     host_ip: str,
 ) -> List[str]:
+    return [
+        e['ip']
+        for e in _parse_ics_arp_entries(arp_text, my_ip, router_ip, subnet_prefix, host_ip)
+    ]
+
+
+def _parse_ics_arp_entries(
+    arp_text: str,
+    my_ip: str,
+    router_ip: str,
+    subnet_prefix: str,
+    host_ip: str,
+) -> List[dict]:
     if not arp_text or not arp_text.strip():
         return []
-    pat_ip = re.compile(r'\b((?:\d{1,3}\.){3}\d{1,3})\b')
-    out: List[str] = []
+    if not subnet_prefix.endswith('.'):
+        subnet_prefix = subnet_prefix + '.'
+    pat = re.compile(
+        r'\b((?:\d{1,3}\.){3}\d{1,3})\b\s+'
+        r'([0-9a-fA-F]{2}(?:[-:])[0-9a-fA-F]{2}(?:[-:])[0-9a-fA-F]{2}(?:[-:])'
+        r'[0-9a-fA-F]{2}(?:[-:])[0-9a-fA-F]{2}(?:[-:])[0-9a-fA-F]{2})\b'
+    )
+    out: List[dict] = []
     seen = set()
     for raw in arp_text.split('\n'):
         line = (raw or '').strip()
@@ -456,7 +541,7 @@ def _parse_ics_clients(
         low = line.lower()
         if 'incomplete' in low:
             continue
-        m = pat_ip.search(line)
+        m = pat.search(line)
         if not m:
             continue
         ip = m.group(1)
@@ -470,10 +555,13 @@ def _parse_ics_clients(
             continue
         if last <= 1 or last >= 255:
             continue
+        mac = good_mac(m.group(2))
+        if not mac or mac == GLOBAL_MAC:
+            continue
         if ip not in seen:
             seen.add(ip)
-            out.append(ip)
-    out.sort(key=lambda x: int(x.rsplit('.', 1)[-1]))
+            out.append({'ip': ip, 'mac': mac})
+    out.sort(key=lambda x: int(x['ip'].rsplit('.', 1)[-1]))
     return out
 
 

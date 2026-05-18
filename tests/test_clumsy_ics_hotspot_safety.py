@@ -332,6 +332,51 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
             if had and not os.path.isfile(path):
                 pass
 
+    def test_flush_arp_skips_on_hotspot_subnet(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from networking.scanner import Scanner
+
+        sc = Scanner()
+        sc.my_ip = '192.168.137.1'
+        with patch('tools.clumsy_inline.hotspot_arp_cache_sensitive', return_value=True):
+            with patch('networking.scanner.terminal') as term:
+                sc.flush_arp()
+        term.assert_not_called()
+
+    def test_startup_teardown_does_not_clear_killed_before_unkill(self) -> None:
+        main_py = os.path.join(_SRC, 'gui', 'main.py')
+        with open(main_py, encoding='utf-8') as fh:
+            src = fh.read()
+        block = src.split('def _ensure_clean_network_on_startup', 1)[1].split('\n    def ', 1)[0]
+        self.assertNotIn('self.killer.killed.clear()', block)
+        self.assertIn('heal_all_hotspot_arp_clients', block)
+
+    def test_unkill_all_uses_ics_router_context(self) -> None:
+        from networking.killer import Killer
+
+        src = inspect.getsource(Killer.unkill_all)
+        self.assertIn('apply_clumsy_ics_router_context', src)
+        self.assertIn('ics_mode=True', src)
+        self.assertIn('heal_ics_client_after_mitm', src)
+
+    def test_parse_ics_arp_entries(self) -> None:
+        text = (
+            'Interface: 192.168.137.1 --- 0x15\n'
+            '  192.168.137.2          ab-cd-ef-12-34-56     dynamic\n'
+            '  192.168.1.50           11-22-33-44-55-66     dynamic\n'
+        )
+        rows = inline._parse_ics_arp_entries(
+            text,
+            '192.168.137.1',
+            '192.168.137.1',
+            '192.168.137.',
+            '192.168.137.1',
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['ip'], '192.168.137.2')
+        self.assertEqual(rows[0]['mac'], 'AB:CD:EF:12:34:56')
+
 
 if __name__ == '__main__':
     unittest.main()
