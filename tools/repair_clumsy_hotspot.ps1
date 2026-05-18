@@ -163,9 +163,9 @@ if ($up -and $down) {
             $icsOk = $uc.SharingEnabled -and $dc.SharingEnabled -and [int]$uc.SharingConnectionType -eq 0 -and [int]$dc.SharingConnectionType -eq 1
         } catch {}
         if (-not $icsOk) {
-            Write-Host 'Applying Wi-Fi -> hotspot internet sharing...'
-            foreach ($k in $cm.Keys) {
-                try { if ($cm[$k].SharingEnabled) { $cm[$k].DisableSharing() } } catch {}
+            Write-Host 'Applying Wi-Fi -> hotspot internet sharing (pair only)...'
+            foreach ($g in @($upG, $dnG)) {
+                try { if ($cm[$g].SharingEnabled) { $cm[$g].DisableSharing() } } catch {}
             }
             Start-Sleep -Seconds 1
             try {

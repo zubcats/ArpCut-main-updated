@@ -54,31 +54,25 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         src = inspect.getsource(ics.repair_clumsy_network_sharing)
         self.assertIn('$skipIcsReset = $hotspotWasOn', src)
         self.assertIn('Apply-MainWifiSharingForHotspot', src)
-        self.assertIn('Repair-HotspotAdapterForConsole', src)
-        self.assertIn('Clear-HotspotStaleArpEntries', src)
         self.assertIn('Ensure-SharingServicesLight', src)
         self.assertNotIn('Restart-NetworkSharingServicesSafe', src)
         self.assertNotIn('Restart-Service -Name $svc', src)
         repair_hotspot_block = src.split('if ($hotspotWasOn) {', 1)[1].split('} else {', 1)[0]
         self.assertNotIn('Apply-HotspotIcsAutomated', repair_hotspot_block)
+        self.assertNotIn('Ensure-MobileHotspotOn', repair_hotspot_block)
+        self.assertNotIn('Repair-HotspotAdapterForConsole', src)
 
-    def test_hotspot_repair_reenables_ipv6_binding(self) -> None:
-        helpers = ics._PS_HOTSPOT_HELPERS
-        self.assertIn('Repair-HotspotAdapterForConsole', helpers)
-        self.assertIn('Enable-NetAdapterBinding', helpers)
-        self.assertIn('ms_tcpip6', helpers)
-        self.assertNotIn('Disable-NetAdapterBinding', helpers)
+    def test_startup_repair_skips_hotspot_topology(self) -> None:
+        src = inspect.getsource(ics.maybe_repair_stale_clumsy_ics_on_startup)
+        self.assertIn("== 'hotspot'", src)
+        self.assertIn('os.remove(_STATE_PATH)', src)
 
-    def test_repair_reenables_mobile_hotspot(self) -> None:
-        src = inspect.getsource(ics.repair_clumsy_network_sharing)
-        self.assertIn('Ensure-MobileHotspotOn', src)
-        self.assertIn('hotspotWasOn', src)
-        self.assertIn('hotspotReenabled', src)
-
-    def test_prepare_can_restart_tethering(self) -> None:
+    def test_prepare_does_not_toggle_hotspot(self) -> None:
         src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
-        self.assertIn('Ensure-MobileHotspotOn', src)
-        self.assertIn('Restart-SharedAccessSafe', src)
+        self.assertIn('Apply-MainWifiSharingForHotspot', src)
+        self.assertNotIn('Apply-HotspotIcsAutomated', src)
+        self.assertNotIn('Stop-MobileHotspotIfOn', src)
+        self.assertNotIn('Ensure-MobileHotspotOn', src)
 
     def test_hotspot_helpers_use_winrt_await_not_2ghz_band(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
@@ -88,18 +82,14 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
         self.assertNotIn('Ensure-MobileHotspot2GhzBand', src)
 
-    def test_prepare_automates_sharing_with_hotspot_toggle(self) -> None:
+    def test_apply_hotspot_ics_core_only_touches_pair(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
-        self.assertIn('Apply-HotspotIcsAutomated', helpers)
-        self.assertIn('Stop-MobileHotspotIfOn', helpers)
-        self.assertIn('Apply-HotspotIcsWithTetheringToggle', helpers)
-        src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
-        self.assertIn('Apply-HotspotIcsAutomated', src)
-
-    def test_prepare_checks_ics_not_only_dhcp(self) -> None:
-        src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
-        self.assertIn('Test-HotspotIcsActive', src)
-        self.assertIn('ics_ok=$false', src)
+        core_idx = helpers.index('function Apply-HotspotIcsCore')
+        next_fn = helpers.index('function Apply-HotspotIcs', core_idx + 1)
+        core = helpers[core_idx:next_fn]
+        self.assertIn('DisableSharingOnGuid', core)
+        self.assertIn('never wipe ICS on other adapters', core)
+        self.assertNotIn('foreach ($k in $connMap.Keys)', core)
 
     def test_enable_script_does_not_set_ics_services_manual(self) -> None:
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
@@ -117,9 +107,9 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
 
     def test_prepare_pc_mobile_hotspot_automation(self) -> None:
         src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
-        self.assertIn('ZubCut-DHCP-In', src)
         self.assertIn('needs_manual_sharing', src)
         self.assertNotIn('Stop-Service icssvc', src.replace(' ', ''))
+        self.assertNotIn('Disable-NetAdapterBinding', src)
 
     def test_autodetect_prefers_hotspot_when_active(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
@@ -170,15 +160,6 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('Apply-MainWifiSharingForHotspot', src)
         self.assertIn('main Wi-Fi internet sharing enabled', src)
         self.assertNotIn("Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot ready (DHCP active).'", src)
-
-    def test_prepare_enables_main_wifi_before_hotspot_toggle(self) -> None:
-        helpers = ics._PS_HOTSPOT_HELPERS
-        self.assertIn('Apply-MainWifiSharingForHotspot', helpers)
-        src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
-        self.assertIn('Apply-MainWifiSharingForHotspot', src)
-        main_idx = src.index('Apply-MainWifiSharingForHotspot')
-        auto_idx = src.index('Apply-HotspotIcsAutomated')
-        self.assertLess(main_idx, auto_idx)
 
     def test_format_clumsy_ics_error_not_duplicated(self) -> None:
         raw = 'Turn ON Mobile Hotspot in Windows Settings first.'
