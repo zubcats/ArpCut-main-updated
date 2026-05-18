@@ -41,6 +41,20 @@ class TestWindowsElevate(unittest.TestCase):
                 with patch.object(ug.ctypes.windll.user32, 'MessageBoxW'):
                     self.assertFalse(ug.ensure_windows_elevated())
 
+    @unittest.skipUnless(sys.platform.startswith('win'), 'Windows only')
+    def test_restart_zubcut_uses_runas(self):
+        with patch.object(ug, '_windows_relaunch_command', return_value=('ZubCut.exe', '', r'C:\ZubCut')):
+            with patch.object(ug, 'spawn_windows_elevated', return_value=True) as spawn:
+                self.assertTrue(ug.restart_zubcut())
+            spawn.assert_called_once_with('ZubCut.exe', '', r'C:\ZubCut')
+
+    @unittest.skipUnless(sys.platform.startswith('win'), 'Windows only')
+    def test_spawn_windows_elevated_runas_verb(self):
+        with patch.object(ug.ctypes.windll.shell32, 'ShellExecuteW', return_value=42) as se:
+            self.assertTrue(ug.spawn_windows_elevated('ZubCut.exe', '', r'C:\ZubCut'))
+            se.assert_called_once()
+            self.assertEqual(se.call_args[0][1], 'runas')
+
 
 if __name__ == '__main__':
     unittest.main()

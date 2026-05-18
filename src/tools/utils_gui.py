@@ -1156,6 +1156,38 @@ def _elevate_skip_requested() -> bool:
     return v in ('1', 'true', 'yes', 'on')
 
 
+def spawn_windows_elevated(exe: str, params: str = '', cwd: str | None = None) -> bool:
+    """
+    Start ``exe`` with UAC elevation (``runas``). Used for startup and Settings/Clumsy restart.
+  """
+    if not sys.platform.startswith('win'):
+        return False
+    work_dir = cwd if cwd is not None else ''
+    ret = ctypes.windll.shell32.ShellExecuteW(
+        None,
+        'runas',
+        exe,
+        params or '',
+        work_dir,
+        1,  # SW_SHOWNORMAL
+    )
+    return int(ret) > 32
+
+
+def _windows_relaunch_command() -> tuple[str, str, str]:
+    """(exe, params, cwd) for relaunching this ZubCut process elevated."""
+    from subprocess import list2cmdline
+
+    exe = sys.executable
+    if getattr(sys, 'frozen', False):
+        cwd = os.path.dirname(os.path.abspath(exe))
+        params = list2cmdline(sys.argv[1:]) if len(sys.argv) > 1 else ''
+    else:
+        cwd = os.getcwd()
+        params = list2cmdline(sys.argv[1:])
+    return exe, params, cwd
+
+
 def ensure_windows_elevated() -> bool:
     """
     On Windows, re-launch this process with UAC elevation when not already Admin.
@@ -1167,19 +1199,8 @@ def ensure_windows_elevated() -> bool:
     if _elevate_skip_requested() or is_admin():
         return True
 
-    from subprocess import list2cmdline
-
-    exe = sys.executable
-    params = list2cmdline(sys.argv[1:]) if len(sys.argv) > 1 else ''
-    ret = ctypes.windll.shell32.ShellExecuteW(
-        None,
-        'runas',
-        exe,
-        params,
-        None,
-        1,  # SW_SHOWNORMAL
-    )
-    if int(ret) <= 32:
+    exe, params, cwd = _windows_relaunch_command()
+    if not spawn_windows_elevated(exe, params, cwd):
         try:
             ctypes.windll.user32.MessageBoxW(
                 0,
@@ -1192,6 +1213,52 @@ def ensure_windows_elevated() -> bool:
             pass
         return False
     sys.exit(0)
+
+
+def restart_zubcut(main_window=None) -> bool:
+    """
+    Start a new elevated ZubCut process and quit this one.
+
+    Settings Clumsy-mode toggle and similar flows must relaunch with ``runas`` so the new
+    instance is Administrator (WinDivert / ICS). A plain ``Popen`` from an elevated parent
+    does not always inherit the admin token on Windows.
+    """
+    if not sys.platform.startswith('win'):
+        import subprocess
+
+        exe, _params, cwd = _windows_relaunch_command()
+        try:
+            subprocess.Popen([exe, *sys.argv[1:]], cwd=cwd, close_fds=True)
+        except Exception as e:
+            print(f'restart_zubcut: failed to spawn process: {e}')
+            return False
+    else:
+        exe, params, cwd = _windows_relaunch_command()
+        if not spawn_windows_elevated(exe, params, cwd):
+            try:
+                ctypes.windll.user32.MessageBoxW(
+                    0,
+                    f'{APP_DISPLAY_NAME} could not restart as Administrator.\n\n'
+                    'Approve the UAC prompt, or close ZubCut and open it again with Run as administrator.',
+                    f'{APP_DISPLAY_NAME} — restart failed',
+                    0x10,
+                )
+            except Exception:
+                pass
+            return False
+
+    app = None
+    try:
+        from PyQt5.QtWidgets import QApplication
+
+        app = QApplication.instance()
+    except Exception:
+        pass
+    if main_window is not None and hasattr(main_window, 'quit_all'):
+        main_window.quit_all()
+    elif app is not None:
+        app.quit()
+    return True
 
 def npcap_exists():
     """
@@ -1326,46 +1393,6 @@ def get_settings(key, default=None):
     if default is not None:
         return default
     return _setting_key_fallback(key)
-
-def restart_zubcut(main_window=None):
-    """
-    Start a new ZubCut process and quit this one (Windows-friendly detach).
-    Used when Clumsy mode (or similar) must fully reset runtime state.
-    """
-    import subprocess
-
-    app = None
-    try:
-        from PyQt5.QtWidgets import QApplication
-
-        app = QApplication.instance()
-    except Exception:
-        pass
-
-    exe = sys.executable
-    cwd = os.path.dirname(exe) if getattr(sys, 'frozen', False) else os.getcwd()
-    try:
-        if sys.platform.startswith('win'):
-            cf = getattr(subprocess, 'DETACHED_PROCESS', 0)
-            subprocess.Popen(
-                [exe],
-                cwd=cwd,
-                close_fds=True,
-                creationflags=cf,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            subprocess.Popen([exe], cwd=cwd, close_fds=True)
-    except Exception as e:
-        print(f'restart_zubcut: failed to spawn process: {e}')
-        return
-    if main_window is not None and hasattr(main_window, 'quit_all'):
-        main_window.quit_all()
-    elif app is not None:
-        app.quit()
-
 
 def repair_settings():
     """

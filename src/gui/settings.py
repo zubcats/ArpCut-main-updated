@@ -599,9 +599,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 f'{APP_DISPLAY_NAME} will restart to apply new interface.'
             )
 
-            # Restart app via restart.exe
-            __import__('os').system('start "" restart.exe')
-            self.elmocut.quit_all()
+            restart_zubcut(self.elmocut)
         
         self.close()
 
