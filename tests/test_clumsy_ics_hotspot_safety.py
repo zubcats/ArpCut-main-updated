@@ -155,6 +155,14 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('Test-ConsoleOnEthernetAdapter', helpers)
         self.assertIn('if ($ethUp.Count -eq 1)', helpers)
 
+    def test_hotspot_operational_without_classic_ics(self) -> None:
+        helpers = ics._PS_HOTSPOT_HELPERS
+        self.assertIn('function Test-MobileHotspotOperational', helpers)
+        self.assertIn('function Test-ClumsyHotspotPathReady', helpers)
+        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        self.assertIn('Test-MobileHotspotOperational', src)
+        self.assertIn('Mobile Hotspot NAT active', src)
+
     def test_hotspot_enable_skips_disrupt_when_already_ok(self) -> None:
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
         helpers = ics._PS_HOTSPOT_HELPERS
@@ -163,6 +171,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         eth_idx = src.index('} else {', hotspot_idx)
         hotspot_block = src[hotspot_idx:eth_idx]
         self.assertIn('$alreadyOk', hotspot_block)
+        self.assertIn('Test-ClumsyHotspotPathReady', hotspot_block)
         self.assertIn('sharing already active', hotspot_block)
         self.assertIn('Apply-HotspotIcsCore', src)
         self.assertNotIn('Prepare-ClumsyHotspotConsole', hotspot_block)
