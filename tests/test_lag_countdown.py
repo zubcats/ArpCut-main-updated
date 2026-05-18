@@ -21,7 +21,8 @@ class TestLagCountdown(unittest.TestCase):
             return fh.read()
 
     def test_format_countdown_subminute(self) -> None:
-        self.assertEqual(format_countdown_ms(9000), 'Time left: 9.0 s')
+        self.assertEqual(format_countdown_ms(9000), 'Time left: 9 s')
+        self.assertEqual(format_countdown_ms(2500), 'Time left: 3 s')
 
     def test_format_countdown_minutes(self) -> None:
         self.assertEqual(format_countdown_ms(125000), 'Time left: 2:05')
@@ -29,8 +30,9 @@ class TestLagCountdown(unittest.TestCase):
     def test_countdown_uses_background_net(self) -> None:
         src = self._main_py()
         self.assertIn('def _run_on_flow_net_thread', src)
-        self.assertIn('Qt.CoarseTimer', src)
-        self.assertIn('_pump_ui_light', src)
+        self.assertIn('flow_net_main_done', src)
+        self.assertIn('_on_flow_net_main_done', src)
+        self.assertNotIn('_pump_ui_light', src)
 
     def test_lag_countdown_wired(self) -> None:
         src = self._main_py()
@@ -49,7 +51,7 @@ class TestLagCountdown(unittest.TestCase):
         from gui.main import ElmoCut
 
         self.assertEqual(ElmoCut._lag_countdown_label(True, 1500), 'Time left: -')
-        self.assertEqual(ElmoCut._lag_countdown_label(False, 9000), 'Time left: 9.0 s')
+        self.assertEqual(ElmoCut._lag_countdown_label(False, 9000), 'Time left: 9 s')
 
 
 if __name__ == '__main__':

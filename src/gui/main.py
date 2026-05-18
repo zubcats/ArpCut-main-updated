@@ -48,12 +48,13 @@ from tools.utils_gui import (
 def format_countdown_ms(left_ms):
     """Human-readable countdown (matches Dupe / Lag Switch inline labels)."""
     left_ms = max(0, int(left_ms))
-    sec = left_ms / 1000.0
-    if sec >= 60:
-        whole = int(sec)
-        m, s = divmod(whole, 60)
+    if left_ms >= 60000:
+        sec = left_ms // 1000
+        m, s = divmod(sec, 60)
         return f'Time left: {m}:{s:02d}'
-    return f'Time left: {sec:.1f} s'
+    if left_ms >= 1000:
+        return f'Time left: {(left_ms + 999) // 1000} s'
+    return f'Time left: {left_ms / 1000.0:.1f} s'
 
 
 from tools.frameless_chrome import (
@@ -757,6 +758,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
 
 class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     mitm_teardown_finished = pyqtSignal(str, bool, str, bool, object)
+    flow_net_main_done = pyqtSignal(object)
 
     def __init__(self, window_icon=None):
         super().__init__()
@@ -886,6 +888,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._mitm_adv_sched_t0 = 0.0
         self._mitm_adv_last_sched = None
         self.mitm_teardown_finished.connect(self._on_mitm_teardown_finished)
+        self.flow_net_main_done.connect(self._on_flow_net_main_done)
         self._lag_dialog_target_mac = None
         self._dupe_dialog_target_mac = None
         self.dupe_timer = QTimer(self)
@@ -2370,6 +2373,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         straight into the router while Clumsy stays enabled in settings).
         ICS subnet ping discovery runs from the scan thread in devices_appender.
         """
+        if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
+            return
         try:
             from tools.clumsy_inline import (
                 clumsy_mode_enabled,
@@ -2866,10 +2871,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             dev = self._lag_resolved_victim()
             if not dev:
                 return
-            try:
-                self._lag_apply_block(dev)
-            except Exception:
-                pass
+            snap = dict(dev)
+            self._run_on_flow_net_thread(partial(self._lag_phase_apply_block_net, snap))
 
         QTimer.singleShot(0, _reassert)
         QTimer.singleShot(40, _reassert)
@@ -3341,14 +3344,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._updateKillButtonState()
         return True
 
-    def _pump_ui_light(self) -> None:
-        """Let countdown labels repaint before heavy WinDivert / firewall work."""
-        try:
-            app = QApplication.instance()
-            if app is not None:
-                app.processEvents(QEventLoop.ExcludeUserInputEvents, 6)
-        except Exception:
-            pass
+    @pyqtSlot(object)
+    def _on_flow_net_main_done(self, cb) -> None:
+        """Run flow-net completion callbacks on the GUI thread (never from a worker)."""
+        if callable(cb):
+            try:
+                cb()
+            except Exception:
+                pass
 
     def _run_on_flow_net_thread(self, fn, *, main_after=None) -> None:
         """Run WinDivert/firewall work off the GUI thread (shared dupe_net pool)."""
@@ -3370,7 +3373,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         fut = ex.submit(_wrapped)
         if main_after is not None:
-            fut.add_done_callback(lambda _f: QTimer.singleShot(0, main_after))
+            fut.add_done_callback(lambda _f: self.flow_net_main_done.emit(main_after))
 
     def _finish_dupe_ics_teardown_net(self, device) -> bool:
         if not isinstance(device, dict) or not clumsy_ics_use_firewall_only(device, self.scanner):
@@ -3903,10 +3906,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self._lag_ics_windivert_active(device_snap):
             self._lag_ics_set_paused(device_snap, True)
         else:
-            QTimer.singleShot(
-                0,
-                partial(self._lag_apply_block, device_snap),
-            )
+            self.flow_net_main_done.emit(partial(self._lag_apply_block, device_snap))
 
     def _lag_phase_apply_allow_net(self, device_snap: dict) -> None:
         if not self.lag_active or not getattr(self, '_lag_in_allow_phase', False):
@@ -3948,6 +3948,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
 
+    @staticmethod
+    def _set_countdown_label(lbl, text: str) -> None:
+        if lbl.text() != text:
+            lbl.setText(text)
+
     def _tick_lag_countdown(self) -> None:
         if not self.lag_active:
             self._stop_lag_countdown()
@@ -3956,20 +3961,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         allow = bool(getattr(self, '_lag_in_allow_phase', False))
         if rem is None and not allow:
             self.lblLagCountdownMain.setVisible(False)
-            self.lblLagCountdownMain.setText('')
+            self._set_countdown_label(self.lblLagCountdownMain, '')
             return
         self.lblLagCountdownMain.setVisible(True)
-        self.lblLagCountdownMain.setText(self._lag_countdown_label(allow, rem))
-        self._pump_ui_light()
+        self._set_countdown_label(
+            self.lblLagCountdownMain, self._lag_countdown_label(allow, rem)
+        )
         dlg = getattr(self, 'lag_switch_dialog', None)
         if dlg is not None and dlg.isVisible():
-            now = time.monotonic()
-            if now - getattr(self, '_lag_dlg_refresh_mono', 0.0) >= 0.15:
-                self._lag_dlg_refresh_mono = now
-                try:
-                    dlg.set_lag_countdown(rem, allow)
-                except Exception:
-                    pass
+            try:
+                dlg.set_lag_countdown(rem, allow)
+            except Exception:
+                pass
 
     def _lag_phase_begin_block(self, device) -> None:
         if not self.lag_active or not isinstance(device, dict):
@@ -4160,28 +4163,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # coarse single-shot dupe_timer fires (can lag tens–100+ ms behind).
         if rem is not None and rem <= 0:
             self.lblDupeCountdownMain.setVisible(True)
-            self.lblDupeCountdownMain.setText('Time left: 0.0 s')
-            self._pump_ui_light()
+            self._set_countdown_label(self.lblDupeCountdownMain, 'Time left: 0 s')
             if not getattr(self, '_dupe_finish_from_countdown_pending', False):
                 self._dupe_finish_from_countdown_pending = True
                 QTimer.singleShot(0, partial(self._dupe_finish_from_countdown))
             return
         if rem is None or rem <= 0:
             self.lblDupeCountdownMain.setVisible(False)
-            self.lblDupeCountdownMain.setText('')
+            self._set_countdown_label(self.lblDupeCountdownMain, '')
         else:
             self.lblDupeCountdownMain.setVisible(True)
-            self.lblDupeCountdownMain.setText(format_countdown_ms(rem))
-        self._pump_ui_light()
+            self._set_countdown_label(self.lblDupeCountdownMain, format_countdown_ms(rem))
         dlg = getattr(self, 'dupe_switch_dialog', None)
         if dlg is not None and dlg.isVisible():
-            now = time.monotonic()
-            if now - getattr(self, '_dupe_dlg_refresh_mono', 0.0) >= 0.15:
-                self._dupe_dlg_refresh_mono = now
-                try:
-                    dlg.refresh_toggle_state()
-                except Exception:
-                    pass
+            try:
+                dlg.set_dupe_countdown(rem)
+            except Exception:
+                pass
 
     def _dupe_timer_fired(self):
         QTimer.singleShot(0, partial(self._dupe_finish_from_countdown, 'Dupe finished'))
