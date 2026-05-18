@@ -536,18 +536,14 @@ class IcsWinDivertLagGate:
         opened_layers: list[int] = []
         last_err = ''
         for filt in filters:
-            opened_any = False
             for layer in layers:
                 hrv = _open_windivert_handle(self._dll, filt, layer)
                 if hrv >= 0:
                     handles.append(hrv)
                     if layer not in opened_layers:
                         opened_layers.append(layer)
-                    opened_any = True
                 else:
                     last_err = _windivert_last_error_message()
-            if opened_any:
-                break
         if not handles:
             hint = 'Run ZubCut as Administrator.'
             if last_err:

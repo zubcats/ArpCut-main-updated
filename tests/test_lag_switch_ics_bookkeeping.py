@@ -40,6 +40,11 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         src = self._main_py()
         self.assertIn('_lag_in_allow_phase', src)
 
+    def test_lag_uses_deadline_poll_not_single_shot_only(self) -> None:
+        src = self._main_py()
+        self.assertIn('_lag_phase_deadline_poll', src)
+        self.assertIn('_lag_ics_force_unpause', src)
+
 
 if __name__ == '__main__':
     unittest.main()
