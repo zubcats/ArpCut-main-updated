@@ -30,7 +30,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('Find-EthernetConsoleAdapter', helpers)
         self.assertIn('Get-InternetUplinkAdapter', helpers)
         self.assertIn('Detect-ClumsyConsolePath', src)
-        self.assertIn('Get-NetUDPEndpoint -LocalPort 67', src)
+        self.assertIn('Enable-MobileHotspotNatPath', src)
         self.assertNotIn('Prepare-ClumsyHotspotConsole', src)
         self.assertIn('purge_clumsy_stale_attack_blocks', inspect.getsource(ics.ensure_clumsy_ics_enabled))
         self.assertIn('netsh wlan stop hostednetwork', src)
@@ -159,8 +159,11 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         helpers = ics._PS_HOTSPOT_HELPERS
         self.assertIn('function Test-MobileHotspotOperational', helpers)
         self.assertIn('function Test-ClumsyHotspotPathReady', helpers)
+        self.assertIn('function Enable-MobileHotspotNatPath', helpers)
+        self.assertIn('function Set-HotspotDhcpRegistry', helpers)
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
-        self.assertIn('Test-MobileHotspotOperational', src)
+        self.assertIn('Enable-MobileHotspotNatPath', src)
+        self.assertIn('ZubCut enabled Mobile Hotspot NAT', src)
         self.assertIn('Mobile Hotspot NAT active', src)
 
     def test_hotspot_enable_skips_disrupt_when_already_ok(self) -> None:
