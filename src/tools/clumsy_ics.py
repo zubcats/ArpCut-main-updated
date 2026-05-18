@@ -758,6 +758,11 @@ function Restart-SharedAccessSafe([bool]$hotspotWasOn) {
 """
 
 
+def _compose_ps_script(*segments: str) -> str:
+    """Join PS script parts without f-string parsing brace literals inside _PS_HOTSPOT_HELPERS."""
+    return ''.join(segments)
+
+
 def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
     fd, path = tempfile.mkstemp(prefix='zubcut_clumsy_', suffix='.ps1')
     try:
@@ -869,13 +874,16 @@ def prepare_pc_mobile_hotspot() -> Tuple[bool, str]:
     if not _windows_is_admin():
         return False, 'Run ZubCut as Administrator to prepare Mobile Hotspot.'
 
-    script = f"""
+    script = _compose_ps_script(
+        f"""
 $ErrorActionPreference = 'Continue'
 function JsonOut([hashtable]$o) {{
   $json = $o | ConvertTo-Json -Compress -Depth 8
   Write-Output ('{_MARKER}' + $json)
 }}
-{_PS_HOTSPOT_HELPERS}
+""",
+        _PS_HOTSPOT_HELPERS,
+        """
 if (Test-HotspotConsoleReady) {{
   JsonOut @{{ ok=$true; dhcp67=(Test-HotspotDhcp67); ics_ok=$true; message='Mobile Hotspot sharing already configured.' }}
   exit 0
@@ -907,7 +915,8 @@ JsonOut @{{
   error='Could not enable internet sharing to Mobile Hotspot. Run ZubCut as Administrator and enable Clumsy mode again.'
 }}
 exit 1
-"""
+""",
+    )
     ok, payload, raw = _run_powershell(script)
     if ok:
         return True, str(payload.get('message') or 'Mobile Hotspot ready.')
@@ -937,7 +946,8 @@ def ensure_clumsy_ics_enabled(topology: str | None = None) -> Tuple[bool, str]:
     purge_clumsy_stale_attack_blocks()
     os.makedirs(DOCUMENTS_PATH, exist_ok=True)
     state_path = _STATE_PATH.replace('\\', '\\\\')
-    script = f"""
+    script = _compose_ps_script(
+        f"""
 $ErrorActionPreference = 'Stop'
 function NormGuid([object]$g) {{
   if ($null -eq $g) {{ return '' }}
@@ -947,7 +957,9 @@ function JsonOut([hashtable]$o) {{
   $json = $o | ConvertTo-Json -Compress -Depth 8
   Write-Output ('{_MARKER}' + $json)
 }}
-{_PS_HOTSPOT_HELPERS}
+""",
+        _PS_HOTSPOT_HELPERS,
+        f"""
 function SharingTypeNum($cfg) {{
   if ($null -eq $cfg) {{ return -1 }}
   try {{
@@ -1222,7 +1234,8 @@ catch {{
   JsonOut @{{ ok=$false; error=$em }}
   exit 1
 }}
-"""
+""",
+    )
     ok, payload, raw = _run_powershell(script)
     if ok:
         return True, str(payload.get('message') or 'ICS sharing enabled.')
@@ -1235,13 +1248,15 @@ def _retry_main_wifi_sharing_for_hotspot() -> None:
     """Best-effort: apply ICS for detected path only (does not start Mobile Hotspot)."""
     if os.name != 'nt':
         return
-    script = f"""
+    script = _compose_ps_script(
+        _PS_HOTSPOT_HELPERS,
+        """
 $ErrorActionPreference = 'Continue'
-{_PS_HOTSPOT_HELPERS}
-try {{
+try {
   Apply-InternetSharingForClumsy | Out-Null
-}} catch {{}}
-"""
+} catch {}
+""",
+    )
     try:
         _run_powershell(script)
     except Exception:
@@ -1263,7 +1278,8 @@ def repair_clumsy_network_sharing() -> Tuple[bool, str]:
             'Run ZubCut as Administrator to repair network sharing / Mobile Hotspot.',
         )
     state_path = _STATE_PATH.replace('\\', '\\\\')
-    script = f"""
+    script = _compose_ps_script(
+        f"""
 $ErrorActionPreference = 'Continue'
 function NormGuid([object]$g) {{
   if ($null -eq $g) {{ return '' }}
@@ -1314,8 +1330,10 @@ function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
   try {{ $cfg.EnableSharing([uint32]$sharingKind); return }} catch {{ }}
   try {{ $cfg.EnableSharing($sharingKind); return }} catch {{ }}
 }}
-{_PS_ENSURE_WLAN_HEALTHY}
-{_PS_HOTSPOT_HELPERS}
+""",
+        _PS_ENSURE_WLAN_HEALTHY,
+        _PS_HOTSPOT_HELPERS,
+        f"""
 try {{
   $snapshot = @()
   if (Test-Path "{state_path}") {{
@@ -1408,7 +1426,8 @@ catch {{
   JsonOut @{{ ok=$false; error=$em }}
   exit 1
 }}
-"""
+""",
+    )
     ok, payload, raw = _run_powershell(script)
     if ok:
         return True, str(payload.get('message') or 'Network sharing repair completed.')
@@ -1462,13 +1481,16 @@ def ensure_wlan_autoconfig_healthy() -> Tuple[bool, str]:
             False,
             'Run ZubCut as Administrator to restore WLAN AutoConfig (Wi-Fi).',
         )
-    script = f"""
+    script = _compose_ps_script(
+        f"""
 $ErrorActionPreference = 'Continue'
 function JsonOut([hashtable]$o) {{
   $json = $o | ConvertTo-Json -Compress -Depth 8
   Write-Output ('{_MARKER}' + $json)
 }}
-{_PS_ENSURE_WLAN_HEALTHY}
+""",
+        _PS_ENSURE_WLAN_HEALTHY,
+        """
 $fixed = Ensure-WlanAutoConfigHealthy
 $wl = Get-Service -Name WlanSvc -ErrorAction SilentlyContinue
 if ($null -eq $wl -or $wl.Status -ne 'Running') {{
@@ -1490,7 +1512,8 @@ if ($wl.StartType -eq 'Manual' -or $wl.StartType -eq 'Disabled') {{
 $msg = if ($fixed) {{ 'Restored WLAN AutoConfig (Wi-Fi).' }} else {{ 'WLAN AutoConfig already healthy.' }}
 JsonOut @{{ ok=$true; fixed=$fixed; message=$msg }}
 exit 0
-"""
+""",
+    )
     ok, payload, _raw = _run_powershell(script)
     if ok:
         return True, str(payload.get('message') or 'WLAN AutoConfig OK.')
