@@ -3057,12 +3057,62 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         gate = getattr(self, '_ics_lag_gate', None)
         if gate is not None:
             try:
-                if hasattr(gate, 'resume_from_pause'):
+                if hasattr(gate, 'clear_blocking_pause'):
+                    gate.clear_blocking_pause()
+                elif hasattr(gate, 'resume_from_pause'):
                     gate.resume_from_pause()
+                    gate.set_blocking(False)
                 else:
                     gate.set_blocking(False)
             except Exception:
                 pass
+
+    def _ics_apply_percent_cut_windivert(self, device, cut_pct: int) -> bool:
+        """Hotspot partial cut via WinDivert byte budget (never ARP Kill / full pause)."""
+        if not self._ensure_ics_lag_gate(device, 'both'):
+            return False
+        gate = getattr(self, '_ics_lag_gate', None)
+        if gate is None:
+            return False
+        try:
+            if hasattr(gate, 'clear_blocking_pause'):
+                gate.clear_blocking_pause()
+            else:
+                gate.set_blocking(False)
+            gate.apply_percent_cut(cut_pct)
+        except Exception:
+            return False
+        return True
+
+    def _ics_apply_advanced_shaping_windivert(
+        self,
+        device,
+        *,
+        du: int,
+        dd: int,
+        ju: int,
+        jd: int,
+        lu: int,
+        ld: int,
+        cu_mbps: float,
+        cd_mbps: float,
+    ) -> bool:
+        """Hotspot Advanced Lag via WinDivert shaping (not pause / Kill)."""
+        if not self._ensure_ics_lag_gate(device, 'both'):
+            return False
+        gate = getattr(self, '_ics_lag_gate', None)
+        if gate is None:
+            return False
+        try:
+            if hasattr(gate, 'clear_blocking_pause'):
+                gate.clear_blocking_pause()
+            else:
+                gate.set_blocking(False)
+            gate.apply_shaping_params(du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps)
+        except Exception:
+            return False
+        self._ics_windivert_shaper = gate
+        return True
 
     def _ics_hotspot_windivert_teardown(self, device, *, heal: bool = False) -> None:
         """
@@ -4395,9 +4445,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             dev = self._get_device_by_mac(self.percent_cut_device_mac) or self._victim_record_for_mac(self.percent_cut_device_mac)
             if dev:
                 try:
-                    if clumsy_ics_lag_can_use_windivert(dev, self.scanner):
-                        if self._ensure_ics_lag_gate(dev, 'both'):
-                            self._ics_lag_gate.apply_percent_cut(pct)
+                    if clumsy_ics_use_firewall_only(dev, self.scanner):
+                        self._ics_apply_percent_cut_windivert(dev, pct)
                     else:
                         allow_pct = max(0, 100 - pct)
                         self._ensure_network_context_for_victim(dev)
@@ -4537,6 +4586,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if turning_on:
             if self.percent_cut_active and self.percent_cut_device_mac and self.percent_cut_device_mac != mac:
                 self.stopPercentCut(log=False)
+            if self.mitm_shaping_active:
+                self.stop_mitm_shaping(log=False)
+                self._await_mitm_teardown_thread()
             if self.lag_active and self.lag_device_mac == mac:
                 self.stopLagSwitch(refresh_dialog=True)
             if self.dupe_active and self.dupe_device_mac == mac:
@@ -4547,14 +4599,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._run_kill_command(mac, dev, turn_on=False, source='pctcut_auto_off_kill')
             pct = self._clamp_percent(self.spinPercentCutMain.value())
             allow_pct = max(0, 100 - pct)
-            if clumsy_ics_lag_can_use_windivert(device, self.scanner):
-                if not self._ensure_ics_lag_gate(device, 'both'):
+            if clumsy_ics_use_firewall_only(device, self.scanner):
+                if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
+                    self.log(
+                        'Percent Cut on hotspot needs WinDivert: '
+                        + clumsy_windivert_unavailable_reason(device),
+                        'red',
+                    )
+                    return
+                if not self._ics_apply_percent_cut_windivert(device, pct):
                     self.log(
                         'Percent Cut needs WinDivert (run as Administrator).',
                         'red',
                     )
                     return
-                self._ics_lag_gate.apply_percent_cut(pct)
             else:
                 self._ensure_network_context_for_victim(device)
                 self.killer.apply_percent_cut(device, pass_percent=allow_pct)
@@ -4652,6 +4710,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not getattr(self, 'mitm_shaping_active', False):
             self._stop_mitm_adv_schedule()
             return
+        if getattr(self, 'percent_cut_active', False):
+            self._stop_mitm_adv_schedule()
+            return
         if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
             return
         from tools import mitm_adv_sched
@@ -4697,17 +4758,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return True
         backend = getattr(self, '_mitm_shaping_backend', None)
         if backend == 'windivert' and use_wd and self._ics_lag_gate is not None:
-            self._ics_lag_gate.set_blocking(False)
-            self._ics_lag_gate.apply_shaping_params(
-                du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps
-            )
-            self._ics_windivert_shaper = self._ics_lag_gate
-            self._mitm_adv_sched_record(
-                du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates
-            )
-            self._start_mitm_adv_schedule()
-            self._refresh_advanced_lag_mitm_if_visible()
-            return True
+            if self._ics_apply_advanced_shaping_windivert(
+                device,
+                du=du,
+                dd=dd,
+                ju=ju,
+                jd=jd,
+                lu=lu,
+                ld=ld,
+                cu_mbps=cu_mbps,
+                cd_mbps=cd_mbps,
+            ):
+                self._mitm_adv_sched_record(
+                    du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates
+                )
+                self._start_mitm_adv_schedule()
+                self._refresh_advanced_lag_mitm_if_visible()
+                return True
         if backend == 'windivert' and not use_wd and self._ics_lag_gate is not None:
             try:
                 self._ics_lag_gate.clear_shaping()
@@ -4873,16 +4940,22 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
                 self._refresh_advanced_lag_mitm_if_visible()
                 return
-            self._ics_lag_gate.set_blocking(False)
-            self._ics_lag_gate.apply_shaping_params(
-                du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps
-            )
-            self._ics_windivert_shaper = self._ics_lag_gate
-            self._mitm_adv_sched_record(
-                du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates
-            )
-            self._start_mitm_adv_schedule()
-            self._refresh_advanced_lag_mitm_if_visible()
+            if self._ics_apply_advanced_shaping_windivert(
+                device,
+                du=du,
+                dd=dd,
+                ju=ju,
+                jd=jd,
+                lu=lu,
+                ld=ld,
+                cu_mbps=cu_mbps,
+                cd_mbps=cd_mbps,
+            ):
+                self._mitm_adv_sched_record(
+                    du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates
+                )
+                self._start_mitm_adv_schedule()
+                self._refresh_advanced_lag_mitm_if_visible()
             return
 
         self.stopLagSwitch(refresh_dialog=True)
@@ -4906,13 +4979,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
             try:
-                if not self._ensure_ics_lag_gate(device, 'both'):
+                if not self._ics_apply_advanced_shaping_windivert(
+                    device,
+                    du=du,
+                    dd=dd,
+                    ju=ju,
+                    jd=jd,
+                    lu=lu,
+                    ld=ld,
+                    cu_mbps=cu_mbps,
+                    cd_mbps=cd_mbps,
+                ):
                     raise OSError('WinDivert gate failed')
-                self._ics_lag_gate.set_blocking(False)
-                self._ics_lag_gate.apply_shaping_params(
-                    du, dd, ju, jd, lu, ld, cu_mbps, cd_mbps
-                )
-                self._ics_windivert_shaper = self._ics_lag_gate
                 self._mitm_shaping_backend = 'windivert'
                 use_forwarder = False
             except Exception as exc:
@@ -5249,6 +5327,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if mac in self.killer.killed:
                         release_ics_victim_block(self.scanner, self.killer, victim)
                     else:
+                        return
+                    if self._ics_windivert_busy(mac):
                         return
                     try:
                         unblock_ip(victim.get('ip') or '')
