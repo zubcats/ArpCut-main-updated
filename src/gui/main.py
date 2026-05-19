@@ -1582,7 +1582,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     parts.append(f'{removed} firewall rule(s)')
                 if ips:
                     parts.append(f'unblocked {len(ips)} IP(s)')
-                self.log(' '.join(parts), _UI_LOG_RESTORE_FG)
+                self.log(' '.join(parts), UI_LOG_RESTORE_FG)
         return summary
 
     def _ensure_clean_network_on_startup(self) -> None:
@@ -1600,7 +1600,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if healed:
                 self.log(
                     f'Restored hotspot gateway ARP for {healed} console(s).',
-                    _UI_LOG_RESTORE_FG,
+                    UI_LOG_RESTORE_FG,
                 )
         except Exception:
             pass
@@ -1612,7 +1612,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 msg += f' ({removed} firewall rule(s))'
             if ips:
                 msg += f' ({len(ips)} IP unblocked)'
-            self.log(msg, _UI_LOG_RESTORE_FG)
+            self.log(msg, UI_LOG_RESTORE_FG)
 
     def quit_all(self):
         """
