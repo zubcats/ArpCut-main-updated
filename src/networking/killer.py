@@ -479,17 +479,30 @@ class Killer:
         """
         Re-kill old devices in self.storage
         """
+        try:
+            from tools.clumsy_inline import (
+                clumsy_ics_resolve_victim_ip,
+                victim_on_clumsy_ics_subnet,
+            )
+        except Exception:
+            clumsy_ics_resolve_victim_ip = lambda _d, _s=None: ''  # type: ignore
+            victim_on_clumsy_ics_subnet = lambda _ip: False  # type: ignore
+
         for mac, old in self.storage.items():
             for new in new_devices:
                 # Update old killed with newer ip
                 if old['mac'] == new['mac']:
                     old['ip'] = new['ip']
                     break
-                
+
             # Update new_devices with those it does not have
             if old not in new_devices:
                 new_devices.append(old)
 
+            ip = clumsy_ics_resolve_victim_ip(old) or str(old.get('ip') or '').strip()
+            if victim_on_clumsy_ics_subnet(ip):
+                # Hotspot Kill uses WinDivert only — ARP MITM here stacks full cut.
+                continue
             self.kill(old)
 
     def one_way_kill(self, victim):
