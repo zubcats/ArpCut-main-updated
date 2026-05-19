@@ -94,9 +94,8 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertIn('self._handles = [h]', src)
         self.assertNotIn('_open_ics_windivert_handles', src)
         open_src = inspect.getsource(wd._ics_windivert_open_candidates)
-        subnet_pos = open_src.find('_ics_windivert_filter')
-        victim_pos = open_src.find('_ics_clumsy_victim_filter')
-        self.assertLess(subnet_pos, victim_pos)
+        self.assertIn('on_subnet', open_src)
+        self.assertIn("_ics_clumsy_victim_filter(vip), 'victim'", open_src)
         best_src = inspect.getsource(wd._open_best_windivert_handle)
         self.assertIn(
             '(WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)',
@@ -106,6 +105,11 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
     def test_open_candidates_always_include_subnet_on_ics(self) -> None:
         cands = wd._ics_windivert_open_candidates('192.168.1.50', '192.168.137.')
         self.assertTrue(any('137.2' in f or '137.' in f for f, _ in cands))
+
+    def test_open_candidates_victim_first_when_on_hotspot_subnet(self) -> None:
+        cands = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
+        self.assertGreaterEqual(len(cands), 2)
+        self.assertEqual(cands[0][1], 'victim')
 
     def test_victim_packet_roles_no_broad_nat_fallback(self) -> None:
         from_v, to_v, _active = wd._victim_packet_roles(
@@ -117,7 +121,7 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertFalse(from_v)
         self.assertFalse(to_v)
 
-    def test_victim_packet_roles_outbound_hint_when_client_on_subnet(self) -> None:
+    def test_victim_packet_roles_no_outbound_nat_hint_for_post_nat(self) -> None:
         from_v, to_v, active = wd._victim_packet_roles(
             '73.12.1.2',
             '8.8.8.8',
@@ -126,7 +130,7 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
             outbound=True,
             subnet_capture=True,
         )
-        self.assertTrue(from_v)
+        self.assertFalse(from_v)
         self.assertFalse(to_v)
         self.assertEqual(active, '192.168.137.55')
 
@@ -165,11 +169,15 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertIn('clumsy_ics_use_firewall_only(device, self.scanner)', tick)
         self.assertIn('_ics_apply_advanced_shaping_windivert', tick)
 
-    def test_windivert_impostor_passthrough_before_impairment(self) -> None:
+    def test_windivert_impostor_dropped_not_reshaped(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
-        idx_imp = src.index('_windivert_addr_impostor')
-        idx_off = src.index('if impair_mode == IMPAIR_OFF')
-        self.assertLess(idx_imp, idx_off)
+        block = src[src.index('if _windivert_addr_impostor'): src.index('parsed = _parse_ipv4_src_dst')]
+        self.assertIn('continue', block)
+        self.assertNotIn('_send_immediate', block)
+
+    def test_open_handle_prefers_no_impostor_filter(self) -> None:
+        src = inspect.getsource(wd._open_windivert_handle)
+        self.assertIn('_ics_windivert_filter_no_impostor', src)
 
     def test_windivert_outbound_flag_uses_address_bitfield(self) -> None:
         # Outbound at bit 17 in UINT64 at offset 8.
