@@ -62,8 +62,11 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
     def test_lag_allow_phase_uses_fast_windivert_resume(self) -> None:
         src = self._main_py()
         resume = src[src.index('def _lag_ics_resume_allow_phase'): src.index('def _lag_apply_allow_phase_sync')]
-        self.assertIn('_lag_ics_set_paused(device, False)', resume)
-        self.assertIn('_ics_hotspot_pause_release', resume)
+        self.assertTrue(
+            'resume_from_pause' in resume or 'clear_blocking_pause' in resume,
+            'allow phase must resume WinDivert in-place',
+        )
+        self.assertNotIn('_ics_hotspot_pause_release', resume)
         self.assertNotIn('_lag_ics_force_unpause', resume)
         allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
         self.assertIn('_lag_apply_allow_phase_sync', allow)

@@ -350,6 +350,34 @@ def _open_windivert_handle(dll: ctypes.WinDLL, filt: str, layer: int) -> int:
     return hv
 
 
+def _open_best_windivert_handle(
+    dll: ctypes.WinDLL, victim_ip: str, downstream_prefix: str = ''
+) -> tuple[int, int, str]:
+    """
+    Open a single WinDivert handle (one layer, one filter).
+
+    Prefer victim-exact filter like MITM forwarder — subnet-wide filters are only
+    used when the victim filter fails to open, and userspace still impairs only
+    victim IPs in the recv loop.
+    """
+    vip = _ipv4_quad(victim_ip)
+    if not vip:
+        return -1, 0, ''
+    quad = _ics_subnet_quad_prefix(downstream_prefix)
+    candidates: list[tuple[str, str]] = [(_ics_clumsy_victim_filter(vip), 'victim')]
+    if quad and vip.startswith(quad + '.'):
+        candidates.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
+    last_err = ''
+    for layer in (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD):
+        for filt, desc in candidates:
+            h = _open_windivert_handle(dll, filt, layer)
+            if h >= 0:
+                return h, layer, desc
+            last_err = _windivert_last_error_message()
+    _ = last_err
+    return -1, 0, ''
+
+
 def probe_windivert_for_victim(victim_ip: str) -> tuple[bool, str]:
     """
     Try opening WinDivert like Clumsy (dll+sys colocated, admin required).
@@ -375,22 +403,20 @@ def probe_windivert_for_victim(victim_ip: str) -> tuple[bool, str]:
         _bind_windivert_api(dll)
     except OSError as exc:
         return False, f'failed to load WinDivert.dll: {exc}'
-    filters = (
-        _ics_clumsy_victim_filter(vip),
-        _ics_windivert_filter(vip, '192.168.137.'),
-    )
-    layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
-    last_err = ''
-    for filt in filters:
-        for layer in layers:
-            h = _open_windivert_handle(dll, filt, layer)
-            if h >= 0:
-                try:
-                    dll.WinDivertClose(h)
-                except Exception:
-                    pass
-                return True, f'ok (layer {layer})'
-            last_err = _windivert_last_error_message()
+    try:
+        from tools.clumsy_inline import clumsy_ics_downstream_prefix
+
+        prefix = clumsy_ics_downstream_prefix()
+    except Exception:
+        prefix = '192.168.137.'
+    h, layer, desc = _open_best_windivert_handle(dll, vip, prefix)
+    if h >= 0:
+        try:
+            dll.WinDivertClose(h)
+        except Exception:
+            pass
+        return True, f'ok (layer {layer}, {desc})'
+    last_err = _windivert_last_error_message()
     hint = ''
     if 'code 3' in (last_err or '').lower() or '(code 3)' in (last_err or ''):
         hint = (
@@ -532,30 +558,15 @@ class IcsWinDivertLagGate:
         except Exception:
             prefix = '192.168.137.'
         self._downstream_prefix = prefix
-        filters = (
-            _ics_windivert_filter(vip, prefix),
-            _ics_clumsy_victim_filter(vip),
-        )
-        layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
-        handles: list[int] = []
-        opened_layers: list[int] = []
-        last_err = ''
-        for filt in filters:
-            for layer in layers:
-                hrv = _open_windivert_handle(self._dll, filt, layer)
-                if hrv >= 0:
-                    handles.append(hrv)
-                    if layer not in opened_layers:
-                        opened_layers.append(layer)
-                else:
-                    last_err = _windivert_last_error_message()
-        if not handles:
+        h, layer, _desc = _open_best_windivert_handle(self._dll, vip, prefix)
+        if h < 0:
+            last_err = _windivert_last_error_message()
             hint = 'Run ZubCut as Administrator.'
             if last_err:
                 raise OSError(f'WinDivertOpen failed: {last_err} {hint}')
             raise OSError(f'WinDivertOpen failed. {hint}')
-        self._handles = handles
-        self._open_layers = opened_layers
+        self._handles = [h]
+        self._open_layers = [layer]
         self._packets_seen = 0
         self._packets_matched = 0
         self._packets_held = 0
@@ -917,6 +928,12 @@ class IcsWinDivertLagGate:
                 is_to_victim = dst == victim
                 n = len(pkt)
 
+                # Subnet filters can see other hotspot clients / gateway traffic;
+                # only impair packets that involve the victim (same scope as MITM forwarder).
+                if not _packet_involves_victim(src, dst, victim):
+                    self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                    continue
+
                 # Partial modes (percent cut / advanced lag) must win over stale
                 # kill/lag full-pause — otherwise blocking=True feels like full Kill.
                 if pass_cut and (is_from_victim or is_to_victim):
@@ -980,7 +997,7 @@ class IcsWinDivertLagGate:
                         heapq.heappush(heap, (due, pkt, addr_b, h))
                         continue
 
-                if blocking:
+                if blocking and _packet_involves_victim(src, dst, victim):
                     if not hold_pause:
                         if loss_pct > 0:
                             if random.randint(1, 100) <= loss_pct:
