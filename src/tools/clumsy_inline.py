@@ -658,19 +658,10 @@ def sync_clumsy_row(scanner: Scanner, *, allow_subnet_ping: bool = False) -> Non
 
 def use_windivert_for_advanced_ics_shaping(scanner: Scanner, device: dict) -> bool:
     """
-    True when Advanced shaping should use the WinDivert driver path (Clumsy mode on,
-    WinDivert bundle ready, and the target row matches the detected ICS client IPv4).
+    True when Advanced Lag should use WinDivert (hotspot / ICS client).
+
+    Uses the same eligibility as Kill/Lag Switch — any ICS-subnet victim with WinDivert
+    ready. Do not require ``detect_inline_ip`` to match (that wrongly forced ARP MITM
+    forwarder / Kill-like behavior when ARP listed a different client first).
     """
-    if not sys.platform.startswith('win'):
-        return False
-    if not clumsy_mode_enabled() or not clumsy_runtime_ready():
-        return False
-    if not isinstance(device, dict) or device.get('admin'):
-        return False
-    dip = str(device.get('ip') or '').strip()
-    if not dip:
-        return False
-    ip = detect_inline_ip(scanner, allow_subnet_ping=False)
-    if not ip:
-        return False
-    return dip == str(ip).strip()
+    return clumsy_ics_lag_can_use_windivert(device, scanner)

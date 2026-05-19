@@ -4649,6 +4649,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._mitm_shaping_backend = 'forwarder'
             backend = 'forwarder'
         if backend == 'forwarder':
+            if clumsy_ics_use_firewall_only(device, self.scanner):
+                self._refresh_advanced_lag_mitm_if_visible()
+                return True
             try:
                 self._ensure_network_context_for_victim(device)
                 self.killer.apply_link_shaping(
@@ -4839,13 +4842,33 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._mitm_shaping_backend = 'windivert'
                 use_forwarder = False
             except Exception as exc:
-                self.log(
-                    f'WinDivert ICS shaping failed ({exc}); using MITM forwarder instead.',
-                    'red',
-                )
+                detail = clumsy_windivert_unavailable_reason(device)
+                if clumsy_ics_use_firewall_only(device, self.scanner):
+                    self.log(
+                        f'Advanced lag WinDivert failed ({exc}) [{detail}]',
+                        'red',
+                    )
+                else:
+                    self.log(
+                        f'WinDivert shaping failed ({exc}); using MITM forwarder instead.',
+                        'red',
+                    )
                 self._ics_windivert_shaper = None
+                if clumsy_ics_use_firewall_only(device, self.scanner):
+                    self._refresh_advanced_lag_mitm_if_visible()
+                    return
 
         if use_forwarder:
+            if clumsy_ics_use_firewall_only(device, self.scanner):
+                if not sched_tick:
+                    reason = clumsy_windivert_unavailable_reason(device)
+                    self.log(
+                        'Advanced lag on PC hotspot needs WinDivert — not ARP Kill/forwarder. '
+                        + reason,
+                        'red',
+                    )
+                self._refresh_advanced_lag_mitm_if_visible()
+                return
             try:
                 self._ensure_network_context_for_victim(device)
                 self.killer.apply_link_shaping(

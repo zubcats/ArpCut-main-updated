@@ -55,29 +55,20 @@ def test_sync_clumsy_row_single_client_row_unchanged():
     assert len(s.devices) == 2
 
 
-def test_use_windivert_for_advanced_ics_shaping_requires_inline_ip_match():
+def test_use_windivert_for_advanced_ics_shaping_matches_lag_switch_eligibility():
     s = _FakeScanner([])
     dev = {'mac': '11:11:11:11:11:01', 'ip': '192.168.137.50', 'admin': False}
-    with (
-        patch('tools.clumsy_inline.clumsy_mode_enabled', return_value=True),
-        patch('tools.clumsy_inline.clumsy_runtime_ready', return_value=True),
-        patch('tools.clumsy_inline.detect_inline_ip', return_value='192.168.137.50'),
-    ):
+    with patch(
+        'tools.clumsy_inline.clumsy_ics_lag_can_use_windivert', return_value=True
+    ) as lag_wd:
         assert use_windivert_for_advanced_ics_shaping(s, dev) is True
-    with (
-        patch('tools.clumsy_inline.clumsy_mode_enabled', return_value=True),
-        patch('tools.clumsy_inline.clumsy_runtime_ready', return_value=True),
-        patch('tools.clumsy_inline.detect_inline_ip', return_value='192.168.137.51'),
-    ):
+        lag_wd.assert_called_once_with(dev, s)
+    with patch('tools.clumsy_inline.clumsy_ics_lag_can_use_windivert', return_value=False):
         assert use_windivert_for_advanced_ics_shaping(s, dev) is False
 
 
 def test_use_windivert_for_advanced_ics_shaping_false_when_clumsy_off():
     s = _FakeScanner([])
     dev = {'mac': '11:11:11:11:11:01', 'ip': '192.168.137.50', 'admin': False}
-    with (
-        patch('tools.clumsy_inline.clumsy_mode_enabled', return_value=False),
-        patch('tools.clumsy_inline.clumsy_runtime_ready', return_value=True),
-        patch('tools.clumsy_inline.detect_inline_ip', return_value='192.168.137.50'),
-    ):
+    with patch('tools.clumsy_inline.clumsy_ics_lag_can_use_windivert', return_value=False):
         assert use_windivert_for_advanced_ics_shaping(s, dev) is False
