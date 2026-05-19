@@ -96,9 +96,22 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertLess(subnet_pos, victim_pos)
         best_src = inspect.getsource(wd._open_best_windivert_handle)
         self.assertIn(
-            '(WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)',
+            '(WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)',
             best_src.replace('\n', ' '),
         )
+
+    def test_open_candidates_always_include_subnet_on_ics(self) -> None:
+        cands = wd._ics_windivert_open_candidates('192.168.1.50', '192.168.137.')
+        self.assertTrue(any('137.2' in f or '137.' in f for f, _ in cands))
+
+    def test_victim_packet_roles_nat_fallback(self) -> None:
+        from_v, to_v, _active = wd._victim_packet_roles(
+            '73.12.1.2',
+            '8.8.8.8',
+            '192.168.1.50',
+            '192.168.137.',
+        )
+        self.assertTrue(from_v and to_v)
 
     def test_victim_packet_roles_matches_hotspot_client(self) -> None:
         from_v, to_v, active = wd._victim_packet_roles(

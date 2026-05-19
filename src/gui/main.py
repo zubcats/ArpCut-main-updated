@@ -3420,7 +3420,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         if not clumsy_ics_use_firewall_only(device, self.scanner):
             return False
-        ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
+        device = self._ics_device_with_resolved_ip(device)
+        ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
+            device.get('ip') or ''
+        ).strip()
         self.killer.disable_percent_cut(device['mac'])
         if device['mac'] in self.killer.killed and not for_dupe and not for_lag:
             release_ics_victim_block(self.scanner, self.killer, device)
