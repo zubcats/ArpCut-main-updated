@@ -85,10 +85,18 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertLess(idx, src.index('if pass_cut and'))
         self.assertLess(idx, src.index('if blocking and _packet_involves_victim'))
 
-    def test_start_opens_single_handle(self) -> None:
+    def test_start_opens_subnet_before_victim_handles(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate.start)
-        self.assertIn('_open_best_windivert_handle', src)
-        self.assertIn('self._handles = [h]', src)
+        self.assertIn('_open_ics_windivert_handles', src)
+        open_src = inspect.getsource(wd._ics_windivert_open_candidates)
+        subnet_pos = open_src.find('_ics_windivert_filter')
+        victim_pos = open_src.find('_ics_clumsy_victim_filter')
+        self.assertLess(subnet_pos, victim_pos)
+        best_src = inspect.getsource(wd._open_best_windivert_handle)
+        self.assertIn(
+            '(WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)',
+            best_src.replace('\n', ' '),
+        )
 
     def test_hotspot_sched_tick_uses_windivert_on_ics(self) -> None:
         path = os.path.join(_SRC, 'gui', 'main.py')
