@@ -321,6 +321,12 @@ def _victim_packet_roles(
     if src_is and dst_is:
         active = src
         return True, dst == active or dst_is, active
+    # FORWARD-layer ICS: headers are often post-NAT (no 137.x) but the subnet
+    # WinDivert filter already scoped this packet to the hotspot client path.
+    gw = _ics_gateway_ip(downstream_prefix)
+    if gw and src != gw and dst != gw:
+        active = vip if _is_hotspot_client_ip(vip, downstream_prefix) else (src if src_is else (dst if dst_is else vip))
+        return True, True, active or vip
     return False, False, vip
 
 
@@ -403,9 +409,11 @@ def _ics_windivert_open_candidates(
         return []
     quad = _ics_subnet_quad_prefix(downstream_prefix)
     out: list[tuple[str, str]] = []
-    if quad and vip.startswith(quad + '.'):
-        out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
-    out.append((_ics_clumsy_victim_filter(vip), 'victim'))
+    if quad:
+        anchor = vip if vip.startswith(quad + '.') else f'{quad}.2'
+        out.append((_ics_windivert_filter(anchor, downstream_prefix), 'subnet'))
+    if vip:
+        out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     return out
 
 
@@ -419,9 +427,8 @@ def _open_best_windivert_handle(
     percent-cut byte budgets / shaping more than once — that looks like full Kill.
     """
     for filt, desc in _ics_windivert_open_candidates(victim_ip, downstream_prefix):
-        # NETWORK first: ICS client IPs (192.168.137.x) are visible in headers;
-        # FORWARD often shows post-NAT addrs and breaks victim-only partial shaping.
-        for layer in (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD):
+        # FORWARD first — PS5 game traffic is usually visible here on ICS hotspot.
+        for layer in (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK):
             h = _open_windivert_handle(dll, filt, layer)
             if h >= 0:
                 return h, layer, desc
@@ -540,6 +547,7 @@ class IcsWinDivertLagGate:
         self._packets_held = 0
         self._open_layers: list[int] = []
         self._downstream_prefix = '192.168.137.'
+        self._subnet_capture = False
 
     @property
     def victim_ip(self) -> str:
@@ -615,7 +623,7 @@ class IcsWinDivertLagGate:
         except Exception:
             prefix = '192.168.137.'
         self._downstream_prefix = prefix
-        h, layer, _desc = _open_best_windivert_handle(self._dll, vip, prefix)
+        h, layer, desc = _open_best_windivert_handle(self._dll, vip, prefix)
         if h < 0:
             last_err = _windivert_last_error_message()
             hint = 'Run ZubCut as Administrator.'
@@ -624,6 +632,7 @@ class IcsWinDivertLagGate:
             raise OSError(f'WinDivertOpen failed. {hint}')
         self._handles = [h]
         self._open_layers = [layer]
+        self._subnet_capture = desc == 'subnet'
         self._packets_seen = 0
         self._packets_matched = 0
         self._packets_held = 0
@@ -975,7 +984,15 @@ class IcsWinDivertLagGate:
                     continue
 
                 src, dst = parsed
-                if not _packet_matches_hotspot_client(src, dst, victim, subnet_prefix):
+                subnet_mode = bool(getattr(self, '_subnet_capture', False))
+                if subnet_mode:
+                    gw = _ics_gateway_ip(subnet_prefix)
+                    if gw and src == gw and dst == gw:
+                        self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                        continue
+                elif not _packet_matches_hotspot_client(
+                    src, dst, victim, subnet_prefix
+                ):
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
                 self._packets_matched += 1
