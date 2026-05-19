@@ -350,31 +350,51 @@ def _open_windivert_handle(dll: ctypes.WinDLL, filt: str, layer: int) -> int:
     return hv
 
 
-def _open_best_windivert_handle(
-    dll: ctypes.WinDLL, victim_ip: str, downstream_prefix: str = ''
-) -> tuple[int, int, str]:
+def _ics_windivert_open_candidates(
+    victim_ip: str, downstream_prefix: str = ''
+) -> list[tuple[str, str]]:
     """
-    Open a single WinDivert handle (one layer, one filter).
+    Filter order for hotspot capture.
 
-    Prefer victim-exact filter like MITM forwarder — subnet-wide filters are only
-    used when the victim filter fails to open, and userspace still impairs only
-    victim IPs in the recv loop.
+    Subnet filter first (FORWARD-layer PS5 traffic often never hits a tight
+    victim-only filter). Userspace still impairs only the victim IP.
     """
     vip = _ipv4_quad(victim_ip)
     if not vip:
-        return -1, 0, ''
+        return []
     quad = _ics_subnet_quad_prefix(downstream_prefix)
-    candidates: list[tuple[str, str]] = [(_ics_clumsy_victim_filter(vip), 'victim')]
+    out: list[tuple[str, str]] = []
     if quad and vip.startswith(quad + '.'):
-        candidates.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
-    last_err = ''
-    for layer in (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD):
-        for filt, desc in candidates:
+        out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
+    out.append((_ics_clumsy_victim_filter(vip), 'victim'))
+    return out
+
+
+def _open_ics_windivert_handles(
+    dll: ctypes.WinDLL, victim_ip: str, downstream_prefix: str = ''
+) -> tuple[list[int], list[int]]:
+    """Open all working filter/layer pairs (subnet before victim, FORWARD before NETWORK)."""
+    handles: list[int] = []
+    opened_layers: list[int] = []
+    for filt, _desc in _ics_windivert_open_candidates(victim_ip, downstream_prefix):
+        for layer in (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK):
+            h = _open_windivert_handle(dll, filt, layer)
+            if h >= 0:
+                handles.append(h)
+                if layer not in opened_layers:
+                    opened_layers.append(layer)
+    return handles, opened_layers
+
+
+def _open_best_windivert_handle(
+    dll: ctypes.WinDLL, victim_ip: str, downstream_prefix: str = ''
+) -> tuple[int, int, str]:
+    """Probe helper: first handle that opens (same filter/layer order as the live gate)."""
+    for filt, desc in _ics_windivert_open_candidates(victim_ip, downstream_prefix):
+        for layer in (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK):
             h = _open_windivert_handle(dll, filt, layer)
             if h >= 0:
                 return h, layer, desc
-            last_err = _windivert_last_error_message()
-    _ = last_err
     return -1, 0, ''
 
 
@@ -558,15 +578,15 @@ class IcsWinDivertLagGate:
         except Exception:
             prefix = '192.168.137.'
         self._downstream_prefix = prefix
-        h, layer, _desc = _open_best_windivert_handle(self._dll, vip, prefix)
-        if h < 0:
+        handles, opened_layers = _open_ics_windivert_handles(self._dll, vip, prefix)
+        if not handles:
             last_err = _windivert_last_error_message()
             hint = 'Run ZubCut as Administrator.'
             if last_err:
                 raise OSError(f'WinDivertOpen failed: {last_err} {hint}')
             raise OSError(f'WinDivertOpen failed. {hint}')
-        self._handles = [h]
-        self._open_layers = [layer]
+        self._handles = handles
+        self._open_layers = opened_layers
         self._packets_seen = 0
         self._packets_matched = 0
         self._packets_held = 0

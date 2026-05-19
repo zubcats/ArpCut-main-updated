@@ -287,15 +287,14 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         open_src = wd_src[
             wd_src.index('def _open_best_windivert_handle'): wd_src.index('def probe_windivert_for_victim')
         ]
-        net_pos = open_src.find('WINDIVERT_LAYER_NETWORK,')
-        fwd_pos = open_src.find('WINDIVERT_LAYER_NETWORK_FORWARD')
-        self.assertGreater(net_pos, 0)
-        self.assertGreater(fwd_pos, 0)
-        self.assertLess(net_pos, fwd_pos, 'ICS hotspot should try NETWORK before FORWARD')
+        self.assertIn(
+            '(WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)',
+            open_src.replace('\n', ' '),
+        )
         self.assertIn('_ics_windivert_filter', wd_src)
         start_src = gate_src[gate_src.index('def start'): gate_src.index('def set_blocking')]
-        self.assertIn('_open_best_windivert_handle', start_src)
-        self.assertIn('self._handles = [h]', start_src)
+        self.assertIn('_open_ics_windivert_handles', start_src)
+        self.assertIn('_ics_windivert_filter', wd_src)
         killer_py = os.path.join(_SRC, 'networking', 'killer.py')
         with open(killer_py, encoding='utf-8') as f:
             ksrc = f.read()
