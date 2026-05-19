@@ -2848,7 +2848,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self.lag_active:
             self.stopLagSwitch(refresh_dialog=False)
         self.lag_device_mac = device['mac']
-        resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
+        resolved_ip = self._ics_hotspot_victim_ip(device, lag=True) or clumsy_ics_resolve_victim_ip(
+            device, self.scanner
+        )
         self.lag_device_ip = resolved_ip or device.get('ip')
         snap = dict(device)
         if resolved_ip:
@@ -3175,6 +3177,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     ) -> bool:
         """Hotspot Advanced Lag via WinDivert shaping (not pause / Kill)."""
         device = self._ics_device_with_resolved_ip(device)
+        ip = self._ics_hotspot_victim_ip(device, mitmshape=True)
+        if not ip:
+            return False
+        device['ip'] = ip
         self._ics_quiesce_killer_mitm(device)
         if not self._ensure_ics_lag_gate(device, 'both'):
             return False
@@ -3466,9 +3472,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not clumsy_ics_use_firewall_only(device, self.scanner):
             return False
         device = self._ics_device_with_resolved_ip(device)
-        ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
+        ip = self._ics_hotspot_victim_ip(
+            device,
+            lag=for_lag,
+            dupe=for_dupe,
+        ) or clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
             device.get('ip') or ''
         ).strip()
+        if ip:
+            device['ip'] = ip
         self.killer.disable_percent_cut(device['mac'])
         if device['mac'] in self.killer.killed and not for_dupe and not for_lag:
             release_ics_victim_block(self.scanner, self.killer, device)
@@ -4750,12 +4762,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         'red',
                     )
                     return
+                resolved_ip = self._ics_hotspot_victim_ip(device, pctcut=True)
             else:
                 self._ensure_network_context_for_victim(device)
                 self.killer.apply_percent_cut(device, pass_percent=allow_pct)
-            resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
-                device.get('ip') or ''
-            ).strip()
+                resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
+                    device.get('ip') or ''
+                ).strip()
             self.percent_cut_active = True
             self.percent_cut_device_mac = mac
             self.percent_cut_device_ip = resolved_ip
@@ -5208,9 +5221,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._ics_windivert_shaper = None
             self._mitm_shaping_backend = 'forwarder'
 
-        resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
-            device.get('ip') or ''
-        ).strip()
+        if use_wd and clumsy_ics_use_firewall_only(device, self.scanner):
+            resolved_ip = self._ics_hotspot_victim_ip(device, mitmshape=True) or str(
+                device.get('ip') or ''
+            ).strip()
+        else:
+            resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
+                device.get('ip') or ''
+            ).strip()
         self.mitm_shaping_active = True
         self.mitm_shaping_mac = mac
         self.mitm_shaping_device_ip = resolved_ip

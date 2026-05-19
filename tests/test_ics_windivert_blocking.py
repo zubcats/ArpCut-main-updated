@@ -22,18 +22,28 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertNotIn('_PAUSE_HOLD_DUE', block)
         self.assertNotIn('self._packets_held += 1', block)
 
-    def test_percent_cut_uses_bernoulli_drop_not_pause_hold(self) -> None:
+    def test_percent_cut_uses_byte_budget_not_pause_hold(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate)
         self.assertIn('def apply_percent_cut', src)
-        self.assertIn('_cut_drop_pct', src)
+        self.assertIn('_passes_byte_ratio', src)
         self.assertIn('IMPAIR_PERCENT', src)
         loop = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
         self.assertIn('impair_mode == IMPAIR_PERCENT', loop)
         pct_block = loop[loop.index('if impair_mode == IMPAIR_PERCENT'): loop.index('if impair_mode == IMPAIR_SHAPE')]
-        self.assertIn('random.randint(1, 100)', pct_block)
+        self.assertIn('_passes_byte_ratio', pct_block)
+        self.assertNotIn('random.randint(1, 100)', pct_block)
         apply = src[src.index('def apply_percent_cut'): src.index('def apply_shaping_params')]
         self.assertIn('IMPAIR_PERCENT', apply)
         self.assertIn('self._blocking = False', apply)
+
+    def test_percent_cut_duplicate_capture_passes_through(self) -> None:
+        loop = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
+        dedupe = loop[loop.index('if sig:'): loop.index('if impair_mode == IMPAIR_PERCENT')]
+        self.assertIn('self._send_immediate', dedupe)
+        self.assertNotRegex(
+            dedupe,
+            r'if last is not None and \(now - last\) < 0\.05:\s*\n\s*continue\s*\n',
+        )
 
     def test_apply_shaping_clears_blocking_and_percent_cut(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate.apply_shaping_params)
@@ -61,6 +71,7 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         path = os.path.join(_SRC, 'gui', 'main.py')
         with open(path, encoding='utf-8') as fh:
             src = fh.read()
+        self.assertIn('def _ics_hotspot_victim_ip', src)
         self.assertIn('def _ics_apply_percent_cut_windivert', src)
         self.assertIn('def _ics_apply_advanced_shaping_windivert', src)
         toggle = src[src.index('def togglePercentCut'): src.index('def stopPercentCut')]
@@ -106,10 +117,10 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         on = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
         self.assertTrue(any('137.' in f for f, _ in on))
 
-    def test_open_candidates_victim_first_when_on_hotspot_subnet(self) -> None:
+    def test_open_candidates_subnet_first_when_on_hotspot_subnet(self) -> None:
         cands = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
         self.assertGreaterEqual(len(cands), 2)
-        self.assertEqual(cands[0][1], 'victim')
+        self.assertEqual(cands[0][1], 'subnet')
 
     def test_victim_packet_roles_no_broad_nat_fallback(self) -> None:
         from_v, to_v, _active = wd._victim_packet_roles(
