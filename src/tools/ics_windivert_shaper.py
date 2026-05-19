@@ -613,6 +613,15 @@ class IcsWinDivertLagGate:
             return True, budget - float(size)
         return False, budget
 
+    def clear_blocking_pause(self) -> None:
+        """Leave kill/lag/dupe full-pause mode; discard held packets (no replay burst)."""
+        with self._lock:
+            self._blocking = False
+            self._hold_pause = False
+            self._delay_ms = 0
+            self._loss_pct = 0
+            self._discard_heap = True
+
     def apply_percent_cut(self, cut_pct: int) -> None:
         """
         Partial cut on hotspot (WinDivert): ``cut_pct`` = share of traffic to drop;
@@ -668,6 +677,7 @@ class IcsWinDivertLagGate:
             self._loss_in = max(0, min(100, int(loss_in)))
             self._cap_out_bps = max(0.0, float(max_kbps_out)) * 1000.0 / 8.0
             self._cap_in_bps = max(0.0, float(max_kbps_in)) * 1000.0 / 8.0
+            self._discard_heap = True
 
     def pause_connection(self) -> None:
         """Hold all shaped victim traffic (lag/kill/dupe block phase)."""
@@ -700,7 +710,7 @@ class IcsWinDivertLagGate:
             self._cap_out_bps = 0.0
             self._cap_in_bps = 0.0
             self._blocking = False
-            self._hold_pause = True
+            self._hold_pause = False
             self._delay_ms = 0
             self._loss_pct = 0
             self._discard_heap = True
