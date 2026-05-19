@@ -3101,8 +3101,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
+    def _ics_device_with_resolved_ip(self, device) -> dict:
+        dev = dict(device) if isinstance(device, dict) else {}
+        ip = clumsy_ics_resolve_victim_ip(dev, self.scanner) or str(dev.get('ip') or '').strip()
+        if ip:
+            dev['ip'] = ip
+        return dev
+
     def _ics_apply_percent_cut_windivert(self, device, cut_pct: int) -> bool:
         """Hotspot partial cut via WinDivert byte budget (never ARP Kill / full pause)."""
+        device = self._ics_device_with_resolved_ip(device)
         self._ics_quiesce_killer_mitm(device)
         if not self._ensure_ics_lag_gate(device, 'both'):
             return False
@@ -3133,6 +3141,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         cd_mbps: float,
     ) -> bool:
         """Hotspot Advanced Lag via WinDivert shaping (not pause / Kill)."""
+        device = self._ics_device_with_resolved_ip(device)
         self._ics_quiesce_killer_mitm(device)
         if not self._ensure_ics_lag_gate(device, 'both'):
             return False
@@ -3377,6 +3386,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if gate is not None and gate.victim_ip == ip:
             if gate.is_running():
                 gate.set_direction(direction)
+                if hasattr(gate, 'set_victim_ip'):
+                    gate.set_victim_ip(ip)
                 return True
             if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
                 try:
@@ -3392,6 +3403,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         gate = IcsWinDivertLagGate(ip)
         gate.start(direction=direction)
         self._ics_lag_gate = gate
+        if hasattr(gate, 'set_victim_ip'):
+            gate.set_victim_ip(ip)
         if not getattr(self, 'lag_active', False):
             self._schedule_ics_windivert_traffic_check(ip)
         return True
@@ -4078,8 +4091,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _lag_phase_end_timer_fired(self) -> None:
         if not self.lag_active:
             return
-        if getattr(self, '_lag_phase_advance_pending', False):
-            return
+        # Never skip phase advance here — countdown may already have set pending.
+        self._lag_phase_advance_pending = False
         self._lag_do_phase_advance()
 
     def _lag_do_phase_advance(self) -> None:
@@ -4198,6 +4211,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_schedule_phase(allow_ms)
         self._arm_lag_phase_countdown()
         self._lag_apply_allow_phase_sync(device)
+        try:
+            self._lag_ics_set_paused(device, False)
+        except Exception:
+            pass
+        self._lag_ics_force_unpause()
         mac = str(device.get('mac') or '').strip()
         if mac:
             self._refresh_table_row_for_mac(mac, device.get('ip'))

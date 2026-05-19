@@ -69,6 +69,7 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         self.assertNotIn('_ics_hotspot_pause_release', resume)
         self.assertNotIn('_lag_ics_force_unpause', resume)
         allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
+        self.assertIn('_lag_ics_set_paused(device, False)', allow)
         self.assertIn('_lag_apply_allow_phase_sync', allow)
         self.assertIn('_sync_lag_timing_values_from_ui', allow)
         self.assertNotIn('_refresh_lag_timing_from_dialog', allow)

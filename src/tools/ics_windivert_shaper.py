@@ -285,6 +285,45 @@ def _packet_involves_victim(src: str, dst: str, victim: str) -> bool:
     return src == victim or dst == victim
 
 
+def _ics_gateway_ip(downstream_prefix: str) -> str:
+    quad = _ics_subnet_quad_prefix(downstream_prefix)
+    return f'{quad}.1' if quad else ''
+
+
+def _is_hotspot_client_ip(ip: str, downstream_prefix: str) -> bool:
+    """ICS downstream client (PS5), not the PC gateway (.1)."""
+    quad = _ics_subnet_quad_prefix(downstream_prefix)
+    if not quad or not ip:
+        return False
+    return ip.startswith(quad + '.') and ip != _ics_gateway_ip(downstream_prefix)
+
+
+def _victim_packet_roles(
+    src: str, dst: str, victim: str, downstream_prefix: str
+) -> tuple[bool, bool, str]:
+    """
+    Map a packet to victim outbound/inbound on the hotspot.
+
+    The device table can still show a home-LAN IP while the PS5 uses 192.168.137.x;
+    treat the hotspot client (.2-.254) as the victim when the pinned IP does not match.
+    """
+    vip = _ipv4_quad(victim)
+    if src == vip:
+        return True, dst == vip, vip
+    if dst == vip:
+        return src == vip, True, vip
+    src_is = _is_hotspot_client_ip(src, downstream_prefix)
+    dst_is = _is_hotspot_client_ip(dst, downstream_prefix)
+    if src_is and not dst_is:
+        return True, False, src
+    if dst_is and not src_is:
+        return False, True, dst
+    if src_is and dst_is:
+        active = src
+        return True, dst == active or dst_is, active
+    return False, False, vip
+
+
 def _packet_matches_hotspot_client(
     src: str, dst: str, victim: str, downstream_prefix: str
 ) -> bool:
@@ -380,7 +419,9 @@ def _open_best_windivert_handle(
     percent-cut byte budgets / shaping more than once — that looks like full Kill.
     """
     for filt, desc in _ics_windivert_open_candidates(victim_ip, downstream_prefix):
-        for layer in (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK):
+        # NETWORK first: ICS client IPs (192.168.137.x) are visible in headers;
+        # FORWARD often shows post-NAT addrs and breaks victim-only partial shaping.
+        for layer in (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD):
             h = _open_windivert_handle(dll, filt, layer)
             if h >= 0:
                 return h, layer, desc
@@ -503,6 +544,13 @@ class IcsWinDivertLagGate:
     @property
     def victim_ip(self) -> str:
         return self._victim
+
+    def set_victim_ip(self, victim_ip: str) -> None:
+        """Pin/live-update PS5 hotspot IP (ARP can lag behind the device table)."""
+        ip = _ipv4_quad(victim_ip)
+        if ip:
+            with self._lock:
+                self._victim = ip
 
     @property
     def packets_seen(self) -> int:
@@ -803,13 +851,15 @@ class IcsWinDivertLagGate:
         self._open_layers = []
         self._dll = None
 
-    def _shapes_packet(self, src: str, dst: str, direction: str) -> bool:
+    def _shapes_packet(
+        self, direction: str, *, from_victim: bool, to_victim: bool
+    ) -> bool:
         if direction == 'both':
-            return True
+            return from_victim or to_victim
         if direction == 'in':
-            return dst == self._victim
+            return to_victim
         if direction == 'out':
-            return src == self._victim
+            return from_victim
         return True
 
     def _send_immediate(self, h, dll, pkt: bytes, addr_b: bytes, send_len_ptr) -> None:
@@ -929,17 +979,24 @@ class IcsWinDivertLagGate:
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
                 self._packets_matched += 1
-                if not self._shapes_packet(src, dst, direction):
+
+                from_v, to_v, active_victim = _victim_packet_roles(
+                    src, dst, victim, subnet_prefix
+                )
+                if active_victim and active_victim != victim:
+                    victim = active_victim
+                    with self._lock:
+                        self._victim = active_victim
+                if not self._shapes_packet(direction, from_victim=from_v, to_victim=to_v):
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
-                is_from_victim = src == victim
-                is_to_victim = dst == victim
+                is_from_victim = from_v
+                is_to_victim = to_v
                 n = len(pkt)
 
-                # Subnet filters can see other hotspot clients / gateway traffic;
-                # only impair packets that involve the victim (same scope as MITM forwarder).
-                if not _packet_involves_victim(src, dst, victim):
+                # Subnet filters can see gateway / other clients — only impair PS5 flows.
+                if not (from_v or to_v):
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
@@ -951,7 +1008,7 @@ class IcsWinDivertLagGate:
                         allow_pkt, budget_out = self._passes_byte_ratio(
                             pass_out_pct, budget_out, n
                         )
-                    if allow_pkt and is_to_victim:
+                    elif is_to_victim:
                         allow_pkt, budget_in = self._passes_byte_ratio(
                             pass_in_pct, budget_in, n
                         )
@@ -1008,7 +1065,7 @@ class IcsWinDivertLagGate:
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
-                if blocking and _packet_involves_victim(src, dst, victim):
+                if blocking and (is_from_victim or is_to_victim):
                     if not hold_pause:
                         if loss_pct > 0:
                             if random.randint(1, 100) <= loss_pct:
