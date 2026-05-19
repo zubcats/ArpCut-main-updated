@@ -298,14 +298,29 @@ def _is_hotspot_client_ip(ip: str, downstream_prefix: str) -> bool:
     return ip.startswith(quad + '.') and ip != _ics_gateway_ip(downstream_prefix)
 
 
+def _windivert_addr_outbound(addr_b: bytes) -> Optional[bool]:
+    """WinDivert 2.x WINDIVERT_ADDRESS.Outbound bit (offset 16)."""
+    if len(addr_b) < 20:
+        return None
+    flags = int.from_bytes(addr_b[16:20], 'little')
+    return bool(flags & 0x02)
+
+
 def _victim_packet_roles(
-    src: str, dst: str, victim: str, downstream_prefix: str
+    src: str,
+    dst: str,
+    victim: str,
+    downstream_prefix: str,
+    *,
+    outbound: Optional[bool] = None,
+    subnet_capture: bool = False,
 ) -> tuple[bool, bool, str]:
     """
     Map a packet to victim outbound/inbound on the hotspot.
 
-    The device table can still show a home-LAN IP while the PS5 uses 192.168.137.x;
-    treat the hotspot client (.2-.254) as the victim when the pinned IP does not match.
+    Never treat all non-gateway traffic as victim — that paused the whole PC NAT path
+    and looked like full WiFi cut. Use 137.x client IPs or outbound hint only when
+    the pinned victim is on the hotspot subnet.
     """
     vip = _ipv4_quad(victim)
     if src == vip:
@@ -321,12 +336,11 @@ def _victim_packet_roles(
     if src_is and dst_is:
         active = src
         return True, dst == active or dst_is, active
-    # FORWARD-layer ICS: headers are often post-NAT (no 137.x) but the subnet
-    # WinDivert filter already scoped this packet to the hotspot client path.
-    gw = _ics_gateway_ip(downstream_prefix)
-    if gw and src != gw and dst != gw:
-        active = vip if _is_hotspot_client_ip(vip, downstream_prefix) else (src if src_is else (dst if dst_is else vip))
-        return True, True, active or vip
+    client = vip if _is_hotspot_client_ip(vip, downstream_prefix) else ''
+    if subnet_capture and client and outbound is not None:
+        if outbound:
+            return True, False, client
+        return False, True, client
     return False, False, vip
 
 
@@ -503,6 +517,12 @@ def _parse_ipv4_src_dst(packet: bytes) -> Optional[Tuple[str, str]]:
 _MAX_LAG_HEAP_PACKETS = 4096
 _PAUSE_HOLD_DUE = float('inf')
 
+# Single source of truth — partial modes must never share state with full pause.
+IMPAIR_OFF = 0
+IMPAIR_PAUSE = 1
+IMPAIR_PERCENT = 2
+IMPAIR_SHAPE = 3
+
 
 class IcsWinDivertLagGate:
     """
@@ -548,6 +568,7 @@ class IcsWinDivertLagGate:
         self._open_layers: list[int] = []
         self._downstream_prefix = '192.168.137.'
         self._subnet_capture = False
+        self._impair_mode = IMPAIR_OFF
 
     @property
     def victim_ip(self) -> str:
@@ -661,8 +682,10 @@ class IcsWinDivertLagGate:
             if loss_pct is not None:
                 self._loss_pct = max(0, min(100, int(loss_pct)))
             if block:
+                self._impair_mode = IMPAIR_PAUSE
                 self._clear_percent_cut_unlocked()
             else:
+                self._impair_mode = IMPAIR_OFF
                 self._discard_heap = True
 
     def _clear_percent_cut_unlocked(self) -> None:
@@ -693,6 +716,7 @@ class IcsWinDivertLagGate:
     def clear_blocking_pause(self) -> None:
         """Leave kill/lag/dupe full-pause mode; discard held packets (no replay burst)."""
         with self._lock:
+            self._impair_mode = IMPAIR_OFF
             self._blocking = False
             self._hold_pause = False
             self._delay_ms = 0
@@ -707,6 +731,7 @@ class IcsWinDivertLagGate:
         cut = max(0, min(100, int(cut_pct)))
         allow = max(0, 100 - cut)
         with self._lock:
+            self._impair_mode = IMPAIR_OFF if cut <= 0 else IMPAIR_PERCENT
             self._blocking = False
             self._hold_pause = False
             self._loss_pct = 0
@@ -741,11 +766,6 @@ class IcsWinDivertLagGate:
         max_kbps_in: float,
     ) -> None:
         with self._lock:
-            self._blocking = False
-            self._hold_pause = False
-            self._loss_pct = 0
-            self._delay_ms = 0
-            self._clear_percent_cut_unlocked()
             self._delay_out_ms = max(0, int(delay_out_ms))
             self._delay_in_ms = max(0, int(delay_in_ms))
             self._jitter_out_ms = max(0, int(jitter_out_ms))
@@ -754,6 +774,13 @@ class IcsWinDivertLagGate:
             self._loss_in = max(0, min(100, int(loss_in)))
             self._cap_out_bps = max(0.0, float(max_kbps_out)) * 1000.0 / 8.0
             self._cap_in_bps = max(0.0, float(max_kbps_in)) * 1000.0 / 8.0
+            shaping_on = self._shaping_active_unlocked()
+            self._impair_mode = IMPAIR_SHAPE if shaping_on else IMPAIR_OFF
+            self._blocking = False
+            self._hold_pause = False
+            self._loss_pct = 0
+            self._delay_ms = 0
+            self._clear_percent_cut_unlocked()
             self._discard_heap = True
 
     def pause_connection(self) -> None:
@@ -768,6 +795,7 @@ class IcsWinDivertLagGate:
             self._loss_in = 0
             self._cap_out_bps = 0.0
             self._cap_in_bps = 0.0
+            self._impair_mode = IMPAIR_PAUSE
             self._blocking = True
             self._hold_pause = True
             self._delay_ms = 0
@@ -777,6 +805,7 @@ class IcsWinDivertLagGate:
     def resume_from_pause(self) -> None:
         """End pause/hold without stopping the gate thread (lag allow phase / unpause)."""
         with self._lock:
+            self._impair_mode = IMPAIR_OFF
             self._clear_percent_cut_unlocked()
             self._delay_out_ms = 0
             self._delay_in_ms = 0
@@ -794,6 +823,7 @@ class IcsWinDivertLagGate:
 
     def clear_shaping(self) -> None:
         with self._lock:
+            self._impair_mode = IMPAIR_OFF
             self._clear_percent_cut_unlocked()
             self._delay_out_ms = 0
             self._delay_in_ms = 0
@@ -833,6 +863,7 @@ class IcsWinDivertLagGate:
 
     def prepare_stop(self) -> None:
         with self._lock:
+            self._impair_mode = IMPAIR_OFF
             self._blocking = False
             self._discard_heap = True
 
@@ -924,16 +955,18 @@ class IcsWinDivertLagGate:
 
         while not self._stop.is_set():
             now = time.perf_counter()
+            impair_mode = IMPAIR_OFF
             with self._lock:
                 if self._discard_heap:
                     self._discard_heap = False
                     heap.clear()
+                impair_mode = int(self._impair_mode)
                 blocking = self._blocking
                 hold_pause = self._hold_pause
                 direction = self._direction
                 delay_ms = self._delay_ms
                 loss_pct = self._loss_pct
-                shaping = self._shaping_active_unlocked()
+                shaping = impair_mode == IMPAIR_SHAPE
                 d_out = self._delay_out_ms
                 d_in = self._delay_in_ms
                 j_out = self._jitter_out_ms
@@ -942,7 +975,7 @@ class IcsWinDivertLagGate:
                 l_in = self._loss_in
                 cap_out = self._cap_out_bps
                 cap_in = self._cap_in_bps
-                pass_cut = self._pass_cut_active
+                pass_cut = impair_mode == IMPAIR_PERCENT
                 pass_out_pct = self._pass_out_pct
                 pass_in_pct = self._pass_in_pct
                 budget_out = self._byte_budget_out
@@ -959,7 +992,7 @@ class IcsWinDivertLagGate:
                 if math.isinf(due) or due >= _PAUSE_HOLD_DUE:
                     heapq.heappop(heap)
                     continue
-                if blocking and hold_pause:
+                if impair_mode == IMPAIR_PAUSE and hold_pause:
                     heapq.heappop(heap)
                     continue
                 _, pkt_b, addr_b, h_send = heapq.heappop(heap)
@@ -997,8 +1030,14 @@ class IcsWinDivertLagGate:
                     continue
                 self._packets_matched += 1
 
+                outbound = _windivert_addr_outbound(addr_b)
                 from_v, to_v, active_victim = _victim_packet_roles(
-                    src, dst, victim, subnet_prefix
+                    src,
+                    dst,
+                    victim,
+                    subnet_prefix,
+                    outbound=outbound,
+                    subnet_capture=subnet_mode,
                 )
                 if active_victim and active_victim != victim:
                     victim = active_victim
@@ -1017,9 +1056,11 @@ class IcsWinDivertLagGate:
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
-                # Partial modes (percent cut / advanced lag) must win over stale
-                # kill/lag full-pause — otherwise blocking=True feels like full Kill.
-                if pass_cut and (is_from_victim or is_to_victim):
+                if impair_mode == IMPAIR_OFF:
+                    self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                    continue
+
+                if impair_mode == IMPAIR_PERCENT and (is_from_victim or is_to_victim):
                     allow_pkt = True
                     if is_from_victim:
                         allow_pkt, budget_out = self._passes_byte_ratio(
@@ -1037,7 +1078,7 @@ class IcsWinDivertLagGate:
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
-                if shaping and (is_from_victim or is_to_victim):
+                if impair_mode == IMPAIR_SHAPE and (is_from_victim or is_to_victim):
                     cap_ok = True
                     if cap_out > 0 and is_from_victim:
                         cap_ok = self._bucket_out >= float(n)
@@ -1082,7 +1123,7 @@ class IcsWinDivertLagGate:
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
-                if blocking and (is_from_victim or is_to_victim):
+                if impair_mode == IMPAIR_PAUSE and blocking and (is_from_victim or is_to_victim):
                     if not hold_pause:
                         if loss_pct > 0:
                             if random.randint(1, 100) <= loss_pct:

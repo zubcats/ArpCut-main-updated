@@ -3383,6 +3383,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if gate is not None and gate.victim_ip != ip:
             self._stop_ics_lag_gate(join_timeout=0.5)
             gate = None
+        if ip and not victim_on_clumsy_ics_subnet(ip):
+            resolved = clumsy_ics_resolve_victim_ip(device, self.scanner)
+            if resolved and victim_on_clumsy_ics_subnet(resolved):
+                ip = resolved.strip()
         if gate is not None and gate.victim_ip == ip:
             if gate.is_running():
                 gate.set_direction(direction)
@@ -4166,9 +4170,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     dlg.set_lag_countdown(0, allow)
                 except Exception:
                     pass
-            if self._lag_phase_end_timer.isActive():
-                self._lag_phase_end_timer.stop()
-            self._lag_request_phase_advance()
             return
         if rem is None:
             self.lblLagCountdownMain.setVisible(False)

@@ -18,7 +18,7 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
     def test_percent_loss_does_not_drop_allowed_packets_twice(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
         block = src[
-            src.index('if blocking and (is_from_victim or is_to_victim)'): src.index('self._packets_held += 1')
+            src.index('if impair_mode == IMPAIR_PAUSE'): src.index('self._packets_held += 1')
         ]
         self.assertIn('_send_immediate', block)
         self.assertNotRegex(
@@ -30,10 +30,12 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         src = inspect.getsource(wd.IcsWinDivertLagGate)
         self.assertIn('def apply_percent_cut', src)
         self.assertIn('_passes_byte_ratio', src)
-        self.assertIn('if pass_cut and', inspect.getsource(wd.IcsWinDivertLagGate._run_loop))
+        self.assertIn('IMPAIR_PERCENT', src)
+        loop = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
+        self.assertIn('impair_mode == IMPAIR_PERCENT', loop)
         apply = src[src.index('def apply_percent_cut'): src.index('def apply_shaping_params')]
+        self.assertIn('IMPAIR_PERCENT', apply)
         self.assertIn('self._blocking = False', apply)
-        self.assertIn('self._pass_cut_active = True', apply)
 
     def test_apply_shaping_clears_blocking_and_percent_cut(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate.apply_shaping_params)
@@ -49,9 +51,11 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
 
     def test_run_loop_partial_modes_before_blocking_pause(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
-        block_idx = src.index('if blocking and (is_from_victim or is_to_victim)')
-        pass_idx = src.index('if pass_cut and')
-        shape_idx = src.index('if shaping and')
+        block_idx = src.index('if impair_mode == IMPAIR_PAUSE and blocking')
+        pass_idx = src.index('if impair_mode == IMPAIR_PERCENT')
+        shape_idx = src.index('if impair_mode == IMPAIR_SHAPE')
+        off_fwd = src.index('if impair_mode == IMPAIR_OFF:\n                    self._send_immediate')
+        self.assertLess(off_fwd, block_idx)
         self.assertLess(pass_idx, block_idx)
         self.assertLess(shape_idx, block_idx)
 
@@ -82,8 +86,7 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
     def test_run_loop_passthrough_non_victim_before_impairment(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
         idx = src.index('if not (from_v or to_v)')
-        self.assertLess(idx, src.index('if pass_cut and'))
-        self.assertLess(idx, src.index('if blocking and (is_from_victim or is_to_victim)'))
+        self.assertLess(idx, src.index('if impair_mode == IMPAIR_OFF'))
 
     def test_start_opens_single_handle_subnet_forward_first(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate.start)
@@ -104,14 +107,28 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         cands = wd._ics_windivert_open_candidates('192.168.1.50', '192.168.137.')
         self.assertTrue(any('137.2' in f or '137.' in f for f, _ in cands))
 
-    def test_victim_packet_roles_nat_fallback(self) -> None:
+    def test_victim_packet_roles_no_broad_nat_fallback(self) -> None:
         from_v, to_v, _active = wd._victim_packet_roles(
             '73.12.1.2',
             '8.8.8.8',
             '192.168.1.50',
             '192.168.137.',
         )
-        self.assertTrue(from_v and to_v)
+        self.assertFalse(from_v)
+        self.assertFalse(to_v)
+
+    def test_victim_packet_roles_outbound_hint_when_client_on_subnet(self) -> None:
+        from_v, to_v, active = wd._victim_packet_roles(
+            '73.12.1.2',
+            '8.8.8.8',
+            '192.168.137.55',
+            '192.168.137.',
+            outbound=True,
+            subnet_capture=True,
+        )
+        self.assertTrue(from_v)
+        self.assertFalse(to_v)
+        self.assertEqual(active, '192.168.137.55')
 
     def test_victim_packet_roles_matches_hotspot_client(self) -> None:
         from_v, to_v, active = wd._victim_packet_roles(
@@ -136,8 +153,9 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
 
     def test_shaping_forwards_when_delay_zero(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
-        after = src[src.index('shape_delay = base_d + extra_j'): src.index('if blocking and (is_from_victim or is_to_victim)')]
-        self.assertRegex(after, r'if shape_delay > 0:[\s\S]*continue[\s\S]*_send_immediate')
+        shape = src[src.index('if impair_mode == IMPAIR_SHAPE'): src.index('if impair_mode == IMPAIR_PAUSE and blocking')]
+        self.assertIn('shape_delay > 0', shape)
+        self.assertIn('_send_immediate', shape)
 
     def test_hotspot_sched_tick_uses_windivert_on_ics(self) -> None:
         path = os.path.join(_SRC, 'gui', 'main.py')
