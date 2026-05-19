@@ -248,6 +248,14 @@ def _ics_clumsy_victim_filter(victim_ip: str) -> str:
     return f'ip and (ip.SrcAddr == {vip} or ip.DstAddr == {vip})'
 
 
+def _ics_windivert_filter_no_impostor(filt: str) -> str:
+    """Exclude reinjected packets so percent/shape budgets are not applied twice."""
+    inner = (filt or '').strip()
+    if not inner:
+        return '!impostor'
+    return f'({inner}) and !impostor'
+
+
 def _ipv4_quad(ip: str) -> str:
     return (ip or '').strip()
 
@@ -329,6 +337,26 @@ def _windivert_addr_impostor(addr_b: bytes) -> bool:
     return bool(_windivert_addr_flag_word(addr_b) & _WD_FLAG_IMPOSTOR)
 
 
+def _windivert_addr_mark_impostor(addr_b: bytes) -> bytes:
+    """Mark outbound WinDivertSend address so stack can identify reinjections."""
+    if len(addr_b) < 16:
+        return addr_b
+    buf = bytearray(addr_b)
+    word = int.from_bytes(buf[8:16], 'little') | _WD_FLAG_IMPOSTOR
+    buf[8:16] = int(word).to_bytes(8, 'little')
+    return bytes(buf)
+
+
+def _ipv4_packet_sig(pkt: bytes) -> int:
+    """Cheap flow signature to ignore immediate duplicate captures."""
+    parsed = _parse_ipv4_src_dst(pkt)
+    if not parsed or len(pkt) < 8:
+        return 0
+    src, dst = parsed
+    ip_id = int.from_bytes(pkt[4:6], 'big')
+    return hash((src, dst, ip_id, len(pkt)))
+
+
 def _victim_packet_roles(
     src: str,
     dst: str,
@@ -359,11 +387,6 @@ def _victim_packet_roles(
     if src_is and dst_is:
         active = src
         return True, dst == active or dst_is, active
-    client = vip if _is_hotspot_client_ip(vip, downstream_prefix) else ''
-    if subnet_capture and client and outbound is not None:
-        if outbound:
-            return True, False, client
-        return False, True, client
     return False, False, vip
 
 
@@ -421,15 +444,22 @@ def _bind_windivert_api(dll: ctypes.WinDLL) -> None:
 
 
 def _open_windivert_handle(dll: ctypes.WinDLL, filt: str, layer: int) -> int:
-    f = filt.encode('ascii', errors='ignore')
-    h = dll.WinDivertOpen(ctypes.c_char_p(f), ctypes.c_int(layer), ctypes.c_int16(0), ctypes.c_uint64(0))
-    if not h:
-        return -1
-    hv = int(h) if not isinstance(h, ctypes.c_void_p) else int(h.value or 0)
-    maxptr = (1 << 64) - 1
-    if hv == 0 or hv == maxptr:
-        return -1
-    return hv
+    for candidate in (_ics_windivert_filter_no_impostor(filt), filt):
+        f = candidate.encode('ascii', errors='ignore')
+        h = dll.WinDivertOpen(
+            ctypes.c_char_p(f),
+            ctypes.c_int(layer),
+            ctypes.c_int16(0),
+            ctypes.c_uint64(0),
+        )
+        if not h:
+            continue
+        hv = int(h) if not isinstance(h, ctypes.c_void_p) else int(h.value or 0)
+        maxptr = (1 << 64) - 1
+        if hv == 0 or hv == maxptr:
+            continue
+        return hv
+    return -1
 
 
 def _ics_windivert_open_candidates(
@@ -446,11 +476,17 @@ def _ics_windivert_open_candidates(
         return []
     quad = _ics_subnet_quad_prefix(downstream_prefix)
     out: list[tuple[str, str]] = []
-    if quad:
-        anchor = vip if vip.startswith(quad + '.') else f'{quad}.2'
-        out.append((_ics_windivert_filter(anchor, downstream_prefix), 'subnet'))
-    if vip:
+    on_subnet = bool(quad and vip.startswith(quad + '.'))
+    if on_subnet:
         out.append((_ics_clumsy_victim_filter(vip), 'victim'))
+        anchor = vip
+        out.append((_ics_windivert_filter(anchor, downstream_prefix), 'subnet'))
+    else:
+        if quad:
+            anchor = f'{quad}.2'
+            out.append((_ics_windivert_filter(anchor, downstream_prefix), 'subnet'))
+        if vip:
+            out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     return out
 
 
@@ -592,6 +628,7 @@ class IcsWinDivertLagGate:
         self._downstream_prefix = '192.168.137.'
         self._subnet_capture = False
         self._impair_mode = IMPAIR_OFF
+        self._recent_shaped: dict[int, float] = {}
 
     @property
     def victim_ip(self) -> str:
@@ -927,7 +964,8 @@ class IcsWinDivertLagGate:
 
     def _send_immediate(self, h, dll, pkt: bytes, addr_b: bytes, send_len_ptr) -> None:
         pkt_buf = (ctypes.c_ubyte * len(pkt)).from_buffer_copy(pkt)
-        addr_buf = (ctypes.c_ubyte * len(addr_b)).from_buffer_copy(addr_b)
+        addr_out = _windivert_addr_mark_impostor(addr_b)
+        addr_buf = (ctypes.c_ubyte * len(addr_out)).from_buffer_copy(addr_out)
         send_len_ptr.value = 0
         dll.WinDivertSend(
             h,
@@ -1023,6 +1061,12 @@ class IcsWinDivertLagGate:
                     break
                 self._send_immediate(h_send, dll, pkt_b, addr_b, ctypes.byref(send_len))
 
+            if len(self._recent_shaped) > 4096:
+                cutoff = now - 0.1
+                self._recent_shaped = {
+                    k: v for k, v in self._recent_shaped.items() if v >= cutoff
+                }
+
             got_pkt = False
             for h in handles:
                 got = self._recv_one(dll, h, buf, addr, recv_len, addr_len)
@@ -1034,10 +1078,9 @@ class IcsWinDivertLagGate:
                 got_pkt = True
                 pkt, addr_b = got
                 self._packets_seen += 1
-                # Reinjected packets must pass through without percent/shape re-apply
-                # (otherwise byte budgets drain twice and partial cut looks like Kill).
+                # Reinjected / duplicate captures: drop (do not WinDivertSend again).
+                # Re-sending impostors loops until TTL=0 and looks like full Kill.
                 if _windivert_addr_impostor(addr_b):
-                    self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
                 parsed = _parse_ipv4_src_dst(pkt)
                 if not parsed:
@@ -1088,6 +1131,15 @@ class IcsWinDivertLagGate:
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
+                sig = 0
+                if impair_mode in (IMPAIR_PERCENT, IMPAIR_SHAPE) and (is_from_victim or is_to_victim):
+                    sig = _ipv4_packet_sig(pkt)
+                    if sig:
+                        last = self._recent_shaped.get(sig)
+                        if last is not None and (now - last) < 0.05:
+                            self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                            continue
+
                 if impair_mode == IMPAIR_PERCENT and (is_from_victim or is_to_victim):
                     allow_pkt = True
                     if is_from_victim:
@@ -1103,6 +1155,8 @@ class IcsWinDivertLagGate:
                         self._byte_budget_in = budget_in
                     if not allow_pkt:
                         continue
+                    if sig:
+                        self._recent_shaped[sig] = now
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
@@ -1147,7 +1201,11 @@ class IcsWinDivertLagGate:
                             heapq.heappop(heap)
                         due = time.perf_counter() + shape_delay / 1000.0
                         heapq.heappush(heap, (due, pkt, addr_b, h))
+                        if sig:
+                            self._recent_shaped[sig] = now
                         continue
+                    if sig:
+                        self._recent_shaped[sig] = now
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 

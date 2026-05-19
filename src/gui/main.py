@@ -4089,7 +4089,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_phase_end_timer.start(ms)
 
     def _lag_request_phase_advance(self) -> None:
-        """Coalesce timer + countdown races; defer so phase begin cannot recurse on the UI stack."""
+        """Coalesce duplicate advance requests (countdown + timer)."""
         if not self.lag_active:
             return
         if getattr(self, '_lag_phase_advance_pending', False):
@@ -4100,11 +4100,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _lag_phase_end_timer_fired(self) -> None:
         if not self.lag_active:
             return
-        self._lag_request_phase_advance()
+        self._lag_do_phase_advance()
 
     def _lag_do_phase_advance(self) -> None:
         self._lag_phase_advance_pending = False
         if not self.lag_active:
+            return
+        if time.monotonic() + 0.02 < float(getattr(self, '_lag_phase_deadline', 0.0)):
             return
         self._lag_phase_end_timer.stop()
         device = self._lag_resolved_victim()
@@ -4172,7 +4174,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     pass
             # Backup when the single-shot phase timer fails to fire (stuck block).
             self._lag_phase_end_timer.stop()
-            self._lag_request_phase_advance()
+            if not getattr(self, '_lag_phase_advance_pending', False):
+                self._lag_do_phase_advance()
             return
         if rem is None:
             self.lblLagCountdownMain.setVisible(False)
@@ -4223,6 +4226,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
         self._lag_ics_force_unpause()
+        gate = getattr(self, '_ics_lag_gate', None)
+        if gate is not None:
+            try:
+                gate.clear_blocking_pause()
+            except Exception:
+                pass
         mac = str(device.get('mac') or '').strip()
         if mac:
             self._refresh_table_row_for_mac(mac, device.get('ip'))
