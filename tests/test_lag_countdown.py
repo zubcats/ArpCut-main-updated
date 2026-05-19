@@ -55,17 +55,17 @@ class TestLagCountdown(unittest.TestCase):
         self.assertEqual(ElmoCut._lag_countdown_label(True, 1500), 'Time left: 2 s')
         self.assertEqual(ElmoCut._lag_countdown_label(False, 9000), 'Time left: 9 s')
 
-    def test_phase_flag_before_refresh_in_begin(self) -> None:
+    def test_phase_flag_before_timing_sync_in_begin(self) -> None:
         src = self._main_py()
         block = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
         allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
         self.assertLess(
             block.index('_lag_in_allow_phase = False'),
-            block.index('_refresh_lag_timing_from_dialog'),
+            block.index('_sync_lag_timing_values_from_ui'),
         )
         self.assertLess(
             allow.index('_lag_in_allow_phase = True'),
-            allow.index('_refresh_lag_timing_from_dialog'),
+            allow.index('_sync_lag_timing_values_from_ui'),
         )
 
     def test_tick_advances_phase_at_zero(self) -> None:
@@ -82,6 +82,9 @@ class TestLagCountdown(unittest.TestCase):
         self.assertIn('_lag_phase_advance_pending', src)
         req = src[src.index('def _lag_request_phase_advance'): src.index('def _lag_phase_end_timer_fired')]
         self.assertIn('QTimer.singleShot(0, self._lag_do_phase_advance)', req)
+        fired = src[src.index('def _lag_phase_end_timer_fired'): src.index('def _lag_do_phase_advance')]
+        self.assertIn('_lag_do_phase_advance', fired)
+        self.assertNotIn('_lag_request_phase_advance', fired)
         begin = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
         self.assertNotIn('_lag_do_phase_advance', begin)
 

@@ -2700,6 +2700,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
+    def _sync_lag_timing_values_from_ui(self) -> None:
+        """Read inline lag timings without rescheduling or toggling pause mid phase-transition."""
+        try:
+            lag_ms, normal_ms, direction = self._lag_inline_values()
+            self.lag_block_ms = lag_ms
+            self.lag_release_ms = normal_ms
+            self.lag_direction = direction
+        except Exception:
+            pass
+
     def _direction_from_checks(self, both_cb, in_cb, out_cb):
         if in_cb.isChecked() and not out_cb.isChecked():
             return 'in'
@@ -3893,10 +3903,25 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return self._lag_phase_seq
 
     def _lag_ics_resume_allow_phase(self, device) -> None:
-        """Allow window: same hotspot path as Kill OFF (stop WinDivert gate, unblock victim IP)."""
+        """
+        Allow window on hotspot: resume WinDivert pause in-place (fast lag cycles).
+        Full gate teardown is reserved for Lag Switch OFF / Kill OFF.
+        """
         if not isinstance(device, dict):
             return
         if clumsy_ics_use_firewall_only(device, self.scanner):
+            if self._lag_ics_windivert_active(device) and self._lag_ics_set_paused(device, False):
+                ip = (
+                    self._flow_stable_victim_ip(device, lag=True)
+                    or clumsy_ics_resolve_victim_ip(device, self.scanner)
+                    or str(device.get('ip') or '').strip()
+                )
+                if ip:
+                    try:
+                        unblock_ip(ip)
+                    except Exception:
+                        pass
+                return
             self._ics_hotspot_pause_release(device, heal=False)
         else:
             self._clear_victim_block(device)
@@ -3930,7 +3955,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         QTimer.singleShot(0, self._lag_do_phase_advance)
 
     def _lag_phase_end_timer_fired(self) -> None:
-        self._lag_request_phase_advance()
+        if not self.lag_active:
+            return
+        if getattr(self, '_lag_phase_advance_pending', False):
+            return
+        self._lag_do_phase_advance()
 
     def _lag_do_phase_advance(self) -> None:
         self._lag_phase_advance_pending = False
@@ -4025,7 +4054,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._cancel_lag_block_reassert()
         self._lag_bump_phase_seq()
         self._lag_in_allow_phase = False
-        self._refresh_lag_timing_from_dialog()
+        self._sync_lag_timing_values_from_ui()
         block_ms = max(1, int(self.lag_block_ms))
         self._lag_schedule_phase(block_ms)
         self._arm_lag_phase_countdown()
@@ -4035,7 +4064,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             pass
         mac = str(device.get('mac') or '').strip()
         if mac:
-            self._schedule_lag_start_reassert(mac)
             self._refresh_table_row_for_mac(mac, device.get('ip'))
 
     def _lag_phase_begin_allow(self, device) -> None:
@@ -4044,7 +4072,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._cancel_lag_block_reassert()
         self._lag_bump_phase_seq()
         self._lag_in_allow_phase = True
-        self._refresh_lag_timing_from_dialog()
+        self._sync_lag_timing_values_from_ui()
         allow_ms = max(1, int(self.lag_release_ms))
         self._lag_schedule_phase(allow_ms)
         self._arm_lag_phase_countdown()
@@ -4054,8 +4082,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._refresh_table_row_for_mac(mac, device.get('ip'))
 
     def _lag_apply_block(self, device):
-        """Block phase: same hotspot path as Kill ON (WinDivert pause, no killer.killed for lag)."""
+        """Block phase: WinDivert pause in-place when possible (fast lag cycles on hotspot)."""
         if clumsy_ics_use_firewall_only(device, self.scanner):
+            if self._lag_ics_windivert_active(device) and self._lag_ics_set_paused(device, True):
+                mac = str(device.get('mac') or '').strip()
+                if mac:
+                    self._refresh_table_row_for_mac(mac, device.get('ip'))
+                return
             self._apply_ics_client_block(device, self.lag_direction, for_lag=True)
         else:
             self._apply_victim_block(device, self.lag_direction, for_lag=True)
