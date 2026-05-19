@@ -165,6 +165,22 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertIn('clumsy_ics_use_firewall_only(device, self.scanner)', tick)
         self.assertIn('_ics_apply_advanced_shaping_windivert', tick)
 
+    def test_windivert_impostor_passthrough_before_impairment(self) -> None:
+        src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
+        idx_imp = src.index('_windivert_addr_impostor')
+        idx_off = src.index('if impair_mode == IMPAIR_OFF')
+        self.assertLess(idx_imp, idx_off)
+
+    def test_windivert_outbound_flag_uses_address_bitfield(self) -> None:
+        # Outbound at bit 17 in UINT64 at offset 8.
+        addr = bytearray(64)
+        word = 1 << 17
+        addr[8:16] = int(word).to_bytes(8, 'little')
+        self.assertTrue(wd._windivert_addr_outbound(bytes(addr)))
+        imp = bytearray(64)
+        imp[8:16] = (1 << 19).to_bytes(8, 'little')
+        self.assertTrue(wd._windivert_addr_impostor(bytes(imp)))
+
     def test_flow_stable_pins_percent_cut_and_mitm_ips(self) -> None:
         path = os.path.join(_SRC, 'gui', 'main.py')
         with open(path, encoding='utf-8') as fh:

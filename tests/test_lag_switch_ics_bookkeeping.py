@@ -80,7 +80,7 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         self.assertNotIn('_schedule_lag_start_reassert', block)
         tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
         self.assertNotIn('_lag_ics_force_unpause', tick)
-        self.assertNotIn('_lag_request_phase_advance', tick)
+        self.assertIn('_lag_request_phase_advance', tick)
 
     def test_release_windivert_unpauses_without_gate_match(self) -> None:
         src = self._main_py()

@@ -2842,6 +2842,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._flush_pending_dupe_clear_sync(max_wait_ms=400)
         self._drop_dupe_restoring_banner()
         self.stop_mitm_shaping(log=False)
+        if self.percent_cut_active:
+            self.stopPercentCut(log=False)
         if self.lag_active:
             self.stopLagSwitch(refresh_dialog=False)
         self.lag_device_mac = device['mac']
@@ -4098,9 +4100,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _lag_phase_end_timer_fired(self) -> None:
         if not self.lag_active:
             return
-        # Never skip phase advance here — countdown may already have set pending.
-        self._lag_phase_advance_pending = False
-        self._lag_do_phase_advance()
+        self._lag_request_phase_advance()
 
     def _lag_do_phase_advance(self) -> None:
         self._lag_phase_advance_pending = False
@@ -4170,6 +4170,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     dlg.set_lag_countdown(0, allow)
                 except Exception:
                     pass
+            # Backup when the single-shot phase timer fails to fire (stuck block).
+            self._lag_phase_end_timer.stop()
+            self._lag_request_phase_advance()
             return
         if rem is None:
             self.lblLagCountdownMain.setVisible(False)

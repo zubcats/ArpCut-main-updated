@@ -298,12 +298,35 @@ def _is_hotspot_client_ip(ip: str, downstream_prefix: str) -> bool:
     return ip.startswith(quad + '.') and ip != _ics_gateway_ip(downstream_prefix)
 
 
+def _windivert_addr_flag_word(addr_b: bytes) -> int:
+    """
+    Layer/Event/Sniffed/Outbound/Loopback/Impostor bitfield (UINT64 at offset 8).
+
+    WinDivert 1.x/2.x share this layout; reading offset 16 was wrong and broke
+    outbound classification on FORWARD-layer post-NAT packets.
+    """
+    if len(addr_b) < 16:
+        return 0
+    return int.from_bytes(addr_b[8:16], 'little')
+
+
+# WINDIVERT_ADDRESS bitfield (see WinDivert 2.2 docs).
+_WD_FLAG_SNIFFED = 1 << 16
+_WD_FLAG_OUTBOUND = 1 << 17
+_WD_FLAG_LOOPBACK = 1 << 18
+_WD_FLAG_IMPOSTOR = 1 << 19
+
+
 def _windivert_addr_outbound(addr_b: bytes) -> Optional[bool]:
-    """WinDivert 2.x WINDIVERT_ADDRESS.Outbound bit (offset 16)."""
-    if len(addr_b) < 20:
+    if len(addr_b) < 16:
         return None
-    flags = int.from_bytes(addr_b[16:20], 'little')
-    return bool(flags & 0x02)
+    word = _windivert_addr_flag_word(addr_b)
+    return bool(word & _WD_FLAG_OUTBOUND)
+
+
+def _windivert_addr_impostor(addr_b: bytes) -> bool:
+    """True for packets reinjected by WinDivertSend (must not shape twice)."""
+    return bool(_windivert_addr_flag_word(addr_b) & _WD_FLAG_IMPOSTOR)
 
 
 def _victim_packet_roles(
@@ -1011,6 +1034,11 @@ class IcsWinDivertLagGate:
                 got_pkt = True
                 pkt, addr_b = got
                 self._packets_seen += 1
+                # Reinjected packets must pass through without percent/shape re-apply
+                # (otherwise byte budgets drain twice and partial cut looks like Kill).
+                if _windivert_addr_impostor(addr_b):
+                    self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                    continue
                 parsed = _parse_ipv4_src_dst(pkt)
                 if not parsed:
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
