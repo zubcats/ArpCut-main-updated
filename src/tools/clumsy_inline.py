@@ -277,9 +277,11 @@ def apply_ics_victim_arp_block(scanner: Scanner, killer, device) -> bool:
         return False
     if not isinstance(device, dict):
         return False
-    ip = str(device.get('ip') or '').strip()
     mac = str(device.get('mac') or '').strip()
-    if not ip or not mac:
+    ip = clumsy_ics_resolve_victim_ip(device, scanner) or str(
+        device.get('ip') or ''
+    ).strip()
+    if not ip or not mac or not victim_on_clumsy_ics_subnet(ip):
         return False
     try:
         scanner.sync_iface_for_victim_ip(ip)
@@ -294,7 +296,9 @@ def apply_ics_victim_arp_block(scanner: Scanner, killer, device) -> bool:
         pass
     try:
         killer.disable_percent_cut(mac)
-        killer.kill(device, ics_mode=True)
+        dev = dict(device)
+        dev['ip'] = ip
+        killer.kill(dev, ics_mode=True)
         return True
     except Exception:
         return False
@@ -309,8 +313,10 @@ def release_ics_victim_block(scanner: Scanner, killer, victim) -> bool:
     """
     if not isinstance(victim, dict):
         return False
-    ip = str(victim.get('ip') or '').strip()
     mac = str(victim.get('mac') or '').strip()
+    ip = clumsy_ics_resolve_victim_ip(victim, scanner) or str(
+        victim.get('ip') or ''
+    ).strip()
     if not victim_on_clumsy_ics_subnet(ip) or not mac:
         return False
     if mac not in killer.killed:
@@ -319,8 +325,10 @@ def release_ics_victim_block(scanner: Scanner, killer, victim) -> bool:
         apply_clumsy_ics_router_context(scanner, killer, ip)
         killer.iface = scanner.iface
         killer.router = scanner.router
-        killer.unkill(victim, ics_mode=True)
-        heal_ics_client_after_mitm(scanner, killer, victim)
+        v = dict(victim)
+        v['ip'] = ip
+        killer.unkill(v, ics_mode=True)
+        heal_ics_client_after_mitm(scanner, killer, v)
         return True
     except Exception:
         return False

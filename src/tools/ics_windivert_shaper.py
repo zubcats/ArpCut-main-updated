@@ -480,8 +480,9 @@ def _ics_windivert_open_candidates(
     out: list[tuple[str, str]] = []
     on_subnet = bool(quad and vip.startswith(quad + '.'))
     if on_subnet:
-        out.append((_ics_clumsy_victim_filter(vip), 'victim'))
+        # Subnet filter first: PS5 game traffic is usually post-NAT on FORWARD.
         out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
+        out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     elif vip:
         out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     return out
@@ -802,8 +803,9 @@ class IcsWinDivertLagGate:
         """
         Partial cut on hotspot (WinDivert): ``cut_pct`` = share of packets to drop.
 
-        Uses independent Bernoulli drops per packet (reinject-safe), not a byte
-        budget that breaks when WinDivert sees the same packet more than once.
+        Uses the same byte-budget model as the MITM forwarder (``_passes_ratio``).
+        Immediate duplicate captures are passed through (not dropped) so reinject
+        quirks cannot look like full Kill.
         """
         cut = max(0, min(100, int(cut_pct)))
         allow = max(0, 100 - cut)
@@ -1139,13 +1141,30 @@ class IcsWinDivertLagGate:
                     if sig:
                         last = self._recent_shaped.get(sig)
                         if last is not None and (now - last) < 0.05:
+                            self._send_immediate(
+                                h, dll, pkt, addr_b, ctypes.byref(send_len)
+                            )
                             continue
 
                 if impair_mode == IMPAIR_PERCENT and (is_from_victim or is_to_victim):
-                    drop_pct = cut_drop_pct
-                    if drop_pct >= 100:
+                    pass_pct = pass_out_pct if is_from_victim else pass_in_pct
+                    if pass_pct <= 0:
                         continue
-                    if drop_pct > 0 and random.randint(1, 100) <= drop_pct:
+                    if pass_pct >= 100:
+                        self._send_immediate(
+                            h, dll, pkt, addr_b, ctypes.byref(send_len)
+                        )
+                        continue
+                    with self._lock:
+                        if is_from_victim:
+                            ok, self._byte_budget_out = self._passes_byte_ratio(
+                                pass_out_pct, self._byte_budget_out, n
+                            )
+                        else:
+                            ok, self._byte_budget_in = self._passes_byte_ratio(
+                                pass_in_pct, self._byte_budget_in, n
+                            )
+                    if not ok:
                         continue
                     if sig:
                         self._recent_shaped[sig] = now
