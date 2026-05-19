@@ -288,7 +288,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
             wd_src.index('def _open_best_windivert_handle'): wd_src.index('def probe_windivert_for_victim')
         ]
         self.assertIn(
-            '(WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)',
+            '(WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)',
             open_src.replace('\n', ' '),
         )
         self.assertIn('_ics_windivert_filter', wd_src)
