@@ -293,7 +293,8 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         )
         self.assertIn('_ics_windivert_filter', wd_src)
         start_src = gate_src[gate_src.index('def start'): gate_src.index('def set_blocking')]
-        self.assertIn('_open_ics_windivert_handles', start_src)
+        self.assertIn('_open_best_windivert_handle', start_src)
+        self.assertIn('self._handles = [h]', start_src)
         self.assertIn('_ics_windivert_filter', wd_src)
         killer_py = os.path.join(_SRC, 'networking', 'killer.py')
         with open(killer_py, encoding='utf-8') as f:

@@ -370,26 +370,15 @@ def _ics_windivert_open_candidates(
     return out
 
 
-def _open_ics_windivert_handles(
-    dll: ctypes.WinDLL, victim_ip: str, downstream_prefix: str = ''
-) -> tuple[list[int], list[int]]:
-    """Open all working filter/layer pairs (subnet before victim, FORWARD before NETWORK)."""
-    handles: list[int] = []
-    opened_layers: list[int] = []
-    for filt, _desc in _ics_windivert_open_candidates(victim_ip, downstream_prefix):
-        for layer in (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK):
-            h = _open_windivert_handle(dll, filt, layer)
-            if h >= 0:
-                handles.append(h)
-                if layer not in opened_layers:
-                    opened_layers.append(layer)
-    return handles, opened_layers
-
-
 def _open_best_windivert_handle(
     dll: ctypes.WinDLL, victim_ip: str, downstream_prefix: str = ''
 ) -> tuple[int, int, str]:
-    """Probe helper: first handle that opens (same filter/layer order as the live gate)."""
+    """
+    Open exactly one WinDivert handle (subnet+FORWARD preferred).
+
+    Multiple overlapping handles each process the same packet and would apply
+    percent-cut byte budgets / shaping more than once — that looks like full Kill.
+    """
     for filt, desc in _ics_windivert_open_candidates(victim_ip, downstream_prefix):
         for layer in (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK):
             h = _open_windivert_handle(dll, filt, layer)
@@ -578,15 +567,15 @@ class IcsWinDivertLagGate:
         except Exception:
             prefix = '192.168.137.'
         self._downstream_prefix = prefix
-        handles, opened_layers = _open_ics_windivert_handles(self._dll, vip, prefix)
-        if not handles:
+        h, layer, _desc = _open_best_windivert_handle(self._dll, vip, prefix)
+        if h < 0:
             last_err = _windivert_last_error_message()
             hint = 'Run ZubCut as Administrator.'
             if last_err:
                 raise OSError(f'WinDivertOpen failed: {last_err} {hint}')
             raise OSError(f'WinDivertOpen failed. {hint}')
-        self._handles = handles
-        self._open_layers = opened_layers
+        self._handles = [h]
+        self._open_layers = [layer]
         self._packets_seen = 0
         self._packets_matched = 0
         self._packets_held = 0
@@ -1016,6 +1005,8 @@ class IcsWinDivertLagGate:
                         due = time.perf_counter() + shape_delay / 1000.0
                         heapq.heappush(heap, (due, pkt, addr_b, h))
                         continue
+                    self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                    continue
 
                 if blocking and _packet_involves_victim(src, dst, victim):
                     if not hold_pause:
