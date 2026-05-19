@@ -85,9 +85,11 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertLess(idx, src.index('if pass_cut and'))
         self.assertLess(idx, src.index('if blocking and _packet_involves_victim'))
 
-    def test_start_opens_subnet_before_victim_handles(self) -> None:
+    def test_start_opens_single_handle_subnet_forward_first(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate.start)
-        self.assertIn('_open_ics_windivert_handles', src)
+        self.assertIn('_open_best_windivert_handle', src)
+        self.assertIn('self._handles = [h]', src)
+        self.assertNotIn('_open_ics_windivert_handles', src)
         open_src = inspect.getsource(wd._ics_windivert_open_candidates)
         subnet_pos = open_src.find('_ics_windivert_filter')
         victim_pos = open_src.find('_ics_clumsy_victim_filter')
@@ -97,6 +99,11 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
             '(WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)',
             best_src.replace('\n', ' '),
         )
+
+    def test_shaping_forwards_when_delay_zero(self) -> None:
+        src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
+        after = src[src.index('shape_delay = base_d + extra_j'): src.index('if blocking and _packet_involves_victim')]
+        self.assertRegex(after, r'if shape_delay > 0:[\s\S]*continue[\s\S]*_send_immediate')
 
     def test_hotspot_sched_tick_uses_windivert_on_ics(self) -> None:
         path = os.path.join(_SRC, 'gui', 'main.py')
