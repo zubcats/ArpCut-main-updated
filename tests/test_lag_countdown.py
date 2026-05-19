@@ -71,8 +71,19 @@ class TestLagCountdown(unittest.TestCase):
     def test_tick_advances_phase_at_zero(self) -> None:
         src = self._main_py()
         tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
-        self.assertIn('_lag_phase_end_timer_fired', tick)
+        self.assertIn('_lag_request_phase_advance', tick)
         self.assertIn('rem <= 0', tick)
+        self.assertNotIn('_lag_phase_end_timer_fired()', tick)
+
+    def test_phase_advance_deferred_not_recursive(self) -> None:
+        src = self._main_py()
+        self.assertIn('def _lag_request_phase_advance', src)
+        self.assertIn('def _lag_do_phase_advance', src)
+        self.assertIn('_lag_phase_advance_pending', src)
+        req = src[src.index('def _lag_request_phase_advance'): src.index('def _lag_phase_end_timer_fired')]
+        self.assertIn('QTimer.singleShot(0, self._lag_do_phase_advance)', req)
+        begin = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
+        self.assertNotIn('_lag_do_phase_advance', begin)
 
 
 if __name__ == '__main__':
