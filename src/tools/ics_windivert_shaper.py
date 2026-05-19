@@ -454,6 +454,11 @@ class IcsWinDivertLagGate:
         self._bucket_out = 0.0
         self._bucket_in = 0.0
         self._last_bucket = 0.0
+        self._pass_cut_active = False
+        self._pass_out_pct = 100
+        self._pass_in_pct = 100
+        self._byte_budget_out = 0.0
+        self._byte_budget_in = 0.0
         self._packets_seen = 0
         self._packets_matched = 0
         self._packets_held = 0
@@ -578,8 +583,65 @@ class IcsWinDivertLagGate:
                 self._delay_ms = max(0, min(2000, int(delay_ms)))
             if loss_pct is not None:
                 self._loss_pct = max(0, min(100, int(loss_pct)))
-            if not block:
+            if block:
+                self._clear_percent_cut_unlocked()
+            else:
                 self._discard_heap = True
+
+    def _clear_percent_cut_unlocked(self) -> None:
+        self._pass_cut_active = False
+        self._pass_out_pct = 100
+        self._pass_in_pct = 100
+        self._byte_budget_out = 0.0
+        self._byte_budget_in = 0.0
+
+    @staticmethod
+    def _passes_byte_ratio(pass_pct: int, budget: float, pkt_size: int) -> Tuple[bool, float]:
+        """
+        Tokenless byte budget (same model as MITM forwarder ``_passes_ratio``).
+        Returns (allowed, updated_budget).
+        """
+        pct = max(0, min(100, int(pass_pct)))
+        if pct <= 0:
+            return False, budget
+        if pct >= 100:
+            return True, budget
+        size = max(1, int(pkt_size))
+        grant = (size * pct) / 100.0
+        budget += grant
+        if budget >= size:
+            return True, budget - float(size)
+        return False, budget
+
+    def apply_percent_cut(self, cut_pct: int) -> None:
+        """
+        Partial cut on hotspot (WinDivert): ``cut_pct`` = share of traffic to drop;
+        ``100 - cut_pct`` is forwarded using a byte budget (not pause/hold).
+        """
+        cut = max(0, min(100, int(cut_pct)))
+        allow = max(0, 100 - cut)
+        with self._lock:
+            self._blocking = False
+            self._hold_pause = False
+            self._loss_pct = 0
+            self._delay_ms = 0
+            self._delay_out_ms = 0
+            self._delay_in_ms = 0
+            self._jitter_out_ms = 0
+            self._jitter_in_ms = 0
+            self._loss_out = 0
+            self._loss_in = 0
+            self._cap_out_bps = 0.0
+            self._cap_in_bps = 0.0
+            if cut <= 0:
+                self._clear_percent_cut_unlocked()
+            else:
+                self._pass_cut_active = True
+                self._pass_out_pct = allow
+                self._pass_in_pct = allow
+                self._byte_budget_out = 0.0
+                self._byte_budget_in = 0.0
+            self._discard_heap = True
 
     def apply_shaping_params(
         self,
@@ -593,6 +655,11 @@ class IcsWinDivertLagGate:
         max_kbps_in: float,
     ) -> None:
         with self._lock:
+            self._blocking = False
+            self._hold_pause = False
+            self._loss_pct = 0
+            self._delay_ms = 0
+            self._clear_percent_cut_unlocked()
             self._delay_out_ms = max(0, int(delay_out_ms))
             self._delay_in_ms = max(0, int(delay_in_ms))
             self._jitter_out_ms = max(0, int(jitter_out_ms))
@@ -605,6 +672,7 @@ class IcsWinDivertLagGate:
     def pause_connection(self) -> None:
         """Hold all shaped victim traffic (lag/kill/dupe block phase)."""
         with self._lock:
+            self._clear_percent_cut_unlocked()
             self._delay_out_ms = 0
             self._delay_in_ms = 0
             self._jitter_out_ms = 0
@@ -622,6 +690,7 @@ class IcsWinDivertLagGate:
     def resume_from_pause(self) -> None:
         """End pause/hold without stopping the gate thread (lag allow phase / unpause)."""
         with self._lock:
+            self._clear_percent_cut_unlocked()
             self._delay_out_ms = 0
             self._delay_in_ms = 0
             self._jitter_out_ms = 0
@@ -638,6 +707,7 @@ class IcsWinDivertLagGate:
 
     def clear_shaping(self) -> None:
         with self._lock:
+            self._clear_percent_cut_unlocked()
             self._delay_out_ms = 0
             self._delay_in_ms = 0
             self._jitter_out_ms = 0
@@ -647,6 +717,9 @@ class IcsWinDivertLagGate:
             self._cap_out_bps = 0.0
             self._cap_in_bps = 0.0
             self._discard_heap = True
+
+    def _percent_cut_active_unlocked(self) -> bool:
+        return bool(self._pass_cut_active)
 
     def _shaping_active_unlocked(self) -> bool:
         return (
@@ -780,6 +853,11 @@ class IcsWinDivertLagGate:
                 l_in = self._loss_in
                 cap_out = self._cap_out_bps
                 cap_in = self._cap_in_bps
+                pass_cut = self._pass_cut_active
+                pass_out_pct = self._pass_out_pct
+                pass_in_pct = self._pass_in_pct
+                budget_out = self._byte_budget_out
+                budget_in = self._byte_budget_in
                 if shaping:
                     if self._last_bucket <= 0:
                         self._last_bucket = now
@@ -848,6 +926,24 @@ class IcsWinDivertLagGate:
                         heapq.heappop(heap)
                     heapq.heappush(heap, (_PAUSE_HOLD_DUE, pkt, addr_b, h))
                     self._packets_held += 1
+                    continue
+
+                if pass_cut and (is_from_victim or is_to_victim):
+                    allow_pkt = True
+                    if is_from_victim:
+                        allow_pkt, budget_out = self._passes_byte_ratio(
+                            pass_out_pct, budget_out, n
+                        )
+                    if allow_pkt and is_to_victim:
+                        allow_pkt, budget_in = self._passes_byte_ratio(
+                            pass_in_pct, budget_in, n
+                        )
+                    with self._lock:
+                        self._byte_budget_out = budget_out
+                        self._byte_budget_in = budget_in
+                    if not allow_pkt:
+                        continue
+                    self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
                 if shaping and (is_from_victim or is_to_victim):

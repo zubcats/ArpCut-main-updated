@@ -49,11 +49,30 @@ class TestLagCountdown(unittest.TestCase):
         tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
         self.assertNotIn('_lag_ics_force_unpause', tick)
 
-    def test_allow_phase_shows_dash(self) -> None:
+    def test_allow_phase_uses_same_countdown_format(self) -> None:
         from gui.main import ElmoCut
 
-        self.assertEqual(ElmoCut._lag_countdown_label(True, 1500), 'Time left: -')
+        self.assertEqual(ElmoCut._lag_countdown_label(True, 1500), 'Time left: 2 s')
         self.assertEqual(ElmoCut._lag_countdown_label(False, 9000), 'Time left: 9 s')
+
+    def test_phase_flag_before_refresh_in_begin(self) -> None:
+        src = self._main_py()
+        block = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
+        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
+        self.assertLess(
+            block.index('_lag_in_allow_phase = False'),
+            block.index('_refresh_lag_timing_from_dialog'),
+        )
+        self.assertLess(
+            allow.index('_lag_in_allow_phase = True'),
+            allow.index('_refresh_lag_timing_from_dialog'),
+        )
+
+    def test_tick_advances_phase_at_zero(self) -> None:
+        src = self._main_py()
+        tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
+        self.assertIn('_lag_phase_end_timer_fired', tick)
+        self.assertIn('rem <= 0', tick)
 
 
 if __name__ == '__main__':
