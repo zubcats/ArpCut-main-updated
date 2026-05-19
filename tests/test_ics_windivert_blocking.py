@@ -17,7 +17,9 @@ from tools import ics_windivert_shaper as wd
 class TestIcsWinDivertBlocking(unittest.TestCase):
     def test_percent_loss_does_not_drop_allowed_packets_twice(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
-        block = src[src.index('if blocking:'): src.index('self._packets_held += 1')]
+        block = src[
+            src.index('if blocking and _packet_involves_victim'): src.index('self._packets_held += 1')
+        ]
         self.assertIn('_send_immediate', block)
         self.assertNotRegex(
             block,
@@ -47,7 +49,7 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
 
     def test_run_loop_partial_modes_before_blocking_pause(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
-        block_idx = src.index('if blocking:')
+        block_idx = src.index('if blocking and _packet_involves_victim')
         pass_idx = src.index('if pass_cut and')
         shape_idx = src.index('if shaping and')
         self.assertLess(pass_idx, block_idx)
@@ -76,6 +78,33 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertLess(allowed, 200)
         ok2, _ = wd.IcsWinDivertLagGate._passes_byte_ratio(1, 0.0, 1000)
         self.assertFalse(ok2)
+
+    def test_run_loop_passthrough_non_victim_before_impairment(self) -> None:
+        src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
+        idx = src.index('if not _packet_involves_victim')
+        self.assertLess(idx, src.index('if pass_cut and'))
+        self.assertLess(idx, src.index('if blocking and _packet_involves_victim'))
+
+    def test_start_opens_single_handle(self) -> None:
+        src = inspect.getsource(wd.IcsWinDivertLagGate.start)
+        self.assertIn('_open_best_windivert_handle', src)
+        self.assertIn('self._handles = [h]', src)
+
+    def test_hotspot_sched_tick_uses_windivert_on_ics(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'main.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        tick = src[src.index('def _mitm_adv_apply_sched_tick'): src.index('def start_mitm_shaping_from_advanced')]
+        self.assertIn('clumsy_ics_use_firewall_only(device, self.scanner)', tick)
+        self.assertIn('_ics_apply_advanced_shaping_windivert', tick)
+
+    def test_flow_stable_pins_percent_cut_and_mitm_ips(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'main.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        fn = src[src.index('def _flow_stable_victim_ip'): src.index('def _ensure_ics_lag_gate')]
+        self.assertIn('percent_cut_device_ip', fn)
+        self.assertIn('mitm_shaping_device_ip', fn)
 
 
 if __name__ == '__main__':

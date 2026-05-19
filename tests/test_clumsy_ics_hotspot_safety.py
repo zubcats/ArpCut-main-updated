@@ -269,27 +269,33 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('release_ics_victim_block', src)
         ics_block = src[src.index('def _apply_ics_client_block'):src.index('def _clear_ics_client_block')]
         self.assertIn('_ensure_ics_lag_gate', ics_block)
-        self.assertIn('set_blocking(', ics_block)
-        self.assertIn("mode='pause'", ics_block)
-        gate_src = inspect.getsource(
-            __import__('tools.ics_windivert_shaper', fromlist=['IcsWinDivertLagGate']).IcsWinDivertLagGate
+        self.assertTrue(
+            'pause_connection' in ics_block or 'set_blocking(' in ics_block,
+            'ICS block must use WinDivert pause, not ARP MITM',
         )
+        wd_mod = __import__('tools.ics_windivert_shaper', fromlist=['IcsWinDivertLagGate'])
+        gate_src = inspect.getsource(wd_mod.IcsWinDivertLagGate)
+        wd_src = inspect.getsource(wd_mod)
         self.assertIn('prepare_stop', gate_src)
         self.assertIn('_discard_heap', gate_src)
         self.assertIn('_hold_pause', gate_src)
         self.assertIn('_PAUSE_HOLD_DUE', gate_src)
-        self.assertIn('WINDIVERT_LAYER_NETWORK_FORWARD', gate_src)
-        self.assertIn('192.168.137.', gate_src)
-        self.assertIn('WINDIVERT_LAYER_NETWORK', gate_src)
+        self.assertIn('WINDIVERT_LAYER_NETWORK_FORWARD', wd_src)
+        self.assertIn('192.168.137.', wd_src)
+        self.assertIn('WINDIVERT_LAYER_NETWORK', wd_src)
         self.assertNotIn('apply_ics_victim_arp_block', ics_block)
-        block_src = gate_src[gate_src.index('def start'):gate_src.index('def set_blocking')]
-        net_pos = block_src.find('WINDIVERT_LAYER_NETWORK,')
-        fwd_pos = block_src.find('WINDIVERT_LAYER_NETWORK_FORWARD')
+        open_src = wd_src[
+            wd_src.index('def _open_best_windivert_handle'): wd_src.index('def probe_windivert_for_victim')
+        ]
+        net_pos = open_src.find('WINDIVERT_LAYER_NETWORK,')
+        fwd_pos = open_src.find('WINDIVERT_LAYER_NETWORK_FORWARD')
         self.assertGreater(net_pos, 0)
         self.assertGreater(fwd_pos, 0)
         self.assertLess(net_pos, fwd_pos, 'ICS hotspot should try NETWORK before FORWARD')
-        self.assertIn('_ics_windivert_filter', gate_src)
-        self.assertNotIn('break', block_src[net_pos:fwd_pos + 80])
+        self.assertIn('_ics_windivert_filter', wd_src)
+        start_src = gate_src[gate_src.index('def start'): gate_src.index('def set_blocking')]
+        self.assertIn('_open_best_windivert_handle', start_src)
+        self.assertIn('self._handles = [h]', start_src)
         killer_py = os.path.join(_SRC, 'networking', 'killer.py')
         with open(killer_py, encoding='utf-8') as f:
             ksrc = f.read()
