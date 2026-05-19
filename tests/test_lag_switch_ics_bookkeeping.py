@@ -31,12 +31,12 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
             r'elif for_lag:\s*\n\s*self\._refresh_table_row_for_mac',
         )
 
-    def test_lag_apply_block_uses_kill_on_hotspot_path(self) -> None:
+    def test_lag_apply_block_prefers_fast_windivert_pause(self) -> None:
         src = self._main_py()
         block = src[src.index('def _lag_apply_block'): src.index('def _lag_resolved_victim')]
+        self.assertIn('_lag_ics_set_paused(device, True)', block)
         self.assertIn('_apply_ics_client_block', block)
         self.assertIn('for_lag=True', block)
-        self.assertNotIn('_lag_ics_set_paused', block)
 
     def test_row_chrome_respects_allow_phase(self) -> None:
         src = self._main_py()
@@ -59,18 +59,21 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         self.assertNotIn('QTimer.singleShot(0, _lag_teardown)', stop)
         self.assertNotIn('_schedule_flow_off_reinforce', stop)
 
-    def test_lag_allow_phase_stops_gate_like_kill_off(self) -> None:
+    def test_lag_allow_phase_uses_fast_windivert_resume(self) -> None:
         src = self._main_py()
-        self.assertIn('_ics_hotspot_pause_release', src)
         resume = src[src.index('def _lag_ics_resume_allow_phase'): src.index('def _lag_apply_allow_phase_sync')]
+        self.assertIn('_lag_ics_set_paused(device, False)', resume)
         self.assertIn('_ics_hotspot_pause_release', resume)
-        self.assertNotIn('_lag_ics_set_paused(device, False)', resume)
         self.assertNotIn('_lag_ics_force_unpause', resume)
         allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
         self.assertIn('_lag_apply_allow_phase_sync', allow)
-        self.assertIn('_cancel_lag_block_reassert', allow)
-        self.assertIn('_lag_schedule_phase', allow)
-        self.assertNotIn('_run_on_flow_net_thread', allow)
+        self.assertIn('_sync_lag_timing_values_from_ui', allow)
+        self.assertNotIn('_refresh_lag_timing_from_dialog', allow)
+        self.assertNotIn('_schedule_lag_start_reassert', allow)
+        block = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
+        self.assertIn('_sync_lag_timing_values_from_ui', block)
+        self.assertNotIn('_refresh_lag_timing_from_dialog', block)
+        self.assertNotIn('_schedule_lag_start_reassert', block)
         tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
         self.assertNotIn('_lag_ics_force_unpause', tick)
 
