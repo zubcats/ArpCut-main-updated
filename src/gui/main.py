@@ -855,6 +855,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_countdown_timer.setTimerType(Qt.CoarseTimer)
         self._lag_countdown_timer.timeout.connect(self._tick_lag_countdown)
         self._lag_dlg_refresh_mono = 0.0
+        self._lag_phase_advance_pending = False
         # False: block phase (Lag ms). True: allow phase (Normal ms).
         self._lag_in_allow_phase = False
         self._ics_wd_traffic_warn_session = None
@@ -3915,12 +3916,27 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Single-shot phase timer (block or allow) — same precision model as Dupe."""
         ms = max(1, int(duration_ms))
         self._lag_phase_deadline = time.monotonic() + ms / 1000.0
+        self._lag_phase_advance_pending = False
         self._lag_phase_end_timer.stop()
         self._lag_phase_end_timer.start(ms)
 
-    def _lag_phase_end_timer_fired(self) -> None:
+    def _lag_request_phase_advance(self) -> None:
+        """Coalesce timer + countdown races; defer so phase begin cannot recurse on the UI stack."""
         if not self.lag_active:
             return
+        if getattr(self, '_lag_phase_advance_pending', False):
+            return
+        self._lag_phase_advance_pending = True
+        QTimer.singleShot(0, self._lag_do_phase_advance)
+
+    def _lag_phase_end_timer_fired(self) -> None:
+        self._lag_request_phase_advance()
+
+    def _lag_do_phase_advance(self) -> None:
+        self._lag_phase_advance_pending = False
+        if not self.lag_active:
+            return
+        self._lag_phase_end_timer.stop()
         device = self._lag_resolved_victim()
         if not device:
             self.stopLagSwitch()
@@ -3976,9 +3992,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         rem = self.lag_remaining_ms()
         allow = bool(getattr(self, '_lag_in_allow_phase', False))
         if rem is not None and rem <= 0:
+            self.lblLagCountdownMain.setVisible(True)
+            self._set_countdown_label(self.lblLagCountdownMain, 'Time left: 0.0 s')
+            dlg = getattr(self, 'lag_switch_dialog', None)
+            if dlg is not None and dlg.isVisible():
+                try:
+                    dlg.set_lag_countdown(0, allow)
+                except Exception:
+                    pass
             if self._lag_phase_end_timer.isActive():
                 self._lag_phase_end_timer.stop()
-            self._lag_phase_end_timer_fired()
+            self._lag_request_phase_advance()
             return
         if rem is None:
             self.lblLagCountdownMain.setVisible(False)
@@ -4069,6 +4093,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         snap = getattr(self, '_lag_device_snapshot', None)
         # Stop phase timer before clearing lag_active so a tick cannot re-block.
         self._lag_phase_end_timer.stop()
+        self._lag_phase_advance_pending = False
         self._stop_lag_countdown()
         self._cancel_lag_block_reassert()
         device = self._lag_resolved_victim()
