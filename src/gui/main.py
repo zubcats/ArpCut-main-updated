@@ -3067,8 +3067,39 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
 
+    def _ics_quiesce_killer_mitm(self, device) -> None:
+        """Stop ARP MITM / forwarder paths so WinDivert partial shaping is not stacked on Kill."""
+        if not isinstance(device, dict):
+            return
+        mac = str(device.get('mac') or '').strip()
+        if not mac:
+            return
+        victim = self._victim_record_for_mac(mac) or device
+        try:
+            self.killer.disable_percent_cut(mac)
+        except Exception:
+            pass
+        if mac in self.killer.killed:
+            try:
+                if clumsy_ics_use_firewall_only(victim, self.scanner):
+                    release_ics_victim_block(self.scanner, self.killer, victim)
+                else:
+                    self.killer.unkill(victim)
+            except Exception:
+                pass
+        try:
+            ip = (
+                clumsy_ics_resolve_victim_ip(victim, self.scanner)
+                or str(victim.get('ip') or '').strip()
+            )
+            if ip:
+                unblock_ip(ip)
+        except Exception:
+            pass
+
     def _ics_apply_percent_cut_windivert(self, device, cut_pct: int) -> bool:
         """Hotspot partial cut via WinDivert byte budget (never ARP Kill / full pause)."""
+        self._ics_quiesce_killer_mitm(device)
         if not self._ensure_ics_lag_gate(device, 'both'):
             return False
         gate = getattr(self, '_ics_lag_gate', None)
@@ -3098,6 +3129,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         cd_mbps: float,
     ) -> bool:
         """Hotspot Advanced Lag via WinDivert shaping (not pause / Kill)."""
+        self._ics_quiesce_killer_mitm(device)
         if not self._ensure_ics_lag_gate(device, 'both'):
             return False
         gate = getattr(self, '_ics_lag_gate', None)
@@ -3331,7 +3363,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._ics_lag_gate = gate
                 return True
         if gate is not None:
-            self._stop_ics_lag_gate()
+            self._stop_ics_lag_gate(join_timeout=0.5)
         gate = IcsWinDivertLagGate(ip)
         gate.start(direction=direction)
         self._ics_lag_gate = gate
@@ -4965,9 +4997,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         use_forwarder = True
         self._mitm_shaping_backend = None
-        from tools.ics_windivert_shaper import IcsWinDivertShaper, _windivert_dll_path as _wd_dll_path
+        from tools.ics_windivert_shaper import IcsWinDivertShaper
 
-        if use_wd and _wd_dll_path():
+        if use_wd:
             if mac in self.killer.killed:
                 try:
                     v0 = self._victim_record_for_mac(mac) or device

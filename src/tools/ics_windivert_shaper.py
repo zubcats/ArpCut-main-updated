@@ -917,27 +917,8 @@ class IcsWinDivertLagGate:
                 is_to_victim = dst == victim
                 n = len(pkt)
 
-                if blocking:
-                    if not hold_pause:
-                        if loss_pct > 0:
-                            if random.randint(1, 100) <= loss_pct:
-                                continue
-                            self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
-                            continue
-                        if delay_ms > 0:
-                            if len(heap) >= _MAX_LAG_HEAP_PACKETS:
-                                heapq.heappop(heap)
-                            due = time.perf_counter() + delay_ms / 1000.0
-                            heapq.heappush(heap, (due, pkt, addr_b, h))
-                            continue
-                        self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
-                        continue
-                    if len(heap) >= _MAX_LAG_HEAP_PACKETS:
-                        heapq.heappop(heap)
-                    heapq.heappush(heap, (_PAUSE_HOLD_DUE, pkt, addr_b, h))
-                    self._packets_held += 1
-                    continue
-
+                # Partial modes (percent cut / advanced lag) must win over stale
+                # kill/lag full-pause — otherwise blocking=True feels like full Kill.
                 if pass_cut and (is_from_victim or is_to_victim):
                     allow_pkt = True
                     if is_from_victim:
@@ -998,6 +979,27 @@ class IcsWinDivertLagGate:
                         due = time.perf_counter() + shape_delay / 1000.0
                         heapq.heappush(heap, (due, pkt, addr_b, h))
                         continue
+
+                if blocking:
+                    if not hold_pause:
+                        if loss_pct > 0:
+                            if random.randint(1, 100) <= loss_pct:
+                                continue
+                            self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                            continue
+                        if delay_ms > 0:
+                            if len(heap) >= _MAX_LAG_HEAP_PACKETS:
+                                heapq.heappop(heap)
+                            due = time.perf_counter() + delay_ms / 1000.0
+                            heapq.heappush(heap, (due, pkt, addr_b, h))
+                            continue
+                        self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                        continue
+                    if len(heap) >= _MAX_LAG_HEAP_PACKETS:
+                        heapq.heappop(heap)
+                    heapq.heappush(heap, (_PAUSE_HOLD_DUE, pkt, addr_b, h))
+                    self._packets_held += 1
+                    continue
 
                 self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                 continue
