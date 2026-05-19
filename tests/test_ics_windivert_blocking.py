@@ -15,24 +15,22 @@ from tools import ics_windivert_shaper as wd
 
 
 class TestIcsWinDivertBlocking(unittest.TestCase):
-    def test_percent_loss_does_not_drop_allowed_packets_twice(self) -> None:
+    def test_pause_drops_victim_packets_without_heap_hold(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
-        block = src[
-            src.index('if impair_mode == IMPAIR_PAUSE'): src.index('self._packets_held += 1')
-        ]
-        self.assertIn('_send_immediate', block)
-        self.assertNotRegex(
-            block,
-            r'elif loss_pct > 0:\s*\n\s*continue',
-        )
+        block = src[src.index('if impair_mode == IMPAIR_PAUSE'): src.index('self._send_immediate(h, dll, pkt, addr_b')]
+        self.assertIn('continue', block)
+        self.assertNotIn('_PAUSE_HOLD_DUE', block)
+        self.assertNotIn('self._packets_held += 1', block)
 
-    def test_percent_cut_uses_byte_budget_not_pause_hold(self) -> None:
+    def test_percent_cut_uses_bernoulli_drop_not_pause_hold(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate)
         self.assertIn('def apply_percent_cut', src)
-        self.assertIn('_passes_byte_ratio', src)
+        self.assertIn('_cut_drop_pct', src)
         self.assertIn('IMPAIR_PERCENT', src)
         loop = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
         self.assertIn('impair_mode == IMPAIR_PERCENT', loop)
+        pct_block = loop[loop.index('if impair_mode == IMPAIR_PERCENT'): loop.index('if impair_mode == IMPAIR_SHAPE')]
+        self.assertIn('random.randint(1, 100)', pct_block)
         apply = src[src.index('def apply_percent_cut'): src.index('def apply_shaping_params')]
         self.assertIn('IMPAIR_PERCENT', apply)
         self.assertIn('self._blocking = False', apply)
@@ -134,6 +132,19 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         )
         self.assertTrue(from_v)
         self.assertFalse(to_v)
+        self.assertEqual(active, '192.168.137.55')
+
+    def test_victim_packet_roles_post_nat_unknown_outbound_impairs(self) -> None:
+        from_v, to_v, active = wd._victim_packet_roles(
+            '73.12.1.2',
+            '8.8.8.8',
+            '192.168.137.55',
+            '192.168.137.',
+            outbound=None,
+            subnet_capture=True,
+        )
+        self.assertTrue(from_v)
+        self.assertTrue(to_v)
         self.assertEqual(active, '192.168.137.55')
 
     def test_victim_packet_roles_rejects_other_hotspot_client(self) -> None:

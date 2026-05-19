@@ -2870,8 +2870,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if not self.lag_active or self.lag_device_mac != mac:
                 return
             cur = self._lag_resolved_victim() or dev
-            self._schedule_lag_start_reassert(mac)
             self._lag_phase_begin_block(cur)
+            self._schedule_lag_start_reassert(mac)
             self._refresh_flow_toggle_ui()
             self._repaint_all_table_rows_for_hover()
 
@@ -3113,9 +3113,37 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             dev['ip'] = ip
         return dev
 
+    def _ics_hotspot_victim_ip(
+        self,
+        device,
+        *,
+        lag: bool = False,
+        dupe: bool = False,
+        pctcut: bool = False,
+        mitmshape: bool = False,
+    ) -> str:
+        """Resolved 137.x hotspot IP for WinDivert, or '' if the console is not on ICS."""
+        dev = self._ics_device_with_resolved_ip(device)
+        ip = self._flow_stable_victim_ip(
+            dev, lag=lag, dupe=dupe, pctcut=pctcut, mitmshape=mitmshape
+        )
+        if not ip:
+            ip = str(dev.get('ip') or '').strip()
+        if not victim_on_clumsy_ics_subnet(ip):
+            resolved = clumsy_ics_resolve_victim_ip(dev, self.scanner)
+            if resolved and victim_on_clumsy_ics_subnet(resolved):
+                ip = resolved.strip()
+        if victim_on_clumsy_ics_subnet(ip):
+            return ip
+        return ''
+
     def _ics_apply_percent_cut_windivert(self, device, cut_pct: int) -> bool:
-        """Hotspot partial cut via WinDivert byte budget (never ARP Kill / full pause)."""
+        """Hotspot partial cut via WinDivert (Bernoulli per packet, not pause / Kill)."""
         device = self._ics_device_with_resolved_ip(device)
+        ip = self._ics_hotspot_victim_ip(device, pctcut=True)
+        if not ip:
+            return False
+        device['ip'] = ip
         self._ics_quiesce_killer_mitm(device)
         if not self._ensure_ics_lag_gate(device, 'both'):
             return False
@@ -3374,7 +3402,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _ensure_ics_lag_gate(self, device, direction: str) -> bool:
         if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
             return False
-        ip = self._flow_stable_victim_ip(
+        ip = self._ics_hotspot_victim_ip(
             device,
             lag=getattr(self, 'lag_active', False),
             dupe=getattr(self, 'dupe_active', False),
@@ -3389,15 +3417,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if gate is not None and gate.victim_ip != ip:
             self._stop_ics_lag_gate(join_timeout=0.5)
             gate = None
-        if ip and not victim_on_clumsy_ics_subnet(ip):
-            resolved = clumsy_ics_resolve_victim_ip(device, self.scanner)
-            if resolved and victim_on_clumsy_ics_subnet(resolved):
-                ip = resolved.strip()
         if gate is not None and gate.victim_ip == ip:
             if gate.is_running():
                 gate.set_direction(direction)
                 if hasattr(gate, 'set_victim_ip'):
                     gate.set_victim_ip(ip)
+                if getattr(self, 'percent_cut_active', False):
+                    pct = self._clamp_percent(self.spinPercentCutMain.value())
+                    gate.apply_percent_cut(pct)
                 return True
             if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
                 try:

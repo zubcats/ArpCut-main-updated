@@ -79,7 +79,10 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         block = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
         self.assertIn('_sync_lag_timing_values_from_ui', block)
         self.assertNotIn('_refresh_lag_timing_from_dialog', block)
-        self.assertNotIn('_schedule_lag_start_reassert', block)
+        self.assertNotIn('_cancel_lag_block_reassert', block)
+        start = src[src.index('def _arm_lag_start'): src.index('def _schedule_lag_start_reassert')]
+        self.assertIn('_lag_phase_begin_block', start)
+        self.assertIn('_schedule_lag_start_reassert', start)
         tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
         self.assertNotIn('_lag_ics_force_unpause', tick)
         self.assertIn('_lag_do_phase_advance(force=True)', tick)
