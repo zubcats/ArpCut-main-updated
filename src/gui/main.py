@@ -878,6 +878,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._mitm_shaping_backend = None  # None | 'forwarder' | 'windivert'
         self._ics_windivert_shaper = None
         self._ics_lag_gate = None
+        self._ics_kill_profile_macs: set[str] = set()
         self._mitm_teardown_thread = None
         self._mitm_adv_sched_timer = QTimer(self)
         self._mitm_adv_sched_timer.setInterval(100)
@@ -3057,21 +3058,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         table_ip = str(device.get('ip') or '').strip()
         return gate.victim_ip in (resolved, table_ip)
 
+    def _ics_gate_allow_traffic(self, gate=None) -> None:
+        """Resume WinDivert forwarding without clearing percent-cut / shaping state."""
+        g = gate if gate is not None else getattr(self, '_ics_lag_gate', None)
+        if g is None:
+            return
+        try:
+            if hasattr(g, 'clear_blocking_pause'):
+                g.clear_blocking_pause()
+            else:
+                g.set_blocking(False)
+        except Exception:
+            pass
+
     def _ics_unpause_victim(self, device) -> None:
         """Instantly resume live traffic; discard held pause packets (no replay burst)."""
         _ = device
-        gate = getattr(self, '_ics_lag_gate', None)
-        if gate is not None:
-            try:
-                if hasattr(gate, 'clear_blocking_pause'):
-                    gate.clear_blocking_pause()
-                elif hasattr(gate, 'resume_from_pause'):
-                    gate.resume_from_pause()
-                    gate.set_blocking(False)
-                else:
-                    gate.set_blocking(False)
-            except Exception:
-                pass
+        self._ics_gate_allow_traffic()
 
     def _ics_quiesce_killer_mitm(self, device) -> None:
         """Stop ARP MITM / forwarder paths so WinDivert partial shaping is not stacked on Kill."""
@@ -3216,6 +3219,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._ics_hotspot_windivert_teardown(device, heal=heal)
         if mac:
             self.killer.killed.pop(mac, None)
+            self._ics_kill_profile_macs.discard(mac)
             self._set_killed_profile(device, False)
 
     def _schedule_ics_hotspot_heal(self, device) -> None:
@@ -3403,12 +3407,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 gate = IcsWinDivertLagGate(ip)
                 gate.start(direction=direction)
                 self._ics_lag_gate = gate
+                if getattr(self, 'lag_active', False) and not getattr(
+                    self, '_lag_in_allow_phase', False
+                ):
+                    gate.pause_connection()
                 return True
         if gate is not None:
             self._stop_ics_lag_gate(join_timeout=0.5)
         gate = IcsWinDivertLagGate(ip)
         gate.start(direction=direction)
         self._ics_lag_gate = gate
+        if getattr(self, 'lag_active', False) and not getattr(
+            self, '_lag_in_allow_phase', False
+        ):
+            gate.pause_connection()
         if hasattr(gate, 'set_victim_ip'):
             gate.set_victim_ip(ip)
         if not getattr(self, 'lag_active', False):
@@ -3435,6 +3447,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             release_ics_victim_block(self.scanner, self.killer, device)
         if clumsy_ics_lag_can_use_windivert(device, self.scanner):
             try:
+                self._ics_quiesce_killer_mitm(device)
                 if self._ensure_ics_lag_gate(device, direction):
                     gate = self._ics_lag_gate
                     if gate is not None:
@@ -3448,7 +3461,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     elif for_lag:
                         self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
                     else:
-                        self.killer.killed[device['mac']] = device
+                        self._ics_kill_profile_macs.add(device['mac'])
                         self._set_killed_profile(device, True)
                         self._sync_killed_devices()
                         self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
@@ -4002,33 +4015,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     gate.clear_shaping()
                     gate.set_blocking(True, mode='pause')
                 return True
-            gate = getattr(self, '_ics_lag_gate', None)
-            if gate is not None:
-                try:
-                    gate.set_direction(self.lag_direction)
-                    if hasattr(gate, 'resume_from_pause'):
-                        gate.resume_from_pause()
-                    else:
-                        gate.set_blocking(False)
-                except Exception:
-                    pass
-                return True
-            return False
+            self._ics_gate_allow_traffic()
+            return True
         except Exception:
             return False
 
     def _lag_ics_force_unpause(self) -> None:
         """Resume ICS WinDivert traffic for lag allow phase (no device/IP gate match required)."""
-        gate = getattr(self, '_ics_lag_gate', None)
-        if gate is None:
-            return
-        try:
-            if hasattr(gate, 'resume_from_pause'):
-                gate.resume_from_pause()
-            else:
-                gate.set_blocking(False)
-        except Exception:
-            pass
+        self._ics_gate_allow_traffic()
 
     def _lag_bump_phase_seq(self) -> int:
         self._lag_phase_seq = int(getattr(self, '_lag_phase_seq', 0)) + 1
@@ -4044,21 +4038,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not clumsy_ics_use_firewall_only(device, self.scanner):
             self._clear_victim_block(device)
             return
+        gate = getattr(self, '_ics_lag_gate', None)
+        if gate is not None:
+            try:
+                gate.set_direction(self.lag_direction)
+                self._ics_gate_allow_traffic(gate)
+            except Exception:
+                pass
         if not self._ensure_ics_lag_gate(device, self.lag_direction):
+            self._ics_gate_allow_traffic()
             return
         gate = getattr(self, '_ics_lag_gate', None)
-        if gate is None:
-            return
-        try:
-            gate.set_direction(self.lag_direction)
-            if hasattr(gate, 'clear_blocking_pause'):
-                gate.clear_blocking_pause()
-            elif hasattr(gate, 'resume_from_pause'):
-                gate.resume_from_pause()
-            else:
-                gate.set_blocking(False)
-        except Exception:
-            pass
+        if gate is not None:
+            try:
+                gate.set_direction(self.lag_direction)
+                self._ics_gate_allow_traffic(gate)
+            except Exception:
+                pass
         ip = (
             self._flow_stable_victim_ip(device, lag=True)
             or clumsy_ics_resolve_victim_ip(device, self.scanner)
@@ -4102,11 +4098,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         self._lag_do_phase_advance()
 
-    def _lag_do_phase_advance(self) -> None:
+    def _lag_do_phase_advance(self, *, force: bool = False) -> None:
         self._lag_phase_advance_pending = False
         if not self.lag_active:
             return
-        if time.monotonic() + 0.02 < float(getattr(self, '_lag_phase_deadline', 0.0)):
+        if not force and time.monotonic() + 0.02 < float(
+            getattr(self, '_lag_phase_deadline', 0.0)
+        ):
             return
         self._lag_phase_end_timer.stop()
         device = self._lag_resolved_victim()
@@ -4175,7 +4173,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             # Backup when the single-shot phase timer fails to fire (stuck block).
             self._lag_phase_end_timer.stop()
             if not getattr(self, '_lag_phase_advance_pending', False):
-                self._lag_do_phase_advance()
+                self._lag_do_phase_advance(force=True)
             return
         if rem is None:
             self.lblLagCountdownMain.setVisible(False)
@@ -4195,7 +4193,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _lag_phase_begin_block(self, device) -> None:
         if not self.lag_active or not isinstance(device, dict):
             return
-        self._cancel_lag_block_reassert()
         self._lag_bump_phase_seq()
         self._lag_in_allow_phase = False
         self._sync_lag_timing_values_from_ui()
@@ -4226,18 +4223,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
         self._lag_ics_force_unpause()
-        gate = getattr(self, '_ics_lag_gate', None)
-        if gate is not None:
-            try:
-                gate.clear_blocking_pause()
-            except Exception:
-                pass
         mac = str(device.get('mac') or '').strip()
         if mac:
             self._refresh_table_row_for_mac(mac, device.get('ip'))
 
     def _lag_apply_block(self, device):
         """Block phase: WinDivert pause in-place when possible (fast lag cycles on hotspot)."""
+        try:
+            self._ics_quiesce_killer_mitm(device)
+        except Exception:
+            pass
         if clumsy_ics_use_firewall_only(device, self.scanner):
             if self._lag_ics_windivert_active(device) and self._lag_ics_set_paused(device, True):
                 mac = str(device.get('mac') or '').strip()
@@ -4712,6 +4707,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         'red',
                     )
                     return
+                resolved = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
+                    device.get('ip') or ''
+                ).strip()
+                if not victim_on_clumsy_ics_subnet(resolved):
+                    self.log(
+                        'Percent Cut needs the PS5 on the hotspot subnet (192.168.137.x). '
+                        'Connect the console to PC Mobile Hotspot, then rescan.',
+                        'red',
+                    )
+                    return
                 if not self._ics_apply_percent_cut_windivert(device, pct):
                     self.log(
                         'Percent Cut needs WinDivert (run as Administrator).',
@@ -4748,7 +4753,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if victim:
             try:
                 if clumsy_ics_lag_can_use_windivert(victim, self.scanner):
-                    self._clear_ics_client_block(victim)
+                    gate = getattr(self, '_ics_lag_gate', None)
+                    if gate is not None:
+                        try:
+                            gate.apply_percent_cut(0)
+                        except Exception:
+                            pass
                     if not self._ics_windivert_busy(prev_mac):
                         self._stop_ics_lag_gate()
                 else:
@@ -5570,6 +5580,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.killed_devices.pop(pk, None)
                 continue
             if mac not in active_macs:
+                if mac in getattr(self, '_ics_kill_profile_macs', set()):
+                    continue
                 self.killed_devices[pk] = False
                 continue
             if '|' in pk:

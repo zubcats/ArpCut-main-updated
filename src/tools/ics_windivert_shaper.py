@@ -367,26 +367,30 @@ def _victim_packet_roles(
     subnet_capture: bool = False,
 ) -> tuple[bool, bool, str]:
     """
-    Map a packet to victim outbound/inbound on the hotspot.
+    Map a packet to the pinned victim only — never retarget to another 137.x client.
 
-    Never treat all non-gateway traffic as victim — that paused the whole PC NAT path
-    and looked like full WiFi cut. Use 137.x client IPs or outbound hint only when
-    the pinned victim is on the hotspot subnet.
+    Post-NAT FORWARD packets (public IPs) use outbound hint only when the pinned
+    victim is on the hotspot subnet and no other client IP appears in the header.
     """
     vip = _ipv4_quad(victim)
+    if not vip:
+        return False, False, ''
     if src == vip:
         return True, dst == vip, vip
     if dst == vip:
         return src == vip, True, vip
-    src_is = _is_hotspot_client_ip(src, downstream_prefix)
-    dst_is = _is_hotspot_client_ip(dst, downstream_prefix)
-    if src_is and not dst_is:
-        return True, False, src
-    if dst_is and not src_is:
-        return False, True, dst
-    if src_is and dst_is:
-        active = src
-        return True, dst == active or dst_is, active
+    if src != vip and _is_hotspot_client_ip(src, downstream_prefix):
+        return False, False, vip
+    if dst != vip and _is_hotspot_client_ip(dst, downstream_prefix):
+        return False, False, vip
+    if (
+        subnet_capture
+        and outbound is not None
+        and _is_hotspot_client_ip(vip, downstream_prefix)
+    ):
+        if outbound:
+            return True, False, vip
+        return False, True, vip
     return False, False, vip
 
 
@@ -444,22 +448,21 @@ def _bind_windivert_api(dll: ctypes.WinDLL) -> None:
 
 
 def _open_windivert_handle(dll: ctypes.WinDLL, filt: str, layer: int) -> int:
-    for candidate in (_ics_windivert_filter_no_impostor(filt), filt):
-        f = candidate.encode('ascii', errors='ignore')
-        h = dll.WinDivertOpen(
-            ctypes.c_char_p(f),
-            ctypes.c_int(layer),
-            ctypes.c_int16(0),
-            ctypes.c_uint64(0),
-        )
-        if not h:
-            continue
-        hv = int(h) if not isinstance(h, ctypes.c_void_p) else int(h.value or 0)
-        maxptr = (1 << 64) - 1
-        if hv == 0 or hv == maxptr:
-            continue
-        return hv
-    return -1
+    """Open with !impostor only — fallback without it doubles partial-cut budgets."""
+    f = _ics_windivert_filter_no_impostor(filt).encode('ascii', errors='ignore')
+    h = dll.WinDivertOpen(
+        ctypes.c_char_p(f),
+        ctypes.c_int(layer),
+        ctypes.c_int16(0),
+        ctypes.c_uint64(0),
+    )
+    if not h:
+        return -1
+    hv = int(h) if not isinstance(h, ctypes.c_void_p) else int(h.value or 0)
+    maxptr = (1 << 64) - 1
+    if hv == 0 or hv == maxptr:
+        return -1
+    return hv
 
 
 def _ics_windivert_open_candidates(
@@ -479,14 +482,9 @@ def _ics_windivert_open_candidates(
     on_subnet = bool(quad and vip.startswith(quad + '.'))
     if on_subnet:
         out.append((_ics_clumsy_victim_filter(vip), 'victim'))
-        anchor = vip
-        out.append((_ics_windivert_filter(anchor, downstream_prefix), 'subnet'))
-    else:
-        if quad:
-            anchor = f'{quad}.2'
-            out.append((_ics_windivert_filter(anchor, downstream_prefix), 'subnet'))
-        if vip:
-            out.append((_ics_clumsy_victim_filter(vip), 'victim'))
+        out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
+    elif vip:
+        out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     return out
 
 
@@ -745,7 +743,15 @@ class IcsWinDivertLagGate:
                 self._impair_mode = IMPAIR_PAUSE
                 self._clear_percent_cut_unlocked()
             else:
-                self._impair_mode = IMPAIR_OFF
+                self._blocking = False
+                self._hold_pause = False
+                if self._impair_mode == IMPAIR_PAUSE:
+                    if self._pass_cut_active:
+                        self._impair_mode = IMPAIR_PERCENT
+                    elif self._shaping_active_unlocked():
+                        self._impair_mode = IMPAIR_SHAPE
+                    else:
+                        self._impair_mode = IMPAIR_OFF
                 self._discard_heap = True
 
     def _clear_percent_cut_unlocked(self) -> None:
@@ -776,11 +782,16 @@ class IcsWinDivertLagGate:
     def clear_blocking_pause(self) -> None:
         """Leave kill/lag/dupe full-pause mode; discard held packets (no replay burst)."""
         with self._lock:
-            self._impair_mode = IMPAIR_OFF
             self._blocking = False
             self._hold_pause = False
             self._delay_ms = 0
             self._loss_pct = 0
+            if self._pass_cut_active:
+                self._impair_mode = IMPAIR_PERCENT
+            elif self._shaping_active_unlocked():
+                self._impair_mode = IMPAIR_SHAPE
+            else:
+                self._impair_mode = IMPAIR_OFF
             self._discard_heap = True
 
     def apply_percent_cut(self, cut_pct: int) -> None:
@@ -864,22 +875,7 @@ class IcsWinDivertLagGate:
 
     def resume_from_pause(self) -> None:
         """End pause/hold without stopping the gate thread (lag allow phase / unpause)."""
-        with self._lock:
-            self._impair_mode = IMPAIR_OFF
-            self._clear_percent_cut_unlocked()
-            self._delay_out_ms = 0
-            self._delay_in_ms = 0
-            self._jitter_out_ms = 0
-            self._jitter_in_ms = 0
-            self._loss_out = 0
-            self._loss_in = 0
-            self._cap_out_bps = 0.0
-            self._cap_in_bps = 0.0
-            self._blocking = False
-            self._hold_pause = False
-            self._delay_ms = 0
-            self._loss_pct = 0
-            self._discard_heap = True
+        self.clear_blocking_pause()
 
     def clear_shaping(self) -> None:
         with self._lock:
@@ -1009,7 +1005,6 @@ class IcsWinDivertLagGate:
         addr_len = ctypes.c_uint(ADDR_BUF)
         send_len = ctypes.c_uint(0)
         kernel32 = ctypes.windll.kernel32
-        victim = self._victim
         subnet_prefix = getattr(self, '_downstream_prefix', '192.168.137.')
         heap: list[Tuple[float, bytes, bytes, int]] = []
         from tools.mitm_compound_loss import CAP_OVERFLOW_LOSS_PCT, should_drop_compounded
@@ -1088,6 +1083,8 @@ class IcsWinDivertLagGate:
                     continue
 
                 src, dst = parsed
+                with self._lock:
+                    pinned_victim = self._victim
                 subnet_mode = bool(getattr(self, '_subnet_capture', False))
                 if subnet_mode:
                     gw = _ics_gateway_ip(subnet_prefix)
@@ -1095,25 +1092,21 @@ class IcsWinDivertLagGate:
                         self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                         continue
                 elif not _packet_matches_hotspot_client(
-                    src, dst, victim, subnet_prefix
+                    src, dst, pinned_victim, subnet_prefix
                 ):
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
                 self._packets_matched += 1
 
                 outbound = _windivert_addr_outbound(addr_b)
-                from_v, to_v, active_victim = _victim_packet_roles(
+                from_v, to_v, _active = _victim_packet_roles(
                     src,
                     dst,
-                    victim,
+                    pinned_victim,
                     subnet_prefix,
                     outbound=outbound,
                     subnet_capture=subnet_mode,
                 )
-                if active_victim and active_victim != victim:
-                    victim = active_victim
-                    with self._lock:
-                        self._victim = active_victim
                 if not self._shapes_packet(direction, from_victim=from_v, to_victim=to_v):
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
@@ -1137,7 +1130,6 @@ class IcsWinDivertLagGate:
                     if sig:
                         last = self._recent_shaped.get(sig)
                         if last is not None and (now - last) < 0.05:
-                            self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                             continue
 
                 if impair_mode == IMPAIR_PERCENT and (is_from_victim or is_to_victim):

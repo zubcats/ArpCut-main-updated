@@ -102,9 +102,11 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
             best_src.replace('\n', ' '),
         )
 
-    def test_open_candidates_always_include_subnet_on_ics(self) -> None:
-        cands = wd._ics_windivert_open_candidates('192.168.1.50', '192.168.137.')
-        self.assertTrue(any('137.2' in f or '137.' in f for f, _ in cands))
+    def test_open_candidates_subnet_only_when_victim_on_hotspot(self) -> None:
+        off = wd._ics_windivert_open_candidates('192.168.1.50', '192.168.137.')
+        self.assertEqual(len(off), 1)
+        on = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
+        self.assertTrue(any('137.' in f for f, _ in on))
 
     def test_open_candidates_victim_first_when_on_hotspot_subnet(self) -> None:
         cands = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
@@ -121,7 +123,7 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertFalse(from_v)
         self.assertFalse(to_v)
 
-    def test_victim_packet_roles_no_outbound_nat_hint_for_post_nat(self) -> None:
+    def test_victim_packet_roles_post_nat_uses_pinned_victim_only(self) -> None:
         from_v, to_v, active = wd._victim_packet_roles(
             '73.12.1.2',
             '8.8.8.8',
@@ -130,15 +132,25 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
             outbound=True,
             subnet_capture=True,
         )
-        self.assertFalse(from_v)
+        self.assertTrue(from_v)
         self.assertFalse(to_v)
         self.assertEqual(active, '192.168.137.55')
 
-    def test_victim_packet_roles_matches_hotspot_client(self) -> None:
+    def test_victim_packet_roles_rejects_other_hotspot_client(self) -> None:
+        from_v, to_v, _active = wd._victim_packet_roles(
+            '192.168.137.56',
+            '8.8.8.8',
+            '192.168.137.55',
+            '192.168.137.',
+        )
+        self.assertFalse(from_v)
+        self.assertFalse(to_v)
+
+    def test_victim_packet_roles_matches_pinned_ip_only(self) -> None:
         from_v, to_v, active = wd._victim_packet_roles(
             '192.168.137.55',
             '8.8.8.8',
-            '192.168.1.50',
+            '192.168.137.55',
             '192.168.137.',
         )
         self.assertTrue(from_v)
@@ -175,9 +187,10 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertIn('continue', block)
         self.assertNotIn('_send_immediate', block)
 
-    def test_open_handle_prefers_no_impostor_filter(self) -> None:
+    def test_open_handle_requires_no_impostor_filter(self) -> None:
         src = inspect.getsource(wd._open_windivert_handle)
         self.assertIn('_ics_windivert_filter_no_impostor', src)
+        self.assertNotIn('for candidate in', src)
 
     def test_windivert_outbound_flag_uses_address_bitfield(self) -> None:
         # Outbound at bit 17 in UINT64 at offset 8.
@@ -188,6 +201,10 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         imp = bytearray(64)
         imp[8:16] = (1 << 19).to_bytes(8, 'little')
         self.assertTrue(wd._windivert_addr_impostor(bytes(imp)))
+
+    def test_run_loop_does_not_retarget_pinned_victim(self) -> None:
+        src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
+        self.assertNotIn('self._victim = active', src)
 
     def test_flow_stable_pins_percent_cut_and_mitm_ips(self) -> None:
         path = os.path.join(_SRC, 'gui', 'main.py')
