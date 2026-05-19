@@ -367,30 +367,29 @@ def _victim_packet_roles(
     subnet_capture: bool = False,
 ) -> tuple[bool, bool, str]:
     """
-    Map a packet to the pinned victim only — never retarget to another 137.x client.
+    Map a packet to the pinned victim only — never another 137.x client.
 
-    Post-NAT FORWARD packets (public IPs) use outbound hint only when the pinned
-    victim is on the hotspot subnet and no other client IP appears in the header.
+    With subnet capture, post-NAT public IPs have no 137.x in headers; treat
+    non-gateway subnet-filtered traffic as the pinned victim (single-PS5 hotspot).
     """
     vip = _ipv4_quad(victim)
     if not vip:
         return False, False, ''
+    gw = _ics_gateway_ip(downstream_prefix)
     if src == vip:
         return True, dst == vip, vip
     if dst == vip:
         return src == vip, True, vip
-    if src != vip and _is_hotspot_client_ip(src, downstream_prefix):
+    if src != vip and _is_hotspot_client_ip(src, downstream_prefix) and src != gw:
         return False, False, vip
-    if dst != vip and _is_hotspot_client_ip(dst, downstream_prefix):
+    if dst != vip and _is_hotspot_client_ip(dst, downstream_prefix) and dst != gw:
         return False, False, vip
-    if (
-        subnet_capture
-        and outbound is not None
-        and _is_hotspot_client_ip(vip, downstream_prefix)
-    ):
-        if outbound:
+    if subnet_capture and _is_hotspot_client_ip(vip, downstream_prefix):
+        if outbound is True:
             return True, False, vip
-        return False, True, vip
+        if outbound is False:
+            return False, True, vip
+        return True, True, vip
     return False, False, vip
 
 
@@ -492,14 +491,17 @@ def _open_best_windivert_handle(
     dll: ctypes.WinDLL, victim_ip: str, downstream_prefix: str = ''
 ) -> tuple[int, int, str]:
     """
-    Open exactly one WinDivert handle (subnet+FORWARD preferred).
+    Open exactly one WinDivert handle.
 
-    Multiple overlapping handles each process the same packet and would apply
-    percent-cut byte budgets / shaping more than once — that looks like full Kill.
+    Victim filter: try NETWORK then FORWARD (137.x often visible pre-NAT).
+    Subnet filter: FORWARD then NETWORK (post-NAT game traffic on ICS).
     """
     for filt, desc in _ics_windivert_open_candidates(victim_ip, downstream_prefix):
-        # FORWARD first — PS5 game traffic is usually visible here on ICS hotspot.
-        for layer in (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK):
+        if desc == 'victim':
+            layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
+        else:
+            layers = (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
+        for layer in layers:
             h = _open_windivert_handle(dll, filt, layer)
             if h >= 0:
                 return h, layer, desc
@@ -615,6 +617,7 @@ class IcsWinDivertLagGate:
         self._bucket_in = 0.0
         self._last_bucket = 0.0
         self._pass_cut_active = False
+        self._cut_drop_pct = 0
         self._pass_out_pct = 100
         self._pass_in_pct = 100
         self._byte_budget_out = 0.0
@@ -756,6 +759,7 @@ class IcsWinDivertLagGate:
 
     def _clear_percent_cut_unlocked(self) -> None:
         self._pass_cut_active = False
+        self._cut_drop_pct = 0
         self._pass_out_pct = 100
         self._pass_in_pct = 100
         self._byte_budget_out = 0.0
@@ -796,8 +800,10 @@ class IcsWinDivertLagGate:
 
     def apply_percent_cut(self, cut_pct: int) -> None:
         """
-        Partial cut on hotspot (WinDivert): ``cut_pct`` = share of traffic to drop;
-        ``100 - cut_pct`` is forwarded using a byte budget (not pause/hold).
+        Partial cut on hotspot (WinDivert): ``cut_pct`` = share of packets to drop.
+
+        Uses independent Bernoulli drops per packet (reinject-safe), not a byte
+        budget that breaks when WinDivert sees the same packet more than once.
         """
         cut = max(0, min(100, int(cut_pct)))
         allow = max(0, 100 - cut)
@@ -819,6 +825,7 @@ class IcsWinDivertLagGate:
                 self._clear_percent_cut_unlocked()
             else:
                 self._pass_cut_active = True
+                self._cut_drop_pct = cut
                 self._pass_out_pct = allow
                 self._pass_in_pct = allow
                 self._byte_budget_out = 0.0
@@ -855,9 +862,10 @@ class IcsWinDivertLagGate:
             self._discard_heap = True
 
     def pause_connection(self) -> None:
-        """Hold all shaped victim traffic (lag/kill/dupe block phase)."""
+        """Drop all shaped victim traffic (lag/kill/dupe block phase) — no heap hold."""
         with self._lock:
-            self._clear_percent_cut_unlocked()
+            if not self._pass_cut_active:
+                self._clear_percent_cut_unlocked()
             self._delay_out_ms = 0
             self._delay_in_ms = 0
             self._jitter_out_ms = 0
@@ -871,7 +879,7 @@ class IcsWinDivertLagGate:
             self._hold_pause = True
             self._delay_ms = 0
             self._loss_pct = 0
-            self._discard_heap = False
+            self._discard_heap = True
 
     def resume_from_pause(self) -> None:
         """End pause/hold without stopping the gate thread (lag allow phase / unpause)."""
@@ -1034,6 +1042,7 @@ class IcsWinDivertLagGate:
                 pass_cut = impair_mode == IMPAIR_PERCENT
                 pass_out_pct = self._pass_out_pct
                 pass_in_pct = self._pass_in_pct
+                cut_drop_pct = int(self._cut_drop_pct)
                 budget_out = self._byte_budget_out
                 budget_in = self._byte_budget_in
                 if shaping:
@@ -1133,19 +1142,10 @@ class IcsWinDivertLagGate:
                             continue
 
                 if impair_mode == IMPAIR_PERCENT and (is_from_victim or is_to_victim):
-                    allow_pkt = True
-                    if is_from_victim:
-                        allow_pkt, budget_out = self._passes_byte_ratio(
-                            pass_out_pct, budget_out, n
-                        )
-                    elif is_to_victim:
-                        allow_pkt, budget_in = self._passes_byte_ratio(
-                            pass_in_pct, budget_in, n
-                        )
-                    with self._lock:
-                        self._byte_budget_out = budget_out
-                        self._byte_budget_in = budget_in
-                    if not allow_pkt:
+                    drop_pct = cut_drop_pct
+                    if drop_pct >= 100:
+                        continue
+                    if drop_pct > 0 and random.randint(1, 100) <= drop_pct:
                         continue
                     if sig:
                         self._recent_shaped[sig] = now
@@ -1202,24 +1202,6 @@ class IcsWinDivertLagGate:
                     continue
 
                 if impair_mode == IMPAIR_PAUSE and blocking and (is_from_victim or is_to_victim):
-                    if not hold_pause:
-                        if loss_pct > 0:
-                            if random.randint(1, 100) <= loss_pct:
-                                continue
-                            self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
-                            continue
-                        if delay_ms > 0:
-                            if len(heap) >= _MAX_LAG_HEAP_PACKETS:
-                                heapq.heappop(heap)
-                            due = time.perf_counter() + delay_ms / 1000.0
-                            heapq.heappush(heap, (due, pkt, addr_b, h))
-                            continue
-                        self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
-                        continue
-                    if len(heap) >= _MAX_LAG_HEAP_PACKETS:
-                        heapq.heappop(heap)
-                    heapq.heappush(heap, (_PAUSE_HOLD_DUE, pkt, addr_b, h))
-                    self._packets_held += 1
                     continue
 
                 self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
