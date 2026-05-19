@@ -451,21 +451,14 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
             self.set_lag_countdown(None, False)
 
     def set_lag_countdown(self, left_ms, allow_phase: bool = False):
-        """Show lag-phase countdown, or '-' during allow (normal) phase; None when idle."""
-        if left_ms is None and not allow_phase:
-            self.lblLagCountdown.setVisible(False)
-            self.lblLagCountdown.setText('')
-            return
-        if allow_phase:
-            self.lblLagCountdown.setVisible(True)
-            self.lblLagCountdown.setText('Time left: -')
-            return
-        if left_ms is None or left_ms <= 0:
+        """Show remaining time for the current lag or normal phase; None when idle."""
+        _ = allow_phase  # kept for callers; both phases use the same countdown format
+        if left_ms is None:
             self.lblLagCountdown.setVisible(False)
             self.lblLagCountdown.setText('')
             return
         self.lblLagCountdown.setVisible(True)
-        self.lblLagCountdown.setText(format_countdown_ms(left_ms))
+        self.lblLagCountdown.setText(format_countdown_ms(max(0, int(left_ms))))
 
     def _reject_enable(self):
         self.refresh_toggle_state()
@@ -888,6 +881,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._mitm_adv_sched_timer.setTimerType(Qt.PreciseTimer)
         self._mitm_adv_sched_timer.timeout.connect(self._mitm_adv_schedule_tick)
         self._mitm_adv_sched_t0 = 0.0
+        self._mitm_adv_row_t0: dict[str, float] = {}
         self._mitm_adv_last_sched = None
         self.mitm_teardown_finished.connect(self._on_mitm_teardown_finished)
         self.flow_net_main_done.connect(self._on_flow_net_main_done)
@@ -1168,8 +1162,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnPercentCut.setMinimumHeight(72)
         self.btnPercentCut.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btnPercentCut.setToolTip(
-            'Percent Cut toggle — applies percentage-based traffic cut to selected device. '
-            'Shortcut: K (main app window in foreground).'
+            'Percent Cut — drops that much of the victim traffic (1% cut ≈ 99% still passes). '
+            'On PC hotspot uses WinDivert byte budgeting, not full pause. Shortcut: K.'
         )
         self.gridLayout.addWidget(self.btnPercentCut, 7, 6, 1, 3)
         self.btnPercentCut.pressed.connect(lambda: self.togglePercentCut('mouse_pressed'))
@@ -3947,10 +3941,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     @staticmethod
     def _lag_countdown_label(allow_phase: bool, rem_ms) -> str:
-        """Allow phase shows '-' only; lag phase uses the same countdown format as Dupe."""
-        if allow_phase:
-            return 'Time left: -'
-        if rem_ms is None or rem_ms <= 0:
+        """Countdown for block (lag) and allow (normal) phases — same format as Dupe."""
+        _ = allow_phase
+        if rem_ms is None:
+            return ''
+        if rem_ms <= 0:
             return 'Time left: 0.0 s'
         return format_countdown_ms(rem_ms)
 
@@ -3980,7 +3975,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         rem = self.lag_remaining_ms()
         allow = bool(getattr(self, '_lag_in_allow_phase', False))
-        if rem is None and not allow:
+        if rem is not None and rem <= 0:
+            if self._lag_phase_end_timer.isActive():
+                self._lag_phase_end_timer.stop()
+            self._lag_phase_end_timer_fired()
+            return
+        if rem is None:
             self.lblLagCountdownMain.setVisible(False)
             self._set_countdown_label(self.lblLagCountdownMain, '')
             return
@@ -3999,9 +3999,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self.lag_active or not isinstance(device, dict):
             return
         self._cancel_lag_block_reassert()
-        self._refresh_lag_timing_from_dialog()
         self._lag_bump_phase_seq()
         self._lag_in_allow_phase = False
+        self._refresh_lag_timing_from_dialog()
         block_ms = max(1, int(self.lag_block_ms))
         self._lag_schedule_phase(block_ms)
         self._arm_lag_phase_countdown()
@@ -4018,8 +4018,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self.lag_active or not isinstance(device, dict):
             return
         self._cancel_lag_block_reassert()
-        self._refresh_lag_timing_from_dialog()
+        self._lag_bump_phase_seq()
         self._lag_in_allow_phase = True
+        self._refresh_lag_timing_from_dialog()
         allow_ms = max(1, int(self.lag_release_ms))
         self._lag_schedule_phase(allow_ms)
         self._arm_lag_phase_countdown()
@@ -4338,9 +4339,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 try:
                     if clumsy_ics_lag_can_use_windivert(dev, self.scanner):
                         if self._ensure_ics_lag_gate(dev, 'both'):
-                            self._ics_lag_gate.set_blocking(
-                                True, mode='delay', delay_ms=0, loss_pct=pct
-                            )
+                            self._ics_lag_gate.apply_percent_cut(pct)
                     else:
                         allow_pct = max(0, 100 - pct)
                         self._ensure_network_context_for_victim(dev)
@@ -4497,10 +4496,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         'red',
                     )
                     return
-                self._ics_lag_gate.clear_shaping()
-                self._ics_lag_gate.set_blocking(
-                    True, mode='delay', delay_ms=0, loss_pct=pct
-                )
+                self._ics_lag_gate.apply_percent_cut(pct)
             else:
                 self._ensure_network_context_for_victim(device)
                 self.killer.apply_percent_cut(device, pass_percent=allow_pct)
@@ -4561,11 +4557,26 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, g
         )
 
-    def _reset_mitm_adv_sched_clock(self) -> None:
-        """Restart per-row timer phases (Advanced Lag schedule origin)."""
+    def _mitm_adv_get(self, key: str, default=None):
+        """Scheduler reads live Advanced Lag dialog UI when open, else saved settings."""
+        dlg = getattr(self, 'advanced_lag_settings_dialog', None)
+        if dlg is not None and getattr(dlg, '_chk_adv_delay_on', None) is not None:
+            try:
+                return dlg.mitm_adv_settings_get(key, default)
+            except Exception:
+                pass
+        return get_settings(key, default)
+
+    def _reset_mitm_adv_sched_clock(self, row_prefix: str | None = None) -> None:
+        """Restart timer phase origin for one impairment row, or all rows."""
         from tools import mitm_adv_sched
 
-        self._mitm_adv_sched_t0 = mitm_adv_sched.monotonic_now()
+        now = mitm_adv_sched.monotonic_now()
+        if row_prefix:
+            self._mitm_adv_row_t0[str(row_prefix)] = now
+        else:
+            self._mitm_adv_row_t0 = {p: now for p in mitm_adv_sched.ROW_PREFIXES}
+            self._mitm_adv_sched_t0 = now
         self._mitm_adv_last_sched = None
 
     def _start_mitm_adv_schedule(self):
@@ -4585,15 +4596,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
             return
-        t0 = float(getattr(self, '_mitm_adv_sched_t0', 0.0) or 0.0)
-        if t0 <= 0.0:
-            self._reset_mitm_adv_sched_clock()
         from tools import mitm_adv_sched
 
         now = mitm_adv_sched.monotonic_now()
         t0 = float(getattr(self, '_mitm_adv_sched_t0', 0.0) or 0.0)
+        if t0 <= 0.0:
+            self._reset_mitm_adv_sched_clock()
+            t0 = float(self._mitm_adv_sched_t0)
+        row_t0 = dict(getattr(self, '_mitm_adv_row_t0', None) or {})
         du, dd, ju, jd, cu, cd, lu, ld, gates = mitm_adv_sched.gated_mitm_params(
-            now, t0, get_settings
+            now, t0, self._mitm_adv_get, row_t0
         )
         prev = getattr(self, '_mitm_adv_last_sched', None)
         cur_tuple = mitm_adv_sched.sched_apply_tuple(
@@ -4739,8 +4751,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         prev_sm = self.mitm_shaping_mac
         if not prev_active or prev_sm != mac:
             self._reset_mitm_adv_sched_clock()
+        row_t0 = dict(getattr(self, '_mitm_adv_row_t0', None) or {})
         du, dd, ju, jd, cu_mbps, cd_mbps, lu, ld, adv_gates = mitm_adv_sched.gated_mitm_params(
-            mitm_adv_sched.monotonic_now(), self._mitm_adv_sched_t0, get_settings
+            mitm_adv_sched.monotonic_now(),
+            self._mitm_adv_sched_t0,
+            self._mitm_adv_get,
+            row_t0,
         )
         du = max(0, int(du))
         dd = max(0, int(dd))
@@ -4995,6 +5011,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self.mitm_shaping_active:
             return
         self._stop_mitm_adv_schedule()
+        self._mitm_adv_row_t0 = {}
         prev_mac = self.mitm_shaping_mac
         backend = getattr(self, '_mitm_shaping_backend', None)
         shaper = getattr(self, '_ics_windivert_shaper', None)

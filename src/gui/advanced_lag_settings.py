@@ -306,6 +306,64 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         btn.setText('On' if checked else 'Off')
         btn.blockSignals(False)
 
+    def live_mitm_adv_settings(self) -> dict:
+        """Current Advanced Lag UI values (for the scheduler; does not write disk)."""
+        if self._chk_adv_delay_on is None:
+            return {}
+        du, dd, ju, jd, cu, cd, lu, ld = self._mitm_effective_params()
+        return {
+            'mitm_adv_delay_on': self._chk_adv_delay_on.isChecked(),
+            'mitm_adv_delay_in': self._chk_adv_delay_in.isChecked(),
+            'mitm_adv_delay_out': self._chk_adv_delay_out.isChecked(),
+            'mitm_adv_delay_ms': int(self._spin_adv_delay_ms.value()),
+            'mitm_adv_jitter_on': self._chk_adv_jitter_on.isChecked(),
+            'mitm_adv_jitter_in': self._chk_adv_jitter_in.isChecked(),
+            'mitm_adv_jitter_out': self._chk_adv_jitter_out.isChecked(),
+            'mitm_adv_jitter_ms': int(self._spin_adv_jitter_ms.value()),
+            'mitm_adv_cap_on': self._chk_adv_cap_on.isChecked(),
+            'mitm_adv_cap_in': self._chk_adv_cap_in.isChecked(),
+            'mitm_adv_cap_out': self._chk_adv_cap_out.isChecked(),
+            'mitm_adv_cap_out_mbps': float(self._spin_adv_cap_out_mbps.value()),
+            'mitm_adv_cap_in_mbps': float(self._spin_adv_cap_in_mbps.value()),
+            'mitm_adv_loss_on': self._chk_adv_loss_on.isChecked(),
+            'mitm_adv_loss_in': self._chk_adv_loss_in.isChecked(),
+            'mitm_adv_loss_out': self._chk_adv_loss_out.isChecked(),
+            'mitm_adv_loss_pct': int(self._spin_adv_loss_pct.value()),
+            'mitm_adv_delay_timer_on': self._chk_adv_delay_timer_on.isChecked(),
+            'mitm_adv_delay_timer_lag_ms': int(self._spin_adv_delay_timer_lag_ms.value()),
+            'mitm_adv_delay_timer_pause_ms': int(self._spin_adv_delay_timer_pause_ms.value()),
+            'mitm_adv_delay_timer_repeat_forever': self._chk_adv_delay_timer_repeat_forever.isChecked(),
+            'mitm_adv_delay_timer_runs': int(self._spin_adv_delay_timer_runs.value()),
+            'mitm_adv_jitter_timer_on': self._chk_adv_jitter_timer_on.isChecked(),
+            'mitm_adv_jitter_timer_lag_ms': int(self._spin_adv_jitter_timer_lag_ms.value()),
+            'mitm_adv_jitter_timer_pause_ms': int(self._spin_adv_jitter_timer_pause_ms.value()),
+            'mitm_adv_jitter_timer_repeat_forever': self._chk_adv_jitter_timer_repeat_forever.isChecked(),
+            'mitm_adv_jitter_timer_runs': int(self._spin_adv_jitter_timer_runs.value()),
+            'mitm_adv_cap_timer_on': self._chk_adv_cap_timer_on.isChecked(),
+            'mitm_adv_cap_timer_lag_ms': int(self._spin_adv_cap_timer_lag_ms.value()),
+            'mitm_adv_cap_timer_pause_ms': int(self._spin_adv_cap_timer_pause_ms.value()),
+            'mitm_adv_cap_timer_repeat_forever': self._chk_adv_cap_timer_repeat_forever.isChecked(),
+            'mitm_adv_cap_timer_runs': int(self._spin_adv_cap_timer_runs.value()),
+            'mitm_adv_loss_timer_on': self._chk_adv_loss_timer_on.isChecked(),
+            'mitm_adv_loss_timer_lag_ms': int(self._spin_adv_loss_timer_lag_ms.value()),
+            'mitm_adv_loss_timer_pause_ms': int(self._spin_adv_loss_timer_pause_ms.value()),
+            'mitm_adv_loss_timer_repeat_forever': self._chk_adv_loss_timer_repeat_forever.isChecked(),
+            'mitm_adv_loss_timer_runs': int(self._spin_adv_loss_timer_runs.value()),
+            'mitm_delay_up_ms': du,
+            'mitm_delay_down_ms': dd,
+            'mitm_cap_up_mbps': cu,
+            'mitm_cap_down_mbps': cd,
+        }
+
+    def mitm_adv_settings_get(self, key: str, default=None):
+        live = self.live_mitm_adv_settings()
+        if key in live:
+            return live[key]
+        try:
+            return get_settings(key)
+        except KeyError:
+            return default
+
     def _persist_mitm_ui(self) -> None:
         if self._chk_adv_delay_on is None:
             return
@@ -447,14 +505,14 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         main._start_mitm_adv_schedule()
         self._refresh_mitm_status()
 
-    def _on_mitm_timer_schedule_changed(self, *_args) -> None:
-        """Timer column edits restart the per-row schedule from now."""
+    def _on_mitm_timer_schedule_changed(self, row_prefix: str = '', *_args) -> None:
+        """Timer column edits restart that row's schedule from now."""
         if self._mitm_sync_guard:
             return
         main = self.elmocut
         if main is not None and getattr(main, 'mitm_shaping_active', False):
             try:
-                main._reset_mitm_adv_sched_clock()
+                main._reset_mitm_adv_sched_clock(row_prefix or None)
             except Exception:
                 pass
         self._on_mitm_field_changed(*_args)
@@ -779,7 +837,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             c.stateChanged.connect(self._on_mitm_field_changed)
             return c
 
-        def _mk_timer_on_chk(key: str, default: bool, tip: str) -> QCheckBox:
+        def _mk_timer_on_chk(key: str, default: bool, tip: str, row_prefix: str) -> QCheckBox:
             c = QCheckBox('', box)
             c.setObjectName('zubcutAdvLagChkDir')
             c.setTristate(False)
@@ -788,10 +846,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             c.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             c.setFixedWidth(22)
             c.setAttribute(Qt.WA_StyledBackground, True)
-            c.stateChanged.connect(self._on_mitm_timer_schedule_changed)
+            c.stateChanged.connect(
+                lambda *_a, p=row_prefix: self._on_mitm_timer_schedule_changed(p)
+            )
             return c
 
-        def _mk_timer_repeat_chk(key: str, default: bool, tip: str) -> QCheckBox:
+        def _mk_timer_repeat_chk(key: str, default: bool, tip: str, row_prefix: str) -> QCheckBox:
             c = QCheckBox('Repeat', box)
             c.setObjectName('zubcutAdvLagChkDir')
             c.setTristate(False)
@@ -800,20 +860,24 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             c.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             c.setMinimumWidth(72)
             c.setAttribute(Qt.WA_StyledBackground, True)
-            c.stateChanged.connect(self._on_mitm_timer_schedule_changed)
+            c.stateChanged.connect(
+                lambda *_a, p=row_prefix: self._on_mitm_timer_schedule_changed(p)
+            )
             return c
 
-        def _mk_timer_lag_spin(key: str, default: int) -> QSpinBox:
+        def _mk_timer_lag_spin(key: str, default: int, row_prefix: str) -> QSpinBox:
             s = QSpinBox(box)
             s.setRange(1, 600_000)
             s.setSingleStep(50)
             s.setSuffix(' ms')
             s.setValue(_int_setting(key, default))
             s.setToolTip('Duration this row applies at full strength (matches your Lag / cap / loss values).')
-            s.valueChanged.connect(self._on_mitm_timer_schedule_changed)
+            s.valueChanged.connect(
+                lambda *_a, p=row_prefix: self._on_mitm_timer_schedule_changed(p)
+            )
             return s
 
-        def _mk_timer_pause_spin(key: str, default: int) -> QSpinBox:
+        def _mk_timer_pause_spin(key: str, default: int, row_prefix: str) -> QSpinBox:
             s = QSpinBox(box)
             s.setRange(0, 600_000)
             s.setSingleStep(50)
@@ -823,10 +887,12 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
                 'Duration this row contributes nothing extra (0 Mbps cap = no cap, 0 ms delay = no added delay) '
                 'before the next lag phase.'
             )
-            s.valueChanged.connect(self._on_mitm_timer_schedule_changed)
+            s.valueChanged.connect(
+                lambda *_a, p=row_prefix: self._on_mitm_timer_schedule_changed(p)
+            )
             return s
 
-        def _mk_timer_runs_spin(key: str, default: int) -> QSpinBox:
+        def _mk_timer_runs_spin(key: str, default: int, row_prefix: str) -> QSpinBox:
             s = QSpinBox(box)
             s.setRange(-1, 999_999)
             s.setSpecialValueText('∞')
@@ -844,7 +910,9 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
 
             s.valueChanged.connect(_sync_runs_suffix)
             _sync_runs_suffix()
-            s.valueChanged.connect(self._on_mitm_timer_schedule_changed)
+            s.valueChanged.connect(
+                lambda *_a, p=row_prefix: self._on_mitm_timer_schedule_changed(p)
+            )
             return s
 
         r = 0
@@ -857,15 +925,23 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             'mitm_adv_delay_timer_on',
             False,
             'Use lag and pause durations to pulse this row on and off.',
+            'mitm_adv_delay',
         )
-        self._spin_adv_delay_timer_lag_ms = _mk_timer_lag_spin('mitm_adv_delay_timer_lag_ms', 1000)
-        self._spin_adv_delay_timer_pause_ms = _mk_timer_pause_spin('mitm_adv_delay_timer_pause_ms', 1000)
+        self._spin_adv_delay_timer_lag_ms = _mk_timer_lag_spin(
+            'mitm_adv_delay_timer_lag_ms', 1000, 'mitm_adv_delay'
+        )
+        self._spin_adv_delay_timer_pause_ms = _mk_timer_pause_spin(
+            'mitm_adv_delay_timer_pause_ms', 1000, 'mitm_adv_delay'
+        )
         self._chk_adv_delay_timer_repeat_forever = _mk_timer_repeat_chk(
             'mitm_adv_delay_timer_repeat_forever',
             True,
             'Lag→Pause cycles for this row only. Off = one Lag window then this row’s effect stops cycling.',
+            'mitm_adv_delay',
         )
-        self._spin_adv_delay_timer_runs = _mk_timer_runs_spin('mitm_adv_delay_timer_runs', -1)
+        self._spin_adv_delay_timer_runs = _mk_timer_runs_spin(
+            'mitm_adv_delay_timer_runs', -1, 'mitm_adv_delay'
+        )
         self._add_impairment_row(
             grid,
             r,
@@ -890,15 +966,24 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             '0 (∞) = no added jitter. Otherwise random extra delay 0…N ms on top of fixed delay (per packet).'
         )
         self._spin_adv_jitter_ms.valueChanged.connect(self._on_mitm_field_changed)
-        self._chk_adv_jitter_timer_on = _mk_timer_on_chk('mitm_adv_jitter_timer_on', False, 'Schedule this jitter row.')
-        self._spin_adv_jitter_timer_lag_ms = _mk_timer_lag_spin('mitm_adv_jitter_timer_lag_ms', 1000)
-        self._spin_adv_jitter_timer_pause_ms = _mk_timer_pause_spin('mitm_adv_jitter_timer_pause_ms', 1000)
+        self._chk_adv_jitter_timer_on = _mk_timer_on_chk(
+            'mitm_adv_jitter_timer_on', False, 'Schedule this jitter row.', 'mitm_adv_jitter'
+        )
+        self._spin_adv_jitter_timer_lag_ms = _mk_timer_lag_spin(
+            'mitm_adv_jitter_timer_lag_ms', 1000, 'mitm_adv_jitter'
+        )
+        self._spin_adv_jitter_timer_pause_ms = _mk_timer_pause_spin(
+            'mitm_adv_jitter_timer_pause_ms', 1000, 'mitm_adv_jitter'
+        )
         self._chk_adv_jitter_timer_repeat_forever = _mk_timer_repeat_chk(
             'mitm_adv_jitter_timer_repeat_forever',
             True,
             'Lag→Pause cycles for this row only. Off = one Lag window then this row’s effect stops cycling.',
+            'mitm_adv_jitter',
         )
-        self._spin_adv_jitter_timer_runs = _mk_timer_runs_spin('mitm_adv_jitter_timer_runs', -1)
+        self._spin_adv_jitter_timer_runs = _mk_timer_runs_spin(
+            'mitm_adv_jitter_timer_runs', -1, 'mitm_adv_jitter'
+        )
         self._add_impairment_row(
             grid,
             r,
@@ -924,15 +1009,24 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         lbl_cap_out = QLabel('Out:')
         self._spin_adv_cap_out_mbps = _mk_cap_mbps_spin(box, 'mitm_adv_cap_out_mbps', 0.0)
         self._spin_adv_cap_out_mbps.valueChanged.connect(self._on_mitm_field_changed)
-        self._chk_adv_cap_timer_on = _mk_timer_on_chk('mitm_adv_cap_timer_on', False, 'Schedule this cap row.')
-        self._spin_adv_cap_timer_lag_ms = _mk_timer_lag_spin('mitm_adv_cap_timer_lag_ms', 1000)
-        self._spin_adv_cap_timer_pause_ms = _mk_timer_pause_spin('mitm_adv_cap_timer_pause_ms', 1000)
+        self._chk_adv_cap_timer_on = _mk_timer_on_chk(
+            'mitm_adv_cap_timer_on', False, 'Schedule this cap row.', 'mitm_adv_cap'
+        )
+        self._spin_adv_cap_timer_lag_ms = _mk_timer_lag_spin(
+            'mitm_adv_cap_timer_lag_ms', 1000, 'mitm_adv_cap'
+        )
+        self._spin_adv_cap_timer_pause_ms = _mk_timer_pause_spin(
+            'mitm_adv_cap_timer_pause_ms', 1000, 'mitm_adv_cap'
+        )
         self._chk_adv_cap_timer_repeat_forever = _mk_timer_repeat_chk(
             'mitm_adv_cap_timer_repeat_forever',
             True,
             'Lag→Pause cycles for this row only. Off = one Lag window then this row’s effect stops cycling.',
+            'mitm_adv_cap',
         )
-        self._spin_adv_cap_timer_runs = _mk_timer_runs_spin('mitm_adv_cap_timer_runs', -1)
+        self._spin_adv_cap_timer_runs = _mk_timer_runs_spin(
+            'mitm_adv_cap_timer_runs', -1, 'mitm_adv_cap'
+        )
         self._add_impairment_row(
             grid,
             r,
@@ -964,15 +1058,24 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._spin_adv_loss_pct.setToolTip('Random drop chance before forwarding.')
         self._spin_adv_loss_pct.valueChanged.connect(self._on_mitm_field_changed)
         lp = QLabel('Chance')
-        self._chk_adv_loss_timer_on = _mk_timer_on_chk('mitm_adv_loss_timer_on', False, 'Schedule this loss row.')
-        self._spin_adv_loss_timer_lag_ms = _mk_timer_lag_spin('mitm_adv_loss_timer_lag_ms', 1000)
-        self._spin_adv_loss_timer_pause_ms = _mk_timer_pause_spin('mitm_adv_loss_timer_pause_ms', 1000)
+        self._chk_adv_loss_timer_on = _mk_timer_on_chk(
+            'mitm_adv_loss_timer_on', False, 'Schedule this loss row.', 'mitm_adv_loss'
+        )
+        self._spin_adv_loss_timer_lag_ms = _mk_timer_lag_spin(
+            'mitm_adv_loss_timer_lag_ms', 1000, 'mitm_adv_loss'
+        )
+        self._spin_adv_loss_timer_pause_ms = _mk_timer_pause_spin(
+            'mitm_adv_loss_timer_pause_ms', 1000, 'mitm_adv_loss'
+        )
         self._chk_adv_loss_timer_repeat_forever = _mk_timer_repeat_chk(
             'mitm_adv_loss_timer_repeat_forever',
             True,
             'Lag→Pause cycles for this row only. Off = one Lag window then this row’s effect stops cycling.',
+            'mitm_adv_loss',
         )
-        self._spin_adv_loss_timer_runs = _mk_timer_runs_spin('mitm_adv_loss_timer_runs', -1)
+        self._spin_adv_loss_timer_runs = _mk_timer_runs_spin(
+            'mitm_adv_loss_timer_runs', -1, 'mitm_adv_loss'
+        )
         self._add_impairment_row(
             grid,
             r,

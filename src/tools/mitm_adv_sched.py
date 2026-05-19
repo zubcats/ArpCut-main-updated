@@ -23,6 +23,13 @@ from typing import Any, Callable, Tuple
 
 Get = Callable[[str], Any]
 
+ROW_PREFIXES: Tuple[str, ...] = (
+    'mitm_adv_delay',
+    'mitm_adv_jitter',
+    'mitm_adv_cap',
+    'mitm_adv_loss',
+)
+
 
 def _bool(v: Any, default: bool = False) -> bool:
     if isinstance(v, bool):
@@ -63,14 +70,18 @@ def gate_for_row(t_mono: float, t0: float, get: Get, prefix: str) -> float:
     if lag_ms <= 0:
         return 1.0
     lag_sec = lag_ms / 1000.0
-    pause_sec = max(0.0, pause_ms / 1000.0)
+    use_repeat_cycle = _bool(get(f'{prefix}_timer_repeat_forever'), True)
+    if use_repeat_cycle and pause_ms <= 0:
+        # Repeat with 0 ms pause would never leave lag phase; use a minimal off-phase.
+        pause_sec = 0.001
+    else:
+        pause_sec = max(0.0, pause_ms / 1000.0)
     period_sec = lag_sec + pause_sec
 
     elapsed = t_mono - t0
     if elapsed < 0:
         return 1.0
 
-    use_repeat_cycle = _bool(get(f'{prefix}_timer_repeat_forever'), True)
     if not use_repeat_cycle:
         if elapsed >= lag_sec:
             return 0.0
@@ -94,12 +105,23 @@ def gate_for_row(t_mono: float, t0: float, get: Get, prefix: str) -> float:
     return 0.0
 
 
-def compute_timer_gates(t_mono: float, t0: float, get: Get) -> Tuple[float, float, float, float]:
+def _row_t0(prefix: str, t0: float, row_t0: dict[str, float] | None) -> float:
+    if row_t0 and prefix in row_t0:
+        return float(row_t0[prefix])
+    return float(t0)
+
+
+def compute_timer_gates(
+    t_mono: float,
+    t0: float,
+    get: Get,
+    row_t0: dict[str, float] | None = None,
+) -> Tuple[float, float, float, float]:
     return (
-        gate_for_row(t_mono, t0, get, 'mitm_adv_delay'),
-        gate_for_row(t_mono, t0, get, 'mitm_adv_jitter'),
-        gate_for_row(t_mono, t0, get, 'mitm_adv_cap'),
-        gate_for_row(t_mono, t0, get, 'mitm_adv_loss'),
+        gate_for_row(t_mono, _row_t0('mitm_adv_delay', t0, row_t0), get, 'mitm_adv_delay'),
+        gate_for_row(t_mono, _row_t0('mitm_adv_jitter', t0, row_t0), get, 'mitm_adv_jitter'),
+        gate_for_row(t_mono, _row_t0('mitm_adv_cap', t0, row_t0), get, 'mitm_adv_cap'),
+        gate_for_row(t_mono, _row_t0('mitm_adv_loss', t0, row_t0), get, 'mitm_adv_loss'),
     )
 
 
@@ -138,9 +160,10 @@ def gated_mitm_params(
     t_mono: float,
     t0: float,
     get: Get,
+    row_t0: dict[str, float] | None = None,
 ) -> Tuple[int, int, int, int, float, float, int, int, Tuple[float, float, float, float]]:
     du, dd, ju, jd, cu, cd, lu, ld = base_mitm_params_from_get(get)
-    gates = compute_timer_gates(t_mono, t0, get)
+    gates = compute_timer_gates(t_mono, t0, get, row_t0)
     gd, gj, gc, gl = gates
     du2 = int(round(du * gd))
     dd2 = int(round(dd * gd))

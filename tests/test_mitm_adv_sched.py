@@ -82,6 +82,31 @@ class MitmAdvSchedTest(unittest.TestCase):
         )
         self.assertEqual(mitm_adv_sched.gate_for_row(0.0, 0.0, get, 'mitm_adv_delay'), 0.0)
 
+    def test_repeat_with_zero_pause_still_alternates(self):
+        get = _g(
+            mitm_adv_delay_timer_on=True,
+            mitm_adv_delay_timer_repeat_forever=True,
+            mitm_adv_delay_timer_lag_ms=100,
+            mitm_adv_delay_timer_pause_ms=0,
+        )
+        t0 = 0.0
+        self.assertEqual(mitm_adv_sched.gate_for_row(0.05, t0, get, 'mitm_adv_delay'), 1.0)
+        self.assertEqual(mitm_adv_sched.gate_for_row(0.1005, t0, get, 'mitm_adv_delay'), 0.0)
+        self.assertEqual(mitm_adv_sched.gate_for_row(0.202, t0, get, 'mitm_adv_delay'), 1.0)
+
+    def test_per_row_t0_independent(self):
+        get = _g(
+            mitm_adv_delay_timer_lag_ms=100,
+            mitm_adv_delay_timer_pause_ms=100,
+            mitm_adv_jitter_timer_lag_ms=300,
+            mitm_adv_jitter_timer_pause_ms=100,
+        )
+        row_t0 = {'mitm_adv_delay': 0.0, 'mitm_adv_jitter': 2.0}
+        gates = mitm_adv_sched.compute_timer_gates(2.15, 0.0, get, row_t0)
+        # delay at 2.15s from its t0=0 -> off phase; jitter at 0.15s from t0=2 -> on phase
+        self.assertEqual(gates[0], 0.0)
+        self.assertEqual(gates[1], 1.0)
+
     def test_sched_apply_tuple_includes_gates(self):
         base = mitm_adv_sched.sched_apply_tuple(0, 0, 0, 0, 0.0, 0.0, 0, 0, (1.0, 1.0, 1.0, 1.0))
         gated = mitm_adv_sched.sched_apply_tuple(0, 0, 0, 0, 0.0, 0.0, 0, 0, (0.0, 1.0, 1.0, 1.0))
