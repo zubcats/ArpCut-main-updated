@@ -270,6 +270,28 @@ def _ics_subnet_quad_prefix(prefix: str) -> str:
     return p
 
 
+def _ics_hotspot_forward_filter(downstream_prefix: str = '') -> str:
+    """
+    Catch post-NAT game traffic on Mobile Hotspot (no 137.x in IPv4 headers).
+
+    Used only as a last-resort WinDivertOpen candidate on FORWARD; userspace
+    still pins impairment to the single hotspot victim.
+    """
+    try:
+        from tools.clumsy_inline import clumsy_ics_downstream_ifidx
+
+        ifidx = clumsy_ics_downstream_ifidx()
+    except Exception:
+        ifidx = 0
+    if ifidx > 0:
+        return f'ip and ifIdx == {ifidx}'
+    quad = _ics_subnet_quad_prefix(downstream_prefix)
+    if quad:
+        gw = f'{quad}.1'
+        return f'ip and !(ip.SrcAddr == {gw} and ip.DstAddr == {gw})'
+    return 'ip'
+
+
 def _ics_windivert_filter(victim_ip: str, downstream_prefix: str = '') -> str:
     """
     WinDivert filter for ICS client traffic.
@@ -447,21 +469,26 @@ def _bind_windivert_api(dll: ctypes.WinDLL) -> None:
 
 
 def _open_windivert_handle(dll: ctypes.WinDLL, filt: str, layer: int) -> int:
-    """Open with !impostor only — fallback without it doubles partial-cut budgets."""
-    f = _ics_windivert_filter_no_impostor(filt).encode('ascii', errors='ignore')
-    h = dll.WinDivertOpen(
-        ctypes.c_char_p(f),
-        ctypes.c_int(layer),
-        ctypes.c_int16(0),
-        ctypes.c_uint64(0),
-    )
-    if not h:
+    """Prefer !impostor; retry without it when the driver rejects the filter."""
+    inner = (filt or '').strip()
+    if not inner:
         return -1
-    hv = int(h) if not isinstance(h, ctypes.c_void_p) else int(h.value or 0)
-    maxptr = (1 << 64) - 1
-    if hv == 0 or hv == maxptr:
-        return -1
-    return hv
+    for candidate in ( _ics_windivert_filter_no_impostor(inner), inner):
+        f = candidate.encode('ascii', errors='ignore')
+        h = dll.WinDivertOpen(
+            ctypes.c_char_p(f),
+            ctypes.c_int(layer),
+            ctypes.c_int16(0),
+            ctypes.c_uint64(0),
+        )
+        if not h:
+            continue
+        hv = int(h) if not isinstance(h, ctypes.c_void_p) else int(h.value or 0)
+        maxptr = (1 << 64) - 1
+        if hv == 0 or hv == maxptr:
+            continue
+        return hv
+    return -1
 
 
 def _ics_windivert_open_candidates(
@@ -470,8 +497,8 @@ def _ics_windivert_open_candidates(
     """
     Filter order for hotspot capture.
 
-    Subnet filter first (FORWARD-layer PS5 traffic often never hits a tight
-    victim-only filter). Userspace still impairs only the victim IP.
+    Victim filter first (137.x visible pre-NAT on NETWORK). Subnet second.
+    Broad FORWARD last for post-NAT game traffic with no 137.x in headers.
     """
     vip = _ipv4_quad(victim_ip)
     if not vip:
@@ -480,9 +507,9 @@ def _ics_windivert_open_candidates(
     out: list[tuple[str, str]] = []
     on_subnet = bool(quad and vip.startswith(quad + '.'))
     if on_subnet:
-        # Subnet filter first: PS5 game traffic is usually post-NAT on FORWARD.
-        out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
         out.append((_ics_clumsy_victim_filter(vip), 'victim'))
+        out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
+        out.append((_ics_hotspot_forward_filter(downstream_prefix), 'forward'))
     elif vip:
         out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     return out
@@ -500,6 +527,8 @@ def _open_best_windivert_handle(
     for filt, desc in _ics_windivert_open_candidates(victim_ip, downstream_prefix):
         if desc == 'victim':
             layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
+        elif desc == 'forward':
+            layers = (WINDIVERT_LAYER_NETWORK_FORWARD,)
         else:
             layers = (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
         for layer in layers:
@@ -629,6 +658,7 @@ class IcsWinDivertLagGate:
         self._open_layers: list[int] = []
         self._downstream_prefix = '192.168.137.'
         self._subnet_capture = False
+        self._capture_desc = ''
         self._impair_mode = IMPAIR_OFF
         self._recent_shaped: dict[int, float] = {}
 
@@ -715,7 +745,8 @@ class IcsWinDivertLagGate:
             raise OSError(f'WinDivertOpen failed. {hint}')
         self._handles = [h]
         self._open_layers = [layer]
-        self._subnet_capture = desc == 'subnet'
+        self._subnet_capture = desc in ('subnet', 'forward')
+        self._capture_desc = desc
         self._packets_seen = 0
         self._packets_matched = 0
         self._packets_held = 0

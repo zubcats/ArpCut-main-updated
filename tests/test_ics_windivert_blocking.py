@@ -5,6 +5,7 @@ import inspect
 import os
 import sys
 import unittest
+from unittest import mock
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 _SRC = os.path.join(_ROOT, 'src')
@@ -117,10 +118,17 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         on = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
         self.assertTrue(any('137.' in f for f, _ in on))
 
-    def test_open_candidates_subnet_first_when_on_hotspot_subnet(self) -> None:
+    def test_open_candidates_victim_first_when_on_hotspot_subnet(self) -> None:
         cands = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
-        self.assertGreaterEqual(len(cands), 2)
-        self.assertEqual(cands[0][1], 'subnet')
+        self.assertGreaterEqual(len(cands), 3)
+        self.assertEqual(cands[0][1], 'victim')
+        self.assertEqual(cands[1][1], 'subnet')
+        self.assertEqual(cands[2][1], 'forward')
+
+    def test_hotspot_forward_filter_prefers_ifidx(self) -> None:
+        with mock.patch('tools.clumsy_inline.clumsy_ics_downstream_ifidx', return_value=42):
+            filt = wd._ics_hotspot_forward_filter('192.168.137.')
+        self.assertIn('ifIdx == 42', filt)
 
     def test_victim_packet_roles_no_broad_nat_fallback(self) -> None:
         from_v, to_v, _active = wd._victim_packet_roles(
@@ -209,10 +217,10 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertIn('continue', block)
         self.assertNotIn('_send_immediate', block)
 
-    def test_open_handle_requires_no_impostor_filter(self) -> None:
+    def test_open_handle_prefers_impostor_with_fallback(self) -> None:
         src = inspect.getsource(wd._open_windivert_handle)
         self.assertIn('_ics_windivert_filter_no_impostor', src)
-        self.assertNotIn('for candidate in', src)
+        self.assertIn('for candidate in', src)
 
     def test_windivert_outbound_flag_uses_address_bitfield(self) -> None:
         # Outbound at bit 17 in UINT64 at offset 8.
