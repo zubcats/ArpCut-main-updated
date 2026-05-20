@@ -11,12 +11,17 @@ import sys
 import platform
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
+_SRC = os.path.join(_ROOT, 'src')
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-from src.constants import APP_BUNDLE_NAME
+# constants.py imports zubcut_legacy_migrate as a top-level module (same as src/zubcut.py).
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+from constants import APP_BUNDLE_NAME
 
 # All the imports PyInstaller is too dumb to find on its own
 HIDDEN_IMPORTS = [
+    'zubcut_legacy_migrate',
     'ctypes.wintypes',
     'tools.license_offline',
     'tools.license_remote_signin',
