@@ -60,9 +60,9 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
 
     def test_run_loop_partial_modes_before_blocking_pause(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
-        block_idx = src.index('if impair_mode == IMPAIR_PAUSE and blocking')
-        pass_idx = src.index('if impair_mode == IMPAIR_PERCENT')
-        shape_idx = src.index('if impair_mode == IMPAIR_SHAPE')
+        block_idx = src.rindex('if impair_mode == IMPAIR_PAUSE and blocking')
+        pass_idx = src.index('if impair_mode == IMPAIR_PERCENT and')
+        shape_idx = src.index('if impair_mode == IMPAIR_SHAPE and')
         off_fwd = src.index('if impair_mode == IMPAIR_OFF:\n                    self._send_immediate')
         self.assertLess(off_fwd, block_idx)
         self.assertLess(pass_idx, block_idx)
@@ -118,17 +118,24 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         on = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
         self.assertTrue(any('137.' in f for f, _ in on))
 
-    def test_open_candidates_victim_first_when_on_hotspot_subnet(self) -> None:
-        cands = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
-        self.assertGreaterEqual(len(cands), 3)
-        self.assertEqual(cands[0][1], 'victim')
-        self.assertEqual(cands[1][1], 'subnet')
-        self.assertEqual(cands[2][1], 'forward')
+    def test_open_candidates_ifidx_first_when_on_hotspot_subnet(self) -> None:
+        with mock.patch('tools.clumsy_inline.clumsy_ics_downstream_ifidx', return_value=16):
+            cands = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
+        self.assertGreaterEqual(len(cands), 4)
+        self.assertEqual(cands[0][1], 'ifidx')
+        self.assertIn('ifIdx == 16', cands[0][0])
 
-    def test_hotspot_forward_filter_prefers_ifidx(self) -> None:
-        with mock.patch('tools.clumsy_inline.clumsy_ics_downstream_ifidx', return_value=42):
-            filt = wd._ics_hotspot_forward_filter('192.168.137.')
-        self.assertIn('ifIdx == 42', filt)
+    def test_open_candidates_victim_after_ifidx_on_hotspot(self) -> None:
+        with mock.patch('tools.clumsy_inline.clumsy_ics_downstream_ifidx', return_value=0):
+            cands = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
+        self.assertEqual(cands[0][1], 'victim')
+        self.assertEqual(cands[-1][1], 'broad')
+
+    def test_broad_capture_pause_drops_without_victim_header_match(self) -> None:
+        src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
+        block = src[src.index('if broad:'): src.index('elif not _packet_matches_hotspot_client')]
+        self.assertIn('IMPAIR_PAUSE and blocking', block)
+        self.assertIn('continue', block)
 
     def test_victim_packet_roles_no_broad_nat_fallback(self) -> None:
         from_v, to_v, _active = wd._victim_packet_roles(
@@ -199,9 +206,9 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
 
     def test_shaping_forwards_when_delay_zero(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
-        shape = src[src.index('if impair_mode == IMPAIR_SHAPE'): src.index('if impair_mode == IMPAIR_PAUSE and blocking')]
-        self.assertIn('shape_delay > 0', shape)
-        self.assertIn('_send_immediate', shape)
+        self.assertIn('if impair_mode == IMPAIR_SHAPE and (is_from_victim or is_to_victim)', src)
+        self.assertIn('shape_delay > 0', src)
+        self.assertIn('_send_immediate', src)
 
     def test_hotspot_sched_tick_uses_windivert_on_ics(self) -> None:
         path = os.path.join(_SRC, 'gui', 'main.py')
