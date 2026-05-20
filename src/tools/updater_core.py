@@ -58,6 +58,18 @@ class RemoteInstallerInfo:
 _remote_cache: tuple[float, RemoteInstallerInfo | None] | None = None
 
 
+def invalidate_remote_installer_cache() -> None:
+    """Drop cached GitHub release metadata (e.g. after asset 404 when a release is re-published)."""
+    global _remote_cache
+    _remote_cache = None
+
+
+def _is_github_release_asset_api_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.netloc or '').lower()
+    return 'api.github.com' in host and '/releases/assets/' in (parsed.path or '')
+
+
 def _parse_build_time_iso(raw):
     if not raw or not str(raw).strip():
         return None
@@ -327,6 +339,17 @@ def format_updater_error_message(exc: BaseException) -> str:
     """User-facing updater failure text (network / Clumsy hotspot hints)."""
     base = str(exc).strip() or repr(exc)
     lines = [base]
+    if isinstance(exc, urllib.error.HTTPError) and int(getattr(exc, 'code', 0) or 0) == 404:
+        manual = (selected_update_url() or '').strip() or release_page_url()
+        lines.extend(
+            [
+                '',
+                'The download link was stale (GitHub replaced the installer on this release).',
+                'Click Install Latest Build again to fetch a fresh link.',
+                f'Manual download: {manual}',
+            ]
+        )
+        return '\n'.join(lines)
     reason = _network_error_reason(exc)
     winerr = getattr(reason, 'winerror', None) if reason else None
     low = base.lower()
@@ -505,6 +528,9 @@ def _temp_installer_path(url):
 
 
 def _download_request_url(url):
+    """Cache-bust static release URLs only — GitHub asset API URLs must stay exact."""
+    if _is_github_release_asset_api_url(url):
+        return url
     parsed = urlparse(url)
     query_items = parse_qsl(parsed.query, keep_blank_values=True)
     query_items.append(('cb', str(int(time.time()))))
@@ -545,7 +571,10 @@ def download_installer(
         raise RuntimeError('Update URL is not configured.')
 
     errors: list[tuple[str, BaseException]] = []
-    for idx, candidate in enumerate(candidates):
+    refreshed_after_asset_404 = False
+    idx = 0
+    while idx < len(candidates):
+        candidate = candidates[idx]
         try:
             return _download_installer_once(
                 candidate,
@@ -556,12 +585,35 @@ def download_installer(
         except RuntimeError as e:
             if 'cancel' in str(e).lower():
                 raise
+            cause = e.__cause__
+            if (
+                isinstance(cause, urllib.error.HTTPError)
+                and int(getattr(cause, 'code', 0) or 0) == 404
+                and _is_github_release_asset_api_url(candidate)
+                and not refreshed_after_asset_404
+            ):
+                invalidate_remote_installer_cache()
+                refreshed_after_asset_404 = True
+                seen_retry: set[str] = set()
+                fresh: list[str] = []
+                for raw in installer_download_candidates(force_refresh=True):
+                    u = (raw or '').strip()
+                    if u and u not in seen_retry:
+                        seen_retry.add(u)
+                        fresh.append(u)
+                if fresh:
+                    candidates = fresh
+                    errors.clear()
+                    idx = 0
+                    continue
             errors.append((candidate, e))
-            if not is_retryable_network_error(e) or idx >= len(candidates) - 1:
+            idx += 1
+            if not is_retryable_network_error(e):
                 break
         except Exception as e:
             errors.append((candidate, e))
-            if not is_retryable_network_error(e) or idx >= len(candidates) - 1:
+            idx += 1
+            if not is_retryable_network_error(e):
                 break
 
     if len(errors) == 1:
