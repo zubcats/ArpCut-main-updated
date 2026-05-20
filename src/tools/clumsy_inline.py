@@ -121,6 +121,38 @@ def clumsy_ics_downstream_prefix() -> str:
     return prefix
 
 
+def clumsy_ics_downstream_ifidx() -> int:
+    """WinDivert ifIdx for the Mobile Hotspot / ICS downstream adapter, or 0."""
+    if not sys.platform.startswith('win'):
+        return 0
+    try:
+        from tools.utils import terminal
+
+        state = read_clumsy_ics_state()
+        name = str(state.get('downstream_name') or '').strip()
+        guid = str(state.get('downstream_guid') or '').strip()
+        if name:
+            safe = name.replace("'", "''")
+            cmd = (
+                f'powershell -NoProfile -Command '
+                f'"(Get-NetAdapter -Name \'{safe}\' -ErrorAction SilentlyContinue).ifIndex"'
+            )
+        elif guid:
+            cmd = (
+                f'powershell -NoProfile -Command '
+                f'"(Get-NetAdapter -InterfaceGuid \'{guid}\' -ErrorAction SilentlyContinue).ifIndex"'
+            )
+        else:
+            return 0
+        out = (terminal(cmd) or '').strip()
+        if not out:
+            return 0
+        idx = int(out.split()[0])
+        return idx if idx > 0 else 0
+    except Exception:
+        return 0
+
+
 def victim_on_clumsy_ics_subnet(victim_ip: str) -> bool:
     ip = str(victim_ip or '').strip()
     if not ip:

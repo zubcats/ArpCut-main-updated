@@ -3415,8 +3415,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             pctcut=getattr(self, 'percent_cut_active', False),
             mitmshape=getattr(self, 'mitm_shaping_active', False),
         )
-        if not ip:
+        if not ip and isinstance(device, dict):
+            ip = str(device.get('ip') or '').strip()
+        if not victim_on_clumsy_ics_subnet(ip):
+            resolved = clumsy_ics_resolve_victim_ip(device, self.scanner)
+            if resolved and victim_on_clumsy_ics_subnet(resolved):
+                ip = resolved.strip()
+        if not ip or not victim_on_clumsy_ics_subnet(ip):
             return False
+        if isinstance(device, dict):
+            device['ip'] = ip
         from tools.ics_windivert_shaper import IcsWinDivertLagGate
 
         gate = getattr(self, '_ics_lag_gate', None)
@@ -3507,8 +3515,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         self._updateKillButtonState()
                     if not for_lag:
                         layers = gate.active_layers if gate is not None else ()
+                        cap = getattr(gate, '_capture_desc', '?')
                         self.log(
-                            f'Hotspot pause on {ip} (WinDivert layers {layers})',
+                            f'Hotspot pause on {ip} (WinDivert {cap} layers {layers})',
                             UI_LOG_VICTIM_BLOCK_FG,
                         )
                     return True
