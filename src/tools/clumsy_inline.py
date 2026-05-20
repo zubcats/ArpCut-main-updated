@@ -261,16 +261,20 @@ def clumsy_ics_resolve_victim_ip(device, scanner: Optional['Scanner'] = None) ->
 
 def clumsy_ics_use_firewall_only(device, scanner: Optional['Scanner'] = None) -> bool:
     """
-    Victim is on the Mobile Hotspot / ICS subnet (e.g. 192.168.137.x).
+    Victim is on the PC downstream ICS subnet (hotspot or ethernet-to-console).
 
-    Use WinDivert or firewall for block — not home-router ARP MITM. Optional ICS ARP
-    kill must use ics_mode on Killer after apply_clumsy_ics_router_context.
+    Use WinDivert for impairment — not home-router ARP MITM / block_ip.
     """
-    if not clumsy_mode_enabled() or not sys.platform.startswith('win'):
-        return False
-    if not isinstance(device, dict):
-        return False
-    return victim_on_clumsy_ics_subnet(clumsy_ics_resolve_victim_ip(device, scanner))
+    try:
+        from tools.ics_impairment_policy import use_windivert_impairment
+
+        return use_windivert_impairment(device, scanner)
+    except Exception:
+        if not clumsy_mode_enabled() or not sys.platform.startswith('win'):
+            return False
+        if not isinstance(device, dict):
+            return False
+        return victim_on_clumsy_ics_subnet(clumsy_ics_resolve_victim_ip(device, scanner))
 
 
 def clumsy_ics_lag_can_use_windivert(device, scanner: Optional['Scanner'] = None) -> bool:
@@ -728,10 +732,8 @@ def sync_clumsy_row(scanner: Scanner, *, allow_subnet_ping: bool = False) -> Non
 
 def use_windivert_for_advanced_ics_shaping(scanner: Scanner, device: dict) -> bool:
     """
-    True when Advanced Lag should use WinDivert (hotspot / ICS client).
+    True when Advanced Lag should use WinDivert (hotspot / ethernet ICS client).
 
-    Uses the same eligibility as Kill/Lag Switch — any ICS-subnet victim with WinDivert
-    ready. Do not require ``detect_inline_ip`` to match (that wrongly forced ARP MITM
-    forwarder / Kill-like behavior when ARP listed a different client first).
+    Same routing as Kill/Lag/Dupe/Percent Cut via ``ics_impairment_policy``.
     """
     return clumsy_ics_lag_can_use_windivert(device, scanner)
