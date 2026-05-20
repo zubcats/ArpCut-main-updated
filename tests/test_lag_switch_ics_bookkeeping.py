@@ -25,11 +25,14 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
 
     def test_apply_ics_client_block_skips_kill_state_for_lag(self) -> None:
         src = self._main_py()
-        self.assertIn('not for_dupe and not for_lag', src)
+        block = src[src.index('def _apply_ics_client_block'): src.index('def _clear_ics_client_block')]
+        self.assertIn('for_lag: bool = False', block)
+        self.assertIn('_ics_kill_profile_macs.add', block)
         self.assertRegex(
-            src,
+            block,
             r'elif for_lag:\s*\n\s*self\._refresh_table_row_for_mac',
         )
+        self.assertNotIn('release_ics_victim_block', block)
 
     def test_lag_apply_block_prefers_fast_windivert_pause(self) -> None:
         src = self._main_py()
