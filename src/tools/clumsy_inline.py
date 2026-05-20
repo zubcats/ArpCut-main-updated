@@ -121,6 +121,37 @@ def clumsy_ics_downstream_prefix() -> str:
     return prefix
 
 
+def clumsy_ics_downstream_ifidx_from_arp() -> int:
+    """
+    Parse ``arp -a`` ``Interface: 192.168.137.1 --- 0x10`` lines (fast, no PowerShell).
+    """
+    if not sys.platform.startswith('win'):
+        return 0
+    try:
+        import re
+
+        from tools.utils import terminal
+
+        state = read_clumsy_ics_state()
+        gw = str(state.get('downstream_ipv4') or '').strip()
+        if not gw:
+            quad = clumsy_ics_downstream_prefix().rstrip('.')
+            gw = f'{quad}.1' if quad else ''
+        if not gw:
+            return 0
+        cache = terminal(f'arp -a -N {gw}') or terminal('arp -a') or ''
+        pat = re.compile(
+            rf'Interface:\s*{re.escape(gw)}\s*---\s*0x([0-9a-fA-F]+)',
+            re.IGNORECASE,
+        )
+        m = pat.search(cache)
+        if m:
+            return int(m.group(1), 16)
+    except Exception:
+        pass
+    return 0
+
+
 def clumsy_ics_downstream_ifidx() -> int:
     """WinDivert ifIdx for the Mobile Hotspot / ICS downstream adapter, or 0."""
     if not sys.platform.startswith('win'):
@@ -128,52 +159,25 @@ def clumsy_ics_downstream_ifidx() -> int:
     cached = getattr(clumsy_ics_downstream_ifidx, '_cached_idx', None)
     if isinstance(cached, int) and cached > 0:
         return cached
-    idx = 0
-    try:
-        from tools.utils import terminal
+    idx = clumsy_ics_downstream_ifidx_from_arp()
+    if idx <= 0:
+        try:
+            from tools.utils import terminal
 
-        state = read_clumsy_ics_state()
-        guid = str(state.get('downstream_guid') or '').strip().strip('{}')
-        name = str(state.get('downstream_name') or '').strip()
-        attempts: list[str] = []
-        if guid:
-            attempts.append(
-                f'powershell -NoProfile -Command '
-                f'"(Get-NetAdapter -InterfaceGuid \'{guid}\' -ErrorAction SilentlyContinue).ifIndex"'
-            )
-        if name:
-            safe = name.replace("'", "''")
-            attempts.append(
-                f'powershell -NoProfile -Command '
-                f'"(Get-NetAdapter -Name \'{safe}\' -ErrorAction SilentlyContinue).ifIndex"'
-            )
-            attempts.append(
-                f'powershell -NoProfile -Command '
-                f'"(Get-NetAdapter | Where-Object {{ $_.Name -eq \'{safe}\' }} '
-                f'| Select-Object -First 1).ifIndex"'
-            )
-        for cmd in attempts:
-            out = (terminal(cmd) or '').strip()
-            if not out:
-                continue
-            try:
-                idx = int(out.split()[0])
-            except ValueError:
-                continue
-            if idx > 0:
-                break
-        if idx <= 0 and name:
-            listing = terminal('netsh interface ipv4 show interfaces') or ''
-            name_low = name.lower()
-            for line in listing.splitlines():
-                if name_low not in line.lower():
-                    continue
-                parts = line.split()
-                if parts and parts[0].isdigit():
-                    idx = int(parts[0])
-                    break
-    except Exception:
-        idx = 0
+            state = read_clumsy_ics_state()
+            name = str(state.get('downstream_name') or '').strip()
+            if name:
+                listing = terminal('netsh interface ipv4 show interfaces') or ''
+                name_low = name.lower()
+                for line in listing.splitlines():
+                    if name_low not in line.lower():
+                        continue
+                    parts = line.split()
+                    if parts and parts[0].isdigit():
+                        idx = int(parts[0])
+                        break
+        except Exception:
+            idx = 0
     if idx > 0:
         clumsy_ics_downstream_ifidx._cached_idx = idx
     return idx if idx > 0 else 0

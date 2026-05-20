@@ -1365,10 +1365,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         Open settings window
         """
         self.settings_window.hide()
-        self.settings_window.loadInterfaces()
+        self.settings_window.loadInterfaces(use_cache=True)
         self.settings_window.currentSettings()
         self.settings_window.show()
         self.settings_window.setWindowState(Qt.WindowNoState)
+        QTimer.singleShot(0, self.settings_window._load_interfaces_background)
 
     def openAbout(self):
         """
@@ -3516,8 +3517,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if not for_lag:
                         layers = gate.active_layers if gate is not None else ()
                         cap = getattr(gate, '_capture_desc', '?')
+                        ifidx = 0
+                        try:
+                            from tools.clumsy_inline import clumsy_ics_downstream_ifidx
+
+                            ifidx = clumsy_ics_downstream_ifidx()
+                        except Exception:
+                            pass
                         self.log(
-                            f'Hotspot pause on {ip} (WinDivert {cap} layers {layers})',
+                            f'Hotspot pause on {ip} (WinDivert {cap} ifIdx={ifidx} '
+                            f'layers {layers})',
                             UI_LOG_VICTIM_BLOCK_FG,
                         )
                     return True
