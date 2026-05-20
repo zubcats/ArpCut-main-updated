@@ -17,12 +17,9 @@ GITHUB_REPO_SLUG = 'zubcats/ZubCut'
 GITHUB_RELEASES_BASE = f'https://github.com/{GITHUB_REPO_SLUG}/releases'
 
 # Direct download URL for the latest installer package per channel (.exe).
-UPDATE_DOWNLOAD_URL_MAIN = (
-    f'{GITHUB_RELEASES_BASE}/download/stable-latest/ZubCut-Setup.exe'
-)
-UPDATE_DOWNLOAD_URL_EXPERIMENTAL = (
-    f'{GITHUB_RELEASES_BASE}/download/experimental-latest/ZubCut-Setup-experimental.exe'
-)
+# Single-line: CI copies .github/ci-blessed/constants.py then tools/ci_apply_build_constants.py patches these.
+UPDATE_DOWNLOAD_URL_MAIN = f'{GITHUB_RELEASES_BASE}/download/stable-latest/ZubCut-Setup.exe'
+UPDATE_DOWNLOAD_URL_EXPERIMENTAL = f'{GITHUB_RELEASES_BASE}/download/experimental-latest/ZubCut-Setup-experimental.exe'
 # UTC ISO timestamp when this binary was built (CI overwrites). Used to detect newer installers online.
 APP_BUILD_TIME_ISO = ''
 # Git commit baked into this binary (CI sets GITHUB_SHA). Used to detect stale CDN installers.

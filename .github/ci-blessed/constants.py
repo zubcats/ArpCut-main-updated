@@ -17,12 +17,9 @@ UPDATE_CHANNEL = 'experimental'
 GITHUB_REPO_SLUG = 'zubcats/ZubCut'
 GITHUB_RELEASES_BASE = f'https://github.com/{GITHUB_REPO_SLUG}/releases'
 
-UPDATE_DOWNLOAD_URL_MAIN = (
-    f'{GITHUB_RELEASES_BASE}/download/stable-latest/ZubCut-Setup.exe'
-)
-UPDATE_DOWNLOAD_URL_EXPERIMENTAL = (
-    f'{GITHUB_RELEASES_BASE}/download/experimental-latest/ZubCut-Setup-experimental.exe'
-)
+# Single-line: tools/ci_apply_build_constants.py replaces these via ^NAME\s*=.*$
+UPDATE_DOWNLOAD_URL_MAIN = f'{GITHUB_RELEASES_BASE}/download/stable-latest/ZubCut-Setup.exe'
+UPDATE_DOWNLOAD_URL_EXPERIMENTAL = f'{GITHUB_RELEASES_BASE}/download/experimental-latest/ZubCut-Setup-experimental.exe'
 APP_BUILD_TIME_ISO = ''
 APP_BUILD_COMMIT = ''
 

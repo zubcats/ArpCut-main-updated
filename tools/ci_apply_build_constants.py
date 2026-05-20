@@ -45,21 +45,20 @@ def main() -> None:
     lic_pubkey = os.getenv("LICENSE_PUBLIC_KEY_B64", "").strip()
     signin_url = os.getenv("LICENSE_SIGNIN_URL", "").strip()
 
-    txt = re.sub(r"^UPDATE_CHANNEL\s*=.*$", f"UPDATE_CHANNEL = '{channel}'", txt, flags=re.M)
+    def _sub_assign(name: str, value: str, body: str) -> str:
+        """Replace NAME = ... including parenthesized multi-line values."""
+        pat = rf"^{re.escape(name)}\s*=(?:\s*\([^)]*\)|\s*[^\n]*)"
+        repl = f"{name} = {value}"
+        new_body, n = re.subn(pat, repl, body, count=1, flags=re.M | re.S)
+        if n != 1:
+            raise SystemExit(f"Could not find assignment for {name} in constants.py")
+        return new_body
+
+    txt = _sub_assign("UPDATE_CHANNEL", repr(channel), txt)
     if main_url:
-        txt = re.sub(
-            r"^UPDATE_DOWNLOAD_URL_MAIN\s*=.*$",
-            f"UPDATE_DOWNLOAD_URL_MAIN = {main_url!r}",
-            txt,
-            flags=re.M,
-        )
+        txt = _sub_assign("UPDATE_DOWNLOAD_URL_MAIN", repr(main_url), txt)
     if experimental_url:
-        txt = re.sub(
-            r"^UPDATE_DOWNLOAD_URL_EXPERIMENTAL\s*=.*$",
-            f"UPDATE_DOWNLOAD_URL_EXPERIMENTAL = {experimental_url!r}",
-            txt,
-            flags=re.M,
-        )
+        txt = _sub_assign("UPDATE_DOWNLOAD_URL_EXPERIMENTAL", repr(experimental_url), txt)
 
     if channel in ("main", "experimental") and not lic_pubkey:
         raise SystemExit(
