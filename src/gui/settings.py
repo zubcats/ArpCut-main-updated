@@ -172,7 +172,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnLicenseSignIn.setMinimumHeight(34)
             self.gridLayout.addWidget(self.btnLicenseSignIn, 7, 0, 1, 4)
             self.btnLicenseSignIn.clicked.connect(self._on_license_sign_in)
-        self.loadInterfaces()
+        self.loadInterfaces(use_cache=True)
+        QTimer.singleShot(0, self._load_interfaces_background)
 
         # Apply old settings on open
         self.currentSettings()
@@ -893,10 +894,54 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             self.btnUpdate.setStyleSheet('')
     
-    def loadInterfaces(self):
+    def loadInterfaces(self, *, use_cache: bool = True):
+        from tools.utils import get_ifaces, get_ifaces_cached
+
         self.comboInterface.clear()
-        for iface in get_ifaces():
+        ifaces = get_ifaces_cached() if use_cache else get_ifaces()
+        for iface in ifaces:
             self.comboInterface.addItem(
                 format_iface_settings_label(iface),
                 iface.name,
             )
+
+    def _load_interfaces_background(self) -> None:
+        """Refresh adapter list off the GUI thread (ipconfig is slow)."""
+        from PyQt5.QtCore import QThread, pyqtSignal
+
+        class _IfaceLoader(QThread):
+            finished_list = pyqtSignal(list)
+
+            def run(self):
+                from tools.utils import get_ifaces
+
+                try:
+                    self.finished_list.emit(get_ifaces())
+                except Exception:
+                    self.finished_list.emit([])
+
+        prev = getattr(self, '_iface_loader', None)
+        if prev is not None and prev.isRunning():
+            return
+
+        def _apply(ifaces):
+            saved = ''
+            try:
+                saved = str(self.comboInterface.currentData() or '')
+            except Exception:
+                pass
+            self.comboInterface.clear()
+            for iface in ifaces:
+                self.comboInterface.addItem(
+                    format_iface_settings_label(iface),
+                    iface.name,
+                )
+            if saved:
+                idx = self.comboInterface.findData(saved)
+                if idx >= 0:
+                    self.comboInterface.setCurrentIndex(idx)
+
+        loader = _IfaceLoader(self)
+        loader.finished_list.connect(_apply)
+        self._iface_loader = loader
+        loader.start()

@@ -265,6 +265,32 @@ def check_connection(func):
             return func(args[0])
     return wrapper
 
+_IFACES_CACHE: list | None = None
+_IFACES_CACHE_AT: float = 0.0
+_IFACES_CACHE_TTL_S = 45.0
+
+
+def invalidate_ifaces_cache() -> None:
+    global _IFACES_CACHE, _IFACES_CACHE_AT
+    _IFACES_CACHE = None
+    _IFACES_CACHE_AT = 0.0
+
+
+def get_ifaces_cached(*, max_age_s: float | None = None):
+    """Return interface list; reuse recent scan to avoid blocking Settings open."""
+    import time
+
+    global _IFACES_CACHE, _IFACES_CACHE_AT
+    ttl = float(_IFACES_CACHE_TTL_S if max_age_s is None else max_age_s)
+    now = time.monotonic()
+    if _IFACES_CACHE is not None and (now - _IFACES_CACHE_AT) < ttl:
+        return list(_IFACES_CACHE)
+    ifaces = get_ifaces()
+    _IFACES_CACHE = list(ifaces)
+    _IFACES_CACHE_AT = now
+    return list(ifaces)
+
+
 def get_ifaces():
     """
     Get current working interfaces (cross-platform)

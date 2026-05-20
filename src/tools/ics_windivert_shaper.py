@@ -384,11 +384,14 @@ def _windivert_addr_mark_impostor(addr_b: bytes) -> bytes:
 
 def _ipv4_packet_sig(pkt: bytes) -> int:
     """Cheap flow signature to ignore immediate duplicate captures."""
+    off = _ipv4_header_offset(pkt)
+    if off < 0 or len(pkt) < off + 8:
+        return 0
     parsed = _parse_ipv4_src_dst(pkt)
-    if not parsed or len(pkt) < 8:
+    if not parsed:
         return 0
     src, dst = parsed
-    ip_id = int.from_bytes(pkt[4:6], 'big')
+    ip_id = int.from_bytes(pkt[off + 4 : off + 6], 'big')
     return hash((src, dst, ip_id, len(pkt)))
 
 
@@ -525,10 +528,11 @@ def _ics_windivert_open_candidates(
         ifidx_f = _ics_hotspot_ifidx_filter(downstream_prefix)
         if ifidx_f:
             out.append((ifidx_f, 'ifidx'))
-        out.append((_ics_clumsy_victim_filter(vip), 'victim'))
-        out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
         out.append((_ics_hotspot_forward_filter(downstream_prefix), 'forward'))
         out.append(('ip or ipv6', 'broad'))
+        out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
+        # Victim-only filter misses post-NAT game traffic — last resort only.
+        out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     elif vip:
         out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     return out
@@ -608,17 +612,29 @@ def probe_windivert_for_victim(victim_ip: str) -> tuple[bool, str]:
     )
 
 
+def _ipv4_header_offset(packet: bytes) -> int:
+    """Start of IPv4 header (0 for raw IP; 14 when WinDivert includes Ethernet)."""
+    if len(packet) >= 14:
+        if int.from_bytes(packet[12:14], 'big') == 0x0800:
+            return 14
+    if len(packet) >= 1 and (packet[0] >> 4) == 4:
+        return 0
+    return -1
+
+
 def _parse_ipv4_src_dst(packet: bytes) -> Optional[Tuple[str, str]]:
-    if len(packet) < 20:
+    off = _ipv4_header_offset(packet)
+    if off < 0 or len(packet) < off + 20:
         return None
-    v = packet[0] >> 4
+    ip = packet[off:]
+    v = ip[0] >> 4
     if v != 4:
         return None
-    ihl = (packet[0] & 0x0F) * 4
-    if len(packet) < ihl or ihl < 20:
+    ihl = (ip[0] & 0x0F) * 4
+    if len(ip) < ihl or ihl < 20:
         return None
-    src = _ipv4_bytes(packet[12:16])
-    dst = _ipv4_bytes(packet[16:20])
+    src = _ipv4_bytes(ip[12:16])
+    dst = _ipv4_bytes(ip[16:20])
     return src, dst
 
 
@@ -755,6 +771,12 @@ class IcsWinDivertLagGate:
         except Exception:
             prefix = '192.168.137.'
         self._downstream_prefix = prefix
+        try:
+            from tools.clumsy_inline import clumsy_ics_downstream_ifidx
+
+            clumsy_ics_downstream_ifidx()
+        except Exception:
+            pass
         h, layer, desc = _open_best_windivert_handle(self._dll, vip, prefix)
         if h < 0:
             last_err = _windivert_last_error_message()
@@ -1142,7 +1164,7 @@ class IcsWinDivertLagGate:
                 broad = bool(getattr(self, '_subnet_capture', False))
                 parsed = _parse_ipv4_src_dst(pkt)
                 if not parsed:
-                    if broad and impair_mode == IMPAIR_PAUSE and blocking:
+                    if impair_mode == IMPAIR_PAUSE and blocking:
                         self._packets_matched += 1
                         continue
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))

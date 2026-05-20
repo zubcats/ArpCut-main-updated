@@ -124,18 +124,29 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertGreaterEqual(len(cands), 4)
         self.assertEqual(cands[0][1], 'ifidx')
         self.assertIn('ifIdx == 16', cands[0][0])
+        self.assertEqual(cands[-1][1], 'victim')
 
-    def test_open_candidates_victim_after_ifidx_on_hotspot(self) -> None:
+    def test_open_candidates_broad_before_victim_when_no_ifidx(self) -> None:
         with mock.patch('tools.clumsy_inline.clumsy_ics_downstream_ifidx', return_value=0):
             cands = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
-        self.assertEqual(cands[0][1], 'victim')
-        self.assertEqual(cands[-1][1], 'broad')
+        names = [d for _, d in cands]
+        self.assertIn('forward', names)
+        self.assertIn('broad', names)
+        self.assertEqual(names[-1], 'victim')
+        self.assertLess(names.index('broad'), names.index('victim'))
 
-    def test_broad_capture_pause_drops_without_victim_header_match(self) -> None:
+    def test_pause_drops_unparsed_packets_when_blocking(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)
-        block = src[src.index('if broad:'): src.index('elif not _packet_matches_hotspot_client')]
+        block = src[src.index('if not parsed:'): src.index('src, dst = parsed')]
         self.assertIn('IMPAIR_PAUSE and blocking', block)
         self.assertIn('continue', block)
+
+    def test_ipv4_parse_handles_ethernet_header(self) -> None:
+        eth = bytes.fromhex(
+            'ffffffffffff0011223344550800'
+            '450000140000000000000000c0a889c208080808'
+        )
+        self.assertEqual(wd._parse_ipv4_src_dst(eth), ('192.168.137.194', '8.8.8.8'))
 
     def test_victim_packet_roles_no_broad_nat_fallback(self) -> None:
         from_v, to_v, _active = wd._victim_packet_roles(
