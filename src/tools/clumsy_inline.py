@@ -159,6 +159,14 @@ def clumsy_ics_downstream_ifidx() -> int:
     cached = getattr(clumsy_ics_downstream_ifidx, '_cached_idx', None)
     if isinstance(cached, int) and cached > 0:
         return cached
+    try:
+        state = read_clumsy_ics_state()
+        saved = int(state.get('downstream_ifindex') or 0)
+        if saved > 0:
+            clumsy_ics_downstream_ifidx._cached_idx = saved
+            return saved
+    except (TypeError, ValueError):
+        pass
     idx = clumsy_ics_downstream_ifidx_from_arp()
     if idx <= 0:
         try:
@@ -214,10 +222,20 @@ def hotspot_arp_cache_sensitive(scanner: Optional['Scanner'] = None) -> bool:
 
 
 def clumsy_hotspot_session_active() -> bool:
-    """True when Clumsy mode is on and topology is PC Mobile Hotspot (not home-router LAN)."""
+    """True when Clumsy mode is on and the console path is PC Mobile Hotspot (not home-router LAN)."""
     if not clumsy_mode_enabled() or not sys.platform.startswith('win'):
         return False
-    return read_clumsy_topology() == 'hotspot'
+    if read_clumsy_topology() == 'hotspot':
+        return True
+    # Stale state: topology saved as ethernet when only a spare LAN port existed (no cable).
+    try:
+        state = read_clumsy_ics_state()
+        gw = str(state.get('downstream_ipv4') or '').strip()
+        if gw.startswith('192.168.137.'):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def clumsy_ics_arp_ip_for_mac(scanner: Optional['Scanner'], mac: str) -> str:

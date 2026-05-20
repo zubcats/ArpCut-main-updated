@@ -124,13 +124,13 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertNotIn('Stop-Service icssvc', src.replace(' ', ''))
         self.assertNotIn('Disable-NetAdapterBinding', src)
 
-    def test_autodetect_checks_ethernet_console_before_hotspot(self) -> None:
+    def test_autodetect_prefers_hotspot_before_spare_ethernet(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
         self.assertIn('Test-HotspotPathActive', helpers)
         detect_idx = helpers.index('function Detect-ClumsyConsolePath')
         eth_idx = helpers.index('Find-EthernetConsoleAdapter', detect_idx)
         hotspot_check = helpers.index('Test-HotspotPathActive', detect_idx)
-        self.assertLess(eth_idx, hotspot_check)
+        self.assertLess(hotspot_check, eth_idx)
 
     def test_autodetect_tracks_uplink_kind(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
@@ -153,7 +153,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
     def test_ethernet_requires_connected_console_neighbor(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
         self.assertIn('Test-ConsoleOnEthernetAdapter', helpers)
-        self.assertIn('if ($ethUp.Count -eq 1)', helpers)
+        self.assertNotIn('if ($ethUp.Count -eq 1) { return $ethUp[0] }', helpers)
 
     def test_hotspot_operational_without_classic_ics(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS

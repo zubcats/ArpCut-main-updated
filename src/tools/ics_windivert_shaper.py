@@ -562,7 +562,7 @@ def _open_best_windivert_handle(
         if desc == 'victim':
             layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
         elif desc in ('forward', 'broad'):
-            layers = (WINDIVERT_LAYER_NETWORK_FORWARD,)
+            layers = (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
         else:
             layers = (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
         for layer in layers:

@@ -334,8 +334,7 @@ function Find-EthernetConsoleAdapter {
   $ethUp = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
     $_.ifIndex -ne $upIdx -and $_.Status -eq 'Up' -and (LikelyEthernetNic $_) -and -not (IsHotspotDownstreamNic $_) -and -not (IsVirtualNicLike $_.Name $_.InterfaceDescription)
   })
-  # One spare Ethernet port (not the router uplink) - console cable path even before ARP shows a neighbor.
-  if ($ethUp.Count -eq 1) { return $ethUp[0] }
+  # Require a reachable IPv4 neighbor on the cable (not router uplink / not home subnet).
   foreach ($a in $ethUp) {
     if (Test-ConsoleOnEthernetAdapter -Adapter $a -GatewayIp $GatewayIp -UplinkIps $upIps -GwPrefix $gwPrefix) {
       return $a
@@ -433,7 +432,14 @@ function Detect-ClumsyConsolePath {
   }
   $gw = Get-GatewayIpForUplink $up
   $uplinkKind = Get-UplinkKindLabel $up
-  # PS5 on spare Ethernet port (not router WAN) - prefer over hotspot when a console is on the cable.
+  # Mobile Hotspot (137.x) before spare Ethernet: desktops often have an unused LAN port that is not a console.
+  if (Test-HotspotPathActive) {
+    $down = Get-HotspotDownstreamAdapter -ExcludeIfIndex $up.ifIndex
+    if ($down) {
+      return @{ Ok=$true; Path='hotspot'; Up=$up; Down=$down; GatewayIp=$gw; UplinkKind=$uplinkKind }
+    }
+  }
+  # PS5/console on spare Ethernet (neighbor on cable), not router WAN.
   $eth = Find-EthernetConsoleAdapter -Uplink $up -GatewayIp $gw
   if ($eth) {
     return @{ Ok=$true; Path='ethernet'; Up=$up; Down=$eth; GatewayIp=$gw; UplinkKind=$uplinkKind }
@@ -1180,6 +1186,7 @@ try {{
       upstream_name = $up.Name
       downstream_guid = (NormGuid $down.InterfaceGuid)
       downstream_name = $down.Name
+      downstream_ifindex = [int]$down.ifIndex
       downstream_ipv4 = $downIp
       downstream_prefix = $prefix
       snapshot = $snapshot

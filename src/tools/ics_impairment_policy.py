@@ -93,6 +93,16 @@ def classify_device_impairment(
     resolved = clumsy_ics_resolve_victim_ip(device, scanner) or table_ip
     prefix = clumsy_ics_downstream_prefix()
     topo = read_clumsy_topology()
+    # Mis-detected spare Ethernet while ICS gateway is still 192.168.137.1 (mobile hotspot).
+    if topo == 'ethernet':
+        try:
+            from tools.clumsy_ics import read_clumsy_ics_state
+
+            gw = str(read_clumsy_ics_state().get('downstream_ipv4') or '').strip()
+            if gw.startswith('192.168.137.'):
+                topo = 'hotspot'
+        except Exception:
+            pass
     on_downstream = victim_on_clumsy_ics_subnet(resolved)
     # Hotspot session: console is on PC Wi‑Fi even when the scan table still shows home LAN IP.
     if not on_downstream and clumsy_hotspot_session_active() and not device.get('admin'):
