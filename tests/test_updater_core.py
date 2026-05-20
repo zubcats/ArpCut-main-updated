@@ -12,6 +12,8 @@ if _ROOT not in sys.path:
 
 from tools.updater_core import (
     RemoteInstallerInfo,
+    _download_request_url,
+    _is_github_release_asset_api_url,
     format_updater_error_message,
     get_update_status,
     installer_download_candidates,
@@ -110,6 +112,34 @@ class UpdaterCoreTest(unittest.TestCase):
         self.assertEqual(len(urls), 2)
         self.assertIn('/releases/assets/7', urls[0])
         self.assertEqual(urls[1], static)
+
+    def test_asset_api_url_not_cache_busted(self) -> None:
+        api = (
+            'https://api.github.com/repos/zubcats/ArpCut-main-updated/releases/assets/42'
+        )
+        self.assertTrue(_is_github_release_asset_api_url(api))
+        self.assertEqual(_download_request_url(api), api)
+        static = (
+            'https://github.com/zubcats/ArpCut-main-updated/releases/download/'
+            'stable-latest/ZubCut-Setup.exe'
+        )
+        bust = _download_request_url(static)
+        self.assertIn('cb=', bust)
+        self.assertNotEqual(bust, static)
+
+    def test_format_updater_error_404_suggests_retry(self) -> None:
+        import urllib.error
+
+        err = urllib.error.HTTPError(
+            'https://api.github.com/repos/zubcats/ArpCut-main-updated/releases/assets/1',
+            404,
+            'Not Found',
+            None,
+            None,
+        )
+        msg = format_updater_error_message(err)
+        self.assertIn('stale', msg.lower())
+        self.assertIn('again', msg.lower())
 
     def test_format_updater_error_10065_mentions_hotspot_repair(self):
         import tools.updater_core as uc
