@@ -18,7 +18,11 @@ from tools.license_remote_signin import effective_signin_url
 from tools.branding import load_shell_window_icon, qicon_is_empty
 from tools.qtools import msg_box, Buttons, MsgIcon
 
-from gui.main import ElmoCut
+from zubcut_platform import require_supported_platform
+
+require_supported_platform()
+
+from gui.main import ZubCutApp
 
 from assets import app_icon
 from constants import *
@@ -35,7 +39,7 @@ _UI_LOG_RESTORE_FG = getattr(
 def _load_window_icon():
     icon = load_shell_window_icon()
     if qicon_is_empty(icon):
-        return ElmoCut.processIcon(app_icon, crop_margins=True)
+        return ZubCutApp.processIcon(app_icon, crop_margins=True)
     return icon
 
 
@@ -308,7 +312,7 @@ if __name__ == "__main__":
             pass
     repair_settings()
     _validate_license_or_exit(icon)
-    GUI = ElmoCut(window_icon=icon)
+    GUI = ZubCutApp(window_icon=icon)
     _start_license_runtime_validation(GUI, icon)
     GUI.show()
     GUI._apply_scan_table_column_layout()

@@ -1,0 +1,5 @@
+ZubCut
+Copyright (c) ZubOnTop. All rights reserved.
+
+This software is proprietary. Unauthorized copying, distribution, or modification
+is prohibited except as permitted by ZubOnTop in writing.

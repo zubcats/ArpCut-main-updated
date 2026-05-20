@@ -511,35 +511,44 @@ _BROAD_CAPTURE_DESCS = frozenset({'subnet', 'forward', 'ifidx', 'broad'})
 
 
 def _ics_windivert_open_candidates(
-    victim_ip: str, downstream_prefix: str = ''
+    victim_ip: str,
+    downstream_prefix: str = '',
+    *,
+    hotspot_capture: bool = False,
 ) -> list[tuple[str, str]]:
     """
     Filter order for hotspot capture.
 
     Hotspot NIC (ifIdx) first for post-NAT game traffic, then pre-NAT victim IP.
+    When ``hotspot_capture`` is true, use ifIdx/broad filters even if the table IP
+    is still a home LAN address (192.168.1.x).
     """
     vip = _ipv4_quad(victim_ip)
-    if not vip:
+    if not vip and not hotspot_capture:
         return []
     quad = _ics_subnet_quad_prefix(downstream_prefix)
     out: list[tuple[str, str]] = []
-    on_subnet = bool(quad and vip.startswith(quad + '.'))
-    if on_subnet:
+    on_subnet = bool(quad and vip and vip.startswith(quad + '.'))
+    if on_subnet or hotspot_capture:
         ifidx_f = _ics_hotspot_ifidx_filter(downstream_prefix)
         if ifidx_f:
             out.append((ifidx_f, 'ifidx'))
         out.append((_ics_hotspot_forward_filter(downstream_prefix), 'forward'))
         out.append(('ip or ipv6', 'broad'))
-        out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
-        # Victim-only filter misses post-NAT game traffic — last resort only.
-        out.append((_ics_clumsy_victim_filter(vip), 'victim'))
+        if on_subnet and vip:
+            out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
+            out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     elif vip:
         out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     return out
 
 
 def _open_best_windivert_handle(
-    dll: ctypes.WinDLL, victim_ip: str, downstream_prefix: str = ''
+    dll: ctypes.WinDLL,
+    victim_ip: str,
+    downstream_prefix: str = '',
+    *,
+    hotspot_capture: bool = False,
 ) -> tuple[int, int, str]:
     """
     Open exactly one WinDivert handle.
@@ -547,7 +556,9 @@ def _open_best_windivert_handle(
     Victim filter: try NETWORK then FORWARD (137.x often visible pre-NAT).
     Subnet filter: FORWARD then NETWORK (post-NAT game traffic on ICS).
     """
-    for filt, desc in _ics_windivert_open_candidates(victim_ip, downstream_prefix):
+    for filt, desc in _ics_windivert_open_candidates(
+        victim_ip, downstream_prefix, hotspot_capture=hotspot_capture
+    ):
         if desc == 'victim':
             layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
         elif desc in ('forward', 'broad'):
@@ -777,7 +788,15 @@ class IcsWinDivertLagGate:
             clumsy_ics_downstream_ifidx()
         except Exception:
             pass
-        h, layer, desc = _open_best_windivert_handle(self._dll, vip, prefix)
+        try:
+            from tools.clumsy_inline import clumsy_hotspot_session_active
+
+            hotspot_capture = clumsy_hotspot_session_active()
+        except Exception:
+            hotspot_capture = False
+        h, layer, desc = _open_best_windivert_handle(
+            self._dll, vip, prefix, hotspot_capture=hotspot_capture
+        )
         if h < 0:
             last_err = _windivert_last_error_message()
             hint = 'Run ZubCut as Administrator.'

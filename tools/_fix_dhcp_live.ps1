@@ -80,9 +80,9 @@ try {
 
 L ''
 L 'On PS5/phone NOW:'
-L '  1. Stay on ArpCutPS5'
+L '  1. Stay on ZubCutPS5'
 L '  2. Set IP to Automatic (not manual)'
 L '  3. Disconnect Wi-Fi 10 sec, reconnect'
 L '  4. Wait 60 seconds for IP'
 L ''
-L 'SSID ArpCutPS5  password Connect12345'
+L 'SSID ZubCutPS5  password Connect12345'

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# Form implementation generated from reading ui file 'C:\Users\ELMOIV\Desktop\Python Data\elmocut\exe\ui_settings.ui'
+# Qt UI — generated from ui_settings.ui (ZubCut)
 #
 # Created by: PyQt5 UI code generator 5.13.0
 #

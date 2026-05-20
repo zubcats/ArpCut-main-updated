@@ -144,7 +144,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
     def __init__(self, parent=None):
         super().__init__(None)
         self.setObjectName('zubcutLagDupeDialog')
-        self.elmocut = parent
+        self.app = parent
         self._lbl_clumsy_status: QLabel | None = None
         self._lbl_mitm_status: QLabel | None = None
         self._mitm_sync_guard = False
@@ -461,7 +461,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
     def _sync_victim_master_toggle(self) -> None:
         if self._tog_victim_all is None:
             return
-        main = self.elmocut
+        main = self.app
         active = main is not None and bool(getattr(main, 'mitm_shaping_active', False))
         self._tog_victim_all.blockSignals(True)
         self._tog_victim_all.setChecked(active)
@@ -472,7 +472,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._sync_victim_master_toggle()
         if self._lbl_mitm_status is None:
             return
-        main = self.elmocut
+        main = self.app
         if main is None or not getattr(main, 'mitm_shaping_active', False):
             self._lbl_mitm_status.setText('')
             self._lbl_mitm_status.setVisible(False)
@@ -486,7 +486,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._lbl_mitm_status.setStyleSheet('color: #8fbcbb; font-size: 11px;')
 
     def _log(self, msg: str, color: str = 'red') -> None:
-        main = self.elmocut
+        main = self.app
         if main is not None and hasattr(main, 'log'):
             try:
                 main.log(msg, color)
@@ -494,7 +494,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
                 pass
 
     def _push_shaping_if_active(self) -> None:
-        main = self.elmocut
+        main = self.app
         if main is None or not getattr(main, 'mitm_shaping_active', False):
             return
         if not self._has_valid_mitm_config():
@@ -509,7 +509,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         """Timer column edits restart that row's schedule from now."""
         if self._mitm_sync_guard:
             return
-        main = self.elmocut
+        main = self.app
         if main is not None and getattr(main, 'mitm_shaping_active', False):
             try:
                 main._reset_mitm_adv_sched_clock(row_prefix or None)
@@ -525,7 +525,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._push_shaping_if_active()
 
     def _on_victim_shaping_toggled(self, checked: bool) -> None:
-        main = self.elmocut
+        main = self.app
         if main is None or self._mitm_sync_guard:
             return
         try:
@@ -559,7 +559,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         self._refresh_mitm_status()
 
     def _on_mitm_stop(self) -> None:
-        main = self.elmocut
+        main = self.app
         if main is None:
             return
         main.stop_mitm_shaping(log=True)

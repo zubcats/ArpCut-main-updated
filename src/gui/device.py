@@ -11,9 +11,9 @@ from tools.utils_gui import register_window_surface_effects
 
 
 class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
-    def __init__(self, elmocut, icon):
+    def __init__(self, app, icon):
         super().__init__()
-        self.elmocut = elmocut
+        self.app = app
         self.device = None
         self.current_row = -1
         self.__nicknames = Nicknames()
@@ -72,7 +72,7 @@ class Device(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def instantApplyChanges(self, name):
         self.device['name'] = name
-        self.elmocut.fillTableRow(self.current_row, self.device)
+        self.app.fillTableRow(self.current_row, self.device)
         self.close()
 
     def showEvent(self, event):

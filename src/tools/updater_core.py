@@ -39,7 +39,6 @@ _NO_CACHE_HEADERS = {
     'Pragma': 'no-cache',
 }
 
-_GITHUB_REPO_FALLBACK = 'zubcats/ArpCut-main-updated'
 _BUILD_INFO_ASSET = 'build-info.json'
 
 _REMOTE_CACHE_TTL_SEC = 45.0
@@ -136,12 +135,20 @@ def local_build_label() -> str:
 
 
 def _github_repo() -> str:
+    try:
+        from constants import GITHUB_REPO_SLUG
+
+        slug = str(GITHUB_REPO_SLUG or '').strip()
+        if slug:
+            return slug
+    except Exception:
+        pass
     url = selected_update_url()
     if url:
         parts = urlparse(url).path.strip('/').split('/')
         if len(parts) >= 2:
             return f'{parts[0]}/{parts[1]}'
-    return _GITHUB_REPO_FALLBACK
+    return 'zubcats/ZubCut'
 
 
 def _release_tag_for_channel(channel: str) -> str:

@@ -76,7 +76,7 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertIn('def _ics_apply_percent_cut_windivert', src)
         self.assertIn('def _ics_apply_advanced_shaping_windivert', src)
         toggle = src[src.index('def togglePercentCut'): src.index('def stopPercentCut')]
-        self.assertIn('clumsy_ics_use_firewall_only(device, self.scanner)', toggle)
+        self.assertIn('plan.is_ics_downstream', toggle)
         self.assertIn('_ics_apply_percent_cut_windivert(device, pct)', toggle)
         self.assertIn('def _ics_quiesce_killer_mitm', src)
         self.assertIn('_ics_quiesce_killer_mitm(device)', src)
@@ -117,6 +117,15 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertEqual(len(off), 1)
         on = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
         self.assertTrue(any('137.' in f for f, _ in on))
+
+    def test_open_candidates_hotspot_capture_for_home_lan_table_ip(self) -> None:
+        cands = wd._ics_windivert_open_candidates(
+            '192.168.1.50', '192.168.137.', hotspot_capture=True
+        )
+        names = [d for _, d in cands]
+        self.assertIn('forward', names)
+        self.assertIn('broad', names)
+        self.assertNotIn('victim', names)
 
     def test_open_candidates_ifidx_first_when_on_hotspot_subnet(self) -> None:
         with mock.patch('tools.clumsy_inline.clumsy_ics_downstream_ifidx', return_value=16):
@@ -226,7 +235,7 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         with open(path, encoding='utf-8') as fh:
             src = fh.read()
         tick = src[src.index('def _mitm_adv_apply_sched_tick'): src.index('def start_mitm_shaping_from_advanced')]
-        self.assertIn('clumsy_ics_use_firewall_only(device, self.scanner)', tick)
+        self.assertIn('_uses_windivert(device)', tick)
         self.assertIn('_ics_apply_advanced_shaping_windivert', tick)
 
     def test_windivert_impostor_dropped_not_reshaped(self) -> None:

@@ -213,6 +213,43 @@ def hotspot_arp_cache_sensitive(scanner: Optional['Scanner'] = None) -> bool:
     return False
 
 
+def clumsy_hotspot_session_active() -> bool:
+    """True when Clumsy mode is on and topology is PC Mobile Hotspot (not home-router LAN)."""
+    if not clumsy_mode_enabled() or not sys.platform.startswith('win'):
+        return False
+    return read_clumsy_topology() == 'hotspot'
+
+
+def clumsy_ics_arp_ip_for_mac(scanner: Optional['Scanner'], mac: str) -> str:
+    """ICS-subnet IPv4 for this MAC from ARP (e.g. 137.x while the table still shows 192.168.1.x)."""
+    mac_norm = good_mac(mac)
+    if not mac_norm or mac_norm == GLOBAL_MAC:
+        return ''
+    prefix = clumsy_ics_downstream_prefix()
+    try:
+        if scanner is not None:
+            text = _arp_lines_for_scanner(scanner)
+        else:
+            from tools.utils import terminal
+
+            text = terminal('arp -a') or ''
+        state = read_clumsy_ics_state()
+        my_ip = ''
+        router_ip = ''
+        host_ip = str(state.get('downstream_ipv4') or '').strip()
+        if scanner is not None:
+            my_ip = (getattr(scanner, 'my_ip', None) or '').strip()
+            router_ip = (getattr(scanner, 'router_ip', None) or '').strip()
+        for entry in _parse_ics_arp_entries(
+            text, my_ip, router_ip, prefix, host_ip
+        ):
+            if entry.get('mac') == mac_norm:
+                return str(entry.get('ip') or '').strip()
+    except Exception:
+        pass
+    return ''
+
+
 def clumsy_ics_resolve_victim_ip(device, scanner: Optional['Scanner'] = None) -> str:
     """
     Best IPv4 for ICS lag when the device table still shows the home LAN (e.g. 192.168.1.x)
@@ -226,6 +263,9 @@ def clumsy_ics_resolve_victim_ip(device, scanner: Optional['Scanner'] = None) ->
     mac = good_mac(device.get('mac'))
     if not mac or mac == GLOBAL_MAC:
         return ip
+    arp_ip = clumsy_ics_arp_ip_for_mac(scanner, mac)
+    if arp_ip:
+        return arp_ip
     prefix = clumsy_ics_downstream_prefix()
     try:
         from tools.utils import terminal
@@ -256,14 +296,23 @@ def clumsy_ics_resolve_victim_ip(device, scanner: Optional['Scanner'] = None) ->
                         return part.strip()
     except Exception:
         pass
+    if clumsy_hotspot_session_active() and scanner is not None:
+        try:
+            detected = detect_inline_ip(scanner)
+            if detected:
+                return detected
+        except Exception:
+            pass
     return ip
 
 
 def clumsy_ics_use_firewall_only(device, scanner: Optional['Scanner'] = None) -> bool:
     """
-    Victim is on the PC downstream ICS subnet (hotspot or ethernet-to-console).
+    Deprecated alias: use ``ics_impairment_policy.use_windivert_impairment`` or
+    ``DeviceImpairmentPlan.use_windivert`` in new code.
 
-    Use WinDivert for impairment — not home-router ARP MITM / block_ip.
+    Victim is on the PC downstream ICS subnet (hotspot or ethernet-to-console).
+    WinDivert path — not home-router ARP MITM / block_ip.
     """
     try:
         from tools.ics_impairment_policy import use_windivert_impairment
@@ -702,32 +751,13 @@ def detect_inline_ip(
 
 def sync_clumsy_row(scanner: Scanner, *, allow_subnet_ping: bool = False) -> None:
     """
-    Remove legacy synthetic rows; when clumsy mode is on, dedupe duplicate non-admin
-    devices that share the detected ICS client IPv4 (keep first list occurrence).
+    Refresh device table for Clumsy (ICS ARP, one row per MAC on hotspot).
 
-    When allow_subnet_ping is True, may run many sequential pings on the ICS subnet
-    to populate ARP — call only from a worker thread (e.g. scan thread), not the Qt GUI thread.
+    Delegates to ``networking.device_table.sync_device_table``.
     """
-    scanner.devices = [d for d in scanner.devices if not d.get('clumsy_inline')]
-    if not clumsy_mode_enabled() or not clumsy_runtime_ready():
-        return
-    ip = detect_inline_ip(scanner, allow_subnet_ping=allow_subnet_ping)
-    if not ip:
-        return
-    ip_norm = str(ip).strip()
-    same = [
-        i
-        for i, d in enumerate(scanner.devices)
-        if not d.get('admin') and str(d.get('ip') or '').strip() == ip_norm
-    ]
-    if len(same) <= 1:
-        return
-    keep_mac = scanner.devices[same[0]]['mac']
-    scanner.devices = [
-        d
-        for d in scanner.devices
-        if d.get('admin') or str(d.get('ip') or '').strip() != ip_norm or d.get('mac') == keep_mac
-    ]
+    from networking.device_table import sync_device_table
+
+    sync_device_table(scanner, allow_subnet_ping=allow_subnet_ping)
 
 
 def use_windivert_for_advanced_ics_shaping(scanner: Scanner, device: dict) -> bool:

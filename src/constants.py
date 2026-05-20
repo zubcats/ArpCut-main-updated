@@ -11,27 +11,45 @@ APP_USER_DATA_DIR = 'ZubCut'
 #                     experimental -> tester builds (UPDATE_CHANNEL `experimental`)
 # CI overwrites UPDATE_CHANNEL and APP_BUILD_TIME_ISO per branch; match your branch when developing.
 UPDATE_CHANNEL = 'experimental'
+
+# GitHub releases/API (update slug when the repository is renamed on GitHub).
+GITHUB_REPO_SLUG = 'zubcats/ZubCut'
+GITHUB_RELEASES_BASE = f'https://github.com/{GITHUB_REPO_SLUG}/releases'
+
 # Direct download URL for the latest installer package per channel (.exe).
-UPDATE_DOWNLOAD_URL_MAIN = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/stable-latest/ZubCut-Setup.exe'
-UPDATE_DOWNLOAD_URL_EXPERIMENTAL = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/experimental-latest/ZubCut-Setup-experimental.exe'
+UPDATE_DOWNLOAD_URL_MAIN = (
+    f'{GITHUB_RELEASES_BASE}/download/stable-latest/ZubCut-Setup.exe'
+)
+UPDATE_DOWNLOAD_URL_EXPERIMENTAL = (
+    f'{GITHUB_RELEASES_BASE}/download/experimental-latest/ZubCut-Setup-experimental.exe'
+)
 # UTC ISO timestamp when this binary was built (CI overwrites). Used to detect newer installers online.
 APP_BUILD_TIME_ISO = ''
 # Git commit baked into this binary (CI sets GITHUB_SHA). Used to detect stale CDN installers.
 APP_BUILD_COMMIT = ''
 
-# Cross-platform settings paths
+# User data (Windows production path)
 if sys.platform.startswith('win'):
-    OLD_DOCUMENTS_PATH = path.join(environ.get('USERPROFILE', ''), 'Documents', 'elmocut')
-    DOCUMENTS_PATH = path.join(environ.get('APPDATA', ''), APP_USER_DATA_DIR)
-else:
-    home = environ.get('HOME', '')
-    if sys.platform == 'darwin':
-        DOCUMENTS_PATH = path.join(home, 'Library', 'Application Support', APP_USER_DATA_DIR)
-    else:
-        DOCUMENTS_PATH = path.join(home, '.config', APP_USER_DATA_DIR)
-    OLD_DOCUMENTS_PATH = path.join(home, '.config', 'elmocut') if sys.platform != 'darwin' else path.join(home, 'Library', 'Application Support', 'elmocut')
+    from zubcut_legacy_migrate import (
+        legacy_documents_path_windows,
+        legacy_settings_path_windows,
+    )
 
-OLD_SETTINGS_PATH = path.join(OLD_DOCUMENTS_PATH, 'elmocut.json')
+    DOCUMENTS_PATH = path.join(environ.get('APPDATA', ''), APP_USER_DATA_DIR)
+    _up = environ.get('USERPROFILE', '')
+    OLD_DOCUMENTS_PATH = legacy_documents_path_windows(_up)
+    OLD_SETTINGS_PATH = legacy_settings_path_windows(_up)
+else:
+    from zubcut_legacy_migrate import (
+        legacy_documents_path_unix,
+        legacy_settings_path_unix,
+    )
+
+    home = environ.get('HOME', '')
+    DOCUMENTS_PATH = path.join(home, '.config', APP_USER_DATA_DIR)
+    _darwin = sys.platform == 'darwin'
+    OLD_DOCUMENTS_PATH = legacy_documents_path_unix(home, darwin=_darwin)
+    OLD_SETTINGS_PATH = legacy_settings_path_unix(home, darwin=_darwin)
 SETTINGS_PATH = path.join(DOCUMENTS_PATH, 'zubcut.json')
 LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'zubcut-license.json')
 # CI injects from secret LICENSE_PUBLIC_KEY_B64 (Ed25519 verify key, base64).

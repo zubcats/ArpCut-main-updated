@@ -16,7 +16,13 @@ from networking.nicknames import (
     record_nickname_last_ip,
 )
 from tools.device_display import infer_network_device_type
-from tools.clumsy_inline import sync_clumsy_row, clumsy_mode_enabled
+from networking.device_table import (
+    build_client_rows_from_scan,
+    extra_scan_hits_from_ics_arp,
+    phantom_favorite_should_skip,
+    sync_device_table,
+)
+from tools.clumsy_inline import clumsy_mode_enabled
 from tools.utils import *
 from constants import *
 
@@ -228,6 +234,8 @@ class Scanner():
             pk = nickname_profile_key(mac, ip)
             if not pk or pk in present_profiles:
                 continue
+            if phantom_favorite_should_skip(self, mac, ip, present_profiles):
+                continue
             if prefix and ipv4_subnet_prefix(ip) != prefix:
                 continue
             parts = str(ip).split('.')
@@ -261,58 +269,16 @@ class Scanner():
 
     def devices_appender(self, scan_result):
         """
-        Append scan results to self.devices
+        Append scan results to self.devices (MAC-centric table in Clumsy hotspot mode).
         """
-        nicknames = Nicknames()
-
-        self.devices = []
-        seen_profiles = set()
-
-        # Sort by last IPv4 octet (tolerant of odd rows so we never abort the scan thread).
-        def _ip_sort_key(item):
-            try:
-                return int(str(item[0]).rsplit('.', 1)[-1])
-            except (ValueError, IndexError, TypeError, AttributeError):
-                return 0
-
-        scan_result = sorted(scan_result, key=_ip_sort_key)
-
-        for ip, mac in scan_result:
-            mac = good_mac(mac)
-            profile = nickname_profile_key(mac, ip)
-
-            # Skip me/router; allow same MAC on different subnets as separate rows.
-            if ip in [self.router_ip, self.my_ip] or not profile or profile in seen_profiles:
-                continue
-
-            if self.old_ips.get(profile, ip) != ip:
-                self.old_ips[profile] = ip
-            seen_profiles.add(profile)
-
-            vend = get_vendor(mac)
-            try:
-                dev_type = infer_network_device_type(mac, vend, '')
-            except Exception:
-                dev_type = 'User'
-            nm = nicknames.get_name(mac, ip)
-            self.devices.append(
-                {
-                    'ip':     ip,
-                    'mac':    mac,
-                    'vendor': vend,
-                    'type':   dev_type,
-                    'name':   nm,
-                    'admin':  False
-                }
-            )
-            if nm and nm != '-':
-                record_nickname_last_ip(mac, ip)
-
-        # Drop stale row when this profile's IP changed on the same subnet.
-        for device in self.devices[:]:
-            pk = nickname_profile_key(device['mac'], device['ip'])
-            if pk and self.old_ips.get(pk, device['ip']) != device['ip']:
-                self.devices.remove(device)
+        hits: list = list(scan_result or [])
+        try:
+            for pair in extra_scan_hits_from_ics_arp(self):
+                if pair not in hits:
+                    hits.append(pair)
+        except Exception:
+            pass
+        self.devices = build_client_rows_from_scan(self, hits)
 
         self.old_ips = {
             nickname_profile_key(d['mac'], d['ip']): d['ip']
@@ -328,7 +294,7 @@ class Scanner():
             for d in self.devices
             if not d.get('admin')
         }
-        sync_clumsy_row(self)
+        sync_device_table(self, allow_subnet_ping=True)
 
         # Clear arp cache to avoid duplicates next time
         if unique:
@@ -341,41 +307,29 @@ class Scanner():
         """
         if not hits:
             return
-        nicknames = Nicknames()
-        by_profile = {
-            nickname_profile_key(d['mac'], d['ip']): d
-            for d in self.devices
-            if not d.get('admin')
-        }
+        admins = [d for d in self.devices if d.get('admin')]
+        existing = [d for d in self.devices if not d.get('admin')]
+        merged_hits = []
+        seen = set()
+        for d in existing:
+            ip = str(d.get('ip') or '').strip()
+            mac = good_mac(d.get('mac'))
+            if ip and mac:
+                merged_hits.append((ip, mac))
+                seen.add((ip, mac))
+            lan = str(d.get('lan_ip') or '').strip()
+            if lan and mac and (lan, mac) not in seen:
+                merged_hits.append((lan, mac))
+                seen.add((lan, mac))
         for ip, mac in hits:
             mac = good_mac(mac)
-            profile = nickname_profile_key(mac, ip)
-            if ip in [self.router_ip, self.my_ip] or not profile:
+            if not mac:
                 continue
-            vend = get_vendor(mac)
-            try:
-                dev_type = infer_network_device_type(mac, vend, '')
-            except Exception:
-                dev_type = 'User'
-            nm = nicknames.get_name(mac, ip)
-            by_profile[profile] = {
-                'ip': ip,
-                'mac': mac,
-                'vendor': vend,
-                'type': dev_type,
-                'name': nm,
-                'admin': False,
-            }
-            if nm and nm != '-':
-                record_nickname_last_ip(mac, ip)
-
-        def _sort_dev(d):
-            try:
-                return int(str(d['ip']).rsplit('.', 1)[-1])
-            except (ValueError, IndexError, TypeError, AttributeError):
-                return 0
-
-        self.devices = sorted(by_profile.values(), key=_sort_dev)
+            pair = (str(ip).strip(), mac)
+            if pair not in seen:
+                merged_hits.append(pair)
+                seen.add(pair)
+        self.devices = build_client_rows_from_scan(self, merged_hits)
         self.old_ips = {
             nickname_profile_key(d['mac'], d['ip']): d['ip']
             for d in self.devices
@@ -389,8 +343,7 @@ class Scanner():
             for d in self.devices
             if not d.get('admin')
         }
-        # Ping sweep can take seconds; this runs on the scan QThread, not the GUI thread.
-        sync_clumsy_row(self, allow_subnet_ping=True)
+        sync_device_table(self, allow_subnet_ping=True)
 
     def _windows_arp_raw_text(self):
         """Merge interface-scoped and full ARP output (``-N`` often returns nothing on some builds)."""

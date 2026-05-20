@@ -19,51 +19,40 @@ from constants import *
 
 
 def enable_ip_forwarding():
-    """Enable kernel IP forwarding (Clumsy ICS scripts set IPEnableRouter on Windows)."""
+    """Enable kernel IP forwarding (Windows: IPEnableRouter + netsh). No-op on other OSes."""
+    if not sys.platform.startswith('win'):
+        return
     try:
-        if sys.platform == 'darwin':
-            subprocess.run(
-                ['sysctl', '-w', 'net.inet.ip.forwarding=1'],
-                capture_output=True,
-                check=False,
-            )
-        elif sys.platform.startswith('linux'):
-            subprocess.run(
-                ['sysctl', '-w', 'net.ipv4.ip_forward=1'],
-                capture_output=True,
-                check=False,
-            )
-        elif sys.platform.startswith('win'):
-            try:
-                import winreg
+        try:
+            import winreg
 
-                key = winreg.OpenKey(
-                    winreg.HKEY_LOCAL_MACHINE,
-                    r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters',
-                    0,
-                    winreg.KEY_SET_VALUE,
-                )
-                winreg.SetValueEx(key, 'IPEnableRouter', 0, winreg.REG_DWORD, 1)
-                winreg.CloseKey(key)
-            except Exception:
-                subprocess.run(
-                    [
-                        'powershell',
-                        '-NoProfile',
-                        '-Command',
-                        "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' "
-                        "-Name 'IPEnableRouter' -Value 1 -Type DWord -Force",
-                    ],
-                    capture_output=True,
-                    timeout=12,
-                    check=False,
-                )
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters',
+                0,
+                winreg.KEY_SET_VALUE,
+            )
+            winreg.SetValueEx(key, 'IPEnableRouter', 0, winreg.REG_DWORD, 1)
+            winreg.CloseKey(key)
+        except Exception:
             subprocess.run(
-                ['netsh', 'interface', 'ipv4', 'set', 'global', 'forwarding=enabled'],
+                [
+                    'powershell',
+                    '-NoProfile',
+                    '-Command',
+                    "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' "
+                    "-Name 'IPEnableRouter' -Value 1 -Type DWord -Force",
+                ],
                 capture_output=True,
                 timeout=12,
                 check=False,
             )
+        subprocess.run(
+            ['netsh', 'interface', 'ipv4', 'set', 'global', 'forwarding=enabled'],
+            capture_output=True,
+            timeout=12,
+            check=False,
+        )
     except Exception:
         pass
 
@@ -480,13 +469,9 @@ class Killer:
         Re-kill old devices in self.storage
         """
         try:
-            from tools.clumsy_inline import (
-                clumsy_ics_resolve_victim_ip,
-                victim_on_clumsy_ics_subnet,
-            )
+            from tools.ics_impairment_policy import should_restore_remembered_kill
         except Exception:
-            clumsy_ics_resolve_victim_ip = lambda _d, _s=None: ''  # type: ignore
-            victim_on_clumsy_ics_subnet = lambda _ip: False  # type: ignore
+            should_restore_remembered_kill = lambda _d, _s=None: True  # type: ignore
 
         for mac, old in self.storage.items():
             for new in new_devices:
@@ -499,9 +484,7 @@ class Killer:
             if old not in new_devices:
                 new_devices.append(old)
 
-            ip = clumsy_ics_resolve_victim_ip(old) or str(old.get('ip') or '').strip()
-            if victim_on_clumsy_ics_subnet(ip):
-                # Hotspot Kill uses WinDivert only — ARP MITM here stacks full cut.
+            if not should_restore_remembered_kill(old):
                 continue
             self.kill(old)
 

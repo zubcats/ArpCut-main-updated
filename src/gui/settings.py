@@ -150,9 +150,9 @@ def _channel_kind_label(channel: str) -> str:
 
 
 class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
-    def __init__(self, elmocut, icon):
+    def __init__(self, app, icon):
         super().__init__()
-        self.elmocut = elmocut
+        self.app = app
 
         # Setup UI
         self.icon = icon
@@ -395,7 +395,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
             set_settings('clumsy_mode', new_v)
-        restart_zubcut(self.elmocut)
+        restart_zubcut(self.app)
 
     def _on_clumsy_install_clicked(self):
         url = (UPDATE_DOWNLOAD_URL_EXPERIMENTAL or '').strip()
@@ -425,7 +425,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if path is None:
                 return
             launch_installer(path)
-            self.elmocut.quit_all()
+            self.app.quit_all()
         except Exception as e:
             MsgType.ERROR(
                 None,
@@ -464,7 +464,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.comboInterface.clearFocus()
         self.comboInterface.hidePopup()
         self.refresh_update_banner()
-        el = getattr(self, 'elmocut', None)
+        el = getattr(self, 'app', None)
         if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
             el._sync_settings_gear_update_hint()
         self._refresh_clumsy_settings_widgets()
@@ -573,13 +573,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             }
         )
 
-        old_iface = self.elmocut.scanner.iface.name
+        old_iface = self.app.scanner.iface.name
         
-        self.elmocut.iface = get_iface_by_name(iface)
-        self.updateElmocutSettings()
+        self.app.iface = get_iface_by_name(iface)
+        self.apply_app_settings()
         # Fix horizontal headerfont reverts to normal after applying settings
         mono_font = 'Menlo' if __import__('sys').platform == 'darwin' else 'Consolas'
-        self.elmocut.tableScan.horizontalHeader().setFont(QFont(mono_font, 11))
+        self.app.tableScan.horizontalHeader().setFont(QFont(mono_font, 11))
 
         if not silent_apply:
             MsgType.INFO(
@@ -595,7 +595,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 f'{APP_DISPLAY_NAME} will restart to apply new interface.'
             )
 
-            restart_zubcut(self.elmocut)
+            restart_zubcut(self.app)
         
         self.close()
 
@@ -633,50 +633,54 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.currentSettings()
         self.Apply()
 
-    def updateElmocutSettings(self):
+    def apply_app_settings(self):
+        """Push Settings values into the running main window."""
         repair_settings()
         s = _coerce_scan_counts(import_settings())
         self.currentSettings()
-        
-        self.elmocut.minimize = s['minimized']
-        self.elmocut.remember = False
-        self.elmocut.autoupdate = s['autoupdate']
-        self.elmocut.scanner.device_count = s['count']
-        self.elmocut.scanner.max_threads = s['threads']
-        
-        self.elmocut.scanner.iface = get_iface_by_name(s['iface'])
-        self.elmocut.killer.iface = get_iface_by_name(s['iface'])
-        
-        app = QApplication.instance()
-        if app is not None:
-            app.setStyleSheet(self.styleSheet())
-        self.elmocut._repolish_chrome_pushbuttons()
-        self.elmocut.setStyleSheet('')
-        self.elmocut.about_window.setStyleSheet('')
-        # Lag/Dupe must inherit QApplication styles only. A full app sheet copied onto QDialog
-        # breaks QDialog-scoped rules from zubcut_dark_stylesheet() (qdark blue panels return).
+        main = self.app
+
+        main.minimize = s['minimized']
+        main.remember = False
+        main.autoupdate = s['autoupdate']
+        main.scanner.device_count = s['count']
+        main.scanner.max_threads = s['threads']
+
+        main.scanner.iface = get_iface_by_name(s['iface'])
+        main.killer.iface = get_iface_by_name(s['iface'])
+
+        qt_app = QApplication.instance()
+        if qt_app is not None:
+            qt_app.setStyleSheet(self.styleSheet())
+        main._repolish_chrome_pushbuttons()
+        main.setStyleSheet('')
+        main.about_window.setStyleSheet('')
         for _dlg in (
-            getattr(self.elmocut, 'lag_switch_dialog', None),
-            getattr(self.elmocut, 'dupe_switch_dialog', None),
-            getattr(self.elmocut, 'advanced_lag_settings_dialog', None),
+            getattr(main, 'lag_switch_dialog', None),
+            getattr(main, 'dupe_switch_dialog', None),
+            getattr(main, 'advanced_lag_settings_dialog', None),
         ):
             if _dlg is not None:
                 _dlg.setStyleSheet('')
         _w = [
-            self.elmocut,
-            self.elmocut.about_window,
+            main,
+            main.about_window,
             self,
-            self.elmocut.device_window,
-            self.elmocut.traffic_window,
+            main.device_window,
+            main.traffic_window,
         ]
-        _w.extend(d for d in (
-            getattr(self.elmocut, 'lag_switch_dialog', None),
-            getattr(self.elmocut, 'dupe_switch_dialog', None),
-            getattr(self.elmocut, 'advanced_lag_settings_dialog', None),
-        ) if d is not None)
+        _w.extend(
+            d
+            for d in (
+                getattr(main, 'lag_switch_dialog', None),
+                getattr(main, 'dupe_switch_dialog', None),
+                getattr(main, 'advanced_lag_settings_dialog', None),
+            )
+            if d is not None
+        )
         sync_translucent_chrome(_w)
-        self.elmocut.refresh_keyboard_shortcuts_from_settings()
-        self.elmocut._sync_scan_table_column_settings()
+        main.refresh_keyboard_shortcuts_from_settings()
+        main._sync_scan_table_column_settings()
 
     def currentSettings(self):
         s = _coerce_scan_counts(import_settings())
@@ -802,7 +806,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             launch_installer(path)
             quit_for_update = True
             updater_log('checkUpdate: quit_all')
-            self.elmocut.quit_all()
+            self.app.quit_all()
         except Exception as e:
             updater_log('checkUpdate: exception %s', e, exc_info=True)
             MsgType.ERROR(
@@ -836,7 +840,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnUpdate.setText(self._update_button_text())
             self._sync_update_button_tooltip()
             self._apply_update_button_style()
-            el = getattr(self, 'elmocut', None)
+            el = getattr(self, 'app', None)
             if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
                 el._sync_settings_gear_update_hint()
         except Exception:

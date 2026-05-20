@@ -261,7 +261,7 @@ def check_connection(func):
     """
     def wrapper(*args, **kargs):
         if is_connected():
-            # args[0] == "self" in ElmoCut class
+            # args[0] == "self" in ZubCutApp class
             return func(args[0])
     return wrapper
 

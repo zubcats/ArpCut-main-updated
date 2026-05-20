@@ -10,6 +10,7 @@ _ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
 if _ROOT not in sys.path:
     sys.path.insert(0, os.path.join(_ROOT, 'src'))
 
+from constants import GITHUB_REPO_SLUG, UPDATE_DOWNLOAD_URL_MAIN
 from tools.updater_core import (
     RemoteInstallerInfo,
     _download_request_url,
@@ -21,6 +22,10 @@ from tools.updater_core import (
 )
 
 
+def _api_asset(asset_id: int) -> str:
+    return f'https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/assets/{asset_id}'
+
+
 class UpdaterCoreTest(unittest.TestCase):
     def test_update_available_when_remote_is_newer(self):
         import tools.updater_core as uc
@@ -28,7 +33,7 @@ class UpdaterCoreTest(unittest.TestCase):
         remote = datetime(2026, 5, 16, 10, 11, tzinfo=timezone.utc)
         info = RemoteInstallerInfo(
             updated_at=remote,
-            download_url='https://api.github.com/repos/zubcats/ArpCut-main-updated/releases/assets/99',
+            download_url=_api_asset(99),
             asset_id=99,
             size=40_000_000,
             remote_commit='abc123def456',
@@ -39,7 +44,7 @@ class UpdaterCoreTest(unittest.TestCase):
         ), patch.object(uc, 'UPDATE_CHANNEL', 'main'), patch.object(
             uc,
             'UPDATE_DOWNLOAD_URL_MAIN',
-            'https://github.com/zubcats/ArpCut-main-updated/releases/download/stable-latest/ZubCut-Setup.exe',
+            UPDATE_DOWNLOAD_URL_MAIN,
         ), patch.object(uc, 'UPDATE_DOWNLOAD_URL_EXPERIMENTAL', ''), patch.object(
             uc, '_cached_remote_installer_info', return_value=info
         ):
@@ -54,7 +59,7 @@ class UpdaterCoreTest(unittest.TestCase):
         commit = 'samecommit1234'
         info = RemoteInstallerInfo(
             updated_at=t,
-            download_url='https://api.github.com/repos/zubcats/ArpCut-main-updated/releases/assets/100',
+            download_url=_api_asset(100),
             asset_id=100,
             size=40_000_000,
             remote_commit=commit,
@@ -65,7 +70,7 @@ class UpdaterCoreTest(unittest.TestCase):
         ), patch.object(uc, 'UPDATE_CHANNEL', 'main'), patch.object(
             uc,
             'UPDATE_DOWNLOAD_URL_MAIN',
-            'https://github.com/zubcats/ArpCut-main-updated/releases/download/stable-latest/ZubCut-Setup.exe',
+            UPDATE_DOWNLOAD_URL_MAIN,
         ), patch.object(uc, 'UPDATE_DOWNLOAD_URL_EXPERIMENTAL', ''), patch.object(
             uc, '_cached_remote_installer_info', return_value=info
         ):
@@ -78,7 +83,7 @@ class UpdaterCoreTest(unittest.TestCase):
 
         info = RemoteInstallerInfo(
             updated_at=None,
-            download_url='https://api.github.com/repos/zubcats/ArpCut-main-updated/releases/assets/42',
+            download_url=_api_asset(42),
             asset_id=42,
             size=1,
             remote_commit='',
@@ -93,16 +98,13 @@ class UpdaterCoreTest(unittest.TestCase):
 
         info = RemoteInstallerInfo(
             updated_at=None,
-            download_url='https://api.github.com/repos/zubcats/ArpCut-main-updated/releases/assets/7',
+            download_url=_api_asset(7),
             asset_id=7,
             size=1,
             remote_commit='',
             remote_built_at='',
         )
-        static = (
-            'https://github.com/zubcats/ArpCut-main-updated/releases/download/'
-            'stable-latest/ZubCut-Setup.exe'
-        )
+        static = UPDATE_DOWNLOAD_URL_MAIN
         with patch.object(uc, '_cached_remote_installer_info', return_value=info), patch.object(
             uc, 'UPDATE_CHANNEL', 'main'
         ), patch.object(uc, 'UPDATE_DOWNLOAD_URL_MAIN', static), patch.object(
@@ -114,15 +116,10 @@ class UpdaterCoreTest(unittest.TestCase):
         self.assertEqual(urls[1], static)
 
     def test_asset_api_url_not_cache_busted(self) -> None:
-        api = (
-            'https://api.github.com/repos/zubcats/ArpCut-main-updated/releases/assets/42'
-        )
+        api = _api_asset(42)
         self.assertTrue(_is_github_release_asset_api_url(api))
         self.assertEqual(_download_request_url(api), api)
-        static = (
-            'https://github.com/zubcats/ArpCut-main-updated/releases/download/'
-            'stable-latest/ZubCut-Setup.exe'
-        )
+        static = UPDATE_DOWNLOAD_URL_MAIN
         bust = _download_request_url(static)
         self.assertIn('cb=', bust)
         self.assertNotEqual(bust, static)
@@ -131,7 +128,7 @@ class UpdaterCoreTest(unittest.TestCase):
         import urllib.error
 
         err = urllib.error.HTTPError(
-            'https://api.github.com/repos/zubcats/ArpCut-main-updated/releases/assets/1',
+            _api_asset(1),
             404,
             'Not Found',
             None,

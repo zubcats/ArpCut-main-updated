@@ -50,10 +50,10 @@ class TestLagCountdown(unittest.TestCase):
         self.assertNotIn('_lag_ics_force_unpause', tick)
 
     def test_allow_phase_uses_same_countdown_format(self) -> None:
-        from gui.main import ElmoCut
+        from gui.main import ZubCutApp
 
-        self.assertEqual(ElmoCut._lag_countdown_label(True, 1500), 'Time left: 2 s')
-        self.assertEqual(ElmoCut._lag_countdown_label(False, 9000), 'Time left: 9 s')
+        self.assertEqual(ZubCutApp._lag_countdown_label(True, 1500), 'Time left: 2 s')
+        self.assertEqual(ZubCutApp._lag_countdown_label(False, 9000), 'Time left: 9 s')
 
     def test_phase_flag_before_timing_sync_in_begin(self) -> None:
         src = self._main_py()

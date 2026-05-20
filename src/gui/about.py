@@ -16,9 +16,9 @@ LINKTREE_URL = 'https://linktr.ee/zubcastle'
 
 
 class About(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
-    def __init__(self, elmocut, icon):
+    def __init__(self, app, icon):
         super().__init__()
-        self.elmocut = elmocut
+        self.app = app
 
         self.icon = icon
         self.setWindowIcon(icon)
@@ -35,7 +35,7 @@ class About(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lblAppIcon.setMaximumHeight(340)
         self.lblAppIcon.setCursor(Qt.ArrowCursor)
 
-        self.lblAppName.setText(f'{APP_DISPLAY_NAME} v{self.elmocut.version}')
+        self.lblAppName.setText(f'{APP_DISPLAY_NAME} v{self.app.version}')
         build_bits = []
         if str(APP_BUILD_TIME_ISO or '').strip():
             build_bits.append(str(APP_BUILD_TIME_ISO).strip()[:10])

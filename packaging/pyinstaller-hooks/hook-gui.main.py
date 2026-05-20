@@ -1,4 +1,4 @@
-# PyInstaller runs this when `gui.main` is analyzed (entry imports ElmoCut from there).
+# PyInstaller runs this when `gui.main` is analyzed (entry imports ZubCutApp from there).
 hiddenimports = [
     'gui.traffic',
     'ui.ui_traffic',

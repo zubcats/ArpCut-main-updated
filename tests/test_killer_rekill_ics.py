@@ -18,7 +18,7 @@ class TestKillerRekillIcs(unittest.TestCase):
         with open(path, encoding='utf-8') as fh:
             src = fh.read()
         block = src[src.index('def rekill_stored'): src.index('def one_way_kill')]
-        self.assertIn('victim_on_clumsy_ics_subnet', block)
+        self.assertIn('should_restore_remembered_kill', block)
         self.assertIn('continue', block)
 
 

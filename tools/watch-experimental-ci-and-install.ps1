@@ -23,7 +23,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$installerUrl = 'https://github.com/zubcats/ArpCut-main-updated/releases/download/experimental-latest/ZubCut-Setup-experimental.exe'
+$installerUrl = 'https://github.com/zubcats/ZubCut/releases/download/experimental-latest/ZubCut-Setup-experimental.exe'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $LogFile = Join-Path $env:TEMP 'zubcut-ci-watch.log'
 
