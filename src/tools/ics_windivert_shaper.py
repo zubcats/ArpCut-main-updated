@@ -270,6 +270,19 @@ def _ics_subnet_quad_prefix(prefix: str) -> str:
     return p
 
 
+def _ics_hotspot_ifidx_filter(downstream_prefix: str = '') -> str:
+    """All IPv4/IPv6 on the hotspot NIC (post-NAT PS5 game traffic)."""
+    try:
+        from tools.clumsy_inline import clumsy_ics_downstream_ifidx
+
+        ifidx = clumsy_ics_downstream_ifidx()
+    except Exception:
+        ifidx = 0
+    if ifidx > 0:
+        return f'(ip or ipv6) and ifIdx == {ifidx}'
+    return ''
+
+
 def _ics_hotspot_forward_filter(downstream_prefix: str = '') -> str:
     """
     Catch post-NAT game traffic on Mobile Hotspot (no 137.x in IPv4 headers).
@@ -491,14 +504,16 @@ def _open_windivert_handle(dll: ctypes.WinDLL, filt: str, layer: int) -> int:
     return -1
 
 
+_BROAD_CAPTURE_DESCS = frozenset({'subnet', 'forward', 'ifidx', 'broad'})
+
+
 def _ics_windivert_open_candidates(
     victim_ip: str, downstream_prefix: str = ''
 ) -> list[tuple[str, str]]:
     """
     Filter order for hotspot capture.
 
-    Victim filter first (137.x visible pre-NAT on NETWORK). Subnet second.
-    Broad FORWARD last for post-NAT game traffic with no 137.x in headers.
+    Hotspot NIC (ifIdx) first for post-NAT game traffic, then pre-NAT victim IP.
     """
     vip = _ipv4_quad(victim_ip)
     if not vip:
@@ -507,9 +522,13 @@ def _ics_windivert_open_candidates(
     out: list[tuple[str, str]] = []
     on_subnet = bool(quad and vip.startswith(quad + '.'))
     if on_subnet:
+        ifidx_f = _ics_hotspot_ifidx_filter(downstream_prefix)
+        if ifidx_f:
+            out.append((ifidx_f, 'ifidx'))
         out.append((_ics_clumsy_victim_filter(vip), 'victim'))
         out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
         out.append((_ics_hotspot_forward_filter(downstream_prefix), 'forward'))
+        out.append(('ip or ipv6', 'broad'))
     elif vip:
         out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     return out
@@ -527,7 +546,7 @@ def _open_best_windivert_handle(
     for filt, desc in _ics_windivert_open_candidates(victim_ip, downstream_prefix):
         if desc == 'victim':
             layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
-        elif desc == 'forward':
+        elif desc in ('forward', 'broad'):
             layers = (WINDIVERT_LAYER_NETWORK_FORWARD,)
         else:
             layers = (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
@@ -745,7 +764,7 @@ class IcsWinDivertLagGate:
             raise OSError(f'WinDivertOpen failed. {hint}')
         self._handles = [h]
         self._open_layers = [layer]
-        self._subnet_capture = desc in ('subnet', 'forward')
+        self._subnet_capture = desc in _BROAD_CAPTURE_DESCS
         self._capture_desc = desc
         self._packets_seen = 0
         self._packets_matched = 0
@@ -1119,55 +1138,69 @@ class IcsWinDivertLagGate:
                 # Re-sending impostors loops until TTL=0 and looks like full Kill.
                 if _windivert_addr_impostor(addr_b):
                     continue
+
+                broad = bool(getattr(self, '_subnet_capture', False))
                 parsed = _parse_ipv4_src_dst(pkt)
                 if not parsed:
+                    if broad and impair_mode == IMPAIR_PAUSE and blocking:
+                        self._packets_matched += 1
+                        continue
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
                 src, dst = parsed
                 with self._lock:
                     pinned_victim = self._victim
-                subnet_mode = bool(getattr(self, '_subnet_capture', False))
-                if subnet_mode:
+                outbound = _windivert_addr_outbound(addr_b)
+
+                if broad:
                     gw = _ics_gateway_ip(subnet_prefix)
                     if gw and src == gw and dst == gw:
                         self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                         continue
+                    self._packets_matched += 1
+                    if impair_mode == IMPAIR_PAUSE and blocking:
+                        continue
+                    is_from_victim = outbound is not False
+                    is_to_victim = outbound is not True
+                    if outbound is None:
+                        is_from_victim = True
+                        is_to_victim = True
                 elif not _packet_matches_hotspot_client(
                     src, dst, pinned_victim, subnet_prefix
                 ):
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
-                self._packets_matched += 1
+                else:
+                    self._packets_matched += 1
+                    from_v, to_v, _active = _victim_packet_roles(
+                        src,
+                        dst,
+                        pinned_victim,
+                        subnet_prefix,
+                        outbound=outbound,
+                        subnet_capture=False,
+                    )
+                    if not self._shapes_packet(
+                        direction, from_victim=from_v, to_victim=to_v
+                    ):
+                        self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                        continue
+                    is_from_victim = from_v
+                    is_to_victim = to_v
+                    if not (from_v or to_v):
+                        self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                        continue
 
-                outbound = _windivert_addr_outbound(addr_b)
-                from_v, to_v, _active = _victim_packet_roles(
-                    src,
-                    dst,
-                    pinned_victim,
-                    subnet_prefix,
-                    outbound=outbound,
-                    subnet_capture=subnet_mode,
-                )
-                if not self._shapes_packet(direction, from_victim=from_v, to_victim=to_v):
-                    self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
-                    continue
-
-                is_from_victim = from_v
-                is_to_victim = to_v
                 n = len(pkt)
-
-                # Subnet filters can see gateway / other clients — only impair PS5 flows.
-                if not (from_v or to_v):
-                    self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
-                    continue
-
                 if impair_mode == IMPAIR_OFF:
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
                 sig = 0
-                if impair_mode in (IMPAIR_PERCENT, IMPAIR_SHAPE) and (is_from_victim or is_to_victim):
+                if impair_mode in (IMPAIR_PERCENT, IMPAIR_SHAPE) and (
+                    is_from_victim or is_to_victim
+                ):
                     sig = _ipv4_packet_sig(pkt)
                     if sig:
                         last = self._recent_shaped.get(sig)
@@ -1251,7 +1284,9 @@ class IcsWinDivertLagGate:
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
 
-                if impair_mode == IMPAIR_PAUSE and blocking and (is_from_victim or is_to_victim):
+                if impair_mode == IMPAIR_PAUSE and blocking and (
+                    is_from_victim or is_to_victim
+                ):
                     continue
 
                 self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))

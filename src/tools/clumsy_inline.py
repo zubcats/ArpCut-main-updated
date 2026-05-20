@@ -125,32 +125,58 @@ def clumsy_ics_downstream_ifidx() -> int:
     """WinDivert ifIdx for the Mobile Hotspot / ICS downstream adapter, or 0."""
     if not sys.platform.startswith('win'):
         return 0
+    cached = getattr(clumsy_ics_downstream_ifidx, '_cached_idx', None)
+    if isinstance(cached, int) and cached > 0:
+        return cached
+    idx = 0
     try:
         from tools.utils import terminal
 
         state = read_clumsy_ics_state()
+        guid = str(state.get('downstream_guid') or '').strip().strip('{}')
         name = str(state.get('downstream_name') or '').strip()
-        guid = str(state.get('downstream_guid') or '').strip()
-        if name:
-            safe = name.replace("'", "''")
-            cmd = (
-                f'powershell -NoProfile -Command '
-                f'"(Get-NetAdapter -Name \'{safe}\' -ErrorAction SilentlyContinue).ifIndex"'
-            )
-        elif guid:
-            cmd = (
+        attempts: list[str] = []
+        if guid:
+            attempts.append(
                 f'powershell -NoProfile -Command '
                 f'"(Get-NetAdapter -InterfaceGuid \'{guid}\' -ErrorAction SilentlyContinue).ifIndex"'
             )
-        else:
-            return 0
-        out = (terminal(cmd) or '').strip()
-        if not out:
-            return 0
-        idx = int(out.split()[0])
-        return idx if idx > 0 else 0
+        if name:
+            safe = name.replace("'", "''")
+            attempts.append(
+                f'powershell -NoProfile -Command '
+                f'"(Get-NetAdapter -Name \'{safe}\' -ErrorAction SilentlyContinue).ifIndex"'
+            )
+            attempts.append(
+                f'powershell -NoProfile -Command '
+                f'"(Get-NetAdapter | Where-Object {{ $_.Name -eq \'{safe}\' }} '
+                f'| Select-Object -First 1).ifIndex"'
+            )
+        for cmd in attempts:
+            out = (terminal(cmd) or '').strip()
+            if not out:
+                continue
+            try:
+                idx = int(out.split()[0])
+            except ValueError:
+                continue
+            if idx > 0:
+                break
+        if idx <= 0 and name:
+            listing = terminal('netsh interface ipv4 show interfaces') or ''
+            name_low = name.lower()
+            for line in listing.splitlines():
+                if name_low not in line.lower():
+                    continue
+                parts = line.split()
+                if parts and parts[0].isdigit():
+                    idx = int(parts[0])
+                    break
     except Exception:
-        return 0
+        idx = 0
+    if idx > 0:
+        clumsy_ics_downstream_ifidx._cached_idx = idx
+    return idx if idx > 0 else 0
 
 
 def victim_on_clumsy_ics_subnet(victim_ip: str) -> bool:
