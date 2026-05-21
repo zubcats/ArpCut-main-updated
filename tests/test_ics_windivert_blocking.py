@@ -98,18 +98,17 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         idx = src.index('if not (from_v or to_v)')
         self.assertLess(idx, src.index('if impair_mode == IMPAIR_OFF'))
 
-    def test_start_opens_single_handle_subnet_forward_first(self) -> None:
+    def test_start_opens_multi_handle_on_hotspot(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate.start)
-        self.assertIn('_open_best_windivert_handle', src)
-        self.assertIn('self._handles = [h]', src)
-        self.assertNotIn('_open_ics_windivert_handles', src)
+        self.assertIn('_open_windivert_handles', src)
+        self.assertIn('self._handles = [h for h', src)
         open_src = inspect.getsource(wd._ics_windivert_open_candidates)
         self.assertIn('on_subnet', open_src)
         self.assertIn("_ics_clumsy_victim_filter(vip), 'victim'", open_src)
-        best_src = inspect.getsource(wd._open_best_windivert_handle)
+        layers_src = inspect.getsource(wd._layers_for_capture_desc)
         self.assertIn(
             '(WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)',
-            best_src.replace('\n', ' '),
+            layers_src.replace('\n', ' '),
         )
 
     def test_open_candidates_subnet_only_when_victim_on_hotspot(self) -> None:
@@ -128,10 +127,13 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertNotIn('victim', names)
 
     def test_open_candidates_ifidx_first_when_on_hotspot_subnet(self) -> None:
-        with mock.patch('tools.clumsy_inline.clumsy_ics_downstream_ifidx', return_value=16):
+        with mock.patch('tools.clumsy_inline.clumsy_ics_downstream_ifidx', return_value=16), mock.patch(
+            'tools.clumsy_inline.clumsy_ics_upstream_ifidx', return_value=5
+        ):
             cands = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
-        self.assertGreaterEqual(len(cands), 4)
-        self.assertEqual(cands[0][1], 'ifidx')
+        self.assertGreaterEqual(len(cands), 5)
+        self.assertEqual(cands[0][1], 'ifidx-down')
+        self.assertIn('ifidx-up', [d for _, d in cands])
         self.assertIn('ifIdx == 16', cands[0][0])
         self.assertEqual(cands[-1][1], 'victim')
 

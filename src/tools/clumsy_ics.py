@@ -1187,6 +1187,7 @@ try {{
       downstream_guid = (NormGuid $down.InterfaceGuid)
       downstream_name = $down.Name
       downstream_ifindex = [int]$down.ifIndex
+      upstream_ifindex = [int]$up.ifIndex
       downstream_ipv4 = $downIp
       downstream_prefix = $prefix
       snapshot = $snapshot

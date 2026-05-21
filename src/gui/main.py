@@ -2227,6 +2227,15 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         device = self.current_index()
+        if device.get('admin'):
+            self.log('Cannot kill Router / Me', UI_LOG_VICTIM_BLOCK_FG)
+            return
+        resolved = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
+            device.get('ip') or ''
+        ).strip()
+        if resolved:
+            device = dict(device)
+            device['ip'] = resolved
         if not _is_valid_ip(device.get('ip') or ''):
             self.log('Target has no IP yet — enable Internet sharing and rescan.', 'red')
             return
@@ -3597,9 +3606,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                             ifidx = clumsy_ics_downstream_ifidx()
                         except Exception:
                             pass
+                        n_h = len(getattr(gate, '_handles', []) or [])
                         self.log(
-                            f'Hotspot pause on {ip} (WinDivert {cap} ifIdx={ifidx} '
-                            f'layers {layers})',
+                            f'Hotspot pause on {ip} (WinDivert {cap} handles={n_h} '
+                            f'ifIdx down/up={ifidx} layers {layers})',
                             UI_LOG_VICTIM_BLOCK_FG,
                         )
                     return True

@@ -295,17 +295,15 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('192.168.137.', wd_src)
         self.assertIn('WINDIVERT_LAYER_NETWORK', wd_src)
         self.assertNotIn('apply_ics_victim_arp_block', ics_block)
-        open_src = wd_src[
-            wd_src.index('def _open_best_windivert_handle'): wd_src.index('def probe_windivert_for_victim')
-        ]
+        layers_src = inspect.getsource(wd_mod._layers_for_capture_desc)
         self.assertIn(
             '(WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)',
-            open_src.replace('\n', ' '),
+            layers_src.replace('\n', ' '),
         )
         self.assertIn('_ics_windivert_filter', wd_src)
         start_src = gate_src[gate_src.index('def start'): gate_src.index('def set_blocking')]
-        self.assertIn('_open_best_windivert_handle', start_src)
-        self.assertIn('self._handles = [h]', start_src)
+        self.assertIn('_open_windivert_handles', start_src)
+        self.assertIn('self._handles = [h for h', start_src)
         self.assertIn('_ics_windivert_filter', wd_src)
         killer_py = os.path.join(_SRC, 'networking', 'killer.py')
         with open(killer_py, encoding='utf-8') as f:

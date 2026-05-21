@@ -191,6 +191,42 @@ def clumsy_ics_downstream_ifidx() -> int:
     return idx if idx > 0 else 0
 
 
+def clumsy_ics_upstream_ifidx() -> int:
+    """WinDivert ifIdx for the internet uplink (post-NAT game traffic often uses this NIC)."""
+    if not sys.platform.startswith('win'):
+        return 0
+    cached = getattr(clumsy_ics_upstream_ifidx, '_cached_idx', None)
+    if isinstance(cached, int) and cached > 0:
+        return cached
+    idx = 0
+    try:
+        state = read_clumsy_ics_state()
+        idx = int(state.get('upstream_ifindex') or 0)
+    except (TypeError, ValueError):
+        idx = 0
+    down = clumsy_ics_downstream_ifidx()
+    if idx <= 0 or idx == down:
+        try:
+            from tools.utils import terminal
+
+            out = terminal(
+                "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 "
+                "| Sort-Object RouteMetric, InterfaceMetric "
+                "| Select-Object -First 1).InterfaceIndex"
+            ) or ''
+            for part in out.split():
+                if part.isdigit():
+                    cand = int(part)
+                    if cand > 0 and cand != down:
+                        idx = cand
+                        break
+        except Exception:
+            idx = 0
+    if idx > 0:
+        clumsy_ics_upstream_ifidx._cached_idx = idx
+    return idx if idx > 0 else 0
+
+
 def victim_on_clumsy_ics_subnet(victim_ip: str) -> bool:
     ip = str(victim_ip or '').strip()
     if not ip:

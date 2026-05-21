@@ -270,17 +270,35 @@ def _ics_subnet_quad_prefix(prefix: str) -> str:
     return p
 
 
-def _ics_hotspot_ifidx_filter(downstream_prefix: str = '') -> str:
-    """All IPv4/IPv6 on the hotspot NIC (post-NAT PS5 game traffic)."""
-    try:
-        from tools.clumsy_inline import clumsy_ics_downstream_ifidx
-
-        ifidx = clumsy_ics_downstream_ifidx()
-    except Exception:
-        ifidx = 0
+def _ics_ifidx_filter(ifidx: int) -> str:
     if ifidx > 0:
         return f'(ip or ipv6) and ifIdx == {ifidx}'
     return ''
+
+
+def _ics_hotspot_ifidx_filters(downstream_prefix: str = '') -> list[tuple[str, str]]:
+    """Hotspot downstream + internet uplink (ICS post-NAT often appears on uplink ifIdx)."""
+    del downstream_prefix
+    out: list[tuple[str, str]] = []
+    try:
+        from tools.clumsy_inline import (
+            clumsy_ics_downstream_ifidx,
+            clumsy_ics_upstream_ifidx,
+        )
+
+        down = clumsy_ics_downstream_ifidx()
+        up = clumsy_ics_upstream_ifidx()
+    except Exception:
+        down = 0
+        up = 0
+    f_down = _ics_ifidx_filter(down)
+    if f_down:
+        out.append((f_down, 'ifidx-down'))
+    if up > 0 and up != down:
+        f_up = _ics_ifidx_filter(up)
+        if f_up:
+            out.append((f_up, 'ifidx-up'))
+    return out
 
 
 def _ics_hotspot_forward_filter(downstream_prefix: str = '') -> str:
@@ -507,7 +525,14 @@ def _open_windivert_handle(dll: ctypes.WinDLL, filt: str, layer: int) -> int:
     return -1
 
 
-_BROAD_CAPTURE_DESCS = frozenset({'subnet', 'forward', 'ifidx', 'broad'})
+_BROAD_CAPTURE_DESCS = frozenset({
+    'subnet',
+    'forward',
+    'ifidx',
+    'ifidx-down',
+    'ifidx-up',
+    'broad',
+})
 
 
 def _ics_windivert_open_candidates(
@@ -530,9 +555,8 @@ def _ics_windivert_open_candidates(
     out: list[tuple[str, str]] = []
     on_subnet = bool(quad and vip and vip.startswith(quad + '.'))
     if on_subnet or hotspot_capture:
-        ifidx_f = _ics_hotspot_ifidx_filter(downstream_prefix)
-        if ifidx_f:
-            out.append((ifidx_f, 'ifidx'))
+        for filt, desc in _ics_hotspot_ifidx_filters(downstream_prefix):
+            out.append((filt, desc))
         out.append((_ics_hotspot_forward_filter(downstream_prefix), 'forward'))
         out.append(('ip or ipv6', 'broad'))
         if on_subnet and vip:
@@ -543,6 +567,44 @@ def _ics_windivert_open_candidates(
     return out
 
 
+def _layers_for_capture_desc(desc: str) -> tuple[int, ...]:
+    if desc == 'victim':
+        return (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
+    if desc in ('forward', 'broad'):
+        return (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
+    return (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
+
+
+def _open_windivert_handles(
+    dll: ctypes.WinDLL,
+    victim_ip: str,
+    downstream_prefix: str = '',
+    *,
+    hotspot_capture: bool = False,
+) -> list[tuple[int, int, str]]:
+    """
+    Open one or more WinDivert handles (hotspot: downstream + uplink ifIdx).
+
+    Multiple handles are required when ICS post-NAT game traffic appears on the
+    Ethernet uplink while pre-NAT PS5 traffic is on the hotspot adapter.
+    """
+    opened: list[tuple[int, int, str]] = []
+    seen: set[tuple[str, int]] = set()
+    for filt, desc in _ics_windivert_open_candidates(
+        victim_ip, downstream_prefix, hotspot_capture=hotspot_capture
+    ):
+        for layer in _layers_for_capture_desc(desc):
+            key = (filt, layer)
+            if key in seen:
+                continue
+            h = _open_windivert_handle(dll, filt, layer)
+            if h < 0:
+                continue
+            seen.add(key)
+            opened.append((h, layer, desc))
+    return opened
+
+
 def _open_best_windivert_handle(
     dll: ctypes.WinDLL,
     victim_ip: str,
@@ -550,29 +612,20 @@ def _open_best_windivert_handle(
     *,
     hotspot_capture: bool = False,
 ) -> tuple[int, int, str]:
-    """
-    Open exactly one WinDivert handle.
-
-    Victim filter: try NETWORK then FORWARD (137.x often visible pre-NAT).
-    Subnet filter: FORWARD then NETWORK (post-NAT game traffic on ICS).
-    """
-    for filt, desc in _ics_windivert_open_candidates(
-        victim_ip, downstream_prefix, hotspot_capture=hotspot_capture
-    ):
-        if desc == 'victim':
-            layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
-        elif desc in ('forward', 'broad'):
-            layers = (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
-        else:
-            layers = (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
-        for layer in layers:
-            h = _open_windivert_handle(dll, filt, layer)
-            if h >= 0:
-                return h, layer, desc
-    return -1, 0, ''
+    """Open a single handle (first successful candidate). Prefer :func:`_open_windivert_handles`."""
+    opened = _open_windivert_handles(
+        dll, victim_ip, downstream_prefix, hotspot_capture=hotspot_capture
+    )
+    if not opened:
+        return -1, 0, ''
+    return opened[0]
 
 
-def probe_windivert_for_victim(victim_ip: str) -> tuple[bool, str]:
+def probe_windivert_for_victim(
+    victim_ip: str,
+    *,
+    hotspot_capture: bool | None = None,
+) -> tuple[bool, str]:
     """
     Try opening WinDivert like Clumsy (dll+sys colocated, admin required).
     Returns (ok, message).
@@ -603,13 +656,24 @@ def probe_windivert_for_victim(victim_ip: str) -> tuple[bool, str]:
         prefix = clumsy_ics_downstream_prefix()
     except Exception:
         prefix = '192.168.137.'
-    h, layer, desc = _open_best_windivert_handle(dll, vip, prefix)
-    if h >= 0:
+    if hotspot_capture is None:
         try:
-            dll.WinDivertClose(h)
+            from tools.clumsy_inline import clumsy_hotspot_session_active
+
+            hotspot_capture = clumsy_hotspot_session_active()
         except Exception:
-            pass
-        return True, f'ok (layer {layer}, {desc})'
+            hotspot_capture = False
+    opened = _open_windivert_handles(
+        dll, vip, prefix, hotspot_capture=bool(hotspot_capture)
+    )
+    if opened:
+        for h, layer, desc in opened:
+            try:
+                dll.WinDivertClose(h)
+            except Exception:
+                pass
+        summary = ', '.join(f'{d}@{layer}' for _h, layer, d in opened[:4])
+        return True, f'ok ({len(opened)} handle(s): {summary})'
     last_err = _windivert_last_error_message()
     hint = ''
     if 'code 3' in (last_err or '').lower() or '(code 3)' in (last_err or ''):
@@ -794,19 +858,20 @@ class IcsWinDivertLagGate:
             hotspot_capture = clumsy_hotspot_session_active()
         except Exception:
             hotspot_capture = False
-        h, layer, desc = _open_best_windivert_handle(
+        opened = _open_windivert_handles(
             self._dll, vip, prefix, hotspot_capture=hotspot_capture
         )
-        if h < 0:
+        if not opened:
             last_err = _windivert_last_error_message()
             hint = 'Run ZubCut as Administrator.'
             if last_err:
                 raise OSError(f'WinDivertOpen failed: {last_err} {hint}')
             raise OSError(f'WinDivertOpen failed. {hint}')
-        self._handles = [h]
-        self._open_layers = [layer]
-        self._subnet_capture = desc in _BROAD_CAPTURE_DESCS
-        self._capture_desc = desc
+        self._handles = [h for h, _layer, _desc in opened]
+        self._open_layers = [layer for _h, layer, _desc in opened]
+        descs = [d for _h, _layer, d in opened]
+        self._subnet_capture = any(d in _BROAD_CAPTURE_DESCS for d in descs)
+        self._capture_desc = descs[0] if len(descs) == 1 else '+'.join(descs[:4])
         self._packets_seen = 0
         self._packets_matched = 0
         self._packets_held = 0
