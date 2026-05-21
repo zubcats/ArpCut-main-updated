@@ -223,6 +223,17 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertEqual(once.count('Valid hotspot path for Clumsy mode'), 1)
         self.assertIn('console on PC hotspot', once)
 
+    def test_clumsy_hotspot_session_active_resolves_topology(self) -> None:
+        """Regression ZC-4VZ0ZQ: read_clumsy_topology must be imported in clumsy_inline."""
+        from unittest.mock import patch
+
+        with patch.object(inline, 'clumsy_mode_enabled', return_value=False):
+            self.assertFalse(inline.clumsy_hotspot_session_active())
+        with patch.object(inline, 'clumsy_mode_enabled', return_value=True), patch(
+            'tools.clumsy_ics.read_clumsy_topology', return_value='hotspot'
+        ):
+            self.assertTrue(inline.clumsy_hotspot_session_active())
+
     def test_clumsy_ics_subnet_and_gateway(self) -> None:
         path = ics.clumsy_ics_state_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)

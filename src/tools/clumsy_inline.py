@@ -14,7 +14,7 @@ import time
 from typing import TYPE_CHECKING, List, Optional
 
 from constants import GLOBAL_MAC
-from tools.clumsy_ics import read_clumsy_ics_state
+from tools.clumsy_ics import read_clumsy_ics_state, read_clumsy_topology
 from tools.utils import good_mac, get_vendor
 
 if TYPE_CHECKING:

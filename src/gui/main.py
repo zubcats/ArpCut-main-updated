@@ -1839,7 +1839,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Disable per-device controls when an admin row is selected.
         """
-        not_enabled = not self.current_index()['admin']
+        device = self._get_selected_device()
+        if not device:
+            return
+        not_enabled = not device.get('admin')
         self._refresh_selected_device_impairment_plan()
 
         self.btnKill.setEnabled(not_enabled)
