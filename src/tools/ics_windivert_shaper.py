@@ -1285,19 +1285,8 @@ class IcsWinDivertLagGate:
                         continue
                     self._packets_matched += 1
                     if impair_mode == IMPAIR_PAUSE and blocking:
-                        from_v, to_v, _active = _victim_packet_roles(
-                            src,
-                            dst,
-                            pinned_victim,
-                            subnet_prefix,
-                            outbound=outbound,
-                            subnet_capture=True,
-                        )
-                        if from_v or to_v:
-                            if sig:
-                                dropped_sigs.add(sig)
-                            continue
-                        self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
+                        if sig:
+                            dropped_sigs.add(sig)
                         continue
                     is_from_victim = outbound is not False
                     is_to_victim = outbound is not True

@@ -436,13 +436,69 @@ def clumsy_windivert_probe_detail(victim_ip: str) -> str:
         return str(exc)
 
 
+def sync_scanner_iface_for_ics_downstream(scanner: Scanner) -> bool:
+    """
+    Bind scanner/killer to the ICS downstream NIC (Mobile Hotspot), not the home LAN port.
+
+    ``sync_iface_for_victim_ip`` follows the route table and often picks Ethernet to the
+    router while the PS5 is on 192.168.137.x — ARP then goes out the wrong adapter.
+    """
+    if not sys.platform.startswith('win'):
+        return False
+    try:
+        from tools.utils import get_iface_by_name
+
+        state = read_clumsy_ics_state()
+        name = str(state.get('downstream_name') or '').strip()
+        if not name:
+            return False
+        target = get_iface_by_name(name)
+        if not target or getattr(target, 'name', None) in (None, '', 'NULL'):
+            return False
+        cur_guid = getattr(getattr(scanner, 'iface', None), 'guid', None) or ''
+        if cur_guid and cur_guid == getattr(target, 'guid', None):
+            return False
+        scanner.iface = target
+        prefix = clumsy_ics_downstream_prefix()
+        gw = str(state.get('downstream_ipv4') or '').strip()
+        if not gw or not gw.startswith(prefix.rstrip('.')):
+            gw = prefix.rstrip('.') + '.1'
+        scanner.router_ip = gw
+        scanner.router_mac = good_mac(getattr(target, 'mac', None) or GLOBAL_MAC)
+        scanner.my_ip = gw
+        scanner.my_mac = scanner.router_mac
+        try:
+            scanner.perfix = prefix.rstrip('.')
+        except Exception:
+            pass
+        scanner.router = {
+            'ip': gw,
+            'mac': scanner.router_mac,
+            'vendor': get_vendor(scanner.router_mac),
+            'type': 'Router',
+            'name': '',
+            'admin': True,
+        }
+        scanner.me = {
+            'ip': scanner.my_ip,
+            'mac': scanner.my_mac,
+            'vendor': get_vendor(scanner.my_mac),
+            'type': 'Me',
+            'name': '',
+            'admin': True,
+        }
+        return True
+    except Exception:
+        return False
+
+
 def apply_ics_victim_arp_block(scanner: Scanner, killer, device) -> bool:
     """
     Hotspot kill/lag: ARP toward the console only (same red Wi‑Fi icon as normal ZubCut).
 
     Uses gateway 192.168.137.1 — not home-router ARP MITM. Skips flush_arp (Clumsy mode).
     """
-    if not clumsy_ics_use_firewall_only(device):
+    if not clumsy_mode_enabled() or not sys.platform.startswith('win'):
         return False
     if not isinstance(device, dict):
         return False
@@ -450,10 +506,15 @@ def apply_ics_victim_arp_block(scanner: Scanner, killer, device) -> bool:
     ip = clumsy_ics_resolve_victim_ip(device, scanner) or str(
         device.get('ip') or ''
     ).strip()
-    if not ip or not mac or not victim_on_clumsy_ics_subnet(ip):
+    if not ip or not mac:
         return False
+    if not victim_on_clumsy_ics_subnet(ip):
+        arp_ip = clumsy_ics_arp_ip_for_mac(scanner, mac)
+        if not arp_ip:
+            return False
+        ip = arp_ip
     try:
-        scanner.sync_iface_for_victim_ip(ip)
+        sync_scanner_iface_for_ics_downstream(scanner)
     except Exception:
         pass
     apply_clumsy_ics_router_context(scanner, killer, ip)

@@ -3568,8 +3568,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             gate.pause_connection()
         if hasattr(gate, 'set_victim_ip'):
             gate.set_victim_ip(ip)
-        if not getattr(self, 'lag_active', False):
-            if not getattr(self, 'lag_active', False) and not getattr(self, 'dupe_active', False):
+        if not getattr(self, 'lag_active', False) and not getattr(self, 'dupe_active', False):
             self._schedule_ics_windivert_traffic_check(ip)
         return True
 
@@ -3596,8 +3595,22 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killer.disable_percent_cut(device['mac'])
         windivert_ok = False
         arp_ok = False
+        fw_ok = False
         gate = None
         stack_arp = bool(ip) and not for_lag and not for_dupe
+        if stack_arp:
+            try:
+                from tools.clumsy_inline import (
+                    apply_ics_victim_arp_block,
+                    sync_scanner_iface_for_ics_downstream,
+                )
+
+                sync_scanner_iface_for_ics_downstream(self.scanner)
+                arp_ok = bool(
+                    apply_ics_victim_arp_block(self.scanner, self.killer, device)
+                )
+            except Exception:
+                arp_ok = False
         if clumsy_ics_lag_can_use_windivert(device, self.scanner):
             try:
                 if for_lag or for_dupe:
@@ -3618,22 +3631,18 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     f'WinDivert lag failed for {ip}: {exc} [{detail}]',
                     'red',
                 )
-        elif ip:
+        elif ip and not stack_arp:
             self.log(
                 'Hotspot lag needs WinDivert: '
                 + clumsy_windivert_unavailable_reason(device),
                 'red',
             )
-        if stack_arp:
+        if stack_arp and ip and sys.platform.startswith('win'):
             try:
-                from tools.clumsy_inline import apply_ics_victim_arp_block
-
-                arp_ok = bool(
-                    apply_ics_victim_arp_block(self.scanner, self.killer, device)
-                )
+                fw_ok = bool(block_ip('', ip, direction))
             except Exception:
-                arp_ok = False
-        if windivert_ok or arp_ok:
+                fw_ok = False
+        if windivert_ok or arp_ok or fw_ok:
             if for_dupe:
                 pass
             elif for_lag:
@@ -3652,17 +3661,28 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     parts.append(f'WinDivert {cap} h={n_h}')
                 if arp_ok:
                     parts.append('ICS-ARP')
+                if fw_ok:
+                    parts.append('firewall')
+                if not arp_ok and stack_arp:
+                    parts.append('ARP-miss')
                 self.log(
                     f'Hotspot pause on {ip} ({", ".join(parts) or "active"})',
                     UI_LOG_VICTIM_BLOCK_FG,
                 )
             return True
         self._stop_ics_lag_gate()
-        self.log(
-            'Hotspot block failed — run as Administrator, confirm WinDivert bundle, '
-            'then rescan the PS5 on 192.168.137.x.',
-            'red',
-        )
+        if stack_arp and not arp_ok:
+            self.log(
+                f'Hotspot block failed for {ip} — rescan so the PS5 shows 192.168.137.x, '
+                'run as Administrator, then Kill again.',
+                'red',
+            )
+        else:
+            self.log(
+                'Hotspot block failed — run as Administrator, confirm WinDivert bundle, '
+                'then rescan the PS5 on 192.168.137.x.',
+                'red',
+            )
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
