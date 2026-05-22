@@ -1384,7 +1384,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             w.setWindowState(Qt.WindowNoState)
         w.raise_()
         w.activateWindow()
-        w.currentSettings()
+        # Paint first; avoid ipconfig / settings merge on the click stack.
+        QTimer.singleShot(0, w.currentSettings)
         QTimer.singleShot(0, w._load_interfaces_background)
 
     def openAbout(self):
@@ -3375,13 +3376,16 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 release_ics_victim_block(self.scanner, self.killer, victim)
             except Exception:
                 pass
-        if plan.use_block_ip:
-            ip = plan.resolved_ip or str(device.get('ip') or '')
-            if ip:
-                try:
-                    unblock_ip(ip)
-                except Exception:
-                    pass
+        ip = (
+            plan.resolved_ip
+            or clumsy_ics_resolve_victim_ip(device, self.scanner)
+            or str(device.get('ip') or '').strip()
+        )
+        if ip:
+            try:
+                unblock_ip(ip)
+            except Exception:
+                pass
 
     def _ics_teardown_gate_if_idle(self, mac: str | None = None) -> None:
         if not self._ics_windivert_busy(mac):
@@ -3422,13 +3426,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _schedule_ics_windivert_traffic_check(self, victim_ip: str) -> None:
         """
-        Once per new gate: hint if WinDivert never sees traffic for the filter IP.
-
-        Not used while Kill/Dupe/Lag (or other flows) are pausing the victim — zero packets
-        then usually means the pause worked, not that the PS5 is offline.
+        After Kill ON: if WinDivert sees no traffic, log a hint (ICS-ARP may still block).
         """
         ip = str(victim_ip or '').strip()
-        if self._ics_victim_impairment_active(ip):
+        if not ip:
             return
         gate = getattr(self, '_ics_lag_gate', None)
         if gate is None or gate.victim_ip != ip:
@@ -3437,26 +3438,37 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if getattr(self, '_ics_wd_traffic_warn_session', None) == session:
             return
         self._ics_wd_traffic_warn_session = session
+        mac = ''
+        dev = self._get_device_by_mac(None, ip)
+        if isinstance(dev, dict):
+            mac = str(dev.get('mac') or '').strip()
 
         def _check() -> None:
             gate = getattr(self, '_ics_lag_gate', None)
             if gate is None or gate.victim_ip != ip or not gate.is_running():
                 return
-            if self._ics_victim_impairment_active(ip):
+            if not self._ics_victim_impairment_active(ip):
                 return
-            if gate.packets_matched > 0 or gate.packets_seen > 0:
+            if gate.packets_matched > 0:
                 return
             if gate.packets_held > 0:
                 return
             layers = gate.active_layers or ()
-            self.log(
-                f'WinDivert is open but no packets yet for {ip} '
-                f'(layers {layers}, seen {gate.packets_seen}). '
-                'Generate traffic on the PS5 (game, store, or connection test), then try again.',
-                'red',
-            )
+            seen = gate.packets_seen
+            arp_active = bool(mac and mac in self.killer.killed)
+            if seen == 0 and not arp_active:
+                self.log(
+                    f'WinDivert sees no traffic for {ip} (layers {layers}). '
+                    'Run as Administrator; confirm PS5 is on 192.168.137.x.',
+                    'red',
+                )
+            elif seen == 0 and arp_active:
+                self.log(
+                    f'WinDivert idle for {ip}; ICS-ARP kill is active.',
+                    UI_LOG_VICTIM_BLOCK_FG,
+                )
 
-        QTimer.singleShot(5000, _check)
+        QTimer.singleShot(4000, _check)
 
     def _flow_stable_victim_ip(
         self,
@@ -3490,7 +3502,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             ).strip()
         return ''
 
-    def _ensure_ics_lag_gate(self, device, direction: str) -> bool:
+    def _ensure_ics_lag_gate(
+        self, device, direction: str, *, start_paused: bool = False
+    ) -> bool:
         plan = self._impairment_plan_for(device)
         if not plan.is_ics_downstream:
             return False
@@ -3522,7 +3536,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 gate.set_direction(direction)
                 if hasattr(gate, 'set_victim_ip'):
                     gate.set_victim_ip(ip)
-                if getattr(self, 'percent_cut_active', False):
+                if start_paused:
+                    gate.pause_connection()
+                elif getattr(self, 'percent_cut_active', False):
                     pct = self._clamp_percent(self.spinPercentCutMain.value())
                     gate.apply_percent_cut(pct)
                 return True
@@ -3532,25 +3548,28 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 except Exception:
                     pass
                 gate = IcsWinDivertLagGate(ip)
-                gate.start(direction=direction)
+                gate.start(direction=direction, start_paused=start_paused)
                 self._ics_lag_gate = gate
-                if getattr(self, 'lag_active', False) and not getattr(
-                    self, '_lag_in_allow_phase', False
+                if start_paused or (
+                    getattr(self, 'lag_active', False)
+                    and not getattr(self, '_lag_in_allow_phase', False)
                 ):
                     gate.pause_connection()
                 return True
         if gate is not None:
             self._stop_ics_lag_gate(join_timeout=0.5)
         gate = IcsWinDivertLagGate(ip)
-        gate.start(direction=direction)
+        gate.start(direction=direction, start_paused=start_paused)
         self._ics_lag_gate = gate
-        if getattr(self, 'lag_active', False) and not getattr(
-            self, '_lag_in_allow_phase', False
+        if start_paused or (
+            getattr(self, 'lag_active', False)
+            and not getattr(self, '_lag_in_allow_phase', False)
         ):
             gate.pause_connection()
         if hasattr(gate, 'set_victim_ip'):
             gate.set_victim_ip(ip)
         if not getattr(self, 'lag_active', False):
+            if not getattr(self, 'lag_active', False) and not getattr(self, 'dupe_active', False):
             self._schedule_ics_windivert_traffic_check(ip)
         return True
 
@@ -3575,59 +3594,73 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if ip:
             device['ip'] = ip
         self.killer.disable_percent_cut(device['mac'])
+        windivert_ok = False
+        arp_ok = False
+        gate = None
+        stack_arp = bool(ip) and not for_lag and not for_dupe
         if clumsy_ics_lag_can_use_windivert(device, self.scanner):
             try:
-                self._ics_quiesce_killer_mitm(device)
-                if self._ensure_ics_lag_gate(device, direction):
+                if for_lag or for_dupe:
+                    self._ics_quiesce_killer_mitm(device)
+                if self._ensure_ics_lag_gate(
+                    device, direction, start_paused=not for_lag
+                ):
                     gate = self._ics_lag_gate
                     if gate is not None:
-                        gate.clear_shaping()
                         if hasattr(gate, 'pause_connection'):
                             gate.pause_connection()
                         else:
                             gate.set_blocking(True, mode='pause')
-                    if for_dupe:
-                        pass
-                    elif for_lag:
-                        self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
-                    else:
-                        self._ics_kill_profile_macs.add(device['mac'])
-                        self._set_killed_profile(device, True)
-                        self._sync_killed_devices()
-                        self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
-                        self._updateKillButtonState()
-                    if not for_lag:
-                        layers = gate.active_layers if gate is not None else ()
-                        cap = getattr(gate, '_capture_desc', '?')
-                        ifidx = 0
-                        try:
-                            from tools.clumsy_inline import clumsy_ics_downstream_ifidx
-
-                            ifidx = clumsy_ics_downstream_ifidx()
-                        except Exception:
-                            pass
-                        n_h = len(getattr(gate, '_handles', []) or [])
-                        self.log(
-                            f'Hotspot pause on {ip} (WinDivert {cap} handles={n_h} '
-                            f'ifIdx down/up={ifidx} layers {layers})',
-                            UI_LOG_VICTIM_BLOCK_FG,
-                        )
-                    return True
+                        windivert_ok = gate.is_running()
             except OSError as exc:
                 detail = clumsy_windivert_probe_detail(ip)
                 self.log(
                     f'WinDivert lag failed for {ip}: {exc} [{detail}]',
                     'red',
                 )
-        else:
+        elif ip:
             self.log(
                 'Hotspot lag needs WinDivert: '
                 + clumsy_windivert_unavailable_reason(device),
                 'red',
             )
+        if stack_arp:
+            try:
+                from tools.clumsy_inline import apply_ics_victim_arp_block
+
+                arp_ok = bool(
+                    apply_ics_victim_arp_block(self.scanner, self.killer, device)
+                )
+            except Exception:
+                arp_ok = False
+        if windivert_ok or arp_ok:
+            if for_dupe:
+                pass
+            elif for_lag:
+                self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
+            else:
+                self._ics_kill_profile_macs.add(device['mac'])
+                self._set_killed_profile(device, True)
+                self._sync_killed_devices()
+                self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
+                self._updateKillButtonState()
+            if not for_lag:
+                parts = []
+                if windivert_ok and gate is not None:
+                    cap = getattr(gate, '_capture_desc', '?')
+                    n_h = len(getattr(gate, '_handles', []) or [])
+                    parts.append(f'WinDivert {cap} h={n_h}')
+                if arp_ok:
+                    parts.append('ICS-ARP')
+                self.log(
+                    f'Hotspot pause on {ip} ({", ".join(parts) or "active"})',
+                    UI_LOG_VICTIM_BLOCK_FG,
+                )
+            return True
         self._stop_ics_lag_gate()
         self.log(
-            'Kill/lag on hotspot needs WinDivert — firewall rules usually do not affect the PS5.',
+            'Hotspot block failed — run as Administrator, confirm WinDivert bundle, '
+            'then rescan the PS5 on 192.168.137.x.',
             'red',
         )
         self._sync_killed_devices()

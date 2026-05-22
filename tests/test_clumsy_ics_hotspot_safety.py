@@ -294,7 +294,8 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('WINDIVERT_LAYER_NETWORK_FORWARD', wd_src)
         self.assertIn('192.168.137.', wd_src)
         self.assertIn('WINDIVERT_LAYER_NETWORK', wd_src)
-        self.assertNotIn('apply_ics_victim_arp_block', ics_block)
+        self.assertIn('stack_arp = bool(ip) and not for_lag and not for_dupe', ics_block)
+        self.assertIn('apply_ics_victim_arp_block', ics_block)
         layers_src = inspect.getsource(wd_mod._layers_for_capture_desc)
         self.assertIn(
             '(WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)',

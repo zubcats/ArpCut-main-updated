@@ -808,13 +808,18 @@ class IcsWinDivertLagGate:
         th = self._thread
         return th is not None and th.is_alive() and bool(self._handles)
 
-    def start(self, direction: str = 'both') -> None:
+    def start(self, direction: str = 'both', *, start_paused: bool = False) -> None:
         d = str(direction or 'both').strip().lower()
         if d not in ('both', 'in', 'out'):
             d = 'both'
         if self.is_running():
             with self._lock:
                 self._direction = d
+                if start_paused:
+                    self._impair_mode = IMPAIR_PAUSE
+                    self._blocking = True
+                    self._hold_pause = True
+                    self._discard_heap = True
             return
         self.stop(join_timeout=0.2)
         self._stop.clear()
@@ -822,8 +827,14 @@ class IcsWinDivertLagGate:
             self._direction = str(direction or 'both').strip().lower()
             if self._direction not in ('both', 'in', 'out'):
                 self._direction = 'both'
-            self._blocking = False
-            self._discard_heap = False
+            self._blocking = bool(start_paused)
+            self._hold_pause = bool(start_paused)
+            if start_paused:
+                self._impair_mode = IMPAIR_PAUSE
+                self._clear_percent_cut_unlocked()
+            else:
+                self._impair_mode = IMPAIR_OFF
+            self._discard_heap = bool(start_paused)
         dll_path, sys_path = _windivert_materialize_paths()
         if not dll_path or not sys_path:
             inst_dll, inst_sys = _windivert_install_paths()
@@ -1173,6 +1184,7 @@ class IcsWinDivertLagGate:
         kernel32 = ctypes.windll.kernel32
         subnet_prefix = getattr(self, '_downstream_prefix', '192.168.137.')
         heap: list[Tuple[float, bytes, bytes, int]] = []
+        dropped_sigs: set[int] = set()
         from tools.mitm_compound_loss import CAP_OVERFLOW_LOSS_PCT, should_drop_compounded
 
         while not self._stop.is_set():
@@ -1230,6 +1242,7 @@ class IcsWinDivertLagGate:
                 }
 
             got_pkt = False
+            dropped_sigs.clear()
             for h in handles:
                 got = self._recv_one(dll, h, buf, addr, recv_len, addr_len)
                 if got is None:
@@ -1245,11 +1258,17 @@ class IcsWinDivertLagGate:
                 if _windivert_addr_impostor(addr_b):
                     continue
 
+                sig = _ipv4_packet_sig(pkt)
+                if sig and sig in dropped_sigs:
+                    continue
+
                 broad = bool(getattr(self, '_subnet_capture', False))
                 parsed = _parse_ipv4_src_dst(pkt)
                 if not parsed:
                     if impair_mode == IMPAIR_PAUSE and blocking:
                         self._packets_matched += 1
+                        if sig:
+                            dropped_sigs.add(sig)
                         continue
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
@@ -1266,6 +1285,19 @@ class IcsWinDivertLagGate:
                         continue
                     self._packets_matched += 1
                     if impair_mode == IMPAIR_PAUSE and blocking:
+                        from_v, to_v, _active = _victim_packet_roles(
+                            src,
+                            dst,
+                            pinned_victim,
+                            subnet_prefix,
+                            outbound=outbound,
+                            subnet_capture=True,
+                        )
+                        if from_v or to_v:
+                            if sig:
+                                dropped_sigs.add(sig)
+                            continue
+                        self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                         continue
                     is_from_victim = outbound is not False
                     is_to_victim = outbound is not True
@@ -1393,6 +1425,8 @@ class IcsWinDivertLagGate:
                 if impair_mode == IMPAIR_PAUSE and blocking and (
                     is_from_victim or is_to_victim
                 ):
+                    if sig:
+                        dropped_sigs.add(sig)
                     continue
 
                 self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))

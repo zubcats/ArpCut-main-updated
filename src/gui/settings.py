@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 from PyQt5.QtGui import QFont, QKeySequence
-from PyQt5.QtCore import Qt, QTimer, QEvent, QObject
+from PyQt5.QtCore import Qt, QTimer, QEvent, QObject, QThread, pyqtSignal
 import os
 import sys
 
@@ -26,7 +26,7 @@ from tools.qtools import MsgType, Buttons
 from tools.utils import (
     goto,
     get_ifaces,
-    get_default_iface,
+    get_ifaces_cached,
     get_iface_by_name,
     terminal,
     format_iface_settings_label,
@@ -102,6 +102,21 @@ def _settings_keybind_mono_font() -> QFont:
     return f
 
 
+class _UpdateBannerPollThread(QThread):
+    """Fetch update availability off the GUI thread (showEvent must not block on HEAD)."""
+
+    done = pyqtSignal(bool, str)
+
+    def run(self):
+        from tools.updater_core import get_update_status
+
+        try:
+            avail, label = get_update_status()
+        except Exception:
+            avail, label = False, ''
+        self.done.emit(bool(avail), str(label or ''))
+
+
 class _WheelSafeComboBox(QComboBox):
     """Ignore mouse wheel unless the user clicked the combo (avoids accidental index changes)."""
 
@@ -175,8 +190,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.loadInterfaces(use_cache=True)
         QTimer.singleShot(0, self._load_interfaces_background)
 
-        # Apply old settings on open
-        self.currentSettings()
+        # Apply saved values after first paint (constructor must not block on ipconfig).
+        QTimer.singleShot(0, self.currentSettings)
 
         self.sliderCount.valueChanged.connect(self.spinCount.setValue)
         self.spinCount.valueChanged.connect(self.sliderCount.setValue)
@@ -188,10 +203,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._update_channel = _normalized_update_channel_setting()
         self._update_published_label = ''
         self._update_available = False
+        self._update_banner_poll_thread = None
+        self._clumsy_widgets_sig = None
+        self._layout_size_locked = False
         self.btnUpdate.setText(self._update_button_text())
         self._sync_update_button_tooltip()
         # Defer first HEAD check so it does not run synchronously during main window construction.
-        QTimer.singleShot(0, self._deferred_initial_update_check)
+        QTimer.singleShot(0, self._schedule_update_banner_refresh)
         QTimer.singleShot(0, self._refresh_clumsy_settings_widgets)
         self.chkAutoupdate.setToolTip(
             'Automatic startup updates are not used. Use Install Latest Build below when you want to update.'
@@ -252,8 +270,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             inner.setMinimumHeight(200)
         gb.setMinimumHeight(inner.minimumHeight() + 32)
 
-    def _finalize_settings_layout(self) -> None:
+    def _finalize_settings_layout(self, *, force: bool = False) -> None:
         """Size the window after Clumsy rows are in the layout (ui file used a 71px-tall Misc. box)."""
+        if not force and getattr(self, '_layout_size_locked', False):
+            return
         self._relayout_misc_group()
         self.groupBox_keys.setMinimumHeight(140)
         min_w = 430
@@ -262,16 +282,31 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setMaximumSize(16777215, min_h + 80)
         self.adjustSize()
         self.setFixedSize(max(min_w, self.width()), max(min_h, self.height()))
+        self._layout_size_locked = True
 
     def _refresh_clumsy_settings_widgets(self):
         if not sys.platform.startswith('win'):
+            sig = ('hidden',)
+            if sig == getattr(self, '_clumsy_widgets_sig', None):
+                return
+            self._clumsy_widgets_sig = sig
             self.chkClumsy.hide()
             self.btnClumsyInstall.hide()
             self.lblClumsyPath.hide()
+            self._layout_size_locked = False
             return
         bundle = clumsy_bundle_offered()
         driver_ok = windivert_driver_installed()
         incomplete = clumsy_bundle_incomplete()
+        try:
+            clumsy_on = bool(self.chkClumsy.isChecked())
+        except Exception:
+            clumsy_on = False
+        sig = (bundle, driver_ok, incomplete, clumsy_on)
+        if sig == getattr(self, '_clumsy_widgets_sig', None):
+            return
+        self._clumsy_widgets_sig = sig
+        self._layout_size_locked = False
         if bundle and driver_ok:
             self.btnClumsyInstall.hide()
             self.chkClumsy.show()
@@ -463,12 +498,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         super().showEvent(event)
         self.comboInterface.clearFocus()
         self.comboInterface.hidePopup()
-        self.refresh_update_banner()
-        el = getattr(self, 'app', None)
-        if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
-            el._sync_settings_gear_update_hint()
         self._refresh_clumsy_settings_widgets()
         self._finalize_settings_layout()
+        self._schedule_update_banner_refresh()
+        el = getattr(self, 'app', None)
+        if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
+            QTimer.singleShot(0, el._sync_settings_gear_update_hint)
 
     def Apply(self, silent_apply=False):
         repair_settings()
@@ -695,8 +730,21 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.sliderThreads.setValue(s['threads'])
         
         if not s['iface']:
-            set_settings('iface', get_default_iface().name)
-            s = import_settings()
+            try:
+                ifaces = get_ifaces_cached()
+            except Exception:
+                ifaces = []
+            pick = None
+            for iface in ifaces:
+                lip = (getattr(iface, 'ip', None) or '').strip()
+                if lip and lip not in ('127.0.0.1', '0.0.0.0'):
+                    pick = iface
+                    break
+            if pick is None and ifaces:
+                pick = ifaces[0]
+            if pick is not None:
+                set_settings('iface', pick.name)
+                s = import_settings()
         
         saved = s.get('iface') or ''
         idx = self.comboInterface.findData(saved)
@@ -834,31 +882,41 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _channel_label(self):
         return 'experimental' if self._update_channel == 'experimental' else APP_DISPLAY_NAME
 
-    def _deferred_initial_update_check(self):
-        try:
-            self._refresh_update_availability()
-            self.btnUpdate.setText(self._update_button_text())
-            self._sync_update_button_tooltip()
-            self._apply_update_button_style()
+    def _schedule_update_banner_refresh(self) -> None:
+        """Network update check off the GUI thread (never block Settings open)."""
+        main = getattr(self, 'app', None)
+        if main is not None and hasattr(main, '_poll_remote_update_status_if_active'):
+            try:
+                QTimer.singleShot(0, main._poll_remote_update_status_if_active)
+                return
+            except Exception:
+                pass
+        prev = getattr(self, '_update_banner_poll_thread', None)
+        if prev is not None:
+            try:
+                if prev.isRunning():
+                    return
+            except RuntimeError:
+                self._update_banner_poll_thread = None
+        poll = _UpdateBannerPollThread()
+        self._update_banner_poll_thread = poll
+
+        def _apply(avail: bool, label: str) -> None:
+            try:
+                self.apply_update_banner_state(avail, label)
+            except Exception:
+                pass
             el = getattr(self, 'app', None)
             if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
                 el._sync_settings_gear_update_hint()
-        except Exception:
-            pass
 
-    def _refresh_update_availability(self):
-        """Fetch remote installer time; compare to embedded build time when CI set it."""
-        self._update_available, self._update_published_label = get_update_status()
+        poll.done.connect(_apply)
+        poll.finished.connect(poll.deleteLater)
+        poll.start()
 
     def refresh_update_banner(self):
-        """Re-fetch server state and refresh the update button (call after open or on a timer)."""
-        try:
-            self._refresh_update_availability()
-            self.btnUpdate.setText(self._update_button_text())
-            self._sync_update_button_tooltip()
-            self._apply_update_button_style()
-        except Exception:
-            pass
+        """Re-fetch server state and refresh the update button (background thread)."""
+        self._schedule_update_banner_refresh()
 
     def apply_update_banner_state(self, available, published_label):
         """Apply a fetch done elsewhere (e.g. background thread) without another HEAD request."""
