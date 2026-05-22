@@ -88,11 +88,22 @@ def migrate_nickname_storage() -> None:
 
 def record_nickname_last_ip(mac: str, ip: str) -> None:
     """Remember last IPv4 for this MAC on this subnet (phantom row after restart)."""
+    ip = (ip or '').strip()
+    if not ip:
+        return
+    try:
+        from tools.clumsy_inline import clumsy_mode_enabled, clumsy_ics_downstream_prefix
+
+        prefix = clumsy_ics_downstream_prefix()
+        if not clumsy_mode_enabled() and ip.startswith(prefix):
+            return
+    except Exception:
+        pass
     pk = nickname_profile_key(mac, ip)
     if not pk:
         return
     m = dict(get_nickname_last_ip_map())
-    m[pk] = ip.strip()
+    m[pk] = ip
     set_settings('nickname_last_ip', m)
 
 

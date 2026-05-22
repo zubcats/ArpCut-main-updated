@@ -88,7 +88,7 @@ def _carry_nickname_to_display_ip(
         if old and old != '-':
             try:
                 nicknames.set_name(mac, old, display_ip)
-                record_nickname_last_ip(mac, display_ip)
+                _maybe_record_nickname_last_ip(mac, display_ip, _ics_prefix())
             except Exception:
                 pass
             return old
@@ -107,6 +107,73 @@ def _ics_prefix() -> str:
 def _is_ics_ip(ip: str, ics_prefix: str) -> bool:
     ip = (ip or '').strip()
     return bool(ip and ics_prefix and ip.startswith(ics_prefix))
+
+
+def _maybe_record_nickname_last_ip(mac: str, ip: str, ics_prefix: str) -> None:
+    """Persist phantom-row IP; skip hotspot subnet when Clumsy mode is off."""
+    ip = (ip or '').strip()
+    if not ip:
+        return
+    if _is_ics_ip(ip, ics_prefix):
+        try:
+            from tools.clumsy_inline import clumsy_mode_enabled
+
+            if not clumsy_mode_enabled():
+                return
+        except Exception:
+            return
+    record_nickname_last_ip(mac, ip)
+
+
+def _home_lan_ip_for_row(row: dict, ics_prefix: str) -> str:
+    """Best home-router LAN IPv4 for a device row (never the hotspot subnet)."""
+    lan = str(row.get('lan_ip') or '').strip()
+    if lan and not _is_ics_ip(lan, ics_prefix):
+        return lan
+    ip = str(row.get('ip') or '').strip()
+    if ip and not _is_ics_ip(ip, ics_prefix):
+        return ip
+    return ''
+
+
+def revert_clients_to_home_lan_display(scanner: 'Scanner') -> None:
+    """
+    When Clumsy is off, show home-LAN IPs only — impairment needs Clumsy anyway.
+
+    Drops rows that only have a hotspot address until the next scan finds LAN.
+    """
+    try:
+        from tools.clumsy_inline import clumsy_mode_enabled
+    except Exception:
+        return
+    if clumsy_mode_enabled():
+        return
+    ics_prefix = _ics_prefix()
+    admins = [d for d in scanner.devices if d.get('admin')]
+    clients: List[dict] = []
+    seen_mac: set[str] = set()
+    for d in scanner.devices:
+        if d.get('admin'):
+            continue
+        mac = good_mac(d.get('mac'))
+        if mac and mac in seen_mac:
+            continue
+        row = dict(d)
+        home = _home_lan_ip_for_row(row, ics_prefix)
+        if not home:
+            if _is_ics_ip(str(row.get('ip') or ''), ics_prefix):
+                continue
+            home = str(row.get('ip') or '').strip()
+        if not home:
+            continue
+        row['ip'] = home
+        row.pop('ics_ip', None)
+        if mac:
+            seen_mac.add(mac)
+        clients.append(row)
+    scanner.devices = admins + sorted(
+        clients, key=lambda d: _sort_ip_key(d.get('ip', ''))
+    )
 
 
 def build_client_rows_from_scan(
@@ -155,7 +222,8 @@ def build_client_rows_from_scan(
             )
             rows.append(_entry_to_device_dict(ent, display))
             if ent.name and ent.name != '-':
-                record_nickname_last_ip(mac, display)
+                if mac_centric or not _is_ics_ip(display, ics_prefix):
+                    record_nickname_last_ip(mac, display)
         return sorted(rows, key=lambda d: _sort_ip_key(d.get('ip', '')))
 
     # Home LAN: separate row per MAC|subnet profile.
@@ -187,7 +255,7 @@ def build_client_rows_from_scan(
             }
         )
         if nm and nm != '-':
-            record_nickname_last_ip(mac, ip)
+            _maybe_record_nickname_last_ip(mac, ip, ics_prefix)
     return rows
 
 
@@ -388,5 +456,6 @@ def sync_device_table(scanner: 'Scanner', *, allow_subnet_ping: bool = False) ->
     except Exception:
         return
     if not clumsy_mode_enabled():
+        revert_clients_to_home_lan_display(scanner)
         return
     refresh_client_ips_from_ics(scanner, allow_subnet_ping=allow_subnet_ping)

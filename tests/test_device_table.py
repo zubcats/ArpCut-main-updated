@@ -69,6 +69,29 @@ class TestDeviceTable(unittest.TestCase):
         self.assertEqual(len(clients), 1)
         self.assertEqual(clients[0]['ip'], '192.168.137.99')
 
+    def test_revert_hides_hotspot_ip_when_clumsy_off(self) -> None:
+        s = _FakeScanner()
+        s.devices = [
+            {
+                'mac': 'dc:e9:94:ab:e6:c4',
+                'ip': '192.168.137.194',
+                'lan_ip': '192.168.1.165',
+                'ics_ip': '192.168.137.194',
+                'admin': False,
+                'name': 'PS5',
+            },
+            {'mac': '00:11:22:33:44:55', 'ip': '10.0.0.1', 'admin': True, 'type': 'Me'},
+        ]
+        with (
+            mock.patch('tools.clumsy_inline.clumsy_mode_enabled', return_value=False),
+            mock.patch.object(dt, '_ics_prefix', return_value='192.168.137.'),
+        ):
+            dt.revert_clients_to_home_lan_display(s)
+        clients = [d for d in s.devices if not d.get('admin')]
+        self.assertEqual(len(clients), 1)
+        self.assertEqual(clients[0]['ip'], '192.168.1.165')
+        self.assertNotIn('ics_ip', clients[0])
+
     def test_phantom_favorite_skips_stale_lan_when_mac_present(self) -> None:
         s = _FakeScanner()
         s.devices = [

@@ -231,6 +231,14 @@ class Scanner():
             ip = last_map.get(key_raw) or last_map.get(mac)
             if not ip:
                 continue
+            if not clumsy_mode_enabled():
+                try:
+                    from tools.clumsy_inline import clumsy_ics_downstream_prefix
+
+                    if str(ip).startswith(clumsy_ics_downstream_prefix()):
+                        continue
+                except Exception:
+                    pass
             pk = nickname_profile_key(mac, ip)
             if not pk or pk in present_profiles:
                 continue
@@ -311,14 +319,38 @@ class Scanner():
         existing = [d for d in self.devices if not d.get('admin')]
         merged_hits = []
         seen = set()
+        try:
+            from networking.device_table import _home_lan_ip_for_row, _ics_prefix, _is_ics_ip
+
+            ics_prefix = _ics_prefix()
+        except Exception:
+            ics_prefix = '192.168.137.'
+            _home_lan_ip_for_row = None
+            _is_ics_ip = None
         for d in existing:
-            ip = str(d.get('ip') or '').strip()
             mac = good_mac(d.get('mac'))
-            if ip and mac:
-                merged_hits.append((ip, mac))
-                seen.add((ip, mac))
+            if not mac:
+                continue
+            if clumsy_mode_enabled():
+                ip = str(d.get('ip') or '').strip()
+                if ip:
+                    pair = (ip, mac)
+                    if pair not in seen:
+                        merged_hits.append(pair)
+                        seen.add(pair)
             lan = str(d.get('lan_ip') or '').strip()
-            if lan and mac and (lan, mac) not in seen:
+            if _home_lan_ip_for_row is not None:
+                home = _home_lan_ip_for_row(d, ics_prefix)
+                if home:
+                    lan = home
+            elif lan and _is_ics_ip and _is_ics_ip(lan, ics_prefix):
+                lan = ''
+            if not lan:
+                ip = str(d.get('ip') or '').strip()
+                if _is_ics_ip and _is_ics_ip(ip, ics_prefix):
+                    ip = ''
+                lan = ip
+            if lan and (lan, mac) not in seen:
                 merged_hits.append((lan, mac))
                 seen.add((lan, mac))
         for ip, mac in hits:
