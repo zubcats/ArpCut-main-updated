@@ -834,6 +834,22 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Main Props
         self.scanner = Scanner()
         self.killer = Killer()
+        # Pre-warm the Npcap L2 socket on a background thread so the first Kill ON
+        # doesn't wait ~0.5–2 s on conf.L2socket() opening Npcap. Pure no-op on Linux.
+        def _prewarm_kill_socket():
+            try:
+                self.killer._get_socket()
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(
+                target=_prewarm_kill_socket,
+                name='zubcut-prewarm-l2',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
         self.killed_devices = {}  # profile key (mac|subnet) -> explicit Kill toggle state
         # Per-MAC intent generation for kill toggle; delayed OFF reinforcement only runs
         # when generation still matches (prevents stale delayed actions from reapplying).
@@ -3082,9 +3098,17 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 apply_clumsy_ics_router_context(self.scanner, self.killer, device['ip'])
             except Exception:
                 pass
+        # Only invalidate the cached L2 socket if the iface actually changed. The
+        # unconditional close here was the real Kill ON delay: Npcap/conf.L2socket()
+        # reopen on Windows costs ~0.5–2 s, which fires inside the ARP worker on the
+        # very first _send_packet after every Kill ON. Kill OFF was instant because it
+        # never reaches this function and the socket stays warm.
+        prev_iface_guid = getattr(getattr(self.killer, 'iface', None), 'guid', None)
+        new_iface_guid = getattr(self.scanner.iface, 'guid', None)
         self.killer.iface = self.scanner.iface
         self.killer.router = self.scanner.router
-        self.killer._close_socket()
+        if prev_iface_guid != new_iface_guid:
+            self.killer._close_socket()
         # Fire ARP-cache flush + ip-forwarding off the UI thread. Both shell out to
         # netsh and can each take ~0.5–2 s, which historically delayed Kill ON by
         # multiple seconds on systems with many adapters. The ARP poison loop only
