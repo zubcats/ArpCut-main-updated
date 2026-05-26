@@ -586,11 +586,28 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     """
     if not _ipv4_valid(victim_ip) or victim_ip in ('0.0.0.0', '127.0.0.1'):
         return fallback if fallback is not None else get_default_iface()
+    # Fast accept: if the caller's fallback already shares the victim's /24, skip the
+    # heavy enumeration entirely. Kill ON on a stable LAN hits this path every time.
+    try:
+        if fallback is not None:
+            f_ip = getattr(fallback, 'ip', None) or ''
+            if f_ip and f_ip not in ('0.0.0.0', '127.0.0.1'):
+                f_oct = [int(x) for x in f_ip.split('.')]
+                v_oct = [int(x) for x in victim_ip.split('.')]
+                if len(f_oct) == 4 and len(v_oct) == 4 and f_oct[:3] == v_oct[:3]:
+                    return fallback
+    except Exception:
+        pass
     try:
         conf.route.resync()
     except Exception:
         pass
-    ifaces = list(get_ifaces())
+    # Cached iface list keeps Kill ON snappy when a Wi-Fi/BT combo dongle inflates
+    # ipconfig output (1–3 s parse). The cache is invalidated by Settings/Clumsy flows.
+    try:
+        ifaces = list(get_ifaces_cached())
+    except Exception:
+        ifaces = list(get_ifaces())
     if not ifaces:
         return fallback if fallback is not None else get_default_iface()
 

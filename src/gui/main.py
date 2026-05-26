@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import sys
 import time
@@ -2253,10 +2253,28 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._ensure_network_context_for_victim(device)
             self.killer.kill(device)
             try:
-                iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-                block_ip(iface, device['ip'], 'both')
+                iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
             except Exception:
-                pass
+                iface_name = 'en0'
+            victim_ip = device['ip']
+
+            def _bg_block():
+                try:
+                    block_ip(iface_name, victim_ip, 'both')
+                except Exception:
+                    pass
+
+            try:
+                threading.Thread(
+                    target=_bg_block,
+                    name='zubcut-kill-blockip',
+                    daemon=True,
+                ).start()
+            except Exception:
+                try:
+                    block_ip(iface_name, victim_ip, 'both')
+                except Exception:
+                    pass
             self._set_killed_profile(device, True)
         self._sync_killed_devices()
         self._write_remembered_killed_macs()
@@ -3055,11 +3073,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             changed = bool(self.scanner.sync_iface_for_victim_ip(device['ip']))
         except Exception:
             pass
-        if not clumsy_mode_enabled():
-            try:
-                self.scanner.flush_arp()
-            except Exception:
-                pass
         try:
             self.scanner.refresh_local_topology()
         except Exception:
@@ -3072,12 +3085,32 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killer.iface = self.scanner.iface
         self.killer.router = self.scanner.router
         self.killer._close_socket()
-        try:
-            from networking.killer import enable_ip_forwarding
+        # Fire ARP-cache flush + ip-forwarding off the UI thread. Both shell out to
+        # netsh and can each take ~0.5–2 s, which historically delayed Kill ON by
+        # multiple seconds on systems with many adapters. The ARP poison loop only
+        # needs the killer iface/router set above to start firing, so deferring these
+        # housekeeping calls is safe.
+        if not clumsy_mode_enabled():
+            try:
+                def _bg_flush_and_forward():
+                    try:
+                        self.scanner.flush_arp()
+                    except Exception:
+                        pass
+                    try:
+                        from networking.killer import enable_ip_forwarding
 
-            enable_ip_forwarding()
-        except Exception:
-            pass
+                        enable_ip_forwarding()
+                    except Exception:
+                        pass
+
+                threading.Thread(
+                    target=_bg_flush_and_forward,
+                    name='zubcut-kill-housekeep',
+                    daemon=True,
+                ).start()
+            except Exception:
+                pass
         try:
             from scapy.all import conf as scapy_conf
 
@@ -5620,11 +5653,35 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         self._ensure_network_context_for_victim(device)
                         self.killer.disable_percent_cut(mac)
                         self.killer.kill(device)
+                        # block_ip shells out to netsh ~4× (in/out + ICMP, IPv4+IPv6) which
+                        # can take seconds. Run it off the UI thread so the perceived Kill ON
+                        # latency matches Kill OFF — the ARP poison thread above already cuts
+                        # the victim instantly; the firewall layer is a backstop.
                         try:
-                            iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-                            block_ip(iface, device['ip'], 'both')
+                            iface_name = (
+                                self.scanner.iface.name if self.scanner.iface else 'en0'
+                            )
                         except Exception:
-                            pass
+                            iface_name = 'en0'
+                        victim_ip = device['ip']
+
+                        def _bg_block():
+                            try:
+                                block_ip(iface_name, victim_ip, 'both')
+                            except Exception:
+                                pass
+
+                        try:
+                            threading.Thread(
+                                target=_bg_block,
+                                name='zubcut-kill-blockip',
+                                daemon=True,
+                            ).start()
+                        except Exception:
+                            try:
+                                block_ip(iface_name, victim_ip, 'both')
+                            except Exception:
+                                pass
                         self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
                         kill_applied = True
             else:
