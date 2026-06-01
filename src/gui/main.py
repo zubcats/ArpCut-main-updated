@@ -117,6 +117,60 @@ def _dupe_net_run_block(iface: str, ip: str, direction: str):
         return exc
 
 
+def _bg_unblock_ip(ip: str | None) -> None:
+    """Fire-and-forget unblock_ip on a background thread.
+
+    netsh delete firewall rules cost 1-3 s synchronously which would freeze
+    the Qt event loop during impairment toggles. The firewall layer is only
+    a backstop on top of ARP/WinDivert, so dropping the rules a few hundred
+    ms late is safe — and dropping them entirely on thread-spawn failure is
+    also safe (Windows will keep the rule until next reboot but ARP poison
+    is already gone via the killer path).
+    """
+    if not ip:
+        return
+    ip_s = str(ip).strip()
+    if not ip_s:
+        return
+    try:
+        threading.Thread(
+            target=lambda: _dupe_net_run_unblock(ip_s),
+            name='zubcut-unblockip-bg',
+            daemon=True,
+        ).start()
+    except Exception:
+        # F5: do NOT fall back to a synchronous unblock_ip here. The fallback
+        # ran on the GUI thread and re-introduced the multi-second freeze the
+        # helper exists to prevent, exactly when the system is already short
+        # on resources (thread-handle exhaustion). Firewall is a backstop —
+        # leaving the rule live until reboot is preferable to freezing the UI.
+        pass
+
+
+def _bg_block_ip(iface: str | None, ip: str | None, direction: str = 'both') -> None:
+    """Fire-and-forget block_ip on a background thread (see _bg_unblock_ip).
+
+    On thread-spawn failure we silently drop the call rather than fall back
+    to a synchronous netsh add on the GUI thread (firewall is a backstop;
+    ARP/WinDivert already cut the victim).
+    """
+    if not ip:
+        return
+    ip_s = str(ip).strip()
+    if not ip_s:
+        return
+    iface_s = str(iface or 'en0').strip() or 'en0'
+    direction_s = str(direction or 'both').strip() or 'both'
+    try:
+        threading.Thread(
+            target=lambda: _dupe_net_run_block(iface_s, ip_s, direction_s),
+            name='zubcut-blockip-bg',
+            daemon=True,
+        ).start()
+    except Exception:
+        pass
+
+
 from assets import *
 
 from bridge import ScanThread  # UpdateThread disabled for fork
@@ -851,6 +905,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
         self.killed_devices = {}  # profile key (mac|subnet) -> explicit Kill toggle state
+        # Immediate visual latch: keep Kill row highlighted between toggle-on click
+        # and backend apply completion, even if sync paths briefly clear killed_devices.
+        self._kill_pending_profiles = set()
         # Per-MAC intent generation for kill toggle; delayed OFF reinforcement only runs
         # when generation still matches (prevents stale delayed actions from reapplying).
         self._kill_intent_seq = {}
@@ -866,6 +923,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_phase_seq = 0
         self.lag_device_mac = None
         self.lag_device_ip = None
+        self._lag_net_prepared_mac = None
         self.lag_direction = 'both'  # 'both', 'in', or 'out'
         self._lag_phase_end_timer = QTimer(self)
         self._lag_phase_end_timer.setSingleShot(True)
@@ -2024,11 +2082,18 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             device, self.dupe_device_mac, getattr(self, 'dupe_device_ip', None)
         ):
             return True
-        if not self._killed_profile_on(device):
-            return False
-        if mac in getattr(self, '_ics_kill_profile_macs', set()):
+        pk = self._killed_profile_key(device)
+        if pk and pk in getattr(self, '_kill_pending_profiles', set()):
             return True
-        return mac in self.killer.killed
+        # Honor the user's intent (_killed_profile_on) instead of the ARP-thread
+        # state (mac in killer.killed). The button already uses the intent flag
+        # via _kill_ui_shows_on, so the previous behavior left the row repaint
+        # racing the ARP worker thread — the user saw "KILL: ON" on the button
+        # but the row stayed un-highlighted until the worker spawned + first
+        # _send_packet completed (which on a cold Npcap socket can be 0.5–2 s).
+        # If the kill actually fails the WinDivert/LAN branches clear the
+        # killed_profile so the row de-highlights instantly too.
+        return self._killed_profile_on(device)
 
     def _table_hover_cell_palette(self, row, device):
         """
@@ -2236,6 +2301,16 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Apply ARP spoofing to selected device
         """
+        # Mirror killAll's cross-flow stop set so the legacy/API path can't
+        # stack on top of a lag/dupe/pctcut/MITM-shape already running on the
+        # same victim (would leave _op_seq mismatched and ARP poison silently
+        # exiting). See start/stop symmetry audit findings A1.
+        self.stopLagSwitch()
+        self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
+        self.stopPercentCut(log=False)
+        self.stop_mitm_shaping(log=False)
+        self._await_mitm_teardown_thread()
         if not self.connected():
             return
         
@@ -2272,25 +2347,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
             except Exception:
                 iface_name = 'en0'
-            victim_ip = device['ip']
-
-            def _bg_block():
-                try:
-                    block_ip(iface_name, victim_ip, 'both')
-                except Exception:
-                    pass
-
-            try:
-                threading.Thread(
-                    target=_bg_block,
-                    name='zubcut-kill-blockip',
-                    daemon=True,
-                ).start()
-            except Exception:
-                try:
-                    block_ip(iface_name, victim_ip, 'both')
-                except Exception:
-                    pass
+            _bg_block_ip(iface_name, device.get('ip'), 'both')
             self._set_killed_profile(device, True)
         self._sync_killed_devices()
         self._write_remembered_killed_macs()
@@ -2303,11 +2360,17 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def unkill(self):
         """
         Disable ARP spoofing on the selected device (internal / API).
-        Clears lag switch and dupe burst for that flow.
+        Clears lag switch, dupe burst, percent cut and MITM shaping for that flow.
         """
+        # Mirror unkillAll: stop every flow on the same victim so killer.unkill
+        # doesn't race a still-running MitmForwarder / WinDivert gate. See
+        # start/stop symmetry audit finding A2.
         self.stopLagSwitch()
         self.stopDupe(log=False)
         self._flush_pending_dupe_clear_sync()
+        self.stopPercentCut(log=False)
+        self.stop_mitm_shaping(log=False)
+        self._await_mitm_teardown_thread()
         if not self.connected():
             return
         
@@ -2328,10 +2391,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._ics_teardown_gate_if_idle(device['mac'])
         else:
             self._ensure_network_context_for_victim(victim)
-            try:
-                unblock_ip(victim.get('ip') or '')
-            except Exception:
-                pass
+            _bg_unblock_ip(victim.get('ip'))
             self.killer.unkill(victim)
         self._set_killed_profile(device, False)
         self._sync_killed_devices()
@@ -2365,9 +2425,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.killer.kill(d)
                 try:
                     iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-                    block_ip(iface, d['ip'], 'both')
                 except Exception:
-                    pass
+                    iface = 'en0'
+                _bg_block_ip(iface, d.get('ip'), 'both')
                 self._set_killed_profile(d, True)
         self._sync_killed_devices()
         self._write_remembered_killed_macs()
@@ -2401,10 +2461,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for v in victims_before:
             if self._impairment_plan_for(v).is_ics_downstream:
                 continue
-            try:
-                unblock_ip(v.get('ip') or '')
-            except Exception:
-                pass
+            _bg_unblock_ip(v.get('ip'))
         self.killer.unkill_all(self.scanner)
         for victim in victims_before:
             mac = victim.get('mac')
@@ -2459,10 +2516,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         _pre_scan_ips = [v.get('ip') for v in self.killer.killed.values() if v.get('ip')]
         self.killer.unkill_all(self.scanner)
         for _ip in _pre_scan_ips:
-            try:
-                unblock_ip(_ip)
-            except Exception:
-                pass
+            _bg_unblock_ip(_ip)
         
         self.log(
             ['Arping', 'Pinging'][scan_type] + ' your network...',
@@ -2979,24 +3033,17 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if self._toggle_start_blocked('lag'):
             return
-        self.stopDupe(refresh_dialog=True, log=False)
-        if self._dupe_pending_clear or getattr(self, '_dupe_clear_future', None):
-            self._flush_pending_dupe_clear_sync(max_wait_ms=400)
-        self._drop_dupe_restoring_banner()
-        self.stop_mitm_shaping(log=False)
-        if self.percent_cut_active:
-            self.stopPercentCut(log=False)
-        if self.lag_active:
-            self.stopLagSwitch(refresh_dialog=False)
-        self.lag_device_mac = device['mac']
+        mac = device['mac']
         resolved_ip = self._ics_hotspot_victim_ip(device, lag=True) or clumsy_ics_resolve_victim_ip(
             device, self.scanner
         )
+        self.lag_device_mac = mac
         self.lag_device_ip = resolved_ip or device.get('ip')
         snap = dict(device)
         if resolved_ip:
             snap['ip'] = resolved_ip
         self._lag_device_snapshot = snap
+        self._lag_net_prepared_mac = None
         self.lag_active = True
         self._refresh_lag_timing_from_dialog()
         self.btnLagSwitch.setText('■ LAGGING')
@@ -3006,8 +3053,35 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             f'Lag switch ON: {self.lag_block_ms}ms lag ({dir_text}) / {self.lag_release_ms}ms normal',
             UI_LOG_VICTIM_BLOCK_FG,
         )
+        # Paint UI first — cross-flow teardown / MITM await can take seconds on a
+        # Driver-Easy-reset NIC (PCIe power saving wake). Dupe feels instant because
+        # it sets dupe_active before heavy work; lag used to block here first.
+        self._refresh_flow_toggle_ui()
+        self._repaint_all_table_rows_for_hover()
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        except Exception:
+            pass
+
+        self.stopDupe(refresh_dialog=True, log=False)
+        if self._dupe_pending_clear or getattr(self, '_dupe_clear_future', None):
+            self._flush_pending_dupe_clear_sync(max_wait_ms=400)
+        self._drop_dupe_restoring_banner()
+        self.stop_mitm_shaping(log=False)
+        # stop_mitm_shaping flips mitm_shaping_active = False immediately but its
+        # _teardown_worker runs killer.unkill() on a daemon thread. If we start
+        # the lag ARP poison before that worker finishes, the worker's unkill()
+        # races and silently kills our fresh kill() — UI shows LAGGING with no
+        # actual MITM traffic. Wait for the teardown to settle before proceeding.
+        self._await_mitm_teardown_thread()
+        if self.percent_cut_active:
+            self.stopPercentCut(log=False)
+        if self.lag_active and self.lag_device_mac == mac:
+            # Another lag was already running on a different victim — rare.
+            pass
         dev = dict(device)
-        mac = device['mac']
 
         def _arm_lag_start():
             if not self.lag_active or self.lag_device_mac != mac:
@@ -3018,8 +3092,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._refresh_flow_toggle_ui()
             self._repaint_all_table_rows_for_hover()
 
-        self._refresh_flow_toggle_ui()
-        self._repaint_all_table_rows_for_hover()
         _arm_lag_start()
 
     def _schedule_lag_start_reassert(self, mac):
@@ -3089,8 +3161,16 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             changed = bool(self.scanner.sync_iface_for_victim_ip(device['ip']))
         except Exception:
             pass
+        # Only refresh router/local topology when we actually changed iface OR the
+        # scanner doesn't have a valid router_mac yet. The previous unconditional
+        # refresh ran get_gateway_mac, which falls back to scapy.getmacbyip() with a
+        # ~4 s ARP timeout when the system ARP cache is empty — and we ourselves
+        # wipe that cache with flush_arp on every kill, guaranteeing the next Kill
+        # ON pays the full 4 s timeout. Skip both when the cache is still good.
         try:
-            self.scanner.refresh_local_topology()
+            router_mac = getattr(self.scanner, 'router_mac', '') or ''
+            if changed or not router_mac or router_mac in ('00:00:00:00:00:00',):
+                self.scanner.refresh_local_topology()
         except Exception:
             pass
         if clumsy_mode_enabled():
@@ -3099,7 +3179,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
         # Only invalidate the cached L2 socket if the iface actually changed. The
-        # unconditional close here was the real Kill ON delay: Npcap/conf.L2socket()
+        # unconditional close here was a major Kill ON delay: Npcap/conf.L2socket()
         # reopen on Windows costs ~0.5–2 s, which fires inside the ARP worker on the
         # very first _send_packet after every Kill ON. Kill OFF was instant because it
         # never reaches this function and the socket stays warm.
@@ -3109,32 +3189,29 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killer.router = self.scanner.router
         if prev_iface_guid != new_iface_guid:
             self.killer._close_socket()
-        # Fire ARP-cache flush + ip-forwarding off the UI thread. Both shell out to
-        # netsh and can each take ~0.5–2 s, which historically delayed Kill ON by
-        # multiple seconds on systems with many adapters. The ARP poison loop only
-        # needs the killer iface/router set above to start firing, so deferring these
-        # housekeeping calls is safe.
-        if not clumsy_mode_enabled():
-            try:
-                def _bg_flush_and_forward():
-                    try:
-                        self.scanner.flush_arp()
-                    except Exception:
-                        pass
-                    try:
-                        from networking.killer import enable_ip_forwarding
+        # Enable IP forwarding off the UI thread (one-shot netsh, ~0.5–1 s). The ARP
+        # poison loop only needs killer iface/router set above to start firing, so
+        # deferring is safe.
+        # NOTE: We intentionally do NOT call scanner.flush_arp() here. That wiped the
+        # local ARP cache the *next* Kill ON depends on for fast gateway-MAC lookup
+        # (see refresh_local_topology guard above). ARP spoofing doesn't need our own
+        # cache cleared — only the victim's, which our poison ARP handles directly.
+        try:
+            def _bg_enable_forwarding():
+                try:
+                    from networking.killer import enable_ip_forwarding
 
-                        enable_ip_forwarding()
-                    except Exception:
-                        pass
+                    enable_ip_forwarding()
+                except Exception:
+                    pass
 
-                threading.Thread(
-                    target=_bg_flush_and_forward,
-                    name='zubcut-kill-housekeep',
-                    daemon=True,
-                ).start()
-            except Exception:
-                pass
+            threading.Thread(
+                target=_bg_enable_forwarding,
+                name='zubcut-kill-housekeep',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
         try:
             from scapy.all import conf as scapy_conf
 
@@ -3355,9 +3432,20 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
         self._stop_ics_lag_gate(join_timeout=0.35)
         if heal and resolved_ip:
-            victim = dict(device)
-            victim['ip'] = resolved_ip
-            self._schedule_ics_hotspot_heal(victim)
+            # F3: only schedule hotspot heal pulses when victim is actually on
+            # the ICS downstream subnet. _ics_emergency_release now reaches
+            # this code path for LAN Kill OFF too (via the has_ics_state probe)
+            # — without this guard we'd queue 4 inert QTimer pulses per LAN
+            # Kill OFF (each pulse early-returns inside restore_ics_hotspot_
+            # connectivity on victim_on_clumsy_ics_subnet).
+            try:
+                on_ics = bool(victim_on_clumsy_ics_subnet(resolved_ip))
+            except Exception:
+                on_ics = False
+            if on_ics:
+                victim = dict(device)
+                victim['ip'] = resolved_ip
+                self._schedule_ics_hotspot_heal(victim)
 
     def _ics_hotspot_pause_release(self, device, *, heal: bool = False) -> None:
         """
@@ -3377,11 +3465,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 or plan.resolved_ip
                 or str(device.get('ip') or '').strip()
             )
-            if ip:
-                try:
-                    unblock_ip(ip)
-                except Exception:
-                    pass
+            _bg_unblock_ip(ip)
 
     def _release_ics_windivert_block(self, device, *, heal: bool = True) -> None:
         """Full WinDivert OFF: unpause, stop gate, clear killer bookkeeping, heal PS5 gateway ARP."""
@@ -3418,31 +3502,45 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Hotspot OFF: WinDivert gate, any stray ARP MITM, and firewall rules for this victim.
         Used when dupe/kill/lag ends (including instant toggle-off before timers fire).
+
+        Plan-drift safe: if the victim hopped LAN ↔ hotspot between ON and OFF
+        the current plan no longer matches what we laid down. We still tear down
+        whatever ICS state actually exists (gate, _ics_kill_profile_macs,
+        killer.killed entry, firewall) rather than gating on plan.is_ics_downstream.
         """
         if not isinstance(device, dict):
             return
         plan = self._impairment_plan_for(device)
-        if not plan.is_ics_downstream:
-            return
         device = self._device_with_plan_ip(device)
-        self._release_ics_windivert_block(device, heal=heal)
         mac = str(device.get('mac') or '').strip()
+        # Has-state probe: only skip when nothing to clean. If any of these are
+        # live we tear them down regardless of the current plan classification.
+        has_ics_state = bool(
+            mac and (
+                mac in getattr(self, '_ics_kill_profile_macs', set())
+                or mac in self.killer.killed
+                or self._ics_windivert_busy(mac)
+            )
+        )
+        if not plan.is_ics_downstream and not has_ics_state:
+            return
         victim = self._victim_record_for_mac(mac) or device
+        # release_ics_victim_block must run BEFORE _release_ics_windivert_block:
+        # the latter pops killer.killed[mac] which would make the `mac in killed`
+        # guard below always False, leaving any stacked ARP MITM (from kill ON
+        # _apply_ics_client_block) running silently after the UI says OFF.
         if mac and mac in self.killer.killed:
             try:
                 release_ics_victim_block(self.scanner, self.killer, victim)
             except Exception:
                 pass
+        self._release_ics_windivert_block(device, heal=heal)
         ip = (
             plan.resolved_ip
             or clumsy_ics_resolve_victim_ip(device, self.scanner)
             or str(device.get('ip') or '').strip()
         )
-        if ip:
-            try:
-                unblock_ip(ip)
-            except Exception:
-                pass
+        _bg_unblock_ip(ip)
 
     def _ics_teardown_gate_if_idle(self, mac: str | None = None) -> None:
         if not self._ics_windivert_busy(mac):
@@ -3695,6 +3793,13 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 'red',
             )
         if stack_arp and ip and sys.platform.startswith('win'):
+            # Firewall is a real fallback when WinDivert AND ARP both fail
+            # (rare, but happens if Npcap is half-installed or the gateway
+            # cannot be ARP-resolved). Keep this sync so fw_ok accurately
+            # reflects the firewall layer in the success gate below — this
+            # is only hit ONCE per hotspot Kill ON (stack_arp is False for
+            # Lag/Dupe block phases), so the 1-3 s netsh cost is acceptable
+            # vs. silently reporting Kill ON without any active block.
             try:
                 fw_ok = bool(block_ip('', ip, direction))
             except Exception:
@@ -3754,7 +3859,15 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if pause_only:
                 self._ics_unpause_victim(device)
             else:
-                self._release_ics_windivert_block(device, heal=True)
+                # Kill ON for hotspot stacked WinDivert + ICS-ARP + firewall
+                # via _apply_ics_client_block(stack_arp=True). The plain
+                # _release_ics_windivert_block only tears down WinDivert and
+                # pops killer.killed[mac] — it does NOT send the gratuitous
+                # ARPs that release_ics_victim_block uses to heal the PS5's
+                # poisoned gateway cache, and it does NOT remove the netsh
+                # firewall rules. Use _ics_emergency_release so every layer
+                # we stacked on Kill ON is unwound on Kill OFF.
+                self._ics_emergency_release(device, heal=True)
         else:
             self._ics_unpause_victim(device)
             if not pause_only:
@@ -3763,10 +3876,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     release_ics_victim_block(self.scanner, self.killer, victim)
                 except Exception:
                     pass
-                try:
-                    unblock_ip(device['ip'])
-                except Exception:
-                    pass
+                _bg_unblock_ip(device.get('ip'))
                 self._ics_teardown_gate_if_idle(mac)
         if pause_only:
             if getattr(self, 'lag_active', False):
@@ -3845,12 +3955,26 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return self._apply_ics_client_block(device, direction, **ics_block_kw)
         if not plan.use_arp_mitm:
             return False
-        self._ensure_network_context_for_victim(device)
+        mac = str(device.get('mac') or '').strip()
+        for_lag = bool(ics_block_kw.get('for_lag'))
+        if for_lag and mac and getattr(self, '_lag_net_prepared_mac', None) == mac:
+            pass
+        else:
+            self._ensure_network_context_for_victim(device)
+            if for_lag and mac:
+                self._lag_net_prepared_mac = mac
         self.killer.disable_percent_cut(device['mac'])
         if device['mac'] not in self.killer.killed:
             self.killer.kill(device)
-        iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-        block_ip(iface, device['ip'], direction)
+        # block_ip is 4x netsh add (in/out + IPv4/IPv6) — ~1–3 s synchronous. Lag
+        # Switch calls _apply_victim_block on every block phase, so a sync call here
+        # froze the UI for seconds per cycle. ARP poison above already cuts the
+        # victim instantly; firewall layer is a backstop and is safe to defer.
+        try:
+            iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
+        except Exception:
+            iface_name = 'en0'
+        _bg_block_ip(iface_name, device.get('ip'), direction)
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
@@ -3864,11 +3988,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
         elif not plan.use_arp_mitm:
             return
-        self._ensure_network_context_for_victim(device)
-        try:
-            unblock_ip(device['ip'])
-        except Exception:
+        mac = str(device.get('mac') or '').strip()
+        if getattr(self, 'lag_active', False) and mac and getattr(self, '_lag_net_prepared_mac', None) == mac:
             pass
+        else:
+            self._ensure_network_context_for_victim(device)
+        _bg_unblock_ip(device.get('ip'))
         if device['mac'] in self.killer.killed:
             try:
                 victim = self._victim_record_for_mac(device['mac']) or device
@@ -4118,6 +4243,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_countdown_timer.stop()
         self.dupe_timer.stop()
         self._dupe_end_mono = None
+        # D5: clear the queued countdown-finish flag so a late callback won't
+        # re-enter the teardown after stopDupe already restored state. Only set
+        # in _tick_dupe_countdown after a successful apply, but defensive here
+        # since the apply path also reaches this on the dupe_duration_ms < apply
+        # time edge case.
+        self._dupe_finish_from_countdown_pending = False
         self.lblDupeCountdownMain.setVisible(False)
         self.lblDupeCountdownMain.setText('')
 
@@ -4137,6 +4268,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     return
                 self.dupe_active = False
                 self.dupe_device_mac = None
+                self.dupe_device_ip = None
+                self._dupe_finish_from_countdown_pending = False
                 self._abort_dupe_apply_failed()
                 self.btnDupe.setText('Dupe')
                 self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
@@ -4176,6 +4309,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception as exc:
             self.dupe_active = False
             self.dupe_device_mac = None
+            self.dupe_device_ip = None
+            self._dupe_finish_from_countdown_pending = False
             self._dupe_block_apply_pending = False
             self._dupe_block_ctx = None
             self._dupe_block_future = None
@@ -4212,6 +4347,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if exc is not None:
             self.dupe_active = False
             self.dupe_device_mac = None
+            self.dupe_device_ip = None
+            self._dupe_finish_from_countdown_pending = False
             self._abort_dupe_apply_failed()
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
@@ -4326,11 +4463,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             or str(device.get('ip') or '').strip()
         )
         plan = self._impairment_plan_for(device)
-        if ip and plan.use_block_ip:
-            try:
-                unblock_ip(ip)
-            except Exception:
-                pass
+        if plan.use_block_ip:
+            _bg_unblock_ip(ip)
 
     def _lag_apply_allow_phase_sync(self, device) -> None:
         """Main-thread allow: must run immediately so a queued block job cannot skip release."""
@@ -4561,14 +4695,21 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._clear_ics_client_block(device, pause_only=True)
                     ip = (device.get('ip') or '').strip()
                     if ip and _is_valid_ip(ip):
-                        try:
-                            unblock_ip(ip)
-                        except Exception:
-                            pass
+                        _bg_unblock_ip(ip)
+                    # The previous "not in self.killer.killed" guard was inverted: lag
+                    # ON paths call killer.kill() which adds the mac to killer.killed,
+                    # so this branch skipped unkill exactly when it was needed and the
+                    # ARP poison thread kept running after the UI showed OFF. Call
+                    # unkill unconditionally — it's a safe no-op if not actually killed,
+                    # and the only path that stops the ARP worker thread.
                     victim = self._victim_record_for_mac(device.get('mac') or '') or device
-                    if victim and victim.get('mac') not in self.killer.killed:
+                    if victim:
                         try:
                             self.killer.unkill(victim)
+                        except Exception:
+                            pass
+                        try:
+                            self.killer.reinforce_restore(victim)
                         except Exception:
                             pass
             except Exception:
@@ -4579,6 +4720,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_active = False
         self.lag_device_mac = None
         self.lag_device_ip = None
+        self._lag_net_prepared_mac = None
         self._lag_in_allow_phase = False
         self._lag_device_snapshot = None
         self._lag_restoring_after_stop = False
@@ -4611,6 +4753,16 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.stopDupe(refresh_dialog=False, log=False)
         self._flush_pending_dupe_clear_sync()
         self._drop_dupe_restoring_banner()
+        # Same race window as startLagSwitch: a still-running MITM teardown can
+        # call killer.unkill() AFTER _apply_dupe_deferred calls killer.kill(),
+        # silently shutting down the dupe ARP worker. _toggle_start_blocked
+        # doesn't catch it because mitm_shaping_active was flipped to False
+        # synchronously, even though the daemon thread keeps running.
+        if self.mitm_shaping_active:
+            self.stop_mitm_shaping(log=False)
+        self._await_mitm_teardown_thread()
+        if self.percent_cut_active:
+            self.stopPercentCut(log=False)
         self._dupe_arm_timer.stop()
         try:
             self._dupe_arm_timer.timeout.disconnect()
@@ -4924,19 +5076,47 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     'red',
                 )
                 return
+        import time as _tk_time
+        _tk_t0 = _tk_time.perf_counter()
+        pk = self._killed_profile_key(device)
+        if pk:
+            pending = getattr(self, '_kill_pending_profiles', set())
+            if next_state:
+                pending.add(pk)
+            else:
+                pending.discard(pk)
+            self._kill_pending_profiles = pending
         self._set_killed_profile(device, next_state)
+        _tk_t1 = _tk_time.perf_counter()
         self._updateKillButtonState()
+        _tk_t2 = _tk_time.perf_counter()
         self._repaint_all_table_rows_for_hover()
+        _tk_t3 = _tk_time.perf_counter()
         try:
             app = QApplication.instance()
             if app is not None:
                 app.processEvents(QEventLoop.ExcludeUserInputEvents)
         except Exception:
             pass
+        _tk_t4 = _tk_time.perf_counter()
         dev = dict(device)
         on = next_state
         src = source
         self._run_kill_command(mac, dev, turn_on=on, source=src)
+        _tk_t5 = _tk_time.perf_counter()
+        try:
+            direction = 'ON' if next_state else 'OFF'
+            self.log(
+                f'[TOGGLE-KILL {direction}] profile={int((_tk_t1-_tk_t0)*1000)}ms '
+                f'btnstate={int((_tk_t2-_tk_t1)*1000)}ms '
+                f'rowsrepaint={int((_tk_t3-_tk_t2)*1000)}ms '
+                f'processEvents={int((_tk_t4-_tk_t3)*1000)}ms '
+                f'runKillCmd={int((_tk_t5-_tk_t4)*1000)}ms '
+                f'total={int((_tk_t5-_tk_t0)*1000)}ms',
+                'gray',
+            )
+        except Exception:
+            pass
 
     def togglePercentCut(self, source='unknown'):
         if not self.connected():
@@ -5629,6 +5809,18 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _run_kill_command(self, mac, device, turn_on, source='unknown'):
         """Immediate explicit command path: one click => one kill/unkill command."""
+        import time as _kill_time
+        # Always-on for this diagnostic build; revert to get_settings('debug_kill_timing')
+        # once the root cause of the Kill ON delay is identified.
+        _kill_dbg = True
+        _kill_t0 = _kill_time.perf_counter()
+        _kill_marks: list[tuple[str, float]] = []
+
+        def _mark(label: str) -> None:
+            if _kill_dbg:
+                _kill_marks.append((label, _kill_time.perf_counter()))
+
+        _mark('enter')
         if turn_on:
             if getattr(self, '_kill_teardown_mac', None) == mac:
                 self._kill_teardown_mac = None
@@ -5648,6 +5840,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._kill_intent_seq[mac] = next_seq
             kill_applied = False
             if turn_on:
+                _mark('crossflow_start')
                 if self.lag_active and self.lag_device_mac == mac:
                     self.stopLagSwitch(refresh_dialog=True)
                 if self.dupe_active and self.dupe_device_mac == mac:
@@ -5658,11 +5851,14 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
                     self.stop_mitm_shaping(log=False)
                     self._await_mitm_teardown_thread()
+                _mark('crossflow_done')
                 if not actual_on and device:
                     if not _is_valid_ip(device.get('ip') or ''):
                         self.log('Target has no IP yet — enable sharing and rescan.', 'red')
                     elif self._uses_windivert(device):
+                        _mark('windivert_start')
                         kill_applied = bool(self._apply_victim_block(device, 'both'))
+                        _mark('windivert_done')
                         if kill_applied:
                             self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
                         else:
@@ -5674,65 +5870,78 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                                 'red',
                             )
                     else:
+                        _mark('lan_start')
                         self._ensure_network_context_for_victim(device)
+                        _mark('lan_ensure_net_done')
                         self.killer.disable_percent_cut(mac)
+                        _mark('lan_disable_pctcut_done')
                         self.killer.kill(device)
-                        # block_ip shells out to netsh ~4× (in/out + ICMP, IPv4+IPv6) which
-                        # can take seconds. Run it off the UI thread so the perceived Kill ON
-                        # latency matches Kill OFF — the ARP poison thread above already cuts
-                        # the victim instantly; the firewall layer is a backstop.
+                        _mark('lan_killer_kill_done')
                         try:
                             iface_name = (
                                 self.scanner.iface.name if self.scanner.iface else 'en0'
                             )
                         except Exception:
                             iface_name = 'en0'
-                        victim_ip = device['ip']
-
-                        def _bg_block():
-                            try:
-                                block_ip(iface_name, victim_ip, 'both')
-                            except Exception:
-                                pass
-
-                        try:
-                            threading.Thread(
-                                target=_bg_block,
-                                name='zubcut-kill-blockip',
-                                daemon=True,
-                            ).start()
-                        except Exception:
-                            try:
-                                block_ip(iface_name, victim_ip, 'both')
-                            except Exception:
-                                pass
+                        _bg_block_ip(iface_name, device.get('ip'), 'both')
+                        _mark('lan_bg_block_ip_done')
                         self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
                         kill_applied = True
             else:
+                # B1: mirror Kill ON's cross-flow stop set — if any of the other
+                # flows are still running on this victim (toggle-blocked logic
+                # should have prevented it but be defensive), tear them down
+                # before unkill so killer.unkill doesn't race a live forwarder.
+                if self.lag_active and self.lag_device_mac == mac:
+                    self.stopLagSwitch(refresh_dialog=True)
+                if self.dupe_active and self.dupe_device_mac == mac:
+                    self.stopDupe(log=False)
+                    self._flush_pending_dupe_clear_sync()
+                if self.percent_cut_active and self.percent_cut_device_mac == mac:
+                    self.stopPercentCut(log=False)
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
                     self.stop_mitm_shaping(log=False)
                     self._await_mitm_teardown_thread()
                 victim = self._victim_record_for_mac(mac) or device
                 if victim:
-                    if self._uses_windivert(victim):
-                        self._ics_emergency_release(victim, heal=True)
-                    else:
+                    # A3-A5: if the victim hopped hotspot↔LAN between ON and OFF,
+                    # the current plan no longer matches what we laid down. Run
+                    # the ICS teardown defensively first (safe no-op when nothing
+                    # ICS is live). Only run the LAN teardown when the device is
+                    # NOT on the ICS path — running killer.unkill(ics_mode=False)
+                    # for an ICS victim cancels the fast ICS restore worker that
+                    # _ics_emergency_release just scheduled (it bumps _op_seq)
+                    # and emits 1.5 s of LAN-router ARPs on the hotspot NIC
+                    # (killer.unkill default refresh_router=True picks the LAN
+                    # gateway via route fallback — see killer.py:123-126).
+                    self._ics_emergency_release(victim, heal=True)
+                    is_ics_now = self._is_ics_downstream(victim)
+                    if not is_ics_now:
+                        _bg_unblock_ip(victim.get('ip'))
                         try:
-                            unblock_ip(victim.get('ip') or '')
+                            self.killer.unkill(victim)
                         except Exception:
                             pass
-                        self.killer.unkill(victim)
-                        self.killer.reinforce_restore(victim)
-                        if actual_on:
+                        try:
                             self.killer.reinforce_restore(victim)
+                        except Exception:
+                            pass
+                        if actual_on:
+                            try:
+                                self.killer.reinforce_restore(victim)
+                            except Exception:
+                                pass
                     self.log('Kill OFF for ' + str(victim.get('ip', '')), UI_LOG_RESTORE_FG)
                     # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
                     self._schedule_kill_off_reinforce(mac, next_seq, 25)
                     self._schedule_kill_off_reinforce(mac, next_seq, 100)
 
+            _mark('tail_start')
             self._set_killed_profile(device, bool(kill_applied) if turn_on else False)
             self._sync_killed_devices()
+            _mark('tail_sync_killed_devices_done')
             self._write_remembered_killed_macs()
+            _mark('tail_write_remembered_done')
             self._updateKillButtonState()
             self._update_scan_count_status()
             self._refresh_table_row_for_mac(mac, device.get('ip'))
@@ -5743,10 +5952,32 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     app.processEvents(QEventLoop.ExcludeUserInputEvents)
             except Exception:
                 pass
+            _mark('tail_done')
         finally:
             if teardown_off and getattr(self, '_kill_teardown_mac', None) == mac:
                 self._kill_teardown_mac = None
                 self._kill_teardown_ip = None
+            try:
+                pk = self._killed_profile_key(device)
+                if pk:
+                    self._kill_pending_profiles.discard(pk)
+            except Exception:
+                pass
+            if _kill_dbg and _kill_marks:
+                try:
+                    parts = []
+                    prev_t = _kill_t0
+                    for label, t in _kill_marks:
+                        parts.append(f'{label}+{int((t - prev_t) * 1000)}ms')
+                        prev_t = t
+                    total_ms = int((_kill_time.perf_counter() - _kill_t0) * 1000)
+                    direction = 'ON' if turn_on else 'OFF'
+                    self.log(
+                        f'[KILL-TIMING {direction} total={total_ms}ms] ' + ' '.join(parts),
+                        'gray',
+                    )
+                except Exception:
+                    pass
 
     def _schedule_kill_off_reinforce(self, mac, intent_seq, delay_ms):
         """Delayed OFF reinforcement that self-cancels if intent changed."""
@@ -5769,10 +6000,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if self._ics_windivert_busy(mac):
                         return
                     if plan.use_block_ip:
-                        try:
-                            unblock_ip(victim.get('ip') or '')
-                        except Exception:
-                            pass
+                        _bg_unblock_ip(victim.get('ip'))
                     self._ics_teardown_gate_if_idle(mac)
                 else:
                     self._ensure_network_context_for_victim(victim)
@@ -5817,10 +6045,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if mac in self.killer.killed:
                         release_ics_victim_block(self.scanner, self.killer, victim)
                     if plan.use_block_ip:
-                        try:
-                            unblock_ip(victim.get('ip') or '')
-                        except Exception:
-                            pass
+                        _bg_unblock_ip(victim.get('ip'))
                     self._ics_teardown_gate_if_idle(mac)
                 else:
                     self._ensure_network_context_for_victim(victim)

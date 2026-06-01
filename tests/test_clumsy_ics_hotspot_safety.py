@@ -320,8 +320,12 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         path = os.path.join(_SRC, 'gui', 'main.py')
         with open(path, encoding='utf-8') as f:
             src = f.read()
-        self.assertIn('if not clumsy_mode_enabled():', src)
-        self.assertIn('self.scanner.flush_arp()', src)
+        # flush_arp must NOT be called from _ensure_network_context_for_victim:
+        # it wipes the local ARP cache the next Kill ON depends on for fast
+        # get_gateway_mac lookups (scapy.getmacbyip fallback = ~4 s timeout).
+        self.assertNotIn('self.scanner.flush_arp()', src)
+        # Clumsy ICS router context binding must still be guarded.
+        self.assertIn('clumsy_mode_enabled()', src)
         self.assertIn('apply_clumsy_ics_router_context', src)
 
     def test_read_clumsy_topology_from_state_file(self) -> None:

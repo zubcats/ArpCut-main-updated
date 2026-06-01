@@ -174,6 +174,8 @@ SETTINGS_KEYS = [
     'mitm_adv_loss_timer_runs',
     # One-shot migration: old "repeat forever" checkbox meant infinite cycles; runs=-1 now.
     'mitm_adv_timer_schema_v2',
+    # Diagnostics: prints per-step Kill ON/OFF timings to the log box when True.
+    'debug_kill_timing',
 ]
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
@@ -248,5 +250,6 @@ SETTINGS_VALS = [
     1000,
     True,
     -1,
+    False,
     False,
 ]
