@@ -598,10 +598,6 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
                     return fallback
     except Exception:
         pass
-    try:
-        conf.route.resync()
-    except Exception:
-        pass
     # Cached iface list keeps Kill ON snappy when a Wi-Fi/BT combo dongle inflates
     # ipconfig output (1–3 s parse). The cache is invalidated by Settings/Clumsy flows.
     try:
@@ -611,11 +607,22 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     if not ifaces:
         return fallback if fallback is not None else get_default_iface()
 
+    # Try route lookup WITHOUT resync first — conf.route.resync() on Windows can
+    # cost 1–3 s and was being hit on every Kill/Lag arm after Driver Easy resets.
     rt = None
     try:
         rt = conf.route.route(victim_ip)
     except Exception:
         rt = None
+    if not rt:
+        try:
+            conf.route.resync()
+        except Exception:
+            pass
+        try:
+            rt = conf.route.route(victim_ip)
+        except Exception:
+            rt = None
 
     if rt:
         for token in rt:

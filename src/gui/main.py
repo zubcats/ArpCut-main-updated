@@ -2544,7 +2544,15 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self.taskbar_progress:
             self.taskbar_progress.setVisible(False)
         self.processDevices()
-    
+        try:
+            threading.Thread(
+                target=lambda: self.killer._get_socket(),
+                name='zubcut-postscan-prewarm',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
     def UpdateThread_Starter(self):
         """
         Periodic HEAD polling refreshes the settings update badge (gear hint).
@@ -3065,17 +3073,33 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
-        self.stopDupe(refresh_dialog=True, log=False)
-        if self._dupe_pending_clear or getattr(self, '_dupe_clear_future', None):
-            self._flush_pending_dupe_clear_sync(max_wait_ms=400)
-        self._drop_dupe_restoring_banner()
+        # Warm NIC + Npcap while cross-flow teardown runs (PS5 LAN path).
+        def _lag_prep_net():
+            try:
+                self._ensure_network_context_for_victim(snap)
+                self.killer._get_socket()
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(target=_lag_prep_net, name='zubcut-lag-prep', daemon=True).start()
+        except Exception:
+            pass
+
+        if self.dupe_active:
+            self.stopDupe(refresh_dialog=True, log=False)
+            if self._dupe_pending_clear or getattr(self, '_dupe_clear_future', None):
+                self._flush_pending_dupe_clear_sync(max_wait_ms=400)
+            self._drop_dupe_restoring_banner()
+        was_mitm = bool(self.mitm_shaping_active)
         self.stop_mitm_shaping(log=False)
         # stop_mitm_shaping flips mitm_shaping_active = False immediately but its
         # _teardown_worker runs killer.unkill() on a daemon thread. If we start
         # the lag ARP poison before that worker finishes, the worker's unkill()
         # races and silently kills our fresh kill() — UI shows LAGGING with no
         # actual MITM traffic. Wait for the teardown to settle before proceeding.
-        self._await_mitm_teardown_thread()
+        if was_mitm:
+            self._await_mitm_teardown_thread()
         if self.percent_cut_active:
             self.stopPercentCut(log=False)
         if self.lag_active and self.lag_device_mac == mac:
@@ -3964,8 +3988,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if for_lag and mac:
                 self._lag_net_prepared_mac = mac
         self.killer.disable_percent_cut(device['mac'])
-        if device['mac'] not in self.killer.killed:
-            self.killer.kill(device)
+        wait_after = 0.08 if for_lag else 2
+        # Lag reassert timers must re-poison every block phase. The old guard
+        # skipped kill() when mac was already in killer.killed, so reasserts
+        # did nothing and the PS5 only felt lag seconds after allow-phase unkill.
+        if for_lag or device['mac'] not in self.killer.killed:
+            self.killer.kill(device, wait_after=wait_after)
         # block_ip is 4x netsh add (in/out + IPv4/IPv6) — ~1–3 s synchronous. Lag
         # Switch calls _apply_victim_block on every block phase, so a sync call here
         # froze the UI for seconds per cycle. ARP poison above already cuts the
@@ -5875,7 +5903,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         _mark('lan_ensure_net_done')
                         self.killer.disable_percent_cut(mac)
                         _mark('lan_disable_pctcut_done')
-                        self.killer.kill(device)
+                        self.killer.kill(device, wait_after=0.08)
                         _mark('lan_killer_kill_done')
                         try:
                             iface_name = (
