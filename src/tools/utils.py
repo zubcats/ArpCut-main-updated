@@ -246,6 +246,48 @@ def get_gateway_mac(iface_ip, router_ip):
         pass
     return GLOBAL_MAC
 
+
+def lookup_mac_from_arp_table(ip: str, iface_ip: str | None = None) -> str:
+    """
+    Read the Windows/macOS ARP cache for ``ip`` without Scapy (fast, no 4s timeout).
+
+    PS5/Wi‑Fi clients are often missing from the cache until something pings them;
+    ZubCut's scan MAC can go stale while the UI still shows KILL:ON in ~20ms.
+    """
+    ip = str(ip or '').strip()
+    if not ip or not _ipv4_valid(ip):
+        return GLOBAL_MAC
+    if sys.platform.startswith('win'):
+        if iface_ip and iface_ip not in ('127.0.0.1', '0.0.0.0'):
+            response = terminal(f'arp -a {ip} -N {iface_ip}')
+        else:
+            response = terminal(f'arp -a {ip}')
+        if response:
+            for line in response.split('\n'):
+                line = line.strip()
+                if not line or 'Interface:' in line:
+                    continue
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == ip:
+                    mac = good_mac(parts[1].replace('-', ':'))
+                    if mac and mac != GLOBAL_MAC:
+                        return mac
+    else:
+        response = terminal(f'arp -n {ip}')
+        if response:
+            for token in response.split():
+                if ':' in token and len(token) >= 17:
+                    mac = good_mac(token)
+                    if mac and mac != GLOBAL_MAC:
+                        return mac
+    return GLOBAL_MAC
+
+
+def mac_address_is_usable(mac: str) -> bool:
+    m = good_mac(str(mac or '').strip())
+    return bool(m and m not in (GLOBAL_MAC, '00:00:00:00:00:00'))
+
+
 def goto(url):
     """
     Open url in default browser (cross-platform)

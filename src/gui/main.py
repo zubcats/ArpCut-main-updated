@@ -3185,6 +3185,77 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if want_ip:
                 return
 
+    def _refresh_victim_mac_from_system_arp(self, device) -> None:
+        """Use the OS ARP cache (ping once if missing) so poison targets the live PS5 MAC."""
+        if not isinstance(device, dict):
+            return
+        try:
+            from tools.utils import lookup_mac_from_arp_table, mac_address_is_usable
+            import subprocess
+
+            ip = str(device.get('ip') or '').strip()
+            if not ip:
+                return
+            iface_ip = str(getattr(self.scanner.iface, 'ip', None) or '').strip()
+            mac = lookup_mac_from_arp_table(ip, iface_ip)
+            if not mac_address_is_usable(mac) and sys.platform.startswith('win'):
+                try:
+                    subprocess.run(
+                        ['ping', '-n', '1', '-w', '400', ip],
+                        capture_output=True,
+                        timeout=2,
+                        check=False,
+                    )
+                except Exception:
+                    pass
+                mac = lookup_mac_from_arp_table(ip, iface_ip)
+            if mac_address_is_usable(mac):
+                old_mac = str(device.get('mac') or '').strip()
+                device['mac'] = mac
+                if old_mac and old_mac != mac and old_mac in self.killer.killed:
+                    entry = dict(self.killer.killed.pop(old_mac))
+                    entry['mac'] = mac
+                    self.killer.killed[mac] = entry
+                elif mac in self.killer.killed:
+                    self.killer.killed[mac] = dict(device)
+        except Exception:
+            pass
+
+    def _log_mitm_arm_status(self, device, *, action: str = 'Kill') -> None:
+        """Surface silent MITM failures (stale MAC / bad router) in the log box."""
+        try:
+            from tools.utils import mac_address_is_usable
+
+            if not isinstance(device, dict):
+                return
+            iface = getattr(self.scanner.iface, 'name', None) or '?'
+            victim_mac = str(device.get('mac') or '')
+            router_mac = str(
+                (getattr(self.killer, 'router', None) or {}).get('mac')
+                or getattr(self.scanner, 'router_mac', '')
+                or ''
+            )
+            if not mac_address_is_usable(victim_mac):
+                self.log(
+                    f'{action} ON: victim MAC unknown for {device.get("ip")} — '
+                    'ping the PS5 once, then rescan.',
+                    'red',
+                )
+                return
+            if not mac_address_is_usable(router_mac):
+                self.log(
+                    f'{action} ON: router MAC unknown on {iface} — '
+                    'ARP cannot MITM. Check Npcap + Ethernet driver.',
+                    'red',
+                )
+                return
+            self.log(
+                f'{action} MITM armed on {iface}: victim {victim_mac} router {router_mac}',
+                'gray',
+            )
+        except Exception:
+            pass
+
     def _ensure_network_context_for_victim(self, device) -> bool:
         """
         Bind scanner + killer to the NIC that routes to the victim (e.g. hotspot vs Ethernet).
@@ -3208,9 +3279,20 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # wipe that cache with flush_arp on every kill, guaranteeing the next Kill
         # ON pays the full 4 s timeout. Skip both when the cache is still good.
         try:
+            from tools.utils import lookup_mac_from_arp_table, mac_address_is_usable
+
+            self._refresh_victim_mac_from_system_arp(device)
             router_mac = getattr(self.scanner, 'router_mac', '') or ''
-            if changed or not router_mac or router_mac in ('00:00:00:00:00:00',):
+            if changed or not mac_address_is_usable(router_mac):
                 self.scanner.refresh_local_topology()
+        except Exception:
+            pass
+        try:
+            if not getattr(self, '_ip_forwarding_armed', False):
+                from networking.killer import enable_ip_forwarding
+
+                enable_ip_forwarding()
+                self._ip_forwarding_armed = True
         except Exception:
             pass
         if clumsy_mode_enabled():
@@ -5922,6 +6004,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         _mark('lan_disable_pctcut_done')
                         self.killer.kill(device, wait_after=0.08)
                         _mark('lan_killer_kill_done')
+                        self._log_mitm_arm_status(device, action='Kill')
                         try:
                             iface_name = (
                                 self.scanner.iface.name if self.scanner.iface else 'en0'
