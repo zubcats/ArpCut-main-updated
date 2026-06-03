@@ -364,8 +364,10 @@ def get_ifaces_cached(*, max_age_s: float | None = None):
     if _IFACES_CACHE is not None and (now - _IFACES_CACHE_AT) < ttl:
         return list(_IFACES_CACHE)
     ifaces = get_ifaces()
-    _IFACES_CACHE = list(ifaces)
-    _IFACES_CACHE_AT = now
+    # Do not cache an empty scan (Npcap may not be ready on first Settings open).
+    if ifaces:
+        _IFACES_CACHE = list(ifaces)
+        _IFACES_CACHE_AT = now
     return list(ifaces)
 
 

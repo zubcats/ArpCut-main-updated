@@ -175,6 +175,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setupUi(self)
         self.setObjectName('zubcutAuxiliaryWindow')
         _apply_wheel_safe_combo(self.comboInterface)
+        self._fix_network_interface_combo()
         self._install_percent_keybind_row()
         self._install_clumsy_controls()
         if _normalized_update_channel_setting() in ('main', 'experimental'):
@@ -250,6 +251,24 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._clumsy_toggle_guard = False
         self.chkClumsy.stateChanged.connect(self._on_clumsy_checkbox_changed)
         self.btnClumsyInstall.clicked.connect(self._on_clumsy_install_clicked)
+
+    def _fix_network_interface_combo(self) -> None:
+        """ui_settings.py gives the combo a 9px min height — unusable/looks empty."""
+        from PyQt5.QtWidgets import QSizePolicy, QVBoxLayout
+
+        combo = self.comboInterface
+        combo.setMinimumHeight(30)
+        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        inner = getattr(self, 'horizontalLayoutWidget_2', None)
+        gb = getattr(self, 'groupBox_4', None)
+        if inner is not None:
+            inner.setMinimumHeight(34)
+        if gb is not None and gb.layout() is None and inner is not None:
+            lay = QVBoxLayout(gb)
+            lay.setContentsMargins(10, 22, 10, 8)
+            lay.setSpacing(4)
+            lay.addWidget(inner)
+            gb.setMinimumHeight(max(78, gb.minimumHeight()))
 
     def _relayout_misc_group(self) -> None:
         """Misc. group was a fixed-size child widget in ui_settings; expand for Clumsy rows."""
@@ -498,6 +517,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         super().showEvent(event)
         self.comboInterface.clearFocus()
         self.comboInterface.hidePopup()
+        if self.comboInterface.count() == 0:
+            from tools.utils import invalidate_ifaces_cache
+
+            invalidate_ifaces_cache()
+            self._load_interfaces_background()
         self._refresh_clumsy_settings_widgets()
         self._finalize_settings_layout()
         self._schedule_update_banner_refresh()
@@ -961,6 +985,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.comboInterface.clear()
         ifaces = get_ifaces_cached() if use_cache else get_ifaces()
+        if not ifaces:
+            self.comboInterface.addItem('(no adapters found — check Npcap)', '')
+            return
         for iface in ifaces:
             self.comboInterface.addItem(
                 format_iface_settings_label(iface),
@@ -975,9 +1002,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             finished_list = pyqtSignal(list)
 
             def run(self):
-                from tools.utils import get_ifaces
+                from tools.utils import get_ifaces, invalidate_ifaces_cache
 
                 try:
+                    invalidate_ifaces_cache()
                     self.finished_list.emit(get_ifaces())
                 except Exception:
                     self.finished_list.emit([])
@@ -993,12 +1021,15 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
             self.comboInterface.clear()
-            for iface in ifaces:
-                self.comboInterface.addItem(
-                    format_iface_settings_label(iface),
-                    iface.name,
-                )
-            if saved:
+            if not ifaces:
+                self.comboInterface.addItem('(no adapters found — check Npcap)', '')
+            else:
+                for iface in ifaces:
+                    self.comboInterface.addItem(
+                        format_iface_settings_label(iface),
+                        iface.name,
+                    )
+            if saved and ifaces:
                 idx = self.comboInterface.findData(saved)
                 if idx >= 0:
                     self.comboInterface.setCurrentIndex(idx)
