@@ -1,6 +1,6 @@
 import sys
 import re
-from subprocess import run, PIPE
+from subprocess import PIPE
 
 ANCHOR = 'com.zubcut'
 _LAST_ERR = ''
@@ -18,6 +18,12 @@ def _is_valid_ip(ip: str) -> bool:
 
 
 def _exec(cmd):
+    if sys.platform.startswith('win'):
+        from tools.utils import run_command
+
+        return run_command(cmd, shell=True)
+    from subprocess import run
+
     return run(cmd, shell=True, stdout=PIPE, stderr=PIPE, text=True)
 
 

@@ -3190,8 +3190,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not isinstance(device, dict):
             return
         try:
-            from tools.utils import lookup_mac_from_arp_table, mac_address_is_usable
-            import subprocess
+            from tools.utils import (
+                lookup_mac_from_arp_table,
+                mac_address_is_usable,
+                run_command,
+            )
 
             ip = str(device.get('ip') or '').strip()
             if not ip:
@@ -3200,11 +3203,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             mac = lookup_mac_from_arp_table(ip, iface_ip)
             if not mac_address_is_usable(mac) and sys.platform.startswith('win'):
                 try:
-                    subprocess.run(
+                    run_command(
                         ['ping', '-n', '1', '-w', '400', ip],
-                        capture_output=True,
+                        shell=False,
                         timeout=2,
-                        check=False,
                     )
                 except Exception:
                     pass
@@ -6000,21 +6002,30 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         _mark('lan_start')
                         self._ensure_network_context_for_victim(device)
                         _mark('lan_ensure_net_done')
+                        self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
                         self.killer.disable_percent_cut(mac)
                         _mark('lan_disable_pctcut_done')
-                        self.killer.kill(device, wait_after=0.08)
-                        _mark('lan_killer_kill_done')
-                        self._log_mitm_arm_status(device, action='Kill')
-                        try:
-                            iface_name = (
-                                self.scanner.iface.name if self.scanner.iface else 'en0'
+                        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device)
+                        if not mitm_ok:
+                            self.log(
+                                f'Kill ON failed: {mitm_reason}',
+                                'red',
                             )
-                        except Exception:
-                            iface_name = 'en0'
-                        _bg_block_ip(iface_name, device.get('ip'), 'both')
-                        _mark('lan_bg_block_ip_done')
-                        self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
-                        kill_applied = True
+                            kill_applied = False
+                        else:
+                            self.killer.kill(device, wait_after=0.08)
+                            _mark('lan_killer_kill_done')
+                            self._log_mitm_arm_status(device, action='Kill')
+                            try:
+                                iface_name = (
+                                    self.scanner.iface.name if self.scanner.iface else 'en0'
+                                )
+                            except Exception:
+                                iface_name = 'en0'
+                            _bg_block_ip(iface_name, device.get('ip'), 'both')
+                            _mark('lan_bg_block_ip_done')
+                            self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                            kill_applied = True
             else:
                 # B1: mirror Kill ON's cross-flow stop set — if any of the other
                 # flows are still running on this victim (toggle-blocked logic

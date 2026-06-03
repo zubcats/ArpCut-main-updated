@@ -884,14 +884,16 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
         proc = None
         last_exc: Exception | None = None
         # Avoid flashing a visible PowerShell console when toggling ICS from the GUI.
-        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        from tools.utils import _windows_subprocess_no_window_kwargs
+
+        ps_kw = _windows_subprocess_no_window_kwargs()
         for cmd in cmd_candidates:
             try:
                 proc = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
-                    creationflags=creationflags,
+                    **ps_kw,
                 )
                 break
             except FileNotFoundError as e:
@@ -932,7 +934,15 @@ def purge_clumsy_stale_attack_blocks(extra_ips=None) -> dict:
         import re
         import subprocess
 
-        out = subprocess.check_output(['arp', '-a'], text=True, errors='replace', timeout=15)
+        from tools.utils import _windows_subprocess_no_window_kwargs
+
+        out = subprocess.check_output(
+            ['arp', '-a'],
+            text=True,
+            errors='replace',
+            timeout=15,
+            **_windows_subprocess_no_window_kwargs(),
+        )
         for m in re.finditer(r'\b(192\.168\.137\.\d{1,3})\b', out):
             ip = m.group(1)
             if not ip.endswith('.255') and ip != '192.168.137.1':
@@ -1551,13 +1561,15 @@ def _wlan_autoconfig_needs_heal() -> bool:
     if os.name != 'nt':
         return False
     try:
-        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        from tools.utils import _windows_subprocess_no_window_kwargs
+
+        sc_kw = _windows_subprocess_no_window_kwargs()
         q = subprocess.run(
             ['sc', 'query', 'WlanSvc'],
             capture_output=True,
             text=True,
             timeout=8,
-            creationflags=flags,
+            **sc_kw,
         )
         out = ((q.stdout or '') + (q.stderr or '')).upper()
         if 'RUNNING' not in out:
@@ -1567,7 +1579,7 @@ def _wlan_autoconfig_needs_heal() -> bool:
             capture_output=True,
             text=True,
             timeout=8,
-            creationflags=flags,
+            **sc_kw,
         )
         cfg = ((c.stdout or '') + (c.stderr or '')).upper()
         if 'AUTO_START' in cfg or 'DELAYED_AUTO_START' in cfg:

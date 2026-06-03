@@ -144,12 +144,7 @@ jobs:
           if (-not $latest) { throw "Installer not found in output/" }
           $aliasName = if ($channel -eq "main") { "ZubCut-Setup.exe" } else { "ZubCut-Setup-experimental.exe" }
           Copy-Item $latest.FullName ("output/" + $aliasName) -Force
-          $manifest = @{
-            commit = "$env:GITHUB_SHA"
-            built_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-            channel = $channel
-          } | ConvertTo-Json -Compress
-          Set-Content -Path "output/build-info.json" -Value $manifest -Encoding utf8
+          python tools/write_build_info_manifest.py --channel $channel
 
       - name: Upload installer EXE
         if: ${{ github.event.inputs.release_channel == 'main' || github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}

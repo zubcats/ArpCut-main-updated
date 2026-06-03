@@ -78,6 +78,84 @@ class UpdaterCoreTest(unittest.TestCase):
         self.assertFalse(available)
         self.assertIn('Up to date', label)
 
+    def test_up_to_date_when_commit_matches_but_asset_upload_is_later(self):
+        """Installer asset upload time is later than PyInstaller stamp; same commit must not loop."""
+        import tools.updater_core as uc
+
+        commit = 'abc123def4567890'
+        local_stamp = datetime(2026, 5, 16, 10, 0, tzinfo=timezone.utc)
+        upload_stamp = datetime(2026, 5, 16, 10, 25, tzinfo=timezone.utc)
+        info = RemoteInstallerInfo(
+            updated_at=upload_stamp,
+            download_url=_api_asset(101),
+            asset_id=101,
+            size=40_000_000,
+            remote_commit=commit,
+            remote_built_at='2026-05-16T10:00:00Z',
+        )
+        with patch.object(uc, 'APP_BUILD_TIME_ISO', '2026-05-16T10:00:00Z'), patch.object(
+            uc, 'APP_BUILD_COMMIT', commit
+        ), patch.object(uc, 'UPDATE_CHANNEL', 'main'), patch.object(
+            uc,
+            'UPDATE_DOWNLOAD_URL_MAIN',
+            UPDATE_DOWNLOAD_URL_MAIN,
+        ), patch.object(uc, 'UPDATE_DOWNLOAD_URL_EXPERIMENTAL', ''), patch.object(
+            uc, '_cached_remote_installer_info', return_value=info
+        ):
+            available, label = uc.get_update_status()
+        self.assertFalse(available)
+        self.assertIn('Up to date', label)
+
+    def test_up_to_date_when_commit_matches_without_local_time_stamp(self):
+        import tools.updater_core as uc
+
+        commit = 'deadbeef0001'
+        info = RemoteInstallerInfo(
+            updated_at=datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc),
+            download_url=_api_asset(102),
+            asset_id=102,
+            size=40_000_000,
+            remote_commit=commit,
+            remote_built_at='2026-05-16T12:00:00Z',
+        )
+        with patch.object(uc, 'APP_BUILD_TIME_ISO', ''), patch.object(
+            uc, 'APP_BUILD_COMMIT', commit
+        ), patch.object(uc, 'UPDATE_CHANNEL', 'main'), patch.object(
+            uc,
+            'UPDATE_DOWNLOAD_URL_MAIN',
+            UPDATE_DOWNLOAD_URL_MAIN,
+        ), patch.object(uc, 'UPDATE_DOWNLOAD_URL_EXPERIMENTAL', ''), patch.object(
+            uc, '_cached_remote_installer_info', return_value=info
+        ):
+            available, label = uc.get_update_status()
+        self.assertFalse(available)
+        self.assertIn('Up to date', label)
+
+    def test_not_update_loop_when_local_commit_but_no_remote_build_info(self):
+        import tools.updater_core as uc
+
+        upload_stamp = datetime(2026, 5, 16, 11, 0, tzinfo=timezone.utc)
+        info = RemoteInstallerInfo(
+            updated_at=upload_stamp,
+            download_url=_api_asset(103),
+            asset_id=103,
+            size=40_000_000,
+            remote_commit='',
+            remote_built_at='',
+        )
+        with patch.object(uc, 'APP_BUILD_TIME_ISO', '2026-05-16T10:00:00Z'), patch.object(
+            uc, 'APP_BUILD_COMMIT', 'localonlycommit1'
+        ), patch.object(uc, 'UPDATE_CHANNEL', 'main'), patch.object(
+            uc,
+            'UPDATE_DOWNLOAD_URL_MAIN',
+            UPDATE_DOWNLOAD_URL_MAIN,
+        ), patch.object(uc, 'UPDATE_DOWNLOAD_URL_EXPERIMENTAL', ''), patch.object(
+            uc, '_cached_remote_installer_info', return_value=info
+        ):
+            available, label = uc.get_update_status()
+        self.assertFalse(available)
+        self.assertIn('Up to date', label)
+
     def test_resolve_download_uses_api_asset_url(self):
         import tools.updater_core as uc
 

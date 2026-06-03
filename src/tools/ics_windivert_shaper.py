@@ -188,6 +188,9 @@ def _windivert_service_image_path() -> str:
 
 
 def _windivert_sc_stop_and_delete() -> None:
+    from tools.utils import _windows_subprocess_no_window_kwargs
+
+    sc_kw = _windows_subprocess_no_window_kwargs()
     for args in (['sc.exe', 'stop', 'WinDivert'], ['sc.exe', 'delete', 'WinDivert']):
         try:
             subprocess.run(
@@ -195,7 +198,7 @@ def _windivert_sc_stop_and_delete() -> None:
                 capture_output=True,
                 timeout=15,
                 check=False,
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                **sc_kw,
             )
         except Exception:
             pass

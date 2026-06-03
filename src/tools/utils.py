@@ -23,7 +23,43 @@ def _windows_subprocess_no_window_kwargs():
     si = subprocess.STARTUPINFO()
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     si.wShowWindow = subprocess.SW_HIDE
-    return {'startupinfo': si}
+    kw = {'startupinfo': si}
+    no_window = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    if no_window:
+        kw['creationflags'] = no_window
+    return kw
+
+
+def run_command(command, *, shell=True, timeout=None, check=False):
+    """
+    Run a subprocess without flashing cmd.exe / PowerShell on Windows.
+
+    String commands with shell=True use ``cmd.exe /d /c`` (not COMSPEC) so PCs
+    with COMSPEC pointing at PowerShell do not spawn a visible console per call.
+    """
+    kwargs = {
+        'stdout': subprocess.PIPE,
+        'stderr': subprocess.PIPE,
+        'text': True,
+        'check': check,
+    }
+    if timeout is not None:
+        kwargs['timeout'] = timeout
+    if sys.platform.startswith('win'):
+        kwargs.update(_windows_subprocess_no_window_kwargs())
+        if shell and isinstance(command, str):
+            cmd_exe = os.path.join(
+                os.environ.get('SystemRoot', r'C:\Windows'),
+                'System32',
+                'cmd.exe',
+            )
+            if os.path.isfile(cmd_exe):
+                return subprocess.run(
+                    [cmd_exe, '/d', '/c', command],
+                    shell=False,
+                    **kwargs,
+                )
+    return subprocess.run(command, shell=shell, **kwargs)
 
 
 def _is_bad_iface_display_name(s: str) -> bool:
