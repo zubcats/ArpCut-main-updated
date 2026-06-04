@@ -6031,7 +6031,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self.stop_mitm_shaping(log=False)
                     self._await_mitm_teardown_thread()
                 _mark('crossflow_done')
-                if not actual_on and device:
+                # Always re-arm on explicit Kill ON. Skipping when actual_on was true
+                # caused "works once then never again" if killer.killed still held the
+                # victim while the UI showed OFF (partial unkill / profile desync).
+                if device:
                     if not _is_valid_ip(device.get('ip') or ''):
                         self.log('Target has no IP yet — enable sharing and rescan.', 'red')
                     elif self._uses_windivert(device):
@@ -6066,17 +6069,30 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                             self.killer.kill(device, wait_after=0.08)
                             mac = self._rekey_kill_bookkeeping(mac, device)
                             _mark('lan_killer_kill_done')
-                            self._log_mitm_arm_status(device, action='Kill')
-                            try:
-                                iface_name = (
-                                    self.scanner.iface.name if self.scanner.iface else 'en0'
+                            fw = self.killer.forwarders.get(mac)
+                            if not (fw and getattr(fw, 'running', False)):
+                                self.log(
+                                    'Kill ON: traffic cut forwarder did not start — '
+                                    'check Npcap adapter in Settings.',
+                                    'red',
                                 )
-                            except Exception:
-                                iface_name = 'en0'
-                            _bg_block_ip(iface_name, device.get('ip'), 'both')
-                            _mark('lan_bg_block_ip_done')
-                            self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
-                            kill_applied = True
+                                try:
+                                    self.killer.unkill(device)
+                                except Exception:
+                                    pass
+                                kill_applied = False
+                            else:
+                                self._log_mitm_arm_status(device, action='Kill')
+                                try:
+                                    iface_name = (
+                                        self.scanner.iface.name if self.scanner.iface else 'en0'
+                                    )
+                                except Exception:
+                                    iface_name = 'en0'
+                                _bg_block_ip(iface_name, device.get('ip'), 'both')
+                                _mark('lan_bg_block_ip_done')
+                                self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                                kill_applied = True
             else:
                 # B1: mirror Kill ON's cross-flow stop set — if any of the other
                 # flows are still running on this victim (toggle-blocked logic

