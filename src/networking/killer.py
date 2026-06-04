@@ -212,7 +212,7 @@ class Killer:
         if mac_address_is_usable(mac):
             victim['mac'] = mac
 
-    def kill(self, victim, wait_after=2, *, ics_mode=False):
+    def kill(self, victim, wait_after=2, *, traffic_cut=True, ics_mode=False):
         """
         Spoofing victim.
         Default 2 second delay - ARP cache lasts 30-120s, no need to spam.
@@ -220,6 +220,10 @@ class Killer:
 
         Registers ``self.killed`` on the caller thread so UI state (e.g. toggleKill)
         stays in sync; only the ARP loop runs in a background thread.
+
+        ``traffic_cut=False`` arms ARP MITM only (Percent Cut / link shaping set their
+        own forwarder pass ratios — calling kill() with the default 0% cut first made
+        Percent Cut feel like a full Kill until OFF).
         """
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         self._refresh_victim_mac_from_cache(victim)
@@ -237,7 +241,7 @@ class Killer:
         # unkill() mirrors this with _restore_arp_now(repeats=3) — keep them paired.
         self._poison_arp_now(victim, seq, repeats=3, delay_s=0)
         self._kill_arp_worker(victim, wait_after, seq)
-        if not ics_mode:
+        if not ics_mode and traffic_cut:
             self._apply_traffic_cut_sync(victim)
 
     def _apply_traffic_cut_sync(self, victim):
@@ -369,19 +373,22 @@ class Killer:
         """
         Keep MITM active and forward only a percentage of packets (both directions).
         """
-        if victim['mac'] not in self.killed:
-            self.kill(victim)
+        mac = victim.get('mac') if isinstance(victim, dict) else None
+        if not mac:
+            return False
+        if mac not in self.killed:
+            self.kill(victim, wait_after=0.08, traffic_cut=False)
+        else:
+            self._stop_forwarder(mac)
         pass_percent = max(0, min(100, int(pass_percent)))
         pass_from_victim = pass_percent
         pass_to_victim = pass_percent
 
-        if victim['mac'] in self.forwarders:
-            self.forwarders[victim['mac']].stop()
         if not self.router.get('mac'):
-            return
+            return False
         iface_to_use = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
         if not iface_to_use or iface_to_use == 'NULL':
-            return
+            return False
         fw = MitmForwarder(debug=debug)
         fw.start(
             victim=victim,
@@ -393,7 +400,8 @@ class Killer:
             pass_from_victim_pct=pass_from_victim,
             pass_to_victim_pct=pass_to_victim,
         )
-        self.forwarders[victim['mac']] = fw
+        self.forwarders[mac] = fw
+        return bool(fw and getattr(fw, 'running', False))
 
     def disable_percent_cut(self, mac):
         self._stop_forwarder(mac)
@@ -416,7 +424,7 @@ class Killer:
         Forwarder with per-direction delay, optional jitter, loss %, and token-bucket caps.
         """
         if victim['mac'] not in self.killed:
-            self.kill(victim)
+            self.kill(victim, wait_after=0.08, traffic_cut=False)
         delay_ms_out = max(0, min(_MAX_DELAY_MS, int(delay_ms_out)))
         delay_ms_in = max(0, min(_MAX_DELAY_MS, int(delay_ms_in)))
         jitter_ms_out = max(0, min(_MAX_DELAY_MS, int(jitter_ms_out)))

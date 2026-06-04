@@ -5270,15 +5270,21 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
         if self.percent_cut_active and self.percent_cut_device_mac:
-            dev = self._get_device_by_mac(self.percent_cut_device_mac) or self._victim_record_for_mac(self.percent_cut_device_mac)
+            dev = self._get_device_by_mac(
+                self.percent_cut_device_mac, getattr(self, 'percent_cut_device_ip', None)
+            ) or self._victim_record_for_mac(self.percent_cut_device_mac)
             if dev:
                 try:
                     if self._uses_windivert(dev):
                         self._ics_apply_percent_cut_windivert(dev, pct)
                     else:
                         allow_pct = max(0, 100 - pct)
+                        dev = dict(dev)
                         self._ensure_network_context_for_victim(dev)
-                        self.killer.apply_percent_cut(dev, pass_percent=allow_pct)
+                        self._refresh_victim_mac_from_system_arp(dev)
+                        self.percent_cut_device_mac = dev.get('mac')
+                        if not self.killer.apply_percent_cut(dev, pass_percent=allow_pct):
+                            self.log('Percent Cut update failed — rescan target', 'red')
                 except Exception:
                     pass
         self._updatePercentCutButtonState()
@@ -5424,6 +5430,29 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
+    def _percent_cut_backend_active(self, mac: str | None, ip: str | None = None) -> bool:
+        """True when MITM forwarder or killer entry still shapes this victim."""
+        mac = str(mac or '').strip()
+        ip = str(ip or '').strip()
+        if mac and mac in getattr(self.killer, 'forwarders', {}):
+            return True
+        if mac and mac in getattr(self.killer, 'killed', {}):
+            return True
+        if ip:
+            for victim in (self.killer.killed or {}).values():
+                if isinstance(victim, dict) and str(victim.get('ip') or '').strip() == ip:
+                    return True
+            for victim in (self.killer.killed or {}).values():
+                vm = str(victim.get('mac') or '').strip()
+                if vm and vm in getattr(self.killer, 'forwarders', {}):
+                    if str(victim.get('ip') or '').strip() == ip:
+                        return True
+        return False
+
+    def _resolve_pctcut_stop_snapshot(self, prev_mac, prev_ip):
+        """Victim for Percent Cut OFF (MAC may have been refreshed while ON)."""
+        return self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, None)
+
     def togglePercentCut(self, source='unknown'):
         if not self.connected():
             return
@@ -5436,8 +5465,16 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         mac = device['mac']
-        turning_on = not (self.percent_cut_active and self.percent_cut_device_mac == mac)
-        if turning_on and self._toggle_start_blocked('pctcut'):
+        ip = str(device.get('ip') or '').strip()
+        ui_on = bool(self.percent_cut_active and self.percent_cut_device_mac == mac)
+        backend_on = self._percent_cut_backend_active(
+            self.percent_cut_device_mac or mac, getattr(self, 'percent_cut_device_ip', None) or ip
+        )
+        turning_on = not ui_on and not backend_on
+        if not turning_on:
+            self.stopPercentCut(log=True)
+            return
+        if self._toggle_start_blocked('pctcut'):
             return
 
         if turning_on:
@@ -5473,8 +5510,22 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     return
                 resolved_ip = self._ics_hotspot_victim_ip(device, pctcut=True)
             else:
+                device = dict(device)
                 self._ensure_network_context_for_victim(device)
-                self.killer.apply_percent_cut(device, pass_percent=allow_pct)
+                self._refresh_victim_mac_from_system_arp(device)
+                mac = str(device.get('mac') or '').strip()
+                if not self.killer.apply_percent_cut(device, pass_percent=allow_pct):
+                    try:
+                        self.killer.unkill(device, ics_mode=True)
+                    except Exception:
+                        pass
+                    self.log(
+                        'Percent Cut failed — router MAC or adapter missing (rescan, ping PS5)',
+                        'red',
+                    )
+                    self._refresh_flow_toggle_ui()
+                    return
+                self._log_mitm_arm_status(device, action='Percent Cut')
                 resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
                     device.get('ip') or ''
                 ).strip()
@@ -5482,23 +5533,21 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.percent_cut_device_mac = mac
             self.percent_cut_device_ip = resolved_ip
             self.log(
-                f'Percent Cut ON for {resolved_ip or device["ip"]}: {pct}% cut ({allow_pct}% allowed)',
+                f'Percent Cut ON for {resolved_ip or device["ip"]}: {pct}% cut ({allow_pct}% pass)',
                 UI_LOG_VICTIM_BLOCK_FG,
             )
             self._refresh_flow_toggle_ui()
             self.showDevices()
             return
 
-        self.stopPercentCut(log=True)
-
     def stopPercentCut(self, log=True):
-        if not self.percent_cut_active:
-            return
         prev_mac = self.percent_cut_device_mac
+        prev_ip = getattr(self, 'percent_cut_device_ip', None)
+        was_ui_on = bool(self.percent_cut_active)
         self.percent_cut_active = False
         self.percent_cut_device_mac = None
         self.percent_cut_device_ip = None
-        victim = self._victim_record_for_mac(prev_mac) or self._get_device_by_mac(prev_mac)
+        victim = self._resolve_pctcut_stop_snapshot(prev_mac, prev_ip)
         if victim:
             try:
                 if clumsy_ics_lag_can_use_windivert(victim, self.scanner):
@@ -5512,17 +5561,50 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         self._stop_ics_lag_gate()
                 else:
                     self._ensure_network_context_for_victim(victim)
-                    self.killer.disable_percent_cut(prev_mac)
-                    self.killer.unkill(victim)
-                    self.killer.reinforce_restore(victim)
-                    pct_off_seq = self._bump_flow_off_intent('pctcut', prev_mac)
-                    self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 25, victim)
-                    self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 90, victim)
-                    self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 200, victim)
+                    cut_mac = str(victim.get('mac') or '').strip()
+                    if cut_mac:
+                        self.killer.disable_percent_cut(cut_mac)
+                    for km in list(getattr(self.killer, 'killed', {}).keys()):
+                        entry = self.killer.killed.get(km)
+                        if not isinstance(entry, dict):
+                            continue
+                        if prev_ip and str(entry.get('ip') or '').strip() == str(prev_ip).strip():
+                            try:
+                                self.killer.disable_percent_cut(km)
+                            except Exception:
+                                pass
+                    try:
+                        self.killer.unkill(victim, ics_mode=True)
+                    except Exception:
+                        pass
+                    try:
+                        self.killer.reinforce_restore(victim, ics_mode=True)
+                    except Exception:
+                        pass
+                    pct_off_seq = self._bump_flow_off_intent('pctcut', cut_mac or prev_mac)
+                    self._schedule_flow_off_reinforce(
+                        'pctcut', cut_mac or prev_mac, pct_off_seq, 25, victim
+                    )
+                    self._schedule_flow_off_reinforce(
+                        'pctcut', cut_mac or prev_mac, pct_off_seq, 90, victim
+                    )
             except Exception:
                 pass
-        if log and victim:
-            self.log('Percent Cut OFF for ' + victim['ip'], UI_LOG_RESTORE_FG)
+        if log:
+            if victim:
+                ip = str(victim.get('ip') or prev_ip or '')
+                still = self._percent_cut_backend_active(
+                    str(victim.get('mac') or ''), ip
+                )
+                if still:
+                    self.log(
+                        f'Percent Cut OFF: cut still active on {ip} — toggle again or use Kill OFF',
+                        'red',
+                    )
+                else:
+                    self.log('Percent Cut OFF for ' + ip, UI_LOG_RESTORE_FG)
+            elif was_ui_on:
+                self.log('Percent Cut OFF', UI_LOG_RESTORE_FG)
         self._refresh_flow_toggle_ui()
         self.showDevices()
 
