@@ -3185,6 +3185,54 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if want_ip:
                 return
 
+    def _refresh_router_mac_from_system_arp(self) -> None:
+        """Populate scanner/killer router MAC from the OS ARP cache (fast ping if missing)."""
+        try:
+            from tools.utils import lookup_mac_from_arp_table, mac_address_is_usable, run_command
+
+            router_ip = str(
+                getattr(self.scanner, 'router_ip', None)
+                or (getattr(self.scanner, 'router', None) or {}).get('ip')
+                or ''
+            ).strip()
+            if not router_ip:
+                return
+            iface_ip = str(getattr(self.scanner.iface, 'ip', None) or '').strip()
+            mac = lookup_mac_from_arp_table(router_ip, iface_ip)
+            if not mac_address_is_usable(mac) and sys.platform.startswith('win'):
+                try:
+                    run_command(
+                        ['ping', '-n', '1', '-w', '500', router_ip],
+                        shell=False,
+                        timeout=2,
+                    )
+                except Exception:
+                    pass
+                mac = lookup_mac_from_arp_table(router_ip, iface_ip)
+            if not mac_address_is_usable(mac):
+                return
+            self.scanner.router_mac = mac
+            if isinstance(getattr(self.scanner, 'router', None), dict):
+                self.scanner.router['mac'] = mac
+            if isinstance(getattr(self.killer, 'router', None), dict):
+                self.killer.router['mac'] = mac
+        except Exception:
+            pass
+
+    def _rekey_kill_bookkeeping(self, old_mac: str, device: dict) -> str:
+        """Keep intent/snapshot keys aligned when ARP refresh updates the victim MAC."""
+        new_mac = str((device or {}).get('mac') or '').strip()
+        if not new_mac or new_mac == old_mac:
+            return old_mac or new_mac
+        seq = self._kill_intent_seq.pop(old_mac, None)
+        if seq is not None:
+            self._kill_intent_seq[new_mac] = seq
+        snap_map = getattr(self, '_kill_device_snapshot', None)
+        if isinstance(snap_map, dict) and old_mac in snap_map:
+            snap_map[new_mac] = dict(device)
+            snap_map.pop(old_mac, None)
+        return new_mac
+
     def _refresh_victim_mac_from_system_arp(self, device) -> None:
         """Use the OS ARP cache (ping once if missing) so poison targets the live PS5 MAC."""
         if not isinstance(device, dict):
@@ -3284,9 +3332,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             from tools.utils import lookup_mac_from_arp_table, mac_address_is_usable
 
             self._refresh_victim_mac_from_system_arp(device)
+            self._refresh_router_mac_from_system_arp()
             router_mac = getattr(self.scanner, 'router_mac', '') or ''
             if changed or not mac_address_is_usable(router_mac):
                 self.scanner.refresh_local_topology()
+                self._refresh_router_mac_from_system_arp()
         except Exception:
             pass
         try:
@@ -6014,6 +6064,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                             kill_applied = False
                         else:
                             self.killer.kill(device, wait_after=0.08)
+                            mac = self._rekey_kill_bookkeeping(mac, device)
                             _mark('lan_killer_kill_done')
                             self._log_mitm_arm_status(device, action='Kill')
                             try:
@@ -6228,13 +6279,14 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _sync_killed_devices(self):
         """
-        Drop Kill-toggle bookkeeping when killer no longer holds this subnet profile.
-        Lag/dupe also use killer.killed for ARP — do not mirror that onto every nickname row.
+        Affirm Kill-toggle bookkeeping when killer holds a matching victim.
+
+        Do not silently clear explicit Kill ON when killer.killed keys drift (MAC
+        refresh, threaded forwarder startup) — only _run_kill_command turns OFF.
         """
         active_macs = set(self.killer.killed.keys())
-        preserve_profiles = set()
         for pk in list(self.killed_devices.keys()):
-            if pk in preserve_profiles:
+            if not self.killed_devices.get(pk):
                 continue
             mac, _pfx = parse_nickname_profile_key(pk)
             if not mac and '|' not in pk:
@@ -6242,17 +6294,20 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if not mac:
                 self.killed_devices.pop(pk, None)
                 continue
-            if mac not in active_macs:
-                if mac in getattr(self, '_ics_kill_profile_macs', set()):
-                    continue
-                self.killed_devices[pk] = False
+            if mac in active_macs:
                 continue
-            if '|' in pk:
-                victim = self.killer.killed.get(mac)
-                if victim:
-                    vpk = nickname_profile_key(mac, victim.get('ip', ''))
-                    if pk != vpk:
-                        self.killed_devices[pk] = False
+            if mac in getattr(self, '_ics_kill_profile_macs', set()):
+                continue
+            matched_backend = False
+            for victim in self.killer.killed.values():
+                vpk = nickname_profile_key(victim.get('mac', ''), victim.get('ip', ''))
+                if vpk == pk or str(victim.get('mac') or '') == mac:
+                    matched_backend = True
+                    break
+            if matched_backend:
+                self.killed_devices[pk] = True
+                continue
+            # Explicit Kill ON from the user — leave profile True until toggle OFF.
 
     def _set_kill_button_idle_look(self):
         """Icon + compact width for Kill: OFF (matches Lag/Dupe footprint)."""
