@@ -439,8 +439,13 @@ def get_ifaces():
         # Step 3: Get Scapy interfaces and match with our map
         from scapy.all import get_if_hwaddr
         scapy_ifaces = get_if_list()
+        # Driver Easy / Npcap reinstall often leaves several ghost NPF_{GUID} bindings
+        # on the same IPv4; keep the one with a real MAC (others are FF:FF:FF:FF:FF:FF).
+        best_by_ip: dict[str, NetFace] = {}
 
         for scapy_name in scapy_ifaces:
+            if 'Loopback' in scapy_name:
+                continue
             # Extract GUID from Scapy name: \\Device\\NPF_{GUID}
             guid = None
             if 'NPF_' in scapy_name:
@@ -568,7 +573,18 @@ def get_ifaces():
                 'ips': [ip],
                 'win_guid': guid,            # optional: keep Windows GUID if needed
             }
-            yield NetFace(iface)
+            face = NetFace(iface)
+            lip = str(ip or '').strip()
+            if lip in ('127.0.0.1', '0.0.0.0'):
+                yield face
+                continue
+            prev = best_by_ip.get(lip)
+            if prev is None:
+                best_by_ip[lip] = face
+            elif mac_address_is_usable(mac) and not mac_address_is_usable(prev.mac):
+                best_by_ip[lip] = face
+        for face in best_by_ip.values():
+            yield face
     else:
         # macOS/Linux: Build iface dicts similar to Windows structure
         # name, guid=name, mac via scapy, ips via route table
@@ -764,13 +780,48 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     return fallback if fallback is not None else get_default_iface()
 
 
+def resolve_settings_iface_name(saved: str) -> str:
+    """
+    Map stored Settings iface name to a live adapter.
+
+    After Driver Easy / Npcap reinstall, settings may still reference a ghost
+    NPF binding (FF:FF:FF:FF:FF:FF MAC) that no longer captures traffic.
+    """
+    name = str(saved or '').strip()
+    if not name or name == 'NULL':
+        return name
+    invalidate_ifaces_cache()
+    ifaces = list(get_ifaces())
+    want_ip = ''
+    for iface in ifaces:
+        if iface.name != name:
+            continue
+        if mac_address_is_usable(iface.mac):
+            return name
+        want_ip = str(getattr(iface, 'ip', None) or '').strip()
+        break
+    for iface in ifaces:
+        lip = str(getattr(iface, 'ip', None) or '').strip()
+        if lip in ('127.0.0.1', '0.0.0.0'):
+            continue
+        if want_ip and lip != want_ip:
+            continue
+        if mac_address_is_usable(iface.mac):
+            return iface.name
+    for iface in ifaces:
+        lip = str(getattr(iface, 'ip', None) or '').strip()
+        if lip not in ('127.0.0.1', '0.0.0.0') and mac_address_is_usable(iface.mac):
+            return iface.name
+    return name
+
+
 def get_iface_by_name(name):
     """
     Return interface given its name
     """
     if not name or str(name).strip() == '' or name == 'NULL':
         return get_default_iface()
-    name = str(name).strip()
+    name = resolve_settings_iface_name(str(name).strip())
     ifaces = list(get_ifaces())
     for iface in ifaces:
         if iface.name == name:

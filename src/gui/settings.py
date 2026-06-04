@@ -770,7 +770,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 set_settings('iface', pick.name)
                 s = import_settings()
         
-        saved = s.get('iface') or ''
+        from tools.utils import resolve_settings_iface_name
+
+        saved = resolve_settings_iface_name(s.get('iface') or '')
+        if saved and saved != (s.get('iface') or ''):
+            set_settings('iface', saved)
         idx = self.comboInterface.findData(saved)
         if idx < 0:
             idx = self.comboInterface.findText(saved, Qt.MatchFixedString)
