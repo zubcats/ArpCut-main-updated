@@ -1,0 +1,43 @@
+"""ZubCut status/logging: single lblleft strip + Dupe inline label."""
+from __future__ import annotations
+
+import os
+import sys
+import unittest
+
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+_SRC = os.path.join(_ROOT, 'src')
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+
+
+class TestDupeStatusLogging(unittest.TestCase):
+    @staticmethod
+    def _main_py() -> str:
+        path = os.path.join(_SRC, 'gui', 'main.py')
+        with open(path, encoding='utf-8') as fh:
+            return fh.read()
+
+    def test_log_documents_single_status_strip(self) -> None:
+        src = self._main_py()
+        log_doc = src[src.index('def log(self'): src.index('def openSettings', src.index('def log(self'))]
+        self.assertIn('no separate log window', log_doc.lower())
+        self.assertIn('lblleft', log_doc)
+
+    def test_dupe_uses_visible_inline_status(self) -> None:
+        src = self._main_py()
+        self.assertIn('def _show_dupe_status', src)
+        self.assertIn('def _log_dupe_restore_result', src)
+        start = src[src.index('def startDupe'): src.index('def dupe_remaining_ms', src.index('def startDupe'))]
+        self.assertIn('_show_dupe_status', start)
+        stop = src[src.index('def stopDupe'): src.index('def _updateDupeButtonState', src.index('def stopDupe'))]
+        self.assertIn('_log_dupe_restore_result', stop)
+        apply_def = src[src.index('def _apply_dupe_deferred'): src.index('def _slot_finish_dupe_block', src.index('def _apply_dupe_deferred'))]
+        self.assertIn("_log_mitm_arm_status(dev, action='Dupe')", apply_def)
+        mitm = src[src.index('def _log_mitm_arm_status'): src.index('def _ensure_network_context_for_victim', src.index('def _log_mitm_arm_status'))]
+        self.assertIn('UI_LOG_VICTIM_BLOCK_FG', mitm)
+        self.assertNotIn("'gray'", mitm)
+
+
+if __name__ == '__main__':
+    unittest.main()

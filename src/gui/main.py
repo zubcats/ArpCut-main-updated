@@ -1436,12 +1436,62 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def log(self, text, color='white'):
         """
         Print log info at left label (elided if long; hover shows full text).
+
+        There is no separate log window — only ``lblleft`` plus flow-specific labels
+        (e.g. ``lblDupeCountdownMain``). Messages are replaced by the next ``log()``.
         """
         self._status_strip_plain = text
         self._status_strip_color = color
         self.lblleft.setToolTip(text)
         self._apply_status_strip_elide()
         QTimer.singleShot(0, self._apply_status_strip_elide)
+
+    def _show_dupe_status(self, text, color=UI_LOG_VICTIM_BLOCK_FG, *, hold_ms=8000):
+        """Dupe feedback on the inline label under Dupe controls + left status strip."""
+        plain = str(text or '').strip()
+        if not plain:
+            return
+        self.log(plain, color)
+        self.lblDupeCountdownMain.setVisible(True)
+        self._set_countdown_label(self.lblDupeCountdownMain, plain)
+        if hold_ms > 0 and not self.dupe_active:
+            QTimer.singleShot(hold_ms, self._clear_dupe_status_label_if_idle)
+
+    def _clear_dupe_status_label_if_idle(self):
+        if self.dupe_active:
+            return
+        self.lblDupeCountdownMain.setVisible(False)
+        self.lblDupeCountdownMain.setText('')
+
+    def _log_dupe_restore_result(self, device) -> None:
+        """After Dupe OFF, report whether MITM/forwarder actually cleared."""
+        if not isinstance(device, dict):
+            self._show_dupe_status('Dupe OFF', UI_LOG_RESTORE_FG)
+            return
+        ip = str(device.get('ip') or '').strip()
+        mac = str(device.get('mac') or '').strip()
+        still = bool(
+            mac
+            and (
+                mac in getattr(self.killer, 'killed', {})
+                or mac in getattr(self.killer, 'forwarders', {})
+            )
+        )
+        if still:
+            self._show_dupe_status(
+                f'Dupe OFF: cut still active on {ip} — press Dupe or Kill OFF, then rescan',
+                'red',
+                hold_ms=12000,
+            )
+            return
+        if mac:
+            self._show_dupe_status(
+                f'Dupe OFF: restored {ip} ({mac})',
+                UI_LOG_RESTORE_FG,
+                hold_ms=10000,
+            )
+        else:
+            self._show_dupe_status(f'Dupe OFF: restored {ip}', UI_LOG_RESTORE_FG, hold_ms=10000)
     
     def openSettings(self):
         """Open Settings, or focus it if already open (avoid reload/freeze on re-click)."""
@@ -3301,7 +3351,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             self.log(
                 f'{action} MITM armed on {iface}: victim {victim_mac} router {router_mac}',
-                'gray',
+                UI_LOG_VICTIM_BLOCK_FG,
             )
         except Exception:
             pass
@@ -4122,6 +4172,99 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._finish_dupe_ics_teardown_ui(device)
         return True
 
+    def _sync_dupe_device_identity(self, device) -> None:
+        """Keep dupe_device_mac/ip aligned after ARP refresh (killer may rekey MAC)."""
+        if not isinstance(device, dict):
+            return
+        mac = str(device.get('mac') or '').strip()
+        ip = str(device.get('ip') or '').strip()
+        if mac:
+            self.dupe_device_mac = mac
+        if ip:
+            self.dupe_device_ip = ip
+
+    def _resolve_dupe_stop_snapshot(self, prev_mac, prev_ip, arm_snap):
+        """Victim dict for dupe OFF — match by IP/MAC even when ARP rekeyed mid-burst."""
+        ip = str(prev_ip or '').strip()
+        mac = str(prev_mac or '').strip()
+        live = self._get_device_by_mac(mac, ip) if mac or ip else None
+        if not live and ip:
+            for row in self.scanner.devices:
+                if str(row.get('ip') or '').strip() == ip:
+                    live = row
+                    break
+        for victim in (self.killer.killed or {}).values():
+            if not isinstance(victim, dict):
+                continue
+            v_ip = str(victim.get('ip') or '').strip()
+            v_mac = str(victim.get('mac') or '').strip()
+            if ip and v_ip == ip:
+                return dict(victim)
+            if mac and v_mac == mac:
+                return dict(victim)
+        if isinstance(arm_snap, dict):
+            if ip and str(arm_snap.get('ip') or '').strip() == ip:
+                snap = dict(arm_snap)
+            elif mac and str(arm_snap.get('mac') or '').strip() == mac:
+                snap = dict(arm_snap)
+            else:
+                snap = None
+            if snap:
+                if live:
+                    if not str(snap.get('ip') or '').strip():
+                        snap['ip'] = live.get('ip')
+                    if not str(snap.get('mac') or '').strip():
+                        snap['mac'] = live.get('mac')
+                return snap
+        if live:
+            return dict(live)
+        return None
+
+    def _release_dupe_victim_immediate(self, device) -> None:
+        """Restore connectivity on the GUI thread (Lag Switch OFF parity).
+
+        Deferred ``_do_deferred_dupe_clear`` only drops leftover firewall rules;
+        waiting for netsh unblock before ``unkill`` left victims cut for 1–3+ s.
+        """
+        if not isinstance(device, dict):
+            return
+        device = self._device_with_plan_ip(device)
+        plan = self._impairment_plan_for(device)
+        if plan.use_windivert or plan.is_ics_downstream:
+            try:
+                self._ics_emergency_release(device, heal=True)
+            except Exception:
+                pass
+            return
+        ip = (device.get('ip') or '').strip()
+        if ip and _is_valid_ip(ip):
+            _bg_unblock_ip(ip)
+        victims = []
+        primary = self._victim_record_for_mac(device.get('mac') or '') or device
+        if isinstance(primary, dict):
+            victims.append(primary)
+        if ip:
+            for victim in (self.killer.killed or {}).values():
+                if not isinstance(victim, dict):
+                    continue
+                if str(victim.get('ip') or '').strip() == ip and victim not in victims:
+                    victims.append(victim)
+        seen_macs = set()
+        for victim in victims:
+            mac = str(victim.get('mac') or '').strip()
+            if mac in seen_macs:
+                continue
+            seen_macs.add(mac)
+            try:
+                self.killer.unkill(victim, ics_mode=True)
+            except Exception:
+                pass
+            try:
+                self.killer.reinforce_restore(victim, ics_mode=True)
+            except Exception:
+                pass
+        self._schedule_dupe_off_reinforce(device.get('mac'), device)
+
     def _apply_victim_block(self, device, direction, **ics_block_kw) -> bool:
         plan = self._impairment_plan_for(device)
         device = self._device_with_plan_ip(device)
@@ -4240,9 +4383,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._dupe_async_unblock_ctx = None
             try:
                 if device and device.get('mac') == prev_mac:
-                    if not self._finish_dupe_ics_teardown(device, prev_mac):
-                        self._clear_victim_block(device)
-                        self._schedule_dupe_off_reinforce(prev_mac, device)
+                    self._release_dupe_victim_immediate(device)
             except Exception:
                 pass
             self._sync_killed_devices()
@@ -4306,22 +4447,21 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not pending:
             return
         prev_mac, snap = pending[0], pending[1]
-        device = self._get_device_by_mac(prev_mac) or snap
-        if not device or device.get('mac') != prev_mac:
+        prev_ip = str((snap or {}).get('ip') or getattr(self, '_dupe_restoring_ip', None) or '').strip()
+        device = self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, snap)
+        if not device:
             self._sync_killed_devices()
             self._drop_dupe_restoring_banner()
             return
         try:
-            if not self._finish_dupe_ics_teardown(device, prev_mac):
-                self._clear_victim_block(device)
-                self._schedule_dupe_off_reinforce(prev_mac, device)
+            self._release_dupe_victim_immediate(device)
         except Exception:
             pass
         self._sync_killed_devices()
         self._drop_dupe_restoring_banner()
 
     def _do_deferred_dupe_clear(self):
-        """Teardown unblock_ip off the GUI thread; unkill/reinforce on the main thread."""
+        """Background firewall cleanup only; ARP/WinDivert restore runs in stopDupe."""
         self._dupe_deferred_clear_timer.stop()
         try:
             self._dupe_deferred_clear_timer.timeout.disconnect()
@@ -4332,33 +4472,20 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not pending:
             return
         prev_mac, snap = pending[0], pending[1]
-        device = self._get_device_by_mac(prev_mac) or snap
-        if not device or device.get('mac') != prev_mac:
+        prev_ip = str((snap or {}).get('ip') or getattr(self, '_dupe_restoring_ip', None) or '').strip()
+        device = self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, snap)
+        if not device:
             self._sync_killed_devices()
             self._drop_dupe_restoring_banner()
             return
-        if self._uses_windivert(device):
-            snap = dict(device)
-
-            def _ics_teardown_done() -> None:
-                if snap.get('mac') != prev_mac:
-                    self._drop_dupe_restoring_banner()
-                    return
-                self._finish_dupe_ics_teardown_ui(snap)
-
-            self._run_on_flow_net_thread(
-                lambda: self._finish_dupe_ics_teardown_net(snap),
-                main_after=_ics_teardown_done,
-            )
+        snap = dict(device)
+        if self._uses_windivert(snap):
+            self._finish_dupe_ics_teardown_ui(snap)
+            self._drop_dupe_restoring_banner()
             return
-        ip = device.get('ip') or ''
+        ip = (device.get('ip') or '').strip()
         ex = getattr(self, '_dupe_net_executor', None)
-        if ex is None:
-            try:
-                self._clear_victim_block(device)
-                self._schedule_dupe_off_reinforce(prev_mac, device)
-            except Exception:
-                pass
+        if ex is None or not ip:
             self._sync_killed_devices()
             self._drop_dupe_restoring_banner()
             return
@@ -4384,28 +4511,14 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._sync_killed_devices()
             self._drop_dupe_restoring_banner()
             return
-        snap = dict(device)
-
-        def _ics_teardown_done() -> None:
-            if snap.get('mac') != prev_mac:
-                self._drop_dupe_restoring_banner()
-                return
-            self._finish_dupe_ics_teardown_ui(snap)
-
         try:
-            if self._uses_windivert(snap):
-                self._run_on_flow_net_thread(
-                    lambda: self._finish_dupe_ics_teardown_net(snap),
-                    main_after=_ics_teardown_done,
-                )
-                return
-            if not self._finish_dupe_ics_teardown(snap, prev_mac):
-                self._clear_victim_block(snap)
-                self._schedule_dupe_off_reinforce(prev_mac, snap)
+            if self._uses_windivert(device):
+                self._finish_dupe_ics_teardown_ui(dict(device))
         except Exception:
             pass
         self._sync_killed_devices()
-        self._refresh_table_row_for_mac(prev_mac)
+        if prev_mac:
+            self._refresh_table_row_for_mac(prev_mac)
         self._updateKillButtonState()
         self._drop_dupe_restoring_banner()
 
@@ -4435,7 +4548,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Kill on main thread; block_ip in worker; stopDupe scheduled for remaining time after block."""
         dev = self._dupe_arm_device
         self._dupe_arm_device = None
-        if not dev or not self.dupe_active or self.dupe_device_mac != dev.get('mac'):
+        if not dev or not self.dupe_active:
+            return
+        dev_ip = str(dev.get('ip') or '').strip()
+        if dev_ip and dev_ip != str(self.dupe_device_ip or '').strip():
             return
         direction = getattr(self, '_dupe_arm_direction', 'both')
         ex = getattr(self, '_dupe_net_executor', None)
@@ -4463,9 +4579,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             self._arm_dupe_burst_wall_clock()
             self._ensure_network_context_for_victim(dev)
+            self._sync_dupe_device_identity(dev)
             self.killer.disable_percent_cut(dev['mac'])
             if dev['mac'] not in self.killer.killed:
-                self.killer.kill(dev)
+                self.killer.kill(dev, wait_after=0.08)
             iface = self.scanner.iface.name if self.scanner.iface else 'en0'
             if ex is None:
                 exc = _dupe_net_run_block(iface, dev['ip'], direction)
@@ -4474,6 +4591,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._sync_killed_devices()
                 self._refresh_table_row_for_mac(dev['mac'])
                 self._updateKillButtonState()
+                self._log_mitm_arm_status(dev, action='Dupe')
                 self._start_dupe_timers_after_network_ready()
                 return
             self._dupe_block_ctx = (dev, direction)
@@ -4548,6 +4666,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._sync_killed_devices()
             self._refresh_table_row_for_mac(dev['mac'])
             self._updateKillButtonState()
+            self._log_mitm_arm_status(dev, action='Dupe')
         except Exception:
             pass
         self._start_dupe_timers_after_network_ready()
@@ -4947,6 +5066,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._dupe_arm_timer.timeout.disconnect()
         except TypeError:
             pass
+        device = dict(device)
+        self._refresh_victim_mac_from_system_arp(device)
         self.dupe_device_mac = device['mac']
         self.dupe_device_ip = device.get('ip')
         self.dupe_direction = direction
@@ -4956,7 +5077,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnDupe.setText('■ DUPE')
         self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         dir_text = {'both': 'all', 'in': 'incoming', 'out': 'outgoing'}[direction]
-        self.log(f'Dupe: {duration_ms}ms ({dir_text}), then full stop', UI_LOG_VICTIM_BLOCK_FG)
+        self._show_dupe_status(
+            f'Dupe ON {duration_ms}ms ({dir_text}) → {device.get("ip")} — Dupe/P to stop early',
+            UI_LOG_VICTIM_BLOCK_FG,
+            hold_ms=0,
+        )
         self._dupe_arm_device = dict(device)
         self._dupe_arm_direction = direction
         self._refresh_flow_toggle_ui()
@@ -5032,17 +5157,41 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_restoring_after_stop = True
         self._dupe_restoring_mac = prev_mac
         self._dupe_restoring_ip = prev_ip
-        # Idle chrome immediately; firewall/ARP finish asynchronously (_do_deferred_dupe_clear).
-        self.lblDupeCountdownMain.setVisible(False)
-        self.lblDupeCountdownMain.setText('')
+        self._show_dupe_status('Dupe OFF — restoring connection…', UI_LOG_RESTORE_FG, hold_ms=0)
         # Mark inactive after timers are stopped so _tick cannot race with teardown.
         self.dupe_active = False
         self.dupe_device_mac = None
         self.dupe_device_ip = None
         self.btnDupe.setText('Dupe')
         self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-        if log:
-            self.log(log_message, UI_LOG_RESTORE_FG)
+        snap = self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, arm_snap)
+        if snap:
+            try:
+                self._release_dupe_victim_immediate(snap)
+            except Exception:
+                pass
+            self._sync_killed_devices()
+            refresh_mac = str(snap.get('mac') or prev_mac or '').strip()
+            if refresh_mac:
+                self._refresh_table_row_for_mac(refresh_mac)
+            self._updateKillButtonState()
+        elif prev_ip or prev_mac:
+            try:
+                for victim in list((self.killer.killed or {}).values()):
+                    v_ip = str(victim.get('ip') or '').strip()
+                    v_mac = str(victim.get('mac') or '').strip()
+                    if (prev_ip and v_ip == str(prev_ip).strip()) or (
+                        prev_mac and v_mac == str(prev_mac).strip()
+                    ):
+                        self._release_dupe_victim_immediate(victim)
+                self._sync_killed_devices()
+                self._updateKillButtonState()
+            except Exception:
+                pass
+        if snap:
+            self._log_dupe_restore_result(snap)
+        elif log:
+            self._show_dupe_status(log_message, UI_LOG_RESTORE_FG)
         if refresh_dialog:
             self._refresh_flow_toggle_ui()
         else:
@@ -5061,32 +5210,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 app.processEvents(QEventLoop.ExcludeUserInputEvents)
         except Exception:
             pass
-        self._drain_dupe_block_if_needed()
-        live = self._get_device_by_mac(prev_mac) if prev_mac else None
-        arm_ok = arm_snap if (isinstance(arm_snap, dict) and arm_snap.get('mac') == prev_mac) else None
-        if live and arm_ok:
-            snap = dict(live)
-            lip = (live.get('ip') or '').strip()
-            sip = (arm_ok.get('ip') or '').strip()
-            if (not lip) and sip:
-                snap['ip'] = sip
-        elif live:
-            snap = dict(live)
-        elif arm_ok:
-            snap = dict(arm_ok)
-        else:
-            snap = None
-        if snap and self._uses_windivert(snap):
-            self._dupe_pending_clear = (prev_mac, snap)
-            try:
-                self._dupe_deferred_clear_timer.timeout.disconnect()
-            except TypeError:
-                pass
-            self._dupe_deferred_clear_timer.timeout.connect(
-                self._do_deferred_dupe_clear, Qt.UniqueConnection
-            )
-            self._dupe_deferred_clear_timer.start(0)
-            return
+        # Do not drain in-flight block_ip here — restore must not wait on netsh add.
+        self._dupe_block_apply_pending = False
+        self._dupe_block_ctx = None
+        self._dupe_block_future = None
         self._dupe_pending_clear = (prev_mac, snap)
         try:
             self._dupe_deferred_clear_timer.timeout.disconnect()

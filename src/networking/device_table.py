@@ -256,7 +256,63 @@ def build_client_rows_from_scan(
         )
         if nm and nm != '-':
             _maybe_record_nickname_last_ip(mac, ip, ics_prefix)
-    return rows
+    return dedupe_home_lan_rows_by_ip(rows, scanner)
+
+
+def _score_duplicate_ip_row(row: dict, arp_mac: str) -> int:
+    """Pick the best row when scan/ARP left multiple MACs on one IP (Driver Easy / stale ARP)."""
+    score = 0
+    mac = good_mac(row.get('mac'))
+    if arp_mac and mac == arp_mac:
+        score += 100
+    name = (row.get('name') or '').strip()
+    if name and name != '-':
+        score += 50
+    dtype = (row.get('type') or '').lower()
+    if 'playstation' in dtype or 'console' in dtype or dtype == 'user':
+        score += 20
+    if 'computer' in dtype and 'playstation' not in dtype:
+        score -= 15
+    return score
+
+
+def dedupe_home_lan_rows_by_ip(rows: List[dict], scanner: 'Scanner') -> List[dict]:
+    """
+    Home LAN: one table row per IP when multiple MAC profiles collide on the same address.
+
+    Stale ARP after Win10Pcap/NIC driver churn often creates a phantom ``Computer`` row
+    beside the real console — poisoning the wrong MAC leaves the victim cut after Dupe OFF.
+    """
+    by_ip: dict[str, List[dict]] = {}
+    for row in rows:
+        ip = str(row.get('ip') or '').strip()
+        if not ip:
+            continue
+        by_ip.setdefault(ip, []).append(row)
+    if not any(len(g) > 1 for g in by_ip.values()):
+        return rows
+    arp_lookup = None
+    try:
+        from tools.utils import lookup_mac_from_arp_table
+
+        arp_lookup = lookup_mac_from_arp_table
+    except Exception:
+        pass
+    iface_ip = str(getattr(getattr(scanner, 'iface', None), 'ip', None) or '').strip()
+    merged: List[dict] = []
+    for ip, group in by_ip.items():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        arp_mac = ''
+        if arp_lookup is not None:
+            try:
+                arp_mac = good_mac(arp_lookup(ip, iface_ip))
+            except Exception:
+                arp_mac = ''
+        best = max(group, key=lambda r, am=arp_mac: _score_duplicate_ip_row(r, am))
+        merged.append(best)
+    return sorted(merged, key=lambda d: _sort_ip_key(d.get('ip', '')))
 
 
 def _entry_to_device_dict(ent: _ClientEntry, display_ip: str) -> dict:

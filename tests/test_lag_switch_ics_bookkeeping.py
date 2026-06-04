@@ -64,6 +64,19 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         self.assertNotIn('QTimer.singleShot(0, _lag_teardown)', stop)
         self.assertNotIn('_schedule_flow_off_reinforce', stop)
 
+    def test_stop_dupe_restores_arp_before_firewall_drain(self) -> None:
+        src = self._main_py()
+        stop = src[src.index('def stopDupe'): src.index('def _updateDupeButtonState', src.index('def stopDupe'))]
+        self.assertIn('_release_dupe_victim_immediate', stop)
+        self.assertIn('_resolve_dupe_stop_snapshot', stop)
+        self.assertIn('killer.unkill(victim, ics_mode=True)', src[src.index('def _release_dupe_victim_immediate'): src.index('def _apply_victim_block', src.index('def _release_dupe_victim_immediate'))])
+        self.assertNotIn('_drain_dupe_block_if_needed', stop)
+        apply_def = src[src.index('def _apply_dupe_deferred'): src.index('def _slot_finish_dupe_block', src.index('def _apply_dupe_deferred'))]
+        self.assertIn('_sync_dupe_device_identity', apply_def)
+        deferred = src[src.index('def _do_deferred_dupe_clear'): src.index('def _arm_dupe_burst_wall_clock', src.index('def _do_deferred_dupe_clear'))]
+        self.assertNotIn('_clear_victim_block', deferred)
+        self.assertNotIn('killer.unkill', deferred)
+
     def test_lag_allow_phase_uses_fast_windivert_resume(self) -> None:
         src = self._main_py()
         resume = src[src.index('def _lag_ics_resume_allow_phase'): src.index('def _lag_apply_allow_phase_sync')]

@@ -69,6 +69,37 @@ class TestDeviceTable(unittest.TestCase):
         self.assertEqual(len(clients), 1)
         self.assertEqual(clients[0]['ip'], '192.168.137.99')
 
+    def test_home_lan_dedupes_same_ip_prefers_arp_mac_and_nickname(self) -> None:
+        s = _FakeScanner()
+        s.iface = mock.Mock(ip='192.168.1.110')
+        hits = [
+            ('192.168.1.165', 'dc:e9:94:ab:e6:c4'),
+            ('192.168.1.165', '00:e4:21:44:ed:0c'),
+        ]
+        with (
+            mock.patch.object(dt, 'clumsy_mac_centric_table', return_value=False),
+            mock.patch.object(dt, '_ics_prefix', return_value='192.168.137.'),
+            mock.patch('networking.device_table.Nicknames') as nick_cls,
+            mock.patch(
+                'tools.utils.lookup_mac_from_arp_table',
+                return_value='dc:e9:94:ab:e6:c4',
+            ),
+        ):
+            nick = nick_cls.return_value
+            nick.get_name.side_effect = lambda mac, ip: (
+                'PS5 DUPE' if mac.lower() == 'dc:e9:94:ab:e6:c4' else '-'
+            )
+            with mock.patch(
+                'networking.device_table.infer_network_device_type',
+                side_effect=lambda mac, *_a: (
+                    'User' if mac.lower() == 'dc:e9:94:ab:e6:c4' else 'Computer (PC / laptop)'
+                ),
+            ):
+                rows = dt.build_client_rows_from_scan(s, hits)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['mac'].lower(), 'dc:e9:94:ab:e6:c4')
+        self.assertEqual(rows[0]['ip'], '192.168.1.165')
+
     def test_revert_hides_hotspot_ip_when_clumsy_off(self) -> None:
         s = _FakeScanner()
         s.devices = [
