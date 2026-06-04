@@ -939,20 +939,19 @@ class IcsWinDivertLagGate:
     @staticmethod
     def _passes_byte_ratio(pass_pct: int, budget: float, pkt_size: int) -> Tuple[bool, float]:
         """
-        Tokenless byte budget (same model as MITM forwarder ``_passes_ratio``).
-        Returns (allowed, updated_budget).
+        Per-packet stochastic pass (matches MITM forwarder — avoids long starvation gaps).
+        Returns (allowed, updated_budget); budget is unused but kept for call-site compat.
         """
+        del budget, pkt_size
+        import random
+
         pct = max(0, min(100, int(pass_pct)))
         if pct <= 0:
-            return False, budget
+            return False, 0.0
         if pct >= 100:
-            return True, budget
-        size = max(1, int(pkt_size))
-        grant = (size * pct) / 100.0
-        budget += grant
-        if budget >= size:
-            return True, budget - float(size)
-        return False, budget
+            return True, 0.0
+        ok = random.randint(1, 100) <= pct
+        return ok, 0.0
 
     def clear_blocking_pause(self) -> None:
         """Leave kill/lag/dupe full-pause mode; discard held packets (no replay burst)."""

@@ -5232,10 +5232,28 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         self._sync_inline_flow_controls_enabled()
 
+    def _percent_cut_ui_shows_on(self, mac: str | None = None, ip: str | None = None) -> bool:
+        """True when Percent Cut is armed for the selected row or any active victim."""
+        if not self.percent_cut_active:
+            return False
+        stored_mac = str(self.percent_cut_device_mac or '').strip()
+        stored_ip = str(getattr(self, 'percent_cut_device_ip', None) or '').strip()
+        if not mac and not ip:
+            return bool(stored_mac or stored_ip)
+        if stored_mac and mac and stored_mac == str(mac).strip():
+            return True
+        if stored_ip and ip and stored_ip == str(ip).strip():
+            return True
+        return bool(stored_mac or stored_ip)
+
     def _updatePercentCutButtonState(self):
         pct = self._clamp_percent(self.spinPercentCutMain.value())
         key = getattr(self, '_shortcut_label_pctcut', 'K')
-        if self.percent_cut_active and self.percent_cut_device_mac:
+        dev = self._get_selected_device()
+        mac = str(dev.get('mac') or '').strip() if dev else ''
+        ip = str(dev.get('ip') or '').strip() if dev else ''
+        on = self._percent_cut_ui_shows_on(mac, ip)
+        if on:
             self.btnPercentCut.setText(f'■ CUT {pct}% (Press {key} to turn off)')
             self.btnPercentCut.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         else:
@@ -5453,6 +5471,53 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Victim for Percent Cut OFF (MAC may have been refreshed while ON)."""
         return self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, None)
 
+    def _release_pctcut_victim_immediate(self, victim) -> None:
+        """Stop Percent Cut MITM on the GUI thread (no slow iface refresh on OFF)."""
+        if not isinstance(victim, dict):
+            return
+        victim = self._device_with_plan_ip(victim)
+        plan = self._impairment_plan_for(victim)
+        if plan.use_windivert or plan.is_ics_downstream:
+            try:
+                gate = getattr(self, '_ics_lag_gate', None)
+                if gate is not None:
+                    gate.apply_percent_cut(0)
+            except Exception:
+                pass
+            if not self._ics_windivert_busy(str(victim.get('mac') or '')):
+                self._stop_ics_lag_gate()
+            return
+        ip = (victim.get('ip') or '').strip()
+        if ip and _is_valid_ip(ip):
+            _bg_unblock_ip(ip)
+        victims = []
+        primary = self._victim_record_for_mac(victim.get('mac') or '') or victim
+        if isinstance(primary, dict):
+            victims.append(primary)
+        if ip:
+            for entry in (self.killer.killed or {}).values():
+                if isinstance(entry, dict) and str(entry.get('ip') or '').strip() == ip:
+                    if entry not in victims:
+                        victims.append(entry)
+        seen = set()
+        for v in victims:
+            mac = str(v.get('mac') or '').strip()
+            if mac in seen:
+                continue
+            seen.add(mac)
+            try:
+                self.killer.disable_percent_cut(mac)
+            except Exception:
+                pass
+            try:
+                self.killer.unkill(v, ics_mode=True)
+            except Exception:
+                pass
+            try:
+                self.killer.reinforce_restore(v, ics_mode=True)
+            except Exception:
+                pass
+
     def togglePercentCut(self, source='unknown'):
         if not self.connected():
             return
@@ -5464,81 +5529,97 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log('Cannot cut admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
 
-        mac = device['mac']
+        mac = str(device.get('mac') or '').strip()
         ip = str(device.get('ip') or '').strip()
-        ui_on = bool(self.percent_cut_active and self.percent_cut_device_mac == mac)
-        backend_on = self._percent_cut_backend_active(
+        if self._percent_cut_ui_shows_on(mac, ip) or self._percent_cut_backend_active(
             self.percent_cut_device_mac or mac, getattr(self, 'percent_cut_device_ip', None) or ip
-        )
-        turning_on = not ui_on and not backend_on
-        if not turning_on:
+        ):
             self.stopPercentCut(log=True)
             return
         if self._toggle_start_blocked('pctcut'):
             return
 
-        if turning_on:
-            if self.percent_cut_active and self.percent_cut_device_mac and self.percent_cut_device_mac != mac:
-                self.stopPercentCut(log=False)
-            if self.mitm_shaping_active:
-                self.stop_mitm_shaping(log=False)
-                self._await_mitm_teardown_thread()
-            if self.lag_active and self.lag_device_mac == mac:
-                self.stopLagSwitch(refresh_dialog=True)
-            if self.dupe_active and self.dupe_device_mac == mac:
-                self.stopDupe(log=False)
-                self._flush_pending_dupe_clear_sync()
-            if self._kill_ui_shows_on(mac, device.get('ip'), device):
-                dev = dict(device)
-                self._run_kill_command(mac, dev, turn_on=False, source='pctcut_auto_off_kill')
-            pct = self._clamp_percent(self.spinPercentCutMain.value())
-            allow_pct = max(0, 100 - pct)
-            plan = self._impairment_plan_for(device)
-            if plan.is_ics_downstream:
-                if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
-                    self.log(
-                        'Percent Cut on hotspot needs WinDivert: '
-                        + clumsy_windivert_unavailable_reason(device),
-                        'red',
-                    )
-                    return
-                if not self._ics_apply_percent_cut_windivert(device, pct):
-                    self.log(
-                        'Percent Cut needs WinDivert (run as Administrator).',
-                        'red',
-                    )
-                    return
-                resolved_ip = self._ics_hotspot_victim_ip(device, pctcut=True)
-            else:
-                device = dict(device)
-                self._ensure_network_context_for_victim(device)
-                self._refresh_victim_mac_from_system_arp(device)
-                mac = str(device.get('mac') or '').strip()
-                if not self.killer.apply_percent_cut(device, pass_percent=allow_pct):
-                    try:
-                        self.killer.unkill(device, ics_mode=True)
-                    except Exception:
-                        pass
-                    self.log(
-                        'Percent Cut failed — router MAC or adapter missing (rescan, ping PS5)',
-                        'red',
-                    )
-                    self._refresh_flow_toggle_ui()
-                    return
-                self._log_mitm_arm_status(device, action='Percent Cut')
-                resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
-                    device.get('ip') or ''
-                ).strip()
-            self.percent_cut_active = True
+        if self.percent_cut_active and self.percent_cut_device_mac and self.percent_cut_device_mac != mac:
+            self.stopPercentCut(log=False)
+        if self.mitm_shaping_active:
+            self.stop_mitm_shaping(log=False)
+            self._await_mitm_teardown_thread()
+        if self.lag_active and self.lag_device_mac == mac:
+            self.stopLagSwitch(refresh_dialog=True)
+        if self.dupe_active and self.dupe_device_mac == mac:
+            self.stopDupe(log=False)
+            self._flush_pending_dupe_clear_sync()
+        if self._kill_ui_shows_on(mac, device.get('ip'), device):
+            dev = dict(device)
+            self._run_kill_command(mac, dev, turn_on=False, source='pctcut_auto_off_kill')
+        pct = self._clamp_percent(self.spinPercentCutMain.value())
+        allow_pct = max(0, 100 - pct)
+        self.percent_cut_active = True
+        self.percent_cut_device_mac = mac
+        self.percent_cut_device_ip = ip
+        self.btnPercentCut.setText(f'■ CUT {pct}%')
+        self.btnPercentCut.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
+        self._refresh_flow_toggle_ui()
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        except Exception:
+            pass
+        plan = self._impairment_plan_for(device)
+        if plan.is_ics_downstream:
+            if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
+                self.percent_cut_active = False
+                self.percent_cut_device_mac = None
+                self.percent_cut_device_ip = None
+                self.log(
+                    'Percent Cut on hotspot needs WinDivert: '
+                    + clumsy_windivert_unavailable_reason(device),
+                    'red',
+                )
+                self._refresh_flow_toggle_ui()
+                return
+            if not self._ics_apply_percent_cut_windivert(device, pct):
+                self.percent_cut_active = False
+                self.percent_cut_device_mac = None
+                self.percent_cut_device_ip = None
+                self.log(
+                    'Percent Cut needs WinDivert (run as Administrator).',
+                    'red',
+                )
+                self._refresh_flow_toggle_ui()
+                return
+            resolved_ip = self._ics_hotspot_victim_ip(device, pctcut=True)
+        else:
+            device = dict(device)
+            self._ensure_network_context_for_victim(device)
+            self._refresh_victim_mac_from_system_arp(device)
+            mac = str(device.get('mac') or '').strip()
             self.percent_cut_device_mac = mac
-            self.percent_cut_device_ip = resolved_ip
-            self.log(
-                f'Percent Cut ON for {resolved_ip or device["ip"]}: {pct}% cut ({allow_pct}% pass)',
-                UI_LOG_VICTIM_BLOCK_FG,
-            )
-            self._refresh_flow_toggle_ui()
-            self.showDevices()
-            return
+            if not self.killer.apply_percent_cut(device, pass_percent=allow_pct):
+                self.percent_cut_active = False
+                self.percent_cut_device_mac = None
+                self.percent_cut_device_ip = None
+                try:
+                    self._release_pctcut_victim_immediate(device)
+                except Exception:
+                    pass
+                self.log(
+                    'Percent Cut failed — router MAC or adapter missing (rescan, ping PS5)',
+                    'red',
+                )
+                self._refresh_flow_toggle_ui()
+                return
+            self._log_mitm_arm_status(device, action='Percent Cut')
+            resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
+                device.get('ip') or ''
+            ).strip()
+        self.percent_cut_device_ip = resolved_ip
+        self.log(
+            f'Percent Cut ON for {resolved_ip or ip}: {pct}% cut ({allow_pct}% pass)',
+            UI_LOG_VICTIM_BLOCK_FG,
+        )
+        self._refresh_flow_toggle_ui()
 
     def stopPercentCut(self, log=True):
         prev_mac = self.percent_cut_device_mac
@@ -5547,47 +5628,18 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.percent_cut_active = False
         self.percent_cut_device_mac = None
         self.percent_cut_device_ip = None
+        self.btnPercentCut.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        self._refresh_flow_toggle_ui()
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        except Exception:
+            pass
         victim = self._resolve_pctcut_stop_snapshot(prev_mac, prev_ip)
         if victim:
             try:
-                if clumsy_ics_lag_can_use_windivert(victim, self.scanner):
-                    gate = getattr(self, '_ics_lag_gate', None)
-                    if gate is not None:
-                        try:
-                            gate.apply_percent_cut(0)
-                        except Exception:
-                            pass
-                    if not self._ics_windivert_busy(prev_mac):
-                        self._stop_ics_lag_gate()
-                else:
-                    self._ensure_network_context_for_victim(victim)
-                    cut_mac = str(victim.get('mac') or '').strip()
-                    if cut_mac:
-                        self.killer.disable_percent_cut(cut_mac)
-                    for km in list(getattr(self.killer, 'killed', {}).keys()):
-                        entry = self.killer.killed.get(km)
-                        if not isinstance(entry, dict):
-                            continue
-                        if prev_ip and str(entry.get('ip') or '').strip() == str(prev_ip).strip():
-                            try:
-                                self.killer.disable_percent_cut(km)
-                            except Exception:
-                                pass
-                    try:
-                        self.killer.unkill(victim, ics_mode=True)
-                    except Exception:
-                        pass
-                    try:
-                        self.killer.reinforce_restore(victim, ics_mode=True)
-                    except Exception:
-                        pass
-                    pct_off_seq = self._bump_flow_off_intent('pctcut', cut_mac or prev_mac)
-                    self._schedule_flow_off_reinforce(
-                        'pctcut', cut_mac or prev_mac, pct_off_seq, 25, victim
-                    )
-                    self._schedule_flow_off_reinforce(
-                        'pctcut', cut_mac or prev_mac, pct_off_seq, 90, victim
-                    )
+                self._release_pctcut_victim_immediate(victim)
             except Exception:
                 pass
         if log:
@@ -5598,7 +5650,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 )
                 if still:
                     self.log(
-                        f'Percent Cut OFF: cut still active on {ip} — toggle again or use Kill OFF',
+                        f'Percent Cut OFF: cut still active on {ip} — toggle again',
                         'red',
                     )
                 else:
@@ -5606,7 +5658,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             elif was_ui_on:
                 self.log('Percent Cut OFF', UI_LOG_RESTORE_FG)
         self._refresh_flow_toggle_ui()
-        self.showDevices()
 
     def _refresh_advanced_lag_mitm_if_visible(self) -> None:
         dlg = getattr(self, 'advanced_lag_settings_dialog', None)

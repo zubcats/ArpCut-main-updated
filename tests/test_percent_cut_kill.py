@@ -45,7 +45,16 @@ class TestPercentCutKill(unittest.TestCase):
     def test_stop_percent_cut_uses_fast_unkill(self) -> None:
         src = self._main_py()
         stop = src[src.index('def stopPercentCut'): src.index('def _refresh_advanced_lag_mitm_if_visible', src.index('def stopPercentCut'))]
-        self.assertIn('unkill(victim, ics_mode=True)', stop)
+        self.assertIn('_release_pctcut_victim_immediate', stop)
+        self.assertIn('_percent_cut_ui_shows_on', src[src.index('def _updatePercentCutButtonState'): src.index('def _refresh_flow_toggle_ui', src.index('def _updatePercentCutButtonState'))])
+
+    def test_forwarder_percent_pass_is_stochastic(self) -> None:
+        from networking.forwarder import MitmForwarder
+
+        fw = MitmForwarder(debug=False)
+        passes = sum(1 for _ in range(500) if fw._passes_ratio(50, 'out', 1400))
+        self.assertGreater(passes, 150)
+        self.assertLess(passes, 350)
 
 
 if __name__ == '__main__':

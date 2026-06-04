@@ -337,24 +337,14 @@ class MitmForwarder:
         return min(_MAX_DELAY_MS, b + extra)
 
     def _passes_ratio(self, pass_pct: int, direction: str, pkt_size: int) -> bool:
+        """Per-packet stochastic pass (smoother than byte-budget bursts that feel like full cut)."""
+        del direction, pkt_size
         pct = max(0, min(100, int(pass_pct)))
         if pct <= 0:
             return False
         if pct >= 100:
             return True
-        size = max(1, int(pkt_size))
-        grant = (size * pct) / 100.0
-        if direction == 'out':
-            self._byte_budget_from_victim += grant
-            if self._byte_budget_from_victim >= size:
-                self._byte_budget_from_victim -= size
-                return True
-            return False
-        self._byte_budget_to_victim += grant
-        if self._byte_budget_to_victim >= size:
-            self._byte_budget_to_victim -= size
-            return True
-        return False
+        return random.randint(1, 100) <= pct
 
     def _process_packet(self, pkt):
         if not self.running or not pkt.haslayer(IP) or not pkt.haslayer(Ether):
