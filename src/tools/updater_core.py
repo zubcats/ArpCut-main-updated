@@ -312,6 +312,19 @@ def installer_download_candidates(*, force_refresh: bool = False) -> list[str]:
     return out
 
 
+def refresh_installer_download_plan() -> tuple[str, list[str], int]:
+    """
+    Fresh GitHub release metadata (blocking). Call from a worker thread only —
+    used after the user confirms install so the confirm dialog stays instant.
+    """
+    candidates = installer_download_candidates(force_refresh=True)
+    url = candidates[0] if candidates else ''
+    fallbacks = candidates[1:] if len(candidates) > 1 else []
+    info = remote_installer_info(force_refresh=True)
+    expected_size = int(info.size) if info and info.size > 0 else 0
+    return url, fallbacks, expected_size
+
+
 def release_page_url() -> str:
     channel = _normalized_update_channel()
     return f'https://github.com/{_github_repo()}/releases/tag/{_release_tag_for_channel(channel)}'

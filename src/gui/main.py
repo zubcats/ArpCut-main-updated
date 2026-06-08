@@ -860,6 +860,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Left status strip (lblleft): elide long lines to fit; full text in tooltip.
         self._status_strip_plain = None
         self._status_strip_color = 'white'
+        self.lblleft.setWordWrap(False)
+        self.lblleft.setMaximumHeight(self.lblleft.fontMetrics().height() + 6)
 
         # Space was bound in the .ui to ARP scan; only fire when the main window is foreground.
         self.btnScanEasy.setShortcut(QKeySequence())

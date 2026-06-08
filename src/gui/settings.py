@@ -819,11 +819,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def checkUpdate(self):
         begin_updater_debug_session('settings.checkUpdate')
         updater_log('checkUpdate: entered')
-        candidates = installer_download_candidates(force_refresh=True)
-        url = candidates[0] if candidates else (selected_update_url() or '')
+        # Do not force_refresh here — GitHub API on the GUI thread delayed the confirm
+        # dialog by seconds. Use cache/constants for instant popup; refresh in the
+        # download worker after the user confirms.
+        candidates = installer_download_candidates(force_refresh=False)
+        url = (candidates[0] if candidates else '') or (selected_update_url() or '')
         fallback_urls = candidates[1:] if len(candidates) > 1 else None
-        remote_info = remote_installer_info(force_refresh=True)
-        expected_size = int(remote_info.size) if remote_info and remote_info.size > 0 else 0
         if not url:
             MsgType.WARN(
                 self,
@@ -872,8 +873,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             path = download_update_with_progress_dialog(
                 self,
                 url,
-                expected_size=expected_size,
+                expected_size=0,
                 fallback_urls=fallback_urls,
+                refresh_metadata_first=True,
             )
             updater_log('checkUpdate: download returned path=%r', path)
             if path is None:

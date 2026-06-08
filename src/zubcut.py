@@ -14,7 +14,7 @@ from tools.utils_gui import (
     ensure_windows_elevated,
 )
 from tools.license_offline import load_and_validate_installed_license
-from tools.license_remote_signin import effective_signin_url
+from tools.license_remote_signin import effective_signin_url, license_transient_reason
 from tools.branding import load_shell_window_icon, qicon_is_empty
 from tools.qtools import msg_box, Buttons, MsgIcon
 
@@ -173,11 +173,11 @@ def _start_license_runtime_validation(gui, icon) -> None:
     gui._license_runtime_last_deferred_reason = ''
 
     def _log_runtime_deferred(reason: str) -> None:
-        msg = str(reason or '').strip() or 'Unknown transient error.'
-        if msg == getattr(gui, '_license_runtime_last_deferred_reason', ''):
+        short = license_transient_reason(reason)
+        if short == getattr(gui, '_license_runtime_last_deferred_reason', ''):
             return
-        gui._license_runtime_last_deferred_reason = msg
-        gui.log(f'License check deferred: {msg}', UI_LOG_RESTORE_FG)
+        gui._license_runtime_last_deferred_reason = short
+        gui.log(f'License check deferred: {short}', UI_LOG_RESTORE_FG)
 
     def _on_session_validated(ok, reason: str) -> None:
         if ok is True:
