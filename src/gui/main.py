@@ -997,6 +997,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_dlg_refresh_mono = 0.0
         self._dupe_net_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='dupe_net')
         self._dupe_end_mono = None  # wall deadline for countdown (set when block_ip finishes)
+        self._idle_mitm_reconcile_timer = QTimer(self)
+        self._idle_mitm_reconcile_timer.setInterval(20000)
+        self._idle_mitm_reconcile_timer.timeout.connect(
+            lambda: self._reconcile_idle_mitm_state(quiet=True)
+        )
+        self._idle_mitm_reconcile_timer.start()
         self._dupe_clear_future = None
         self._dupe_async_unblock_ctx = None  # (device, prev_mac) until post-unblock slot runs
         self._dupe_block_future = None
@@ -1971,6 +1977,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         not_enabled = not device.get('admin')
         self._refresh_selected_device_impairment_plan()
+        self._reconcile_idle_mitm_state(quiet=True)
 
         self.btnKill.setEnabled(not_enabled)
         self.btnLagSwitch.setEnabled(not_enabled)
@@ -5386,6 +5393,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         mac = device['mac']
         row_pk = self._killed_profile_key(device)
+        self._reconcile_stale_kill_profile(device)
         current_ui_on = self._kill_ui_shows_on(mac, device.get('ip'), device)
         if not current_ui_on and len(active_explicit) == 1 and active_explicit[0] != row_pk:
             # Selection drifted to a different row while one kill victim is active.
@@ -5455,7 +5463,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         mac = str(mac or '').strip()
         ip = str(ip or '').strip()
         if mac and mac in getattr(self.killer, 'forwarders', {}):
-            return True
+            fw = self.killer.forwarders.get(mac)
+            if fw is not None and getattr(fw, 'running', False):
+                return True
         if mac and mac in getattr(self.killer, 'killed', {}):
             return True
         if ip:
@@ -5511,12 +5521,13 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.killer.disable_percent_cut(mac)
             except Exception:
                 pass
+            is_ics = self._is_ics_downstream(v)
             try:
-                self.killer.unkill(v, ics_mode=True)
+                self.killer.unkill(v, ics_mode=is_ics)
             except Exception:
                 pass
             try:
-                self.killer.reinforce_restore(v, ics_mode=True)
+                self.killer.reinforce_restore(v, ics_mode=is_ics)
             except Exception:
                 pass
 
@@ -6289,6 +6300,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._flush_pending_dupe_clear_sync()
                 if self.percent_cut_active and self.percent_cut_device_mac == mac:
                     self.stopPercentCut(log=False)
+                elif self._percent_cut_backend_active(mac, device.get('ip')):
+                    try:
+                        self._release_pctcut_victim_immediate(device)
+                    except Exception:
+                        pass
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
                     self.stop_mitm_shaping(log=False)
                     self._await_mitm_teardown_thread()
@@ -6367,6 +6383,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._flush_pending_dupe_clear_sync()
                 if self.percent_cut_active and self.percent_cut_device_mac == mac:
                     self.stopPercentCut(log=False)
+                elif self._percent_cut_backend_active(mac, device.get('ip')):
+                    try:
+                        self._release_pctcut_victim_immediate(device)
+                    except Exception:
+                        pass
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
                     self.stop_mitm_shaping(log=False)
                     self._await_mitm_teardown_thread()
@@ -6555,14 +6576,135 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return None
         return self.scanner.devices[row]
 
+    def _kill_toggle_pending_for_mac(self, mac: str | None) -> bool:
+        mac = str(mac or '').strip()
+        if not mac:
+            return False
+        for pk in getattr(self, '_kill_pending_profiles', set()):
+            pm, _pfx = parse_nickname_profile_key(pk)
+            if pm == mac or pk == mac:
+                return True
+        return False
+
+    def _any_explicit_kill_profile_for_mac(self, mac: str | None) -> bool:
+        mac = str(mac or '').strip()
+        if not mac:
+            return False
+        for d in self.scanner.devices:
+            if d.get('mac') == mac and self._killed_profile_on(d):
+                return True
+        for pk, on in self.killed_devices.items():
+            if not on:
+                continue
+            pm, _pfx = parse_nickname_profile_key(pk)
+            if pm == mac or pk == mac:
+                return True
+        return False
+
+    def _killer_mac_key(self, mac: str | None) -> str | None:
+        """Resolve killer.killed / forwarders key (MAC casing may differ from profile keys)."""
+        from tools.utils import good_mac
+
+        want = good_mac(str(mac or '').strip())
+        if not want:
+            return None
+        killed = getattr(self.killer, 'killed', {}) or {}
+        if want in killed:
+            return want
+        for key in killed:
+            if good_mac(str(key)) == want:
+                return str(key)
+        forwarders = getattr(self.killer, 'forwarders', {}) or {}
+        if want in forwarders:
+            return want
+        for key in forwarders:
+            if good_mac(str(key)) == want:
+                return str(key)
+        return None
+
+    def _explicit_kill_backend_live(self, mac: str | None, device=None) -> bool:
+        """True when explicit Kill (not lag/dupe/pctcut) still has live network state."""
+        from tools.utils import good_mac
+
+        mac_n = good_mac(str(mac or '').strip())
+        if not mac_n:
+            return False
+        ics_macs = {good_mac(m) for m in getattr(self, '_ics_kill_profile_macs', set())}
+        if mac_n in ics_macs:
+            gate = getattr(self, '_ics_lag_gate', None)
+            if gate is not None and gate.is_running():
+                return True
+            if self._killer_mac_key(mac_n):
+                return True
+        killer_key = self._killer_mac_key(mac_n)
+        if not killer_key:
+            return False
+        fw = getattr(self.killer, 'forwarders', {}).get(killer_key)
+        if fw is None:
+            return True
+        return bool(getattr(fw, 'running', False))
+
+    def _reconcile_stale_kill_profile(self, device) -> bool:
+        """Clear ghost Kill ON when the UI profile outlived the backend (e.g. after idle)."""
+        if not device:
+            return False
+        pk = self._killed_profile_key(device)
+        if not pk or pk in getattr(self, '_kill_pending_profiles', set()):
+            return False
+        if not self._killed_profile_on(device):
+            return False
+        mac = str(device.get('mac') or '').strip()
+        if self._explicit_kill_backend_live(mac, device):
+            return False
+        self._set_killed_profile(device, False)
+        self.log('Kill state reset (was out of sync).', UI_LOG_RESTORE_FG)
+        return True
+
+    def _reconcile_idle_mitm_state(self, *, quiet: bool = True) -> None:
+        """Drop ghost Kill UI and orphan MITM left behind when flows ended without cleanup."""
+        self._sync_killed_devices()
+        flows_busy = (
+            self.lag_active
+            or self.dupe_active
+            or self.mitm_shaping_active
+            or self.percent_cut_active
+        )
+        if not flows_busy:
+            cleared = False
+            for mac in list(getattr(self.killer, 'killed', {}).keys()):
+                if self._kill_toggle_pending_for_mac(mac):
+                    continue
+                if self._any_explicit_kill_profile_for_mac(mac):
+                    continue
+                victim = self._victim_record_for_mac(mac) or {'mac': mac}
+                try:
+                    self.killer.unkill(victim)
+                    self.killer.reinforce_restore(victim)
+                    cleared = True
+                except Exception:
+                    pass
+            for mac, fw in list(getattr(self.killer, 'forwarders', {}).items()):
+                if mac in getattr(self.killer, 'killed', {}):
+                    continue
+                if fw is not None and getattr(fw, 'running', False):
+                    try:
+                        self.killer.disable_percent_cut(mac)
+                    except Exception:
+                        pass
+                    cleared = True
+            if cleared and not quiet:
+                self.log('Cleared stale network cut after idle.', UI_LOG_RESTORE_FG)
+        self._updateKillButtonState()
+
     def _sync_killed_devices(self):
         """
-        Affirm Kill-toggle bookkeeping when killer holds a matching victim.
+        Sync Kill-toggle bookkeeping with live backend state.
 
-        Do not silently clear explicit Kill ON when killer.killed keys drift (MAC
-        refresh, threaded forwarder startup) — only _run_kill_command turns OFF.
+        In-flight toggles stay latched via ``_kill_pending_profiles``. When the
+        profile says ON but nothing is actually cutting traffic anymore, clear the
+        ghost state so Kill is usable again after idle.
         """
-        active_macs = set(self.killer.killed.keys())
+        pending = getattr(self, '_kill_pending_profiles', set())
         for pk in list(self.killed_devices.keys()):
             if not self.killed_devices.get(pk):
                 continue
@@ -6572,20 +6714,13 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if not mac:
                 self.killed_devices.pop(pk, None)
                 continue
-            if mac in active_macs:
+            if pk in pending:
                 continue
             if mac in getattr(self, '_ics_kill_profile_macs', set()):
                 continue
-            matched_backend = False
-            for victim in self.killer.killed.values():
-                vpk = nickname_profile_key(victim.get('mac', ''), victim.get('ip', ''))
-                if vpk == pk or str(victim.get('mac') or '') == mac:
-                    matched_backend = True
-                    break
-            if matched_backend:
-                self.killed_devices[pk] = True
+            if self._explicit_kill_backend_live(mac):
                 continue
-            # Explicit Kill ON from the user — leave profile True until toggle OFF.
+            self.killed_devices[pk] = False
 
     def _set_kill_button_idle_look(self):
         """Icon + compact width for Kill: OFF (matches Lag/Dupe footprint)."""
