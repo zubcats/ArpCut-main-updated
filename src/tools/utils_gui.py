@@ -1474,6 +1474,16 @@ def repair_settings():
                     original[f'{_pre}_timer_runs'] = -1
     except (JSONDecodeError, OSError):
         pass
+    try:
+        from tools.utils import repair_saved_iface_name, repair_nickname_last_ips_from_arp
+
+        original['iface'] = repair_saved_iface_name(original.get('iface', ''))
+        original['nickname_last_ip'] = repair_nickname_last_ips_from_arp(
+            original.get('nickname_last_ip') or {},
+            original.get('nicknames') or {},
+        )
+    except Exception:
+        pass
     export_settings([original[k] for k in SETTINGS_KEYS])
 
 def migrate_settings_file():

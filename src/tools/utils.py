@@ -67,7 +67,7 @@ def _is_bad_iface_display_name(s: str) -> bool:
     t = (s or '').strip().lower()
     if not t:
         return True
-    if t == 'description':
+    if t == 'description' or t.startswith('description'):
         return True
     if t in ('connected', 'disconnected', 'enabled', 'disabled', 'dedicated'):
         return True
@@ -346,12 +346,59 @@ def check_connection(func):
 _IFACES_CACHE: list | None = None
 _IFACES_CACHE_AT: float = 0.0
 _IFACES_CACHE_TTL_S = 45.0
+_WIN_ADAPTER_NAMES: dict[str, str] | None = None
+
+
+def _guid_lookup_key(guid: str) -> str:
+    g = str(guid or '').strip().upper()
+    if not g:
+        return ''
+    if not g.startswith('{'):
+        g = '{' + g + '}'
+    return g
+
+
+def _windows_adapter_friendly_by_guid() -> dict[str, str]:
+    """One-shot GUID → 'Wi-Fi' / 'Ethernet' map (cached; Realtek USB Wi‑Fi breaks ipconfig labels)."""
+    global _WIN_ADAPTER_NAMES
+    if _WIN_ADAPTER_NAMES is not None:
+        return _WIN_ADAPTER_NAMES
+    out: dict[str, str] = {}
+    if sys.platform.startswith('win'):
+        try:
+            r = run_command(
+                [
+                    'powershell',
+                    '-NoProfile',
+                    '-WindowStyle',
+                    'Hidden',
+                    '-Command',
+                    "Get-NetAdapter | ForEach-Object { $_.InterfaceGuid.ToString().ToUpper() + '|' + $_.Name }",
+                ],
+                shell=False,
+                timeout=8,
+            )
+            if r.returncode == 0 and r.stdout:
+                for line in str(r.stdout).splitlines():
+                    line = line.strip()
+                    if '|' not in line:
+                        continue
+                    gid, fname = line.split('|', 1)
+                    gid = _guid_lookup_key(gid.strip())
+                    fname = fname.strip()
+                    if gid and fname:
+                        out[gid] = fname
+        except Exception:
+            pass
+    _WIN_ADAPTER_NAMES = out
+    return out
 
 
 def invalidate_ifaces_cache() -> None:
-    global _IFACES_CACHE, _IFACES_CACHE_AT
+    global _IFACES_CACHE, _IFACES_CACHE_AT, _WIN_ADAPTER_NAMES
     _IFACES_CACHE = None
     _IFACES_CACHE_AT = 0.0
+    _WIN_ADAPTER_NAMES = None
 
 
 def get_ifaces_cached(*, max_age_s: float | None = None):
@@ -418,6 +465,7 @@ def get_ifaces():
         # Step 2: Get GUID mapping from netsh (may be localized - best effort)
         netsh_output = terminal('netsh interface show interface')
         guid_to_friendly = {}  # guid -> friendly_name
+        guid_names = _windows_adapter_friendly_by_guid()
         if netsh_output:
             for line in netsh_output.split('\n'):
                 line = line.strip()
@@ -478,6 +526,8 @@ def get_ifaces():
             # powershell.exe on every refresh; ipconfig + MAC match remains the source of truth).
             if friendly_name and _is_bad_iface_display_name(friendly_name):
                 friendly_name = None
+            if not friendly_name and guid:
+                friendly_name = guid_names.get(_guid_lookup_key(guid))
 
             # Get IP and MAC
             ip = '0.0.0.0'
@@ -554,8 +604,10 @@ def get_ifaces():
                     pass
             
             # Use friendly name if available, otherwise use Scapy name (cleaned up)
-            if friendly_name:
+            if friendly_name and not _is_bad_iface_display_name(friendly_name):
                 display_name = friendly_name
+            elif guid and _guid_lookup_key(guid) in guid_names:
+                display_name = guid_names[_guid_lookup_key(guid)]
             else:
                 # Clean up Scapy name for display
                 display_name = scapy_name.replace('\\Device\\NPF_', '').strip('{}')
@@ -576,7 +628,11 @@ def get_ifaces():
             face = NetFace(iface)
             lip = str(ip or '').strip()
             if lip in ('127.0.0.1', '0.0.0.0'):
-                yield face
+                if mac_address_is_usable(mac):
+                    yield face
+                continue
+            # Skip ghost Npcap bindings (00:00… / FF:FF…) that share a live LAN IP with a real NIC.
+            if not mac_address_is_usable(mac):
                 continue
             prev = best_by_ip.get(lip)
             if prev is None:
@@ -820,6 +876,71 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     return ifaces[0] if ifaces else get_default_iface()
 
 
+def pick_best_live_iface():
+    """Return the best connected LAN adapter for Settings (live IP, usable MAC, not APIPA)."""
+    invalidate_ifaces_cache()
+    ifaces = list(get_ifaces())
+    best = None
+    best_score = -1
+    for iface in ifaces:
+        lip = _iface_live_ipv4(iface)
+        if not lip or lip.startswith('169.254.') or not mac_address_is_usable(iface.mac):
+            continue
+        score = 0
+        if not _is_bad_iface_display_name(iface.name):
+            score += 10
+        try:
+            rt = conf.route.route('0.0.0.0')
+            for token in rt or ():
+                if str(token) == str(iface.guid):
+                    score += 100
+                    break
+        except Exception:
+            pass
+        if score > best_score:
+            best_score = score
+            best = iface
+    if best is not None:
+        return best
+    for iface in ifaces:
+        if _iface_live_ipv4(iface) and mac_address_is_usable(iface.mac):
+            return iface
+    return ifaces[0] if ifaces else NetFace(DUMMY_IFACE)
+
+
+def repair_saved_iface_name(saved: str) -> str:
+    """Map broken Settings labels / ghost bindings to the live default-route NIC."""
+    name = str(saved or '').strip()
+    if name and not _is_bad_iface_display_name(name):
+        for iface in get_ifaces_cached():
+            if iface.name == name and mac_address_is_usable(iface.mac) and _iface_live_ipv4(iface):
+                return name
+    best = pick_best_live_iface()
+    return best.name if best and best.name != 'NULL' else name
+
+
+def repair_nickname_last_ips_from_arp(nickname_last_ip: dict, nicknames: dict) -> dict:
+    """Refresh saved last-IP map from the OS ARP table (PS5 moved .165 → .248)."""
+    try:
+        from networking.nicknames import parse_nickname_profile_key
+    except Exception:
+        return dict(nickname_last_ip or {})
+    last = dict(nickname_last_ip or {})
+    iface = pick_best_live_iface()
+    iface_ip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '')
+    for key in list(nicknames or {}):
+        mac, _pfx = parse_nickname_profile_key(str(key))
+        if not mac:
+            continue
+        try:
+            found = lookup_mac_from_arp_table(mac, iface_ip)
+        except Exception:
+            found = ''
+        if found and _ipv4_valid(found):
+            last[str(key)] = found
+    return last
+
+
 def resolve_settings_iface_name(saved: str) -> str:
     """
     Map stored Settings iface name to a live adapter.
@@ -830,6 +951,8 @@ def resolve_settings_iface_name(saved: str) -> str:
     name = str(saved or '').strip()
     if not name or name == 'NULL':
         return name
+    if _is_bad_iface_display_name(name):
+        name = ''
     invalidate_ifaces_cache()
     ifaces = list(get_ifaces())
     want_ip = ''
@@ -849,9 +972,12 @@ def resolve_settings_iface_name(saved: str) -> str:
         if mac_address_is_usable(iface.mac):
             return iface.name
     for iface in ifaces:
-        lip = str(getattr(iface, 'ip', None) or '').strip()
-        if lip not in ('127.0.0.1', '0.0.0.0') and mac_address_is_usable(iface.mac):
+        lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
+        if lip not in ('127.0.0.1', '0.0.0.0', '') and mac_address_is_usable(iface.mac):
             return iface.name
+    if not name:
+        best = pick_best_live_iface()
+        return best.name if best and best.name != 'NULL' else ''
     return name
 
 
