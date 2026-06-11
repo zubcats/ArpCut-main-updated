@@ -3171,9 +3171,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.stopPercentCut(log=False)
         dev = dict(device)
         try:
-            from tools.utils import invalidate_ifaces_cache
-
-            invalidate_ifaces_cache()
             self._ensure_network_context_for_victim(snap)
             mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(snap)
             if not mitm_ok:

@@ -394,11 +394,13 @@ def _windows_adapter_friendly_by_guid() -> dict[str, str]:
     return out
 
 
-def invalidate_ifaces_cache() -> None:
+def invalidate_ifaces_cache(*, full: bool = False) -> None:
+    """Drop cached adapter list. ``full=True`` also refreshes Windows friendly names (PowerShell)."""
     global _IFACES_CACHE, _IFACES_CACHE_AT, _WIN_ADAPTER_NAMES
     _IFACES_CACHE = None
     _IFACES_CACHE_AT = 0.0
-    _WIN_ADAPTER_NAMES = None
+    if full:
+        _WIN_ADAPTER_NAMES = None
 
 
 def get_ifaces_cached(*, max_age_s: float | None = None):
@@ -878,8 +880,7 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
 
 def pick_best_live_iface():
     """Return the best connected LAN adapter for Settings (live IP, usable MAC, not APIPA)."""
-    invalidate_ifaces_cache()
-    ifaces = list(get_ifaces())
+    ifaces = list(get_ifaces_cached())
     best = None
     best_score = -1
     for iface in ifaces:
@@ -915,6 +916,7 @@ def repair_saved_iface_name(saved: str) -> str:
         for iface in get_ifaces_cached():
             if iface.name == name and mac_address_is_usable(iface.mac) and _iface_live_ipv4(iface):
                 return name
+    invalidate_ifaces_cache(full=True)
     best = pick_best_live_iface()
     return best.name if best and best.name != 'NULL' else name
 
@@ -953,8 +955,7 @@ def resolve_settings_iface_name(saved: str) -> str:
         return name
     if _is_bad_iface_display_name(name):
         name = ''
-    invalidate_ifaces_cache()
-    ifaces = list(get_ifaces())
+    ifaces = list(get_ifaces_cached())
     want_ip = ''
     for iface in ifaces:
         if iface.name != name:
