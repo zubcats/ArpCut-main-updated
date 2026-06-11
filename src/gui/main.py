@@ -6262,9 +6262,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _run_kill_command(self, mac, device, turn_on, source='unknown'):
         """Immediate explicit command path: one click => one kill/unkill command."""
         import time as _kill_time
-        # Always-on for this diagnostic build; revert to get_settings('debug_kill_timing')
-        # once the root cause of the Kill ON delay is identified.
-        _kill_dbg = True
+        _kill_dbg = bool(get_settings('debug_kill_timing'))
         _kill_t0 = _kill_time.perf_counter()
         _kill_marks: list[tuple[str, float]] = []
 

@@ -517,10 +517,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         super().showEvent(event)
         self.comboInterface.clearFocus()
         self.comboInterface.hidePopup()
-        if self.comboInterface.count() == 0:
-            from tools.utils import invalidate_ifaces_cache
-
-            invalidate_ifaces_cache()
+        if self._iface_combo_is_placeholder():
+            self._load_interfaces_foreground()
+        elif self.comboInterface.count() == 0:
             self._load_interfaces_background()
         self._refresh_clumsy_settings_widgets()
         self._finalize_settings_layout()
@@ -986,19 +985,52 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             self.btnUpdate.setStyleSheet('')
     
-    def loadInterfaces(self, *, use_cache: bool = True):
-        from tools.utils import get_ifaces, get_ifaces_cached
+    def _iface_combo_is_placeholder(self) -> bool:
+        """True when the combo only shows the Npcap error stub (not a real adapter)."""
+        if self.comboInterface.count() != 1:
+            return False
+        try:
+            return not str(self.comboInterface.itemData(0) or '').strip()
+        except Exception:
+            return True
 
+    def _apply_combo_ifaces(self, ifaces, *, preserve_selection: bool = True) -> bool:
+        """Populate network-interface combo; return True when at least one adapter was added."""
+        saved = ''
+        if preserve_selection:
+            try:
+                saved = str(self.comboInterface.currentData() or '')
+            except Exception:
+                pass
         self.comboInterface.clear()
-        ifaces = get_ifaces_cached() if use_cache else get_ifaces()
         if not ifaces:
             self.comboInterface.addItem('(no adapters found — check Npcap)', '')
-            return
+            return False
         for iface in ifaces:
             self.comboInterface.addItem(
                 format_iface_settings_label(iface),
                 iface.name,
             )
+        if saved and ifaces:
+            idx = self.comboInterface.findData(saved)
+            if idx >= 0:
+                self.comboInterface.setCurrentIndex(idx)
+        return True
+
+    def loadInterfaces(self, *, use_cache: bool = True):
+        from tools.utils import get_ifaces, get_ifaces_cached
+
+        ifaces = get_ifaces_cached() if use_cache else get_ifaces()
+        self._apply_combo_ifaces(ifaces)
+
+    def _load_interfaces_foreground(self) -> None:
+        """Resync adapter list on the GUI thread (Scapy/Npcap is unreliable from QThread)."""
+        from tools.utils import get_ifaces, get_ifaces_cached
+
+        ifaces = list(get_ifaces_cached())
+        if not ifaces:
+            ifaces = list(get_ifaces())
+        self._apply_combo_ifaces(ifaces)
 
     def _load_interfaces_background(self) -> None:
         """Refresh adapter list off the GUI thread (ipconfig is slow)."""
@@ -1008,11 +1040,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             finished_list = pyqtSignal(list)
 
             def run(self):
-                from tools.utils import get_ifaces, invalidate_ifaces_cache
+                from tools.utils import get_ifaces
 
                 try:
-                    invalidate_ifaces_cache()
-                    self.finished_list.emit(get_ifaces())
+                    # Do not invalidate cache here — worker-thread Scapy often returns []
+                    # and would wipe a good list that loadInterfaces(use_cache=True) just showed.
+                    self.finished_list.emit(list(get_ifaces()))
                 except Exception:
                     self.finished_list.emit([])
 
@@ -1021,24 +1054,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         def _apply(ifaces):
-            saved = ''
-            try:
-                saved = str(self.comboInterface.currentData() or '')
-            except Exception:
-                pass
-            self.comboInterface.clear()
             if not ifaces:
-                self.comboInterface.addItem('(no adapters found — check Npcap)', '')
-            else:
-                for iface in ifaces:
-                    self.comboInterface.addItem(
-                        format_iface_settings_label(iface),
-                        iface.name,
-                    )
-            if saved and ifaces:
-                idx = self.comboInterface.findData(saved)
-                if idx >= 0:
-                    self.comboInterface.setCurrentIndex(idx)
+                if not self._iface_combo_is_placeholder():
+                    return
+                QTimer.singleShot(0, self._load_interfaces_foreground)
+                return
+            self._apply_combo_ifaces(ifaces)
 
         loader = _IfaceLoader(self)
         loader.finished_list.connect(_apply)
