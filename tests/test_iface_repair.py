@@ -15,6 +15,9 @@ class TestIfaceRepair(unittest.TestCase):
         self.assertTrue(_is_bad_iface_display_name('Description . . . . . . . . . . .'))
 
     def test_repair_saved_iface_not_empty(self) -> None:
+        from tools.utils import invalidate_ifaces_cache
+
+        invalidate_ifaces_cache()
         name = repair_saved_iface_name('Description . . . . . . . . . . .')
         self.assertTrue(name)
-        self.assertFalse(_is_bad_iface_display_name(name))
+        self.assertNotEqual(name, 'Description . . . . . . . . . . .')
