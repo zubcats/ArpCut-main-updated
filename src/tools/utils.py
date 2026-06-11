@@ -673,6 +673,37 @@ def _network_for_route(route_entry):
         return None
 
 
+def _iface_live_ipv4(iface) -> str:
+    """Current IPv4 on this Npcap iface (not the stale NetFace.ip cache)."""
+    guid = str(getattr(iface, 'guid', None) or '').strip()
+    if not guid:
+        return ''
+    try:
+        ip = str(get_my_ip(guid) or '').strip()
+    except Exception:
+        return ''
+    if ip in ('0.0.0.0', '127.0.0.1'):
+        return ''
+    return ip
+
+
+def _iface_for_route_tokens(route_tokens, ifaces):
+    if not route_tokens:
+        return None
+    for token in route_tokens:
+        ts = str(token)
+        for iface in ifaces:
+            if iface.guid == ts or ts == iface.guid:
+                return iface
+    for token in route_tokens:
+        ts = str(token)
+        if 'NPF_' in ts or ts.startswith('\\Device'):
+            for iface in ifaces:
+                if iface.guid == ts:
+                    return iface
+    return None
+
+
 def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     """
     Pick the local NetFace Scapy would use to reach victim_ip (same subnet / route table).
@@ -682,18 +713,6 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     """
     if not _ipv4_valid(victim_ip) or victim_ip in ('0.0.0.0', '127.0.0.1'):
         return fallback if fallback is not None else get_default_iface()
-    # Fast accept: if the caller's fallback already shares the victim's /24, skip the
-    # heavy enumeration entirely. Kill ON on a stable LAN hits this path every time.
-    try:
-        if fallback is not None:
-            f_ip = getattr(fallback, 'ip', None) or ''
-            if f_ip and f_ip not in ('0.0.0.0', '127.0.0.1'):
-                f_oct = [int(x) for x in f_ip.split('.')]
-                v_oct = [int(x) for x in victim_ip.split('.')]
-                if len(f_oct) == 4 and len(v_oct) == 4 and f_oct[:3] == v_oct[:3]:
-                    return fallback
-    except Exception:
-        pass
     # Cached iface list keeps Kill ON snappy when a Wi-Fi/BT combo dongle inflates
     # ipconfig output (1–3 s parse). The cache is invalidated by Settings/Clumsy flows.
     try:
@@ -703,35 +722,39 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     if not ifaces:
         return fallback if fallback is not None else get_default_iface()
 
-    # Try route lookup WITHOUT resync first — conf.route.resync() on Windows can
-    # cost 1–3 s and was being hit on every Kill/Lag arm after Driver Easy resets.
-    rt = None
-    try:
-        rt = conf.route.route(victim_ip)
-    except Exception:
-        rt = None
-    if not rt:
-        try:
-            conf.route.resync()
-        except Exception:
-            pass
+    def _route_iface(*, resync: bool = False):
+        if resync:
+            try:
+                conf.route.resync()
+            except Exception:
+                pass
         try:
             rt = conf.route.route(victim_ip)
         except Exception:
-            rt = None
+            return None
+        return _iface_for_route_tokens(rt, ifaces)
 
-    if rt:
-        for token in rt:
-            ts = str(token)
-            for iface in ifaces:
-                if iface.guid == ts or ts == iface.guid:
-                    return iface
-        for token in rt:
-            ts = str(token)
-            if 'NPF_' in ts or ts.startswith('\\Device'):
-                for iface in ifaces:
-                    if iface.guid == ts:
-                        return iface
+    # Route table first — authoritative when the PC hops Ethernet ↔ Wi‑Fi on the same /24.
+    # The old /24 fast-accept on fallback.NetFace.ip kept using unplugged Ethernet after
+    # switching to Wi‑Fi (stale 192.168.1.x on the cached object), so Lag/Kill sent no traffic.
+    hit = _route_iface(resync=False)
+    if hit is not None:
+        return hit
+    hit = _route_iface(resync=True)
+    if hit is not None:
+        return hit
+
+    # Fast accept only when fallback still has a live address on the victim's /24.
+    try:
+        if fallback is not None:
+            live_ip = _iface_live_ipv4(fallback)
+            if live_ip:
+                f_oct = [int(x) for x in live_ip.split('.')]
+                v_oct = [int(x) for x in victim_ip.split('.')]
+                if len(f_oct) == 4 and len(v_oct) == 4 and f_oct[:3] == v_oct[:3]:
+                    return fallback
+    except Exception:
+        pass
 
     # Fallback #1: longest-prefix match from full route table.
     try:
@@ -761,13 +784,13 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     except Exception:
         pass
 
-    # Fallback #2: same /24 as a configured interface (hotspot clients, odd route tables).
+    # Fallback #2: same /24 as a live interface (hotspot clients, odd route tables).
     try:
         v_oct = [int(x) for x in victim_ip.split('.')]
     except ValueError:
         return fallback if fallback is not None else get_default_iface()
     for iface in ifaces:
-        ip = getattr(iface, 'ip', None) or ''
+        ip = _iface_live_ipv4(iface)
         if not ip or ip in ('0.0.0.0', '127.0.0.1'):
             continue
         try:
@@ -777,7 +800,9 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
         if len(a) == 4 and len(v_oct) == 4 and a[:3] == v_oct[:3]:
             return iface
 
-    return fallback if fallback is not None else get_default_iface()
+    if fallback is not None and _iface_live_ipv4(fallback):
+        return fallback
+    return ifaces[0] if ifaces else get_default_iface()
 
 
 def resolve_settings_iface_name(saved: str) -> str:
