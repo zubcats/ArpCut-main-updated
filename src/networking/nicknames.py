@@ -53,6 +53,69 @@ def get_nickname_last_ip_map() -> dict:
     return m if isinstance(m, dict) else {}
 
 
+def _last_ip_for_mac(mac: str, last_map: dict) -> str:
+    """Resolve saved last IPv4 for a MAC (legacy or profile keys)."""
+    mac = good_mac(mac)
+    if not mac:
+        return ''
+    for key in (mac,):
+        lip = str(last_map.get(key) or '').strip()
+        if lip:
+            return lip
+    for lk, lip in last_map.items():
+        lm, _ = parse_nickname_profile_key(lk)
+        if lm == mac and lip:
+            return str(lip).strip()
+    return ''
+
+
+def resolve_favorite_ip(
+    mac: str, key_raw: str, last_map: dict | None = None, iface_ip: str = ''
+) -> str:
+    """Best IPv4 for a nicknamed device on startup: ARP first, then saved last-IP."""
+    mac = good_mac(mac)
+    if not mac:
+        return ''
+    last_map = last_map if last_map is not None else get_nickname_last_ip_map()
+    key_raw = str(key_raw or '').strip()
+    ip = str(last_map.get(key_raw) or '').strip()
+    if not ip:
+        ip = _last_ip_for_mac(mac, last_map)
+    try:
+        from tools.utils import lookup_ip_from_arp_table, _ipv4_valid
+
+        arp_ip = str(lookup_ip_from_arp_table(mac, iface_ip) or '').strip()
+        if arp_ip and _ipv4_valid(arp_ip):
+            return arp_ip
+    except Exception:
+        pass
+    return ip
+
+
+def stale_nickname_favorite_should_skip(mac: str, ip: str, iface_ip: str = '') -> bool:
+    """Skip injecting a remembered IP when ARP shows the device is elsewhere or absent."""
+    mac = good_mac(mac)
+    ip = str(ip or '').strip()
+    if not mac or not ip:
+        return True
+    try:
+        from tools.utils import (
+            lookup_ip_from_arp_table,
+            lookup_mac_from_arp_table,
+            mac_address_is_usable,
+        )
+
+        arp_ip = str(lookup_ip_from_arp_table(mac, iface_ip) or '').strip()
+        if arp_ip:
+            return arp_ip != ip
+        owner = lookup_mac_from_arp_table(ip, iface_ip)
+        if mac_address_is_usable(owner) and owner != mac:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def migrate_nickname_storage() -> None:
     """Move MAC-only nicknames to MAC|subnet keys using the last known IP per device."""
     db = dict(get_nicknames_dict())
@@ -61,7 +124,7 @@ def migrate_nickname_storage() -> None:
     for key, name in list(db.items()):
         if not is_legacy_nickname_key(key) or not name or name == '-':
             continue
-        ip = last.get(key)
+        ip = _last_ip_for_mac(key, last)
         if not ip:
             continue
         pk = nickname_profile_key(key, ip)
@@ -81,6 +144,15 @@ def migrate_nickname_storage() -> None:
         last[pk] = ip
         del last[key]
         changed = True
+    try:
+        from tools.utils import repair_nickname_last_ips_from_arp
+
+        repaired = repair_nickname_last_ips_from_arp(last, db)
+        if repaired != last:
+            last = repaired
+            changed = True
+    except Exception:
+        pass
     if changed:
         set_settings('nicknames', db)
         set_settings('nickname_last_ip', last)

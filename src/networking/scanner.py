@@ -14,6 +14,8 @@ from networking.nicknames import (
     nickname_profile_key,
     parse_nickname_profile_key,
     record_nickname_last_ip,
+    resolve_favorite_ip,
+    stale_nickname_favorite_should_skip,
 )
 from tools.device_display import infer_network_device_type
 from networking.device_table import (
@@ -60,7 +62,7 @@ class Scanner():
         self.router_ip = get_gateway_ip(self.iface.guid)
         self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
 
-        self.my_ip = get_my_ip(self.iface.guid)
+        self.my_ip = resolve_iface_my_ip(self.iface)
         self.my_mac = good_mac(self.iface.mac)
         
         self.perfix = self.my_ip.rsplit(".", 1)[0]
@@ -84,7 +86,7 @@ class Scanner():
         refresh_netface_live_ip(self.iface)
         self.router_ip = get_gateway_ip(self.iface.guid)
         self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
-        self.my_ip = get_my_ip(self.iface.guid)
+        self.my_ip = resolve_iface_my_ip(self.iface)
         self.my_mac = good_mac(self.iface.mac)
         if self.my_ip:
             self.iface.ip = self.my_ip
@@ -131,7 +133,7 @@ class Scanner():
             return
         self.router_ip = get_gateway_ip(guid)
         self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
-        self.my_ip = get_my_ip(guid)
+        self.my_ip = resolve_iface_my_ip(self.iface)
         self.my_mac = good_mac(self.iface.mac)
         try:
             self.perfix = self.my_ip.rsplit('.', 1)[0]
@@ -222,6 +224,7 @@ class Scanner():
         if not nick_db:
             return
         last_map = get_nickname_last_ip_map()
+        iface_ip = str(getattr(getattr(self, 'iface', None), 'ip', None) or '').strip()
         present_profiles = set()
         for d in self.devices:
             if not isinstance(d, dict) or d.get('admin'):
@@ -237,8 +240,10 @@ class Scanner():
             mac, prefix = parse_nickname_profile_key(key_raw)
             if not mac:
                 continue
-            ip = last_map.get(key_raw) or last_map.get(mac)
+            ip = resolve_favorite_ip(mac, key_raw, last_map, iface_ip)
             if not ip:
+                continue
+            if stale_nickname_favorite_should_skip(mac, ip, iface_ip):
                 continue
             if not clumsy_mode_enabled():
                 try:

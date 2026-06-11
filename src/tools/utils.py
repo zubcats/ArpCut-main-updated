@@ -180,6 +180,7 @@ def get_my_ip(iface_name):
 
     invalid_ips = ('0.0.0.0', '127.0.0.1', None)
     iface_name = iface_name or str(conf.iface)
+    candidates: list[str] = []
 
     # Preferred: walk the scapy route table for the specific interface
     try:
@@ -187,15 +188,26 @@ def get_my_ip(iface_name):
             if len(entry) >= 5:
                 dst, mask, gw, iface, src_ip = entry[:5]
                 if iface == iface_name and src_ip not in invalid_ips:
-                    return src_ip
+                    candidates.append(str(src_ip))
     except Exception:
         pass
+
+    for src_ip in candidates:
+        if _ipv4_usable_for_lan(src_ip):
+            return src_ip
+    for src_ip in candidates:
+        if _ipv4_valid(src_ip) and src_ip not in invalid_ips:
+            return src_ip
 
     # Fallback: use the default route (first non-loopback source IP)
     try:
         route_result = conf.route.route("0.0.0.0")
         if len(route_result) >= 2 and route_result[1] not in invalid_ips:
-            return route_result[1]
+            src_ip = str(route_result[1])
+            if _ipv4_usable_for_lan(src_ip):
+                return src_ip
+            if _ipv4_valid(src_ip):
+                return src_ip
     except Exception:
         pass
 
@@ -317,6 +329,40 @@ def lookup_mac_from_arp_table(ip: str, iface_ip: str | None = None) -> str:
                     if mac and mac != GLOBAL_MAC:
                         return mac
     return GLOBAL_MAC
+
+
+def lookup_ip_from_arp_table(mac: str, iface_ip: str | None = None) -> str:
+    """Reverse ARP lookup: IPv4 currently associated with ``mac`` in the OS cache."""
+    mac = good_mac(mac)
+    if not mac or mac in (GLOBAL_MAC, '00:00:00:00:00:00'):
+        return ''
+    if sys.platform.startswith('win'):
+        if iface_ip and iface_ip not in ('127.0.0.1', '0.0.0.0'):
+            response = terminal(f'arp -a -N {iface_ip}')
+        else:
+            response = terminal('arp -a')
+        if response:
+            for line in response.split('\n'):
+                line = line.strip()
+                if not line or 'Interface:' in line or 'Internet Address' in line:
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    ip_candidate = parts[0]
+                    mac_candidate = good_mac(parts[1].replace('-', ':'))
+                    if mac_candidate == mac and _ipv4_valid(ip_candidate):
+                        return ip_candidate
+    else:
+        response = terminal('arp -a') or terminal('arp -n') or ''
+        if response:
+            for line in response.split('\n'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    ip_candidate = parts[0]
+                    mac_candidate = good_mac(parts[1])
+                    if mac_candidate == mac and _ipv4_valid(ip_candidate):
+                        return ip_candidate
+    return ''
 
 
 def mac_address_is_usable(mac: str) -> bool:
@@ -456,7 +502,9 @@ def get_ifaces():
                         try:
                             nums = ip.split('.')
                             if all(0 <= int(n) <= 255 for n in nums) and ip != '0.0.0.0':
-                                interface_map[current_adapter]['ip'] = ip
+                                interface_map[current_adapter]['ip'] = _prefer_ipv4(
+                                    interface_map[current_adapter]['ip'], ip
+                                )
                         except ValueError:
                             pass
                     # Look for Physical Address (MAC) using regex for locale-agnostic parsing
@@ -568,7 +616,7 @@ def get_ifaces():
                     if route_result and len(route_result) > 1:
                         potential_ip = route_result[1]
                         if potential_ip and potential_ip not in ('0.0.0.0', '127.0.0.1'):
-                            ip = potential_ip
+                            ip = _prefer_ipv4(ip, potential_ip)
                             found_ip = True
                 except TypeError:
                     # Newer scapy versions do not accept iface kwarg
@@ -584,7 +632,7 @@ def get_ifaces():
                             if len(route) >= 5 and route[3] == scapy_name:
                                 route_ip = route[4]
                                 if route_ip and route_ip not in ('0.0.0.0', '127.0.0.1'):
-                                    ip = route_ip
+                                    ip = _prefer_ipv4(ip, route_ip)
                                     found_ip = True
                                     break
                     except Exception:
@@ -600,7 +648,7 @@ def get_ifaces():
                 try:
                     potential_ip = get_my_ip(scapy_name)
                     if potential_ip and potential_ip != '0.0.0.0' and potential_ip != '127.0.0.1':
-                        ip = potential_ip
+                        ip = _prefer_ipv4(ip, potential_ip)
                         found_ip = True
                 except Exception:
                     pass
@@ -702,6 +750,26 @@ def _ipv4_valid(ip: str) -> bool:
         return False
 
 
+def _ipv4_usable_for_lan(ip: str) -> bool:
+    """Routable LAN IPv4 — excludes loopback, unset, and APIPA (169.254.x.x)."""
+    if not _ipv4_valid(ip):
+        return False
+    if ip in ('0.0.0.0', '127.0.0.1'):
+        return False
+    return not ip.startswith('169.254.')
+
+
+def _prefer_ipv4(current: str, new: str) -> str:
+    """Keep DHCP/home LAN over APIPA when ipconfig lists multiple addresses."""
+    cur = str(current or '').strip()
+    nxt = str(new or '').strip()
+    if _ipv4_usable_for_lan(nxt):
+        return nxt
+    if _ipv4_usable_for_lan(cur):
+        return cur
+    return nxt or cur
+
+
 def _mask_prefix_len(mask_value) -> int:
     """Convert route-table mask (int or dotted string) to prefix length."""
     try:
@@ -738,6 +806,19 @@ def refresh_netface_live_ip(iface: NetFace) -> None:
         iface.ip = lip
 
 
+def resolve_iface_my_ip(iface) -> str:
+    """Best IPv4 for scanner Me/router topology — DHCP LAN over APIPA."""
+    refresh_netface_live_ip(iface)
+    guid = str(getattr(iface, 'guid', None) or '').strip()
+    ip = str(get_my_ip(guid) if guid else '') or ''
+    cached = str(getattr(iface, 'ip', None) or '').strip()
+    if _ipv4_usable_for_lan(ip):
+        return ip
+    if _ipv4_usable_for_lan(cached):
+        return cached
+    return ip if _ipv4_valid(ip) else cached
+
+
 def _pick_first_live_iface(ifaces):
     for iface in ifaces:
         refresh_netface_live_ip(iface)
@@ -755,7 +836,7 @@ def _iface_live_ipv4(iface) -> str:
         ip = str(get_my_ip(guid) or '').strip()
     except Exception:
         return ''
-    if ip in ('0.0.0.0', '127.0.0.1'):
+    if ip in ('0.0.0.0', '127.0.0.1') or not _ipv4_usable_for_lan(ip):
         return ''
     return ip
 
@@ -924,22 +1005,37 @@ def repair_saved_iface_name(saved: str) -> str:
 def repair_nickname_last_ips_from_arp(nickname_last_ip: dict, nicknames: dict) -> dict:
     """Refresh saved last-IP map from the OS ARP table (PS5 moved .165 → .248)."""
     try:
-        from networking.nicknames import parse_nickname_profile_key
+        from networking.nicknames import nickname_profile_key, parse_nickname_profile_key
     except Exception:
         return dict(nickname_last_ip or {})
     last = dict(nickname_last_ip or {})
     iface = pick_best_live_iface()
     iface_ip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '')
-    for key in list(nicknames or {}):
+    keys = set(last.keys()) | {str(k) for k in (nicknames or {})}
+    for key in list(keys):
         mac, _pfx = parse_nickname_profile_key(str(key))
         if not mac:
             continue
         try:
-            found = lookup_mac_from_arp_table(mac, iface_ip)
+            arp_ip = lookup_ip_from_arp_table(mac, iface_ip)
         except Exception:
-            found = ''
-        if found and _ipv4_valid(found):
-            last[str(key)] = found
+            arp_ip = ''
+        if arp_ip and _ipv4_valid(arp_ip):
+            pk = nickname_profile_key(mac, arp_ip)
+            if pk:
+                last[pk] = arp_ip
+            if str(key) in last and str(key) != pk:
+                del last[str(key)]
+            continue
+        stored = str(last.get(str(key)) or '').strip()
+        if not stored:
+            continue
+        try:
+            owner = lookup_mac_from_arp_table(stored, iface_ip)
+        except Exception:
+            owner = ''
+        if not mac_address_is_usable(owner) or owner != mac:
+            del last[str(key)]
     return last
 
 
