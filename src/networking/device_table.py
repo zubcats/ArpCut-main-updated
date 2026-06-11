@@ -444,22 +444,22 @@ def refresh_client_ips_from_ics(
 def phantom_favorite_should_skip(
     scanner: 'Scanner', mac: str, ip: str, present_profiles: set[str]
 ) -> bool:
-    """Skip injecting a stale home-LAN phantom when MAC-centric row already exists."""
-    if not clumsy_mac_centric_table():
-        return False
+    """Skip injecting a stale favorite when that MAC is already in the scan table."""
     mac = good_mac(mac)
     if not mac:
-        return False
-    ics_prefix = _ics_prefix()
-    home_prefix = ipv4_subnet_prefix(ip)
-    ics_net = ipv4_subnet_prefix(ics_prefix.rstrip('.'))
-    if home_prefix == ics_net:
         return False
     for d in scanner.devices:
         if d.get('admin'):
             continue
         if good_mac(d.get('mac')) == mac:
             return True
+    if not clumsy_mac_centric_table():
+        return False
+    ics_prefix = _ics_prefix()
+    home_prefix = ipv4_subnet_prefix(ip)
+    ics_net = ipv4_subnet_prefix(ics_prefix.rstrip('.'))
+    if home_prefix == ics_net:
+        return False
     return False
 
 

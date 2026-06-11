@@ -673,6 +673,21 @@ def _network_for_route(route_entry):
         return None
 
 
+def refresh_netface_live_ip(iface: NetFace) -> None:
+    """Refresh NetFace.ip from the OS (Settings/scan objects go stale after NIC changes)."""
+    lip = _iface_live_ipv4(iface)
+    if lip:
+        iface.ip = lip
+
+
+def _pick_first_live_iface(ifaces):
+    for iface in ifaces:
+        refresh_netface_live_ip(iface)
+        if _iface_live_ipv4(iface):
+            return iface
+    return None
+
+
 def _iface_live_ipv4(iface) -> str:
     """Current IPv4 on this Npcap iface (not the stale NetFace.ip cache)."""
     guid = str(getattr(iface, 'guid', None) or '').strip()
@@ -848,18 +863,30 @@ def get_iface_by_name(name):
         return get_default_iface()
     name = resolve_settings_iface_name(str(name).strip())
     ifaces = list(get_ifaces())
+    chosen = None
     for iface in ifaces:
         if iface.name == name:
-            return iface
-    # Settings may still store a legacy "Short — long description" label from older builds.
-    for sep in ('\u2014', '\u2013'):
-        if sep in name:
-            stem = name.split(sep, 1)[0].strip()
-            if stem and stem != name:
-                for iface in ifaces:
-                    if iface.name == stem:
-                        return iface
-    return get_default_iface()
+            chosen = iface
+            break
+    if chosen is None:
+        for sep in ('\u2014', '\u2013'):
+            if sep in name:
+                stem = name.split(sep, 1)[0].strip()
+                if stem and stem != name:
+                    for iface in ifaces:
+                        if iface.name == stem:
+                            chosen = iface
+                            break
+            if chosen is not None:
+                break
+    if chosen is None:
+        chosen = get_default_iface()
+    refresh_netface_live_ip(chosen)
+    if not _iface_live_ipv4(chosen):
+        live = _pick_first_live_iface(ifaces)
+        if live is not None:
+            return live
+    return chosen
 
 def is_connected(current_iface=None):
     """

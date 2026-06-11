@@ -2262,6 +2262,14 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.scanner.inject_nicknamed_favorites()
         except Exception:
             pass
+        try:
+            from networking.device_table import dedupe_home_lan_rows_by_ip
+
+            self.scanner.devices = dedupe_home_lan_rows_by_ip(
+                self.scanner.devices, self.scanner
+            )
+        except Exception:
+            pass
         current_row = self.tableScan.currentRow()
         selected_mac = None
         selected = self._get_selected_device()
@@ -3161,10 +3169,38 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._await_mitm_teardown_thread()
         if self.percent_cut_active:
             self.stopPercentCut(log=False)
-        if self.lag_active and self.lag_device_mac == mac:
-            # Another lag was already running on a different victim — rare.
-            pass
         dev = dict(device)
+        try:
+            from tools.utils import invalidate_ifaces_cache
+
+            invalidate_ifaces_cache()
+            self._ensure_network_context_for_victim(snap)
+            mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(snap)
+            if not mitm_ok:
+                self.lag_active = False
+                self.lag_device_mac = None
+                self.lag_device_ip = None
+                self._lag_device_snapshot = None
+                self.btnLagSwitch.setText('Lag Switch')
+                self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+                self.log(f'Lag failed: {mitm_reason}', 'red')
+                self._refresh_flow_toggle_ui()
+                return
+            iface = self.scanner.iface
+            self.log(
+                f'Lag via {iface.name} ({getattr(iface, "ip", "") or "?"}) → {snap.get("ip", "")}',
+                'gray',
+            )
+        except Exception as exc:
+            self.lag_active = False
+            self.lag_device_mac = None
+            self.lag_device_ip = None
+            self._lag_device_snapshot = None
+            self.btnLagSwitch.setText('Lag Switch')
+            self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+            self.log(f'Lag failed: {exc}', 'red')
+            self._refresh_flow_toggle_ui()
+            return
 
         def _arm_lag_start():
             if not self.lag_active or self.lag_device_mac != mac:
@@ -4289,6 +4325,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._ensure_network_context_for_victim(device)
             if for_lag and mac:
                 self._lag_net_prepared_mac = mac
+        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device)
+        if not mitm_ok:
+            if for_lag:
+                self.log(f'Lag MITM blocked: {mitm_reason}', 'red')
+            return False
         self.killer.disable_percent_cut(device['mac'])
         wait_after = 0.08 if for_lag else 2
         if device['mac'] not in self.killer.killed:
@@ -4948,10 +4989,15 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 mac = str(device.get('mac') or '').strip()
                 if mac:
                     self._refresh_table_row_for_mac(mac, device.get('ip'))
-                return
-            self._apply_ics_client_block(device, self.lag_direction, for_lag=True)
-        else:
-            self._apply_victim_block(device, self.lag_direction, for_lag=True)
+                return True
+            return bool(self._apply_ics_client_block(device, self.lag_direction, for_lag=True))
+        ok = self._apply_victim_block(device, self.lag_direction, for_lag=True)
+        if not ok:
+            self.log(
+                f'Lag block failed for {device.get("ip", "")} — rescan, pick Wi‑Fi in Settings if PC is on Wi‑Fi',
+                'red',
+            )
+        return ok
 
     def _lag_resolved_victim(self):
         """

@@ -72,13 +72,22 @@ class Scanner():
         topology (gateway, me, router dict) so Killer/ARP/firewall use the right NIC.
         """
         target = get_iface_for_victim_ip(victim_ip, fallback=self.iface)
-        if target.guid == self.iface.guid:
+        refresh_netface_live_ip(target)
+        live_here = _iface_live_ipv4(self.iface)
+        live_target = _iface_live_ipv4(target)
+        if str(target.guid) == str(self.iface.guid) and live_here:
+            refresh_netface_live_ip(self.iface)
+            return False
+        if str(target.guid) == str(self.iface.guid) and not live_target:
             return False
         self.iface = target
+        refresh_netface_live_ip(self.iface)
         self.router_ip = get_gateway_ip(self.iface.guid)
         self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
         self.my_ip = get_my_ip(self.iface.guid)
         self.my_mac = good_mac(self.iface.mac)
+        if self.my_ip:
+            self.iface.ip = self.my_ip
         try:
             self.perfix = self.my_ip.rsplit(".", 1)[0]
         except Exception:
