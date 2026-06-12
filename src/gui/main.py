@@ -2244,16 +2244,21 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         View scanlist devices with correct colors processed
         """
         # Ensure "Me" and "Router" are always shown even if scan hasn't run
-        if not self.scanner.devices or not any(d.get('type') == 'Me' for d in self.scanner.devices):
-            try:
-                self.scanner.add_me()
-            except Exception:
-                pass
-        if not self.scanner.devices or not any(d.get('type') == 'Router' for d in self.scanner.devices):
-            try:
-                self.scanner.add_router()
-            except Exception:
-                pass
+        try:
+            self.scanner.refresh_local_topology()
+            self.scanner.add_me()
+            self.scanner.add_router()
+        except Exception:
+            if not self.scanner.devices or not any(d.get('type') == 'Me' for d in self.scanner.devices):
+                try:
+                    self.scanner.add_me()
+                except Exception:
+                    pass
+            if not self.scanner.devices or not any(d.get('type') == 'Router' for d in self.scanner.devices):
+                try:
+                    self.scanner.add_router()
+                except Exception:
+                    pass
         try:
             sync_clumsy_row(self.scanner, allow_subnet_ping=False)
         except Exception:

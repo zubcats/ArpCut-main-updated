@@ -706,6 +706,15 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         main.scanner.iface = get_iface_by_name(s['iface'])
         main.killer.iface = get_iface_by_name(s['iface'])
+        try:
+            main.scanner.refresh_local_topology()
+            main.killer.iface = main.scanner.iface
+            main.killer.router = getattr(main.scanner, 'router', None) or main.killer.router
+            main.scanner.add_me()
+            main.scanner.add_router()
+            main.showDevices()
+        except Exception:
+            pass
 
         qt_app = QApplication.instance()
         if qt_app is not None:

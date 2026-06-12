@@ -55,7 +55,16 @@ class Scanner():
         """
         Intializing Scanner
         """
-        self.iface = get_iface_by_name(self.iface.name)
+        try:
+            from tools.utils_gui import get_settings
+
+            saved = str(get_settings('iface') or '').strip()
+            if saved and saved != 'NULL':
+                self.iface = get_iface_by_name(saved)
+            else:
+                self.iface = get_iface_by_name(self.iface.name)
+        except Exception:
+            self.iface = get_iface_by_name(self.iface.name)
         self.devices = []
 
         # Use iface.guid (Scapy/pcap name) for network operations, not iface.name
@@ -131,10 +140,13 @@ class Scanner():
         guid = getattr(self.iface, 'guid', None) or getattr(self.iface, 'name', None)
         if not guid or guid == 'NULL':
             return
-        self.router_ip = get_gateway_ip(guid)
-        self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
+        refresh_netface_live_ip(self.iface)
         self.my_ip = resolve_iface_my_ip(self.iface)
         self.my_mac = good_mac(self.iface.mac)
+        if self.my_ip:
+            self.iface.ip = self.my_ip
+        self.router_ip = get_gateway_ip(guid)
+        self.router_mac = get_gateway_mac(self.my_ip or self.iface.ip, self.router_ip)
         try:
             self.perfix = self.my_ip.rsplit('.', 1)[0]
         except Exception:
@@ -197,7 +209,10 @@ class Scanner():
             'name':     '',
             'admin':    True
         }
-        
+        for i, row in enumerate(self.devices):
+            if isinstance(row, dict) and row.get('type') == 'Me':
+                self.devices[i] = dict(self.me)
+                return
         self.devices.insert(0, self.me)
 
     def add_router(self):
@@ -212,7 +227,10 @@ class Scanner():
             'name':     '',
             'admin':    True
         }
-
+        for i, row in enumerate(self.devices):
+            if isinstance(row, dict) and row.get('type') == 'Router':
+                self.devices[i] = dict(self.router)
+                return
         self.devices.insert(0, self.router)
 
     def inject_nicknamed_favorites(self):
