@@ -3398,6 +3398,46 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
+    def _schedule_mitm_traffic_probe(self, device, *, flow: str = 'Kill') -> None:
+        """After MITM arms, warn if no victim IP traffic reaches this NIC (common on Wi‑Fi → Ethernet)."""
+        if not isinstance(device, dict):
+            return
+        mac = str(device.get('mac') or '').strip()
+        ip = str(device.get('ip') or '').strip()
+        iface = getattr(self.scanner, 'iface', None)
+        guid = str(getattr(iface, 'guid', None) or '').strip()
+        if not mac or not ip or not guid:
+            return
+
+        def _probe() -> None:
+            import time
+
+            time.sleep(0.9)
+            if mac not in getattr(self.killer, 'killed', {}):
+                return
+            try:
+                from tools.mitm_probe import count_victim_ip_packets, mitm_path_warning
+
+                seen = count_victim_ip_packets(guid, ip, 1.0)
+            except Exception:
+                return
+            if seen != 0:
+                return
+            msg = mitm_path_warning(iface, ip)
+
+            def _log_warning() -> None:
+                self.log(f'{flow}: {msg}', 'red')
+
+            try:
+                QTimer.singleShot(0, _log_warning)
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(target=_probe, name='zubcut-mitm-probe', daemon=True).start()
+        except Exception:
+            pass
+
     def _ensure_network_context_for_victim(self, device) -> bool:
         """
         Bind scanner + killer to the NIC that routes to the victim (e.g. hotspot vs Ethernet).
@@ -3431,14 +3471,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._refresh_router_mac_from_system_arp()
         except Exception:
             pass
-        try:
-            if not getattr(self, '_ip_forwarding_armed', False):
-                from networking.killer import enable_ip_forwarding
-
-                enable_ip_forwarding()
-                self._ip_forwarding_armed = True
-        except Exception:
-            pass
         if clumsy_mode_enabled():
             try:
                 apply_clumsy_ics_router_context(self.scanner, self.killer, device['ip'])
@@ -3455,29 +3487,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killer.router = self.scanner.router
         if prev_iface_guid != new_iface_guid:
             self.killer._close_socket()
-        # Enable IP forwarding off the UI thread (one-shot netsh, ~0.5–1 s). The ARP
-        # poison loop only needs killer iface/router set above to start firing, so
-        # deferring is safe.
-        # NOTE: We intentionally do NOT call scanner.flush_arp() here. That wiped the
-        # local ARP cache the *next* Kill ON depends on for fast gateway-MAC lookup
-        # (see refresh_local_topology guard above). ARP spoofing doesn't need our own
-        # cache cleared — only the victim's, which our poison ARP handles directly.
-        try:
-            def _bg_enable_forwarding():
-                try:
-                    from networking.killer import enable_ip_forwarding
-
-                    enable_ip_forwarding()
-                except Exception:
-                    pass
-
-            threading.Thread(
-                target=_bg_enable_forwarding,
-                name='zubcut-kill-housekeep',
-                daemon=True,
-            ).start()
-        except Exception:
-            pass
         try:
             from scapy.all import conf as scapy_conf
 
@@ -4989,6 +4998,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return True
             return bool(self._apply_ics_client_block(device, self.lag_direction, for_lag=True))
         ok = self._apply_victim_block(device, self.lag_direction, for_lag=True)
+        if ok:
+            self._schedule_mitm_traffic_probe(device, flow='Lag')
         if not ok:
             self.log(
                 f'Lag block failed for {device.get("ip", "")} — rescan, pick Wi‑Fi in Settings if PC is on Wi‑Fi',
@@ -6412,6 +6423,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                                 _mark('lan_bg_block_ip_done')
                                 self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
                                 kill_applied = True
+                                self._schedule_mitm_traffic_probe(device, flow='Kill')
             else:
                 # B1: mirror Kill ON's cross-flow stop set — if any of the other
                 # flows are still running on this victim (toggle-blocked logic

