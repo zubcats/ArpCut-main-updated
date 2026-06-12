@@ -20,9 +20,16 @@ from tools.utils import (
 
 
 class TestApipaIp(unittest.TestCase):
-    def test_prefer_ipv4_keeps_dhcp_over_apipa(self) -> None:
-        self.assertEqual(_prefer_ipv4('192.168.1.56', '169.254.151.57'), '192.168.1.56')
-        self.assertEqual(_prefer_ipv4('169.254.151.57', '192.168.1.56'), '192.168.1.56')
+    def test_prefer_ipv4_keeps_first_usable_host(self) -> None:
+        self.assertEqual(_prefer_ipv4('192.168.1.56', '192.168.1.1'), '192.168.1.56')
+        self.assertEqual(_prefer_ipv4('192.168.1.56', '169.254.1.1'), '192.168.1.56')
+
+    def test_ipconfig_skips_gateway_line(self) -> None:
+        from tools.utils import _ipconfig_line_is_host_ipv4
+
+        self.assertTrue(_ipconfig_line_is_host_ipv4('IPv4 Address. . . . . . : 192.168.1.56'))
+        self.assertFalse(_ipconfig_line_is_host_ipv4('Default Gateway . . . . : 192.168.1.1'))
+        self.assertFalse(_ipconfig_line_is_host_ipv4('DHCP Server . . . . . : 192.168.1.1'))
 
     def test_get_my_ip_skips_apipa_when_dhcp_on_same_iface(self) -> None:
         routes = [

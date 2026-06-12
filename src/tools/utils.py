@@ -83,6 +83,12 @@ def format_iface_settings_label(iface: NetFace) -> str:
     """
     name = (iface.name or '').strip()
     ip = getattr(iface, 'ip', None) or ''
+    try:
+        lip = _iface_live_ipv4(iface)
+        if lip:
+            ip = lip
+    except Exception:
+        pass
     if ip in ('0.0.0.0', '127.0.0.1'):
         ip = ''
     mac = getattr(iface, 'mac', None) or ''
@@ -495,7 +501,12 @@ def get_ifaces():
                             current_adapter = adapter_name
                         interface_map[current_adapter] = {'ip': '0.0.0.0', 'mac': GLOBAL_MAC, 'guid': None}
                 elif current_adapter:
-                    # Look for IPv4 address with a regex to handle "(Preferred)" or localized text
+                    # Only the adapter's own IPv4 — skip gateway/DHCP/DNS/mask lines
+                    if not _ipconfig_line_is_host_ipv4(line):
+                        mac_match = re.search(r'([0-9A-Fa-f]{2}(?:[-:][0-9A-Fa-f]{2}){5})', line)
+                        if mac_match:
+                            interface_map[current_adapter]['mac'] = good_mac(mac_match.group(1))
+                        continue
                     ip_match = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', line)
                     if ip_match:
                         ip = ip_match.group(1)
@@ -507,7 +518,6 @@ def get_ifaces():
                                 )
                         except ValueError:
                             pass
-                    # Look for Physical Address (MAC) using regex for locale-agnostic parsing
                     mac_match = re.search(r'([0-9A-Fa-f]{2}(?:[-:][0-9A-Fa-f]{2}){5})', line)
                     if mac_match:
                         interface_map[current_adapter]['mac'] = good_mac(mac_match.group(1))
@@ -676,7 +686,8 @@ def get_ifaces():
                 'win_guid': guid,            # optional: keep Windows GUID if needed
             }
             face = NetFace(iface)
-            lip = str(ip or '').strip()
+            refresh_netface_live_ip(face)
+            lip = str(face.ip or ip or '').strip()
             if lip in ('127.0.0.1', '0.0.0.0'):
                 if mac_address_is_usable(mac):
                     yield face
@@ -774,14 +785,46 @@ def _ipv4_usable_for_lan(ip: str) -> bool:
 
 
 def _prefer_ipv4(current: str, new: str) -> str:
-    """Keep DHCP/home LAN over APIPA when ipconfig lists multiple addresses."""
+    """Keep DHCP/home LAN over APIPA; never replace a good host IP with another."""
     cur = str(current or '').strip()
     nxt = str(new or '').strip()
-    if _ipv4_usable_for_lan(nxt):
+    cur_ok = _ipv4_usable_for_lan(cur)
+    nxt_ok = _ipv4_usable_for_lan(nxt)
+    if cur_ok and nxt_ok:
+        return cur
+    if nxt_ok:
         return nxt
-    if _ipv4_usable_for_lan(cur):
+    if cur_ok:
         return cur
     return nxt or cur
+
+
+def _ipconfig_line_is_host_ipv4(line: str) -> bool:
+    """True only for adapter IPv4 assignment lines — not gateway/DNS/mask."""
+    low = (line or '').lower()
+    if any(
+        token in low
+        for token in (
+            'gateway',
+            'dhcp server',
+            'dns',
+            'wins',
+            'mask',
+            'subnet',
+            'route',
+        )
+    ):
+        return False
+    return any(
+        token in low
+        for token in (
+            'ipv4 address',
+            'ip address',
+            'ip-adresse',
+            'adresse ipv4',
+            'indirizzo ipv4',
+        )
+    )
 
 
 def _mask_prefix_len(mask_value) -> int:
