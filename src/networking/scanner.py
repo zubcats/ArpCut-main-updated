@@ -26,6 +26,7 @@ from networking.device_table import (
 )
 from tools.clumsy_inline import clumsy_mode_enabled
 from tools.utils import *
+from tools.utils import _iface_live_ipv4  # star-import skips private names; sync_iface needs this
 from constants import *
 
 class Scanner():
