@@ -684,6 +684,10 @@ def get_ifaces():
             # Skip ghost Npcap bindings (00:00… / FF:FF…) that share a live LAN IP with a real NIC.
             if not mac_address_is_usable(mac):
                 continue
+            # Disconnected adapters (Bluetooth, unplugged Ethernet) often show APIPA only —
+            # do not treat them as the active LAN NIC (breaks Lag/Kill MITM on Wi‑Fi).
+            if not _ipv4_usable_for_lan(lip):
+                continue
             prev = best_by_ip.get(lip)
             if prev is None:
                 best_by_ip[lip] = face
@@ -721,20 +725,30 @@ def get_default_iface():
     """
     Get default pcap interface (cross-platform)
     """
+    try:
+        best = pick_best_live_iface()
+        if best is not None and best.name != 'NULL' and _iface_live_ipv4(best):
+            refresh_netface_live_ip(best)
+            return best
+    except Exception:
+        pass
     ifaces_list = list(get_ifaces())
     if not ifaces_list:
         return NetFace(DUMMY_IFACE)
-    
+
     # Try to match with scapy's default interface
     for iface in ifaces_list:
         if iface.guid in str(conf.iface) or iface.name in str(conf.iface):
-            return iface
-    
-    # Fallback: return first non-loopback interface
+            refresh_netface_live_ip(iface)
+            if _iface_live_ipv4(iface):
+                return iface
+
+    # Fallback: first connected LAN interface (not APIPA)
     for iface in ifaces_list:
-        if iface.ip and iface.ip != '127.0.0.1' and iface.ip != '0.0.0.0':
+        refresh_netface_live_ip(iface)
+        if _iface_live_ipv4(iface):
             return iface
-    
+
     # Last resort: return first interface
     return ifaces_list[0] if ifaces_list else NetFace(DUMMY_IFACE)
 
@@ -962,6 +976,8 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
 def pick_best_live_iface():
     """Return the best connected LAN adapter for Settings (live IP, usable MAC, not APIPA)."""
     ifaces = list(get_ifaces_cached())
+    if not ifaces:
+        ifaces = list(get_ifaces())
     best = None
     best_score = -1
     for iface in ifaces:
@@ -999,6 +1015,11 @@ def repair_saved_iface_name(saved: str) -> str:
                 return name
     invalidate_ifaces_cache(full=True)
     best = pick_best_live_iface()
+    if best is None or best.name == 'NULL' or not _iface_live_ipv4(best):
+        for iface in get_ifaces():
+            lip = _iface_live_ipv4(iface)
+            if lip and mac_address_is_usable(iface.mac):
+                return iface.name
     return best.name if best and best.name != 'NULL' else name
 
 
@@ -1056,13 +1077,13 @@ def resolve_settings_iface_name(saved: str) -> str:
     for iface in ifaces:
         if iface.name != name:
             continue
-        if mac_address_is_usable(iface.mac):
+        if mac_address_is_usable(iface.mac) and _iface_live_ipv4(iface):
             return name
         want_ip = str(getattr(iface, 'ip', None) or '').strip()
         break
     for iface in ifaces:
         lip = str(getattr(iface, 'ip', None) or '').strip()
-        if lip in ('127.0.0.1', '0.0.0.0'):
+        if not _ipv4_usable_for_lan(lip):
             continue
         if want_ip and lip != want_ip:
             continue
@@ -1070,12 +1091,14 @@ def resolve_settings_iface_name(saved: str) -> str:
             return iface.name
     for iface in ifaces:
         lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
-        if lip not in ('127.0.0.1', '0.0.0.0', '') and mac_address_is_usable(iface.mac):
-            return iface.name
+        if not _ipv4_usable_for_lan(lip) or not mac_address_is_usable(iface.mac):
+            continue
+        return iface.name
     if not name:
         best = pick_best_live_iface()
         return best.name if best and best.name != 'NULL' else ''
-    return name
+    best = pick_best_live_iface()
+    return best.name if best and best.name != 'NULL' and _iface_live_ipv4(best) else name
 
 
 def get_iface_by_name(name):

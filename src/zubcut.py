@@ -12,6 +12,7 @@ from tools.utils_gui import (
     repair_settings,
     migrate_settings_file,
     ensure_windows_elevated,
+    import_settings,
 )
 from tools.license_offline import load_and_validate_installed_license
 from tools.license_remote_signin import effective_signin_url, license_transient_reason
@@ -319,6 +320,20 @@ if __name__ == "__main__":
     GUI._apply_status_strip_elide()
     try:
         GUI._ensure_clean_network_on_startup()
+    except Exception:
+        pass
+
+    # Bind scanner/killer to repaired Settings adapter (not get_default_iface guess).
+    try:
+        from tools.utils import get_iface_by_name
+
+        s = import_settings()
+        saved_iface = str(s.get('iface') or '').strip()
+        if saved_iface:
+            picked = get_iface_by_name(saved_iface)
+            if picked and picked.name != 'NULL':
+                GUI.scanner.iface = picked
+                GUI.killer.iface = picked
     except Exception:
         pass
 
