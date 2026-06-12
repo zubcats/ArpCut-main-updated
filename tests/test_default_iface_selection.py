@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-from unittest.mock import patch
+from unittest import mock
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 _SRC = os.path.join(_ROOT, 'src')
@@ -20,19 +20,19 @@ def _face(name: str, ip: str) -> NetFace:
 
 
 class TestDefaultIfaceSelection(unittest.TestCase):
-    @patch('tools.utils.get_ifaces')
-    @patch('tools.utils.pick_best_live_iface')
+    @mock.patch('tools.utils.get_ifaces')
+    @mock.patch('tools.utils.pick_best_live_iface')
     def test_get_default_iface_uses_pick_best(self, mock_pick, mock_list) -> None:
         wifi = _face('Wi-Fi', '192.168.1.56')
         mock_pick.return_value = wifi
         mock_list.return_value = [_face('Bluetooth Network Connection', '169.254.151.57'), wifi]
-        with patch('tools.utils._iface_live_ipv4', return_value='192.168.1.56'):
-            with patch('tools.utils.refresh_netface_live_ip'):
+        with mock.patch('tools.utils._iface_live_ipv4', return_value='192.168.1.56'):
+            with mock.patch('tools.utils.refresh_netface_live_ip'):
                 got = get_default_iface()
         self.assertEqual(got.name, 'Wi-Fi')
 
-    @patch('tools.utils.get_ifaces')
-    @patch('tools.utils.pick_best_live_iface')
+    @mock.patch('tools.utils.get_ifaces')
+    @mock.patch('tools.utils.pick_best_live_iface')
     def test_repair_keeps_valid_wifi_when_ethernet_is_default(self, mock_pick, mock_list) -> None:
         eth = _face('Ethernet 2', '192.168.1.110')
         wifi = _face('Wi-Fi', '192.168.1.56')
@@ -46,20 +46,20 @@ class TestDefaultIfaceSelection(unittest.TestCase):
             repaired = repair_saved_iface_name('Wi-Fi')
         self.assertEqual(repaired, 'Wi-Fi')
 
-    @patch('tools.utils.get_ifaces')
-    @patch('tools.utils.pick_best_live_iface')
+    @mock.patch('tools.utils.get_ifaces')
+    @mock.patch('tools.utils.pick_best_live_iface')
     def test_repair_saved_iface_maps_bluetooth_to_wifi(self, mock_pick, mock_list) -> None:
         wifi = _face('Wi-Fi', '192.168.1.56')
         mock_pick.return_value = wifi
         mock_list.return_value = [wifi]
-        with patch('tools.utils.get_ifaces_cached', return_value=[]):
-            with patch('tools.utils._iface_live_ipv4', side_effect=lambda i: '192.168.1.56' if i.name == 'Wi-Fi' else ''):
-                with patch('tools.utils.invalidate_ifaces_cache'):
+        with mock.patch('tools.utils.get_ifaces_cached', return_value=[]):
+            with mock.patch('tools.utils._iface_live_ipv4', side_effect=lambda i: '192.168.1.56' if i.name == 'Wi-Fi' else ''):
+                with mock.patch('tools.utils.invalidate_ifaces_cache'):
                     repaired = repair_saved_iface_name('Bluetooth Network Connection')
         self.assertEqual(repaired, 'Wi-Fi')
 
-    @patch('tools.utils.get_ifaces_cached')
-    @patch('tools.utils._iface_live_ipv4')
+    @mock.patch('tools.utils.get_ifaces_cached')
+    @mock.patch('tools.utils._iface_live_ipv4')
     def test_resolve_keeps_saved_wifi_name(self, mock_live, mock_cached) -> None:
         bt = _face('Bluetooth Network Connection', '169.254.151.57')
         wifi = _face('Wi-Fi', '192.168.1.56')
