@@ -915,6 +915,47 @@ def _iface_for_route_tokens(route_tokens, ifaces):
     return None
 
 
+def _parse_windows_arp_by_interface() -> dict[str, set[str]]:
+    """Map local interface IPv4 -> remote IPs listed under that ARP section."""
+    if not sys.platform.startswith('win'):
+        return {}
+    text = terminal('arp -a') or ''
+    result: dict[str, set[str]] = {}
+    current_iface_ip = ''
+    for raw in text.split('\n'):
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith('interface:'):
+            parts = line.split()
+            current_iface_ip = parts[1] if len(parts) >= 2 else ''
+            if current_iface_ip:
+                result.setdefault(current_iface_ip, set())
+            continue
+        if not current_iface_ip:
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and _ipv4_valid(parts[0]):
+            result.setdefault(current_iface_ip, set()).add(parts[0])
+    return result
+
+
+def _iface_for_victim_arp(victim_ip: str, ifaces) -> 'NetFace | None':
+    """Pick the NIC whose OS ARP cache already lists this victim (Wi‑Fi vs Ethernet)."""
+    victim_ip = str(victim_ip or '').strip()
+    if not victim_ip or not ifaces:
+        return None
+    by_iface = _parse_windows_arp_by_interface()
+    if not by_iface:
+        return None
+    for iface in ifaces:
+        lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
+        if lip and victim_ip in by_iface.get(lip, set()):
+            return iface
+    return None
+
+
 def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     """
     Pick the local NetFace Scapy would use to reach victim_ip (same subnet / route table).
@@ -933,6 +974,17 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     if not ifaces:
         return fallback if fallback is not None else get_default_iface()
 
+    # ARP cache first: when PC has Ethernet + Wi‑Fi on the same /24, the route
+    # table often picks Ethernet while the victim (PS5 on Wi‑Fi) is only reachable
+    # via the Wi‑Fi ARP segment — poisoning on the wrong NIC does nothing.
+    arp_hit = _iface_for_victim_arp(victim_ip, ifaces)
+    if arp_hit is not None:
+        return arp_hit
+    if fallback is not None:
+        live_fb = _iface_live_ipv4(fallback)
+        if live_fb and victim_ip in _parse_windows_arp_by_interface().get(live_fb, set()):
+            return fallback
+
     def _route_iface(*, resync: bool = False):
         if resync:
             try:
@@ -950,6 +1002,21 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     # switching to Wi‑Fi (stale 192.168.1.x on the cached object), so Lag/Kill sent no traffic.
     hit = _route_iface(resync=False)
     if hit is not None:
+        # Same /24: prefer Settings/fallback when route picked a different NIC.
+        try:
+            if fallback is not None:
+                live_fb = _iface_live_ipv4(fallback)
+                v_oct = [int(x) for x in victim_ip.split('.')]
+                f_oct = [int(x) for x in live_fb.split('.')] if live_fb else []
+                if (
+                    len(v_oct) == 4
+                    and len(f_oct) == 4
+                    and v_oct[:3] == f_oct[:3]
+                    and str(hit.guid) != str(fallback.guid)
+                ):
+                    return fallback
+        except Exception:
+            pass
         return hit
     hit = _route_iface(resync=True)
     if hit is not None:
