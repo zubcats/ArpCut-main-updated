@@ -33,6 +33,21 @@ class TestDefaultIfaceSelection(unittest.TestCase):
 
     @patch('tools.utils.get_ifaces')
     @patch('tools.utils.pick_best_live_iface')
+    def test_repair_keeps_valid_wifi_when_ethernet_is_default(self, mock_pick, mock_list) -> None:
+        eth = _face('Ethernet 2', '192.168.1.110')
+        wifi = _face('Wi-Fi', '192.168.1.56')
+        mock_list.return_value = [eth, wifi]
+        mock_pick.return_value = eth
+        with (
+            mock.patch('tools.utils.invalidate_ifaces_cache'),
+            mock.patch('tools.utils._iface_live_ipv4', side_effect=lambda i: i.ip),
+            mock.patch('tools.utils.mac_address_is_usable', return_value=True),
+        ):
+            repaired = repair_saved_iface_name('Wi-Fi')
+        self.assertEqual(repaired, 'Wi-Fi')
+
+    @patch('tools.utils.get_ifaces')
+    @patch('tools.utils.pick_best_live_iface')
     def test_repair_saved_iface_maps_bluetooth_to_wifi(self, mock_pick, mock_list) -> None:
         wifi = _face('Wi-Fi', '192.168.1.56')
         mock_pick.return_value = wifi
@@ -45,16 +60,17 @@ class TestDefaultIfaceSelection(unittest.TestCase):
 
     @patch('tools.utils.get_ifaces_cached')
     @patch('tools.utils._iface_live_ipv4')
-    def test_resolve_settings_requires_live_ip(self, mock_live, mock_cached) -> None:
+    def test_resolve_keeps_saved_wifi_name(self, mock_live, mock_cached) -> None:
         bt = _face('Bluetooth Network Connection', '169.254.151.57')
         wifi = _face('Wi-Fi', '192.168.1.56')
-        mock_cached.return_value = [bt, wifi]
+        eth = _face('Ethernet 2', '192.168.1.110')
+        mock_cached.return_value = [bt, wifi, eth]
 
         def _live(iface):
-            return '192.168.1.56' if iface.name == 'Wi-Fi' else ''
+            return {'Wi-Fi': '192.168.1.56', 'Ethernet 2': '192.168.1.110'}.get(iface.name, '')
 
         mock_live.side_effect = _live
-        self.assertEqual(resolve_settings_iface_name('Bluetooth Network Connection'), 'Wi-Fi')
+        self.assertEqual(resolve_settings_iface_name('Wi-Fi'), 'Wi-Fi')
 
 
 if __name__ == '__main__':

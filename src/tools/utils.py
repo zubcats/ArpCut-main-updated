@@ -1119,18 +1119,44 @@ def pick_best_live_iface():
 def repair_saved_iface_name(saved: str) -> str:
     """Map broken Settings labels / ghost bindings to the live default-route NIC."""
     name = str(saved or '').strip()
-    if name and not _is_bad_iface_display_name(name):
-        for iface in get_ifaces_cached():
-            if iface.name == name and mac_address_is_usable(iface.mac) and _iface_live_ipv4(iface):
-                return name
-    invalidate_ifaces_cache(full=True)
-    best = pick_best_live_iface()
-    if best is None or best.name == 'NULL' or not _iface_live_ipv4(best):
+    if not name or name == 'NULL' or _is_bad_iface_display_name(name):
+        invalidate_ifaces_cache(full=True)
+        best = pick_best_live_iface()
+        if best is not None and best.name != 'NULL' and _iface_live_ipv4(best):
+            return best.name
         for iface in get_ifaces():
             lip = _iface_live_ipv4(iface)
             if lip and mac_address_is_usable(iface.mac):
                 return iface.name
-    return best.name if best and best.name != 'NULL' else name
+        return name
+
+    invalidate_ifaces_cache(full=True)
+    ifaces = list(get_ifaces())
+    for iface in ifaces:
+        if iface.name != name:
+            continue
+        if mac_address_is_usable(iface.mac) and _iface_live_ipv4(iface):
+            return name
+
+    # Saved adapter disconnected or ghost — remap by last known IP, else default route.
+    want_ip = ''
+    for iface in ifaces:
+        if iface.name == name:
+            want_ip = str(getattr(iface, 'ip', None) or '').strip()
+            break
+    if want_ip and _ipv4_usable_for_lan(want_ip):
+        for iface in ifaces:
+            lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
+            if lip == want_ip and mac_address_is_usable(iface.mac):
+                return iface.name
+    best = pick_best_live_iface()
+    if best is not None and best.name != 'NULL' and _iface_live_ipv4(best):
+        return best.name
+    for iface in ifaces:
+        lip = _iface_live_ipv4(iface)
+        if lip and mac_address_is_usable(iface.mac):
+            return iface.name
+    return name
 
 
 def repair_nickname_last_ips_from_arp(nickname_last_ip: dict, nicknames: dict) -> dict:
@@ -1191,24 +1217,15 @@ def resolve_settings_iface_name(saved: str) -> str:
             return name
         want_ip = str(getattr(iface, 'ip', None) or '').strip()
         break
-    for iface in ifaces:
-        lip = str(getattr(iface, 'ip', None) or '').strip()
-        if not _ipv4_usable_for_lan(lip):
-            continue
-        if want_ip and lip != want_ip:
-            continue
-        if mac_address_is_usable(iface.mac):
-            return iface.name
-    for iface in ifaces:
-        lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
-        if not _ipv4_usable_for_lan(lip) or not mac_address_is_usable(iface.mac):
-            continue
-        return iface.name
+    if want_ip and _ipv4_usable_for_lan(want_ip):
+        for iface in ifaces:
+            lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
+            if lip == want_ip and mac_address_is_usable(iface.mac):
+                return iface.name
     if not name:
         best = pick_best_live_iface()
         return best.name if best and best.name != 'NULL' else ''
-    best = pick_best_live_iface()
-    return best.name if best and best.name != 'NULL' and _iface_live_ipv4(best) else name
+    return name
 
 
 def get_iface_by_name(name):

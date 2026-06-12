@@ -529,7 +529,6 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             QTimer.singleShot(0, el._sync_settings_gear_update_hint)
 
     def Apply(self, silent_apply=False):
-        repair_settings()
         nicknames = Nicknames()
 
         count         =  self.spinCount.value()
@@ -693,7 +692,6 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def apply_app_settings(self):
         """Push Settings values into the running main window."""
-        repair_settings()
         s = _coerce_scan_counts(import_settings())
         self.currentSettings()
         main = self.app
@@ -780,12 +778,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         
         from tools.utils import resolve_settings_iface_name
 
-        saved = resolve_settings_iface_name(s.get('iface') or '')
-        if saved and saved != (s.get('iface') or ''):
-            set_settings('iface', saved)
+        saved = str(s.get('iface') or '').strip()
+        display = resolve_settings_iface_name(saved) or saved
         idx = self.comboInterface.findData(saved)
         if idx < 0:
-            idx = self.comboInterface.findText(saved, Qt.MatchFixedString)
+            idx = self.comboInterface.findData(display)
+        if idx < 0:
+            idx = self.comboInterface.findText(display, Qt.MatchFixedString)
         if idx >= 0:
             self.comboInterface.setCurrentIndex(idx)
 
