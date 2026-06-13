@@ -5501,21 +5501,22 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         dev = dict(device)
         on = next_state
         src = source
-        self._run_kill_command(mac, dev, turn_on=on, source=src)
-        _tk_t5 = _tk_time.perf_counter()
-        try:
-            direction = 'ON' if next_state else 'OFF'
-            self.log(
-                f'[TOGGLE-KILL {direction}] profile={int((_tk_t1-_tk_t0)*1000)}ms '
-                f'btnstate={int((_tk_t2-_tk_t1)*1000)}ms '
-                f'rowsrepaint={int((_tk_t3-_tk_t2)*1000)}ms '
-                f'processEvents={int((_tk_t4-_tk_t3)*1000)}ms '
-                f'runKillCmd={int((_tk_t5-_tk_t4)*1000)}ms '
-                f'total={int((_tk_t5-_tk_t0)*1000)}ms',
-                'gray',
-            )
-        except Exception:
-            pass
+        self._schedule_kill_command(mac, dev, turn_on=on, source=src)
+        if bool(get_settings('debug_kill_timing')):
+            _tk_t5 = _tk_time.perf_counter()
+            try:
+                direction = 'ON' if next_state else 'OFF'
+                self.log(
+                    f'[TOGGLE-KILL {direction}] profile={int((_tk_t1-_tk_t0)*1000)}ms '
+                    f'btnstate={int((_tk_t2-_tk_t1)*1000)}ms '
+                    f'rowsrepaint={int((_tk_t3-_tk_t2)*1000)}ms '
+                    f'processEvents={int((_tk_t4-_tk_t3)*1000)}ms '
+                    f'schedule={int((_tk_t5-_tk_t4)*1000)}ms '
+                    f'total={int((_tk_t5-_tk_t0)*1000)}ms',
+                    'gray',
+                )
+            except Exception:
+                pass
 
     def _percent_cut_backend_active(self, mac: str | None, ip: str | None = None) -> bool:
         """True when MITM forwarder or killer entry still shapes this victim."""
@@ -6246,6 +6247,65 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         elif mac:
             self.log('Advanced lag shaping stopped (device no longer in list).', UI_LOG_RESTORE_FG)
 
+    def _halt_mitm_shaping_traffic_now(
+        self,
+        prev_mac: str | None,
+        backend: str | None,
+        victim_snap: dict | None,
+        *,
+        wd_gate,
+    ) -> bool:
+        """
+        Stop delay/jitter/loss and ARP MITM on the caller thread.
+
+        Advanced Lag master toggle OFF must not wait on a daemon thread — the UI
+        already shows Off while the forwarder/WinDivert gate was still shaping.
+        Returns True when WinDivert still needs async gate.stop().
+        """
+        was_wd = backend == 'windivert' and wd_gate is not None
+        if was_wd:
+            try:
+                wd_gate.clear_shaping()
+                if hasattr(wd_gate, 'clear_blocking_pause'):
+                    wd_gate.clear_blocking_pause()
+                elif hasattr(wd_gate, 'set_blocking'):
+                    wd_gate.set_blocking(False)
+            except Exception:
+                pass
+            return True
+
+        mac = str(prev_mac or '').strip()
+        victim = dict(victim_snap) if isinstance(victim_snap, dict) else None
+        if victim is None and mac:
+            key = self._killer_mac_key(mac)
+            killed = getattr(self.killer, 'killed', {}) or {}
+            if key and key in killed:
+                victim = dict(killed[key])
+            elif mac in killed:
+                victim = dict(killed[mac])
+
+        if mac:
+            key = self._killer_mac_key(mac) or mac
+            try:
+                self.killer.disable_percent_cut(key)
+            except Exception:
+                pass
+            try:
+                self.killer._stop_forwarder(key)
+            except Exception:
+                pass
+
+        if isinstance(victim, dict):
+            try:
+                unblock_ip(victim.get('ip') or '')
+            except Exception:
+                pass
+            try:
+                self.killer.unkill(victim)
+            except Exception:
+                pass
+        return False
+
     def stop_mitm_shaping(self, log=True):
         if not self.mitm_shaping_active:
             return
@@ -6260,28 +6320,37 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             victim = (getattr(self.killer, 'killed', None) or {}).get(prev_mac)
         victim_snap = dict(victim) if isinstance(victim, dict) else None
 
+        was_wd = backend == 'windivert' and shaper is not None
+        gate = getattr(self, '_ics_lag_gate', None) if was_wd else None
+        need_async_wd_stop = self._halt_mitm_shaping_traffic_now(
+            prev_mac,
+            backend,
+            victim_snap,
+            wd_gate=gate,
+        )
+
+        if isinstance(victim_snap, dict):
+            self._set_killed_profile(victim_snap, False)
+        elif prev_mac:
+            self._set_killed_profile({'mac': prev_mac, 'ip': ''}, False)
+
         self.mitm_shaping_active = False
         self.mitm_shaping_mac = None
         self.mitm_shaping_device_ip = None
         self._mitm_shaping_backend = None
         self._ics_windivert_shaper = None
 
+        self._sync_killed_devices()
+        self._write_remembered_killed_macs()
+        self._updateKillButtonState()
+        self._refresh_flow_toggle_ui()
         self._refresh_advanced_lag_mitm_if_visible()
-
-        was_wd = backend == 'windivert' and shaper is not None
-        gate = self._ics_lag_gate if was_wd else None
 
         def _teardown_worker():
             log_ip = ''
             try:
-                if prev_mac:
+                if need_async_wd_stop and gate is not None:
                     try:
-                        self.killer.disable_percent_cut(prev_mac)
-                    except Exception:
-                        pass
-                if was_wd and gate is not None:
-                    try:
-                        gate.clear_shaping()
                         gate.prepare_stop()
                     except Exception:
                         pass
@@ -6289,15 +6358,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         log_ip = str(victim_snap.get('ip') or '')
                 elif isinstance(victim_snap, dict):
                     try:
-                        self._ensure_network_context_for_victim(victim_snap)
-                    except Exception:
-                        pass
-                    try:
-                        unblock_ip(victim_snap.get('ip') or '')
-                    except Exception:
-                        pass
-                    try:
-                        self.killer.unkill(victim_snap)
                         self.killer.reinforce_restore(victim_snap)
                     except Exception:
                         pass
@@ -6308,7 +6368,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         str(prev_mac or ''),
                         bool(log),
                         log_ip,
-                        bool(was_wd),
+                        bool(need_async_wd_stop),
                         victim_snap,
                     )
                 except Exception:
@@ -6317,6 +6377,16 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         t = threading.Thread(target=_teardown_worker, daemon=True, name='mitm-stop-teardown')
         self._mitm_teardown_thread = t
         t.start()
+
+    def _schedule_kill_command(self, mac, device, turn_on, source='unknown'):
+        """Paint optimistic Kill UI first; run Npcap/ARP work on the next event-loop tick."""
+        dev = dict(device)
+        QTimer.singleShot(
+            0,
+            lambda m=str(mac), d=dev, on=bool(turn_on), src=str(source): self._run_kill_command(
+                m, d, on, src
+            ),
+        )
 
     def _run_kill_command(self, mac, device, turn_on, source='unknown'):
         """Immediate explicit command path: one click => one kill/unkill command."""
@@ -6347,6 +6417,13 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             actual_on = mac in self.killer.killed
             next_seq = int(self._kill_intent_seq.get(mac, 0)) + 1
             self._kill_intent_seq[mac] = next_seq
+            my_seq = next_seq
+
+            def _superseded() -> bool:
+                return int(self._kill_intent_seq.get(mac, 0)) != my_seq
+
+            if turn_on and not self._killed_profile_on(device):
+                return
             kill_applied = False
             if turn_on:
                 _mark('crossflow_start')
@@ -6480,25 +6557,35 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                                 pass
                     self.log('Kill OFF for ' + str(victim.get('ip', '')), UI_LOG_RESTORE_FG)
                     # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
-                    self._schedule_kill_off_reinforce(mac, next_seq, 25)
-                    self._schedule_kill_off_reinforce(mac, next_seq, 100)
+                    self._schedule_kill_off_reinforce(mac, my_seq, 25)
+                    self._schedule_kill_off_reinforce(mac, my_seq, 100)
+
+            if turn_on and kill_applied and _superseded():
+                try:
+                    victim = self._victim_record_for_mac(mac) or device
+                    if victim:
+                        self.killer.unkill(victim)
+                except Exception:
+                    pass
+                kill_applied = False
 
             _mark('tail_start')
-            self._set_killed_profile(device, bool(kill_applied) if turn_on else False)
-            self._sync_killed_devices()
-            _mark('tail_sync_killed_devices_done')
-            self._write_remembered_killed_macs()
-            _mark('tail_write_remembered_done')
-            self._updateKillButtonState()
-            self._update_scan_count_status()
-            self._refresh_table_row_for_mac(mac, device.get('ip'))
-            self._repaint_all_table_rows_for_hover()
-            try:
-                app = QApplication.instance()
-                if app is not None:
-                    app.processEvents(QEventLoop.ExcludeUserInputEvents)
-            except Exception:
-                pass
+            if not _superseded():
+                self._set_killed_profile(device, bool(kill_applied) if turn_on else False)
+                self._sync_killed_devices()
+                _mark('tail_sync_killed_devices_done')
+                self._write_remembered_killed_macs()
+                _mark('tail_write_remembered_done')
+                self._updateKillButtonState()
+                self._update_scan_count_status()
+                self._refresh_table_row_for_mac(mac, device.get('ip'))
+                self._repaint_all_table_rows_for_hover()
+                try:
+                    app = QApplication.instance()
+                    if app is not None:
+                        app.processEvents(QEventLoop.ExcludeUserInputEvents)
+                except Exception:
+                    pass
             _mark('tail_done')
         finally:
             if teardown_off and getattr(self, '_kill_teardown_mac', None) == mac:
@@ -6878,5 +6965,5 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._set_killed_profile(device, False)
         self._updateKillButtonState()
         dev = dict(device)
-        self._run_kill_command(mac, dev, turn_on=False, source='enqueue_off_only')
+        self._schedule_kill_command(mac, dev, turn_on=False, source='enqueue_off_only')
 
