@@ -5462,6 +5462,23 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 mac = device['mac']
             current_ui_on = self._kill_ui_shows_on(mac, device.get('ip'), device)
         next_state = not current_ui_on
+        shaping_mac = str(getattr(self, 'mitm_shaping_mac', None) or '').strip()
+        shaping_ip = str(getattr(self, 'mitm_shaping_device_ip', None) or '').strip()
+        sel_ip = str(device.get('ip') or '').strip()
+        if (
+            next_state
+            and getattr(self, 'mitm_shaping_active', False)
+            and (
+                (shaping_mac and shaping_mac != mac)
+                or (shaping_ip and sel_ip and shaping_ip != sel_ip)
+            )
+        ):
+            self.stop_mitm_shaping(log=True)
+            self.log(
+                'Advanced lag stopped — select the live PS5 row (Wi‑Fi .165), not a stale Ethernet IP.',
+                UI_LOG_RESTORE_FG,
+            )
+            return
         if next_state and self._toggle_start_blocked('kill'):
             return
         if next_state and clumsy_mode_enabled():
@@ -5801,6 +5818,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         du, dd, ju, jd, cu, cd, lu, ld, gates = mitm_adv_sched.gated_mitm_params(
             now, t0, self._mitm_adv_get, row_t0
         )
+        if mitm_adv_sched.all_enabled_timers_finished(
+            now, t0, self._mitm_adv_get, row_t0
+        ):
+            self.stop_mitm_shaping(log=True)
+            return
         prev = getattr(self, '_mitm_adv_last_sched', None)
         cur_tuple = mitm_adv_sched.sched_apply_tuple(
             du, dd, ju, jd, cu, cd, lu, ld, gates

@@ -5,8 +5,9 @@ import sys
 import unittest
 
 _ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
-if _ROOT not in sys.path:
-    sys.path.insert(0, os.path.join(_ROOT, 'src'))
+_SRC = os.path.join(_ROOT, 'src')
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 from tools import mitm_adv_sched
 
@@ -111,6 +112,33 @@ class MitmAdvSchedTest(unittest.TestCase):
         base = mitm_adv_sched.sched_apply_tuple(0, 0, 0, 0, 0.0, 0.0, 0, 0, (1.0, 1.0, 1.0, 1.0))
         gated = mitm_adv_sched.sched_apply_tuple(0, 0, 0, 0, 0.0, 0.0, 0, 0, (0.0, 1.0, 1.0, 1.0))
         self.assertNotEqual(base, gated)
+
+    def test_loss_timer_two_cycles_finishes(self):
+        get = _g(
+            mitm_adv_loss_on=True,
+            mitm_adv_loss_out=True,
+            mitm_adv_loss_in=True,
+            mitm_adv_loss_pct=50,
+            mitm_adv_loss_timer_on=True,
+            mitm_adv_loss_timer_lag_ms=1000,
+            mitm_adv_loss_timer_pause_ms=1000,
+            mitm_adv_loss_timer_repeat_forever=True,
+            mitm_adv_loss_timer_runs=2,
+        )
+        t0 = 0.0
+        self.assertFalse(
+            mitm_adv_sched.row_schedule_finished(3.5, t0, get, 'mitm_adv_loss')
+        )
+        self.assertTrue(
+            mitm_adv_sched.row_schedule_finished(4.1, t0, get, 'mitm_adv_loss')
+        )
+        self.assertTrue(
+            mitm_adv_sched.all_enabled_timers_finished(4.1, t0, get, None)
+        )
+
+    def test_timer_off_row_does_not_finish_session(self):
+        get = _g(mitm_adv_delay_timer_on=False, mitm_adv_delay_on=True)
+        self.assertFalse(mitm_adv_sched.all_enabled_timers_finished(999.0, 0.0, get, None))
 
 
 if __name__ == '__main__':
