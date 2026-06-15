@@ -17,6 +17,7 @@ from tools.utils import (
     run_command,
     mac_address_is_usable,
     lookup_mac_from_arp_table,
+    victim_endpoint_live_for_mitm,
 )
 from constants import *
 
@@ -215,6 +216,13 @@ class Killer:
             return False, 'router MAC unknown (ping gateway, check Npcap)'
         if not mac_address_is_usable(getattr(self.iface, 'mac', None)):
             return False, 'PC adapter MAC unknown'
+        live_ok, live_reason = victim_endpoint_live_for_mitm(
+            victim.get('ip'),
+            victim.get('mac'),
+            getattr(self.iface, 'ip', None),
+        )
+        if not live_ok:
+            return False, live_reason
         return True, ''
 
     def _refresh_victim_mac_from_cache(self, victim) -> None:

@@ -111,6 +111,13 @@ def stale_nickname_favorite_should_skip(mac: str, ip: str, iface_ip: str = '') -
         owner = lookup_mac_from_arp_table(ip, iface_ip)
         if mac_address_is_usable(owner) and owner != mac:
             return True
+        try:
+            from tools.utils import ipv4_ping_reachable
+
+            if not ipv4_ping_reachable(ip):
+                return True
+        except Exception:
+            pass
     except Exception:
         pass
     return False
