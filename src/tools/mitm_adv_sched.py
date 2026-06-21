@@ -105,6 +105,57 @@ def gate_for_row(t_mono: float, t0: float, get: Get, prefix: str) -> float:
     return 0.0
 
 
+def row_schedule_finished(
+    t_mono: float, t0: float, get: Get, prefix: str
+) -> bool:
+    """True when this row's timer has no more lag phases (finite runs or single-shot)."""
+    if not _bool(get(f'{prefix}_timer_on'), False):
+        return False
+    if not _bool(get(f'{prefix}_on'), False):
+        return False
+    lag_ms = max(0, _int(get(f'{prefix}_timer_lag_ms'), 0))
+    if lag_ms <= 0:
+        return False
+    lag_sec = lag_ms / 1000.0
+    pause_ms = max(0, _int(get(f'{prefix}_timer_pause_ms'), 0))
+    use_repeat = _bool(get(f'{prefix}_timer_repeat_forever'), True)
+    if use_repeat and pause_ms <= 0:
+        pause_sec = 0.001
+    else:
+        pause_sec = max(0.0, pause_ms / 1000.0)
+    period_sec = lag_sec + pause_sec
+    elapsed = max(0.0, t_mono - t0)
+    runs = _int(get(f'{prefix}_timer_runs'), -1)
+    if runs == 0:
+        return True
+    if not use_repeat:
+        return elapsed >= lag_sec
+    if runs < 0:
+        return False
+    n_cyc = max(1, min(99_999, runs))
+    return elapsed >= n_cyc * period_sec
+
+
+def all_enabled_timers_finished(
+    t_mono: float,
+    t0: float,
+    get: Get,
+    row_t0: dict[str, float] | None = None,
+) -> bool:
+    """True when every timer-enabled active row has used up its cycles (session may stop)."""
+    saw_timer = False
+    for prefix in ROW_PREFIXES:
+        if not _bool(get(f'{prefix}_timer_on'), False):
+            continue
+        if not _bool(get(f'{prefix}_on'), False):
+            continue
+        saw_timer = True
+        rt0 = _row_t0(prefix, t0, row_t0)
+        if not row_schedule_finished(t_mono, rt0, get, prefix):
+            return False
+    return saw_timer
+
+
 def _row_t0(prefix: str, t0: float, row_t0: dict[str, float] | None) -> float:
     if row_t0 and prefix in row_t0:
         return float(row_t0[prefix])

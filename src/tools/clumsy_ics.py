@@ -334,8 +334,7 @@ function Find-EthernetConsoleAdapter {
   $ethUp = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
     $_.ifIndex -ne $upIdx -and $_.Status -eq 'Up' -and (LikelyEthernetNic $_) -and -not (IsHotspotDownstreamNic $_) -and -not (IsVirtualNicLike $_.Name $_.InterfaceDescription)
   })
-  # One spare Ethernet port (not the router uplink) - console cable path even before ARP shows a neighbor.
-  if ($ethUp.Count -eq 1) { return $ethUp[0] }
+  # Require a reachable IPv4 neighbor on the cable (not router uplink / not home subnet).
   foreach ($a in $ethUp) {
     if (Test-ConsoleOnEthernetAdapter -Adapter $a -GatewayIp $GatewayIp -UplinkIps $upIps -GwPrefix $gwPrefix) {
       return $a
@@ -433,7 +432,14 @@ function Detect-ClumsyConsolePath {
   }
   $gw = Get-GatewayIpForUplink $up
   $uplinkKind = Get-UplinkKindLabel $up
-  # PS5 on spare Ethernet port (not router WAN) - prefer over hotspot when a console is on the cable.
+  # Mobile Hotspot (137.x) before spare Ethernet: desktops often have an unused LAN port that is not a console.
+  if (Test-HotspotPathActive) {
+    $down = Get-HotspotDownstreamAdapter -ExcludeIfIndex $up.ifIndex
+    if ($down) {
+      return @{ Ok=$true; Path='hotspot'; Up=$up; Down=$down; GatewayIp=$gw; UplinkKind=$uplinkKind }
+    }
+  }
+  # PS5/console on spare Ethernet (neighbor on cable), not router WAN.
   $eth = Find-EthernetConsoleAdapter -Uplink $up -GatewayIp $gw
   if ($eth) {
     return @{ Ok=$true; Path='ethernet'; Up=$up; Down=$eth; GatewayIp=$gw; UplinkKind=$uplinkKind }
@@ -878,14 +884,16 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
         proc = None
         last_exc: Exception | None = None
         # Avoid flashing a visible PowerShell console when toggling ICS from the GUI.
-        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        from tools.utils import _windows_subprocess_no_window_kwargs
+
+        ps_kw = _windows_subprocess_no_window_kwargs()
         for cmd in cmd_candidates:
             try:
                 proc = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
-                    creationflags=creationflags,
+                    **ps_kw,
                 )
                 break
             except FileNotFoundError as e:
@@ -926,7 +934,15 @@ def purge_clumsy_stale_attack_blocks(extra_ips=None) -> dict:
         import re
         import subprocess
 
-        out = subprocess.check_output(['arp', '-a'], text=True, errors='replace', timeout=15)
+        from tools.utils import _windows_subprocess_no_window_kwargs
+
+        out = subprocess.check_output(
+            ['arp', '-a'],
+            text=True,
+            errors='replace',
+            timeout=15,
+            **_windows_subprocess_no_window_kwargs(),
+        )
         for m in re.finditer(r'\b(192\.168\.137\.\d{1,3})\b', out):
             ip = m.group(1)
             if not ip.endswith('.255') and ip != '192.168.137.1':
@@ -1180,6 +1196,8 @@ try {{
       upstream_name = $up.Name
       downstream_guid = (NormGuid $down.InterfaceGuid)
       downstream_name = $down.Name
+      downstream_ifindex = [int]$down.ifIndex
+      upstream_ifindex = [int]$up.ifIndex
       downstream_ipv4 = $downIp
       downstream_prefix = $prefix
       snapshot = $snapshot
@@ -1543,13 +1561,15 @@ def _wlan_autoconfig_needs_heal() -> bool:
     if os.name != 'nt':
         return False
     try:
-        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        from tools.utils import _windows_subprocess_no_window_kwargs
+
+        sc_kw = _windows_subprocess_no_window_kwargs()
         q = subprocess.run(
             ['sc', 'query', 'WlanSvc'],
             capture_output=True,
             text=True,
             timeout=8,
-            creationflags=flags,
+            **sc_kw,
         )
         out = ((q.stdout or '') + (q.stderr or '')).upper()
         if 'RUNNING' not in out:
@@ -1559,7 +1579,7 @@ def _wlan_autoconfig_needs_heal() -> bool:
             capture_output=True,
             text=True,
             timeout=8,
-            creationflags=flags,
+            **sc_kw,
         )
         cfg = ((c.stdout or '') + (c.stderr or '')).upper()
         if 'AUTO_START' in cfg or 'DELAYED_AUTO_START' in cfg:

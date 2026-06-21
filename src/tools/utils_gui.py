@@ -1394,7 +1394,7 @@ def get_settings(key, default=None):
         return default
     return _setting_key_fallback(key)
 
-def repair_settings():
+def repair_settings(repair_iface: bool = True):
     """
     Merge defaults when settings are missing keys or JSON is invalid.
     """
@@ -1473,6 +1473,17 @@ def repair_settings():
                 if fk in s and bool(s.get(fk)):
                     original[f'{_pre}_timer_runs'] = -1
     except (JSONDecodeError, OSError):
+        pass
+    try:
+        from tools.utils import repair_saved_iface_name, repair_nickname_last_ips_from_arp
+
+        if repair_iface:
+            original['iface'] = repair_saved_iface_name(original.get('iface', ''))
+        original['nickname_last_ip'] = repair_nickname_last_ips_from_arp(
+            original.get('nickname_last_ip') or {},
+            original.get('nicknames') or {},
+        )
+    except Exception:
         pass
     export_settings([original[k] for k in SETTINGS_KEYS])
 

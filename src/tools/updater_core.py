@@ -39,7 +39,6 @@ _NO_CACHE_HEADERS = {
     'Pragma': 'no-cache',
 }
 
-_GITHUB_REPO_FALLBACK = 'zubcats/ArpCut-main-updated'
 _BUILD_INFO_ASSET = 'build-info.json'
 
 _REMOTE_CACHE_TTL_SEC = 45.0
@@ -136,12 +135,20 @@ def local_build_label() -> str:
 
 
 def _github_repo() -> str:
+    try:
+        from constants import GITHUB_REPO_SLUG
+
+        slug = str(GITHUB_REPO_SLUG or '').strip()
+        if slug:
+            return slug
+    except Exception:
+        pass
     url = selected_update_url()
     if url:
         parts = urlparse(url).path.strip('/').split('/')
         if len(parts) >= 2:
             return f'{parts[0]}/{parts[1]}'
-    return _GITHUB_REPO_FALLBACK
+    return 'zubcats/ZubCut'
 
 
 def _release_tag_for_channel(channel: str) -> str:
@@ -305,6 +312,19 @@ def installer_download_candidates(*, force_refresh: bool = False) -> list[str]:
     return out
 
 
+def refresh_installer_download_plan() -> tuple[str, list[str], int]:
+    """
+    Fresh GitHub release metadata (blocking). Call from a worker thread only —
+    used after the user confirms install so the confirm dialog stays instant.
+    """
+    candidates = installer_download_candidates(force_refresh=True)
+    url = candidates[0] if candidates else ''
+    fallbacks = candidates[1:] if len(candidates) > 1 else []
+    info = remote_installer_info(force_refresh=True)
+    expected_size = int(info.size) if info and info.size > 0 else 0
+    return url, fallbacks, expected_size
+
+
 def release_page_url() -> str:
     channel = _normalized_update_channel()
     return f'https://github.com/{_github_repo()}/releases/tag/{_release_tag_for_channel(channel)}'
@@ -423,6 +443,21 @@ def _remote_installer_datetime(channel: str, download_url: str) -> datetime | No
         return None
 
 
+def _remote_compare_datetime(
+    remote_info: RemoteInstallerInfo | None,
+    channel: str,
+    download_url: str,
+) -> datetime | None:
+    """Prefer build-info built_at (matches PyInstaller stamp) over asset upload time."""
+    if remote_info is not None and remote_info.remote_built_at:
+        dt = _parse_build_time_iso(remote_info.remote_built_at)
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+    return _remote_installer_datetime(channel, download_url)
+
+
 def _update_available_by_commit(remote: RemoteInstallerInfo | None) -> bool | None:
     """True/False when both sides have a commit; None if commit compare not possible."""
     if remote is None:
@@ -446,13 +481,17 @@ def get_update_status():
         return False, ''
 
     remote_info = _cached_remote_installer_info(channel)
-    remote_dt = _remote_installer_datetime(channel, url)
+    remote_dt = _remote_compare_datetime(remote_info, channel, url)
     if remote_dt is None and remote_info is None:
         return False, ''
 
     local_dt = local_build_datetime()
     remote_label = _format_dt_label(remote_dt)
     local_label = local_build_label()
+    local_commit = local_build_commit()
+    remote_commit = (
+        str(remote_info.remote_commit or '').strip().lower() if remote_info else ''
+    )
 
     commit_cmp = _update_available_by_commit(remote_info)
     if commit_cmp is True:
@@ -460,12 +499,27 @@ def get_update_status():
             return True, f'New build online: {remote_label} · yours: {local_label}'
         return True, 'New build online (newer commit)'
 
+    if commit_cmp is False:
+        if local_label and remote_label:
+            return False, f'Up to date · built {local_label} · online: {remote_label}'
+        return False, f'Up to date · online: {remote_label or "unknown"}'
+
+    # Remote release lacks build-info commit metadata — do not treat installer
+    # upload time (~10–20 min after PyInstaller) as proof of a newer build.
+    if local_commit and not remote_commit:
+        if local_label:
+            return False, f'Up to date · built {local_label}'
+        return False, 'Up to date'
+
+    if not local_commit and remote_commit:
+        if local_label and remote_label:
+            return True, f'New build online: {remote_label} · yours: {local_label}'
+        return True, 'New build online (newer commit)'
+
     if local_dt is None:
-        return True, f'Latest online: {remote_label or "unknown"}'
+        return False, 'Up to date (build stamp unavailable)'
 
     available = (remote_dt - local_dt) > _MIN_REMOTE_AHEAD_OF_BUILD if remote_dt else False
-    if commit_cmp is False:
-        available = False
 
     if available:
         if local_label and remote_label:

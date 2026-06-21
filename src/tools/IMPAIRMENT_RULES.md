@@ -47,6 +47,25 @@ Kill log should show `ifidx` and `ifIdx=N` (not `victim` + `ifIdx=0`).
 - **Wrong:** `_ics_quiesce` + `release_ics` + `unblock_ip` on every WinDivert start.
 - **Right:** `quiesce_legacy_stack()` once; no `unblock_ip` when `use_block_ip` is false.
 
+## Wiring (no new ``clumsy_ics_use_firewall_only`` in GUI)
+
+- **Policy:** ``ics_impairment_policy.classify_device_impairment`` → ``plan.use_windivert`` /
+  ``plan.is_ics_downstream``.
+- **Victim row:** ``device_row_for_impairment`` / ``MainWindow._victim_row`` — not scattered
+  ``clumsy_ics_resolve_victim_ip`` calls.
+- **Remember kill:** ``should_restore_remembered_kill`` — LAN ARP only; ICS uses
+  ``_apply_victim_block`` + ``killed_devices`` / ``_ics_kill_profile_macs``.
+- **Scan:** ``device_table.extra_scan_hits_from_ics_arp`` merged in ``devices_appender``.
+
+## Device table (``networking/device_table.py``)
+
+- **Clumsy hotspot / ethernet-console:** one row per MAC; display IP prefers ICS (`137.x`)
+  from scan + ARP refresh (`sync_device_table`).
+- **Home LAN (Clumsy off or regular path):** one row per `MAC|subnet` profile.
+- **Wrong:** Using the IP column alone for impairment without `clumsy_ics_resolve_victim_ip`.
+- **Right:** Refresh table before paint (`sync_clumsy_row`); impairment via
+  `classify_device_impairment` + WinDivert on downstream path.
+
 ## Clumsy reference
 
 Real Clumsy: one `WinDivertOpen`, one filter, module flags — no ARP, no gate stop per button.

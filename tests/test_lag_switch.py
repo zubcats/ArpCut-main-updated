@@ -66,8 +66,16 @@ def test_lag_switch_with_real_network():
         print("\n⚠️  Network modules not available (scapy not installed)")
         print("   Install with: pip3 install scapy")
         return False
-    
-    if os.geteuid() != 0:
+
+    # os.geteuid only exists on Unix. On Windows this integration test cannot
+    # run unattended (requires Administrator + interactive UAC) — skip cleanly
+    # rather than crash with AttributeError under pytest collection.
+    geteuid = getattr(os, 'geteuid', None)
+    if geteuid is None:
+        print("\n⚠️  This integration test requires Unix root / Linux capabilities.")
+        print("   Skipping on Windows (run ZubCut as Administrator instead).")
+        return False
+    if geteuid() != 0:
         print("\n⚠️  This test requires root privileges.")
         print("   Run with: sudo python3 test_lag_switch.py")
         return False

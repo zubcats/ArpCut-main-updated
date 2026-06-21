@@ -14,10 +14,19 @@ from networking.nicknames import (
     nickname_profile_key,
     parse_nickname_profile_key,
     record_nickname_last_ip,
+    resolve_favorite_ip,
+    stale_nickname_favorite_should_skip,
 )
 from tools.device_display import infer_network_device_type
-from tools.clumsy_inline import sync_clumsy_row, clumsy_mode_enabled
+from networking.device_table import (
+    build_client_rows_from_scan,
+    extra_scan_hits_from_ics_arp,
+    phantom_favorite_should_skip,
+    sync_device_table,
+)
+from tools.clumsy_inline import clumsy_mode_enabled
 from tools.utils import *
+from tools.utils import _iface_live_ipv4  # star-import skips private names; sync_iface needs this
 from constants import *
 
 class Scanner():
@@ -47,14 +56,23 @@ class Scanner():
         """
         Intializing Scanner
         """
-        self.iface = get_iface_by_name(self.iface.name)
+        try:
+            from tools.utils_gui import get_settings
+
+            saved = str(get_settings('iface') or '').strip()
+            if saved and saved != 'NULL':
+                self.iface = get_iface_by_name(saved)
+            else:
+                self.iface = get_iface_by_name(self.iface.name)
+        except Exception:
+            self.iface = get_iface_by_name(self.iface.name)
         self.devices = []
 
         # Use iface.guid (Scapy/pcap name) for network operations, not iface.name
         self.router_ip = get_gateway_ip(self.iface.guid)
         self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
 
-        self.my_ip = get_my_ip(self.iface.guid)
+        self.my_ip = resolve_iface_my_ip(self.iface)
         self.my_mac = good_mac(self.iface.mac)
         
         self.perfix = self.my_ip.rsplit(".", 1)[0]
@@ -66,13 +84,22 @@ class Scanner():
         topology (gateway, me, router dict) so Killer/ARP/firewall use the right NIC.
         """
         target = get_iface_for_victim_ip(victim_ip, fallback=self.iface)
-        if target.guid == self.iface.guid:
+        refresh_netface_live_ip(target)
+        live_here = _iface_live_ipv4(self.iface)
+        live_target = _iface_live_ipv4(target)
+        if str(target.guid) == str(self.iface.guid) and live_here:
+            refresh_netface_live_ip(self.iface)
+            return False
+        if str(target.guid) == str(self.iface.guid) and not live_target:
             return False
         self.iface = target
+        refresh_netface_live_ip(self.iface)
         self.router_ip = get_gateway_ip(self.iface.guid)
         self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
-        self.my_ip = get_my_ip(self.iface.guid)
+        self.my_ip = resolve_iface_my_ip(self.iface)
         self.my_mac = good_mac(self.iface.mac)
+        if self.my_ip:
+            self.iface.ip = self.my_ip
         try:
             self.perfix = self.my_ip.rsplit(".", 1)[0]
         except Exception:
@@ -114,10 +141,13 @@ class Scanner():
         guid = getattr(self.iface, 'guid', None) or getattr(self.iface, 'name', None)
         if not guid or guid == 'NULL':
             return
-        self.router_ip = get_gateway_ip(guid)
-        self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
-        self.my_ip = get_my_ip(guid)
+        refresh_netface_live_ip(self.iface)
+        self.my_ip = resolve_iface_my_ip(self.iface)
         self.my_mac = good_mac(self.iface.mac)
+        if self.my_ip:
+            self.iface.ip = self.my_ip
+        self.router_ip = get_gateway_ip(guid)
+        self.router_mac = get_gateway_mac(self.my_ip or self.iface.ip, self.router_ip)
         try:
             self.perfix = self.my_ip.rsplit('.', 1)[0]
         except Exception:
@@ -180,7 +210,10 @@ class Scanner():
             'name':     '',
             'admin':    True
         }
-        
+        for i, row in enumerate(self.devices):
+            if isinstance(row, dict) and row.get('type') == 'Me':
+                self.devices[i] = dict(self.me)
+                return
         self.devices.insert(0, self.me)
 
     def add_router(self):
@@ -195,7 +228,10 @@ class Scanner():
             'name':     '',
             'admin':    True
         }
-
+        for i, row in enumerate(self.devices):
+            if isinstance(row, dict) and row.get('type') == 'Router':
+                self.devices[i] = dict(self.router)
+                return
         self.devices.insert(0, self.router)
 
     def inject_nicknamed_favorites(self):
@@ -207,6 +243,7 @@ class Scanner():
         if not nick_db:
             return
         last_map = get_nickname_last_ip_map()
+        iface_ip = str(getattr(getattr(self, 'iface', None), 'ip', None) or '').strip()
         present_profiles = set()
         for d in self.devices:
             if not isinstance(d, dict) or d.get('admin'):
@@ -222,11 +259,23 @@ class Scanner():
             mac, prefix = parse_nickname_profile_key(key_raw)
             if not mac:
                 continue
-            ip = last_map.get(key_raw) or last_map.get(mac)
+            ip = resolve_favorite_ip(mac, key_raw, last_map, iface_ip)
             if not ip:
                 continue
+            if stale_nickname_favorite_should_skip(mac, ip, iface_ip):
+                continue
+            if not clumsy_mode_enabled():
+                try:
+                    from tools.clumsy_inline import clumsy_ics_downstream_prefix
+
+                    if str(ip).startswith(clumsy_ics_downstream_prefix()):
+                        continue
+                except Exception:
+                    pass
             pk = nickname_profile_key(mac, ip)
             if not pk or pk in present_profiles:
+                continue
+            if phantom_favorite_should_skip(self, mac, ip, present_profiles):
                 continue
             if prefix and ipv4_subnet_prefix(ip) != prefix:
                 continue
@@ -261,58 +310,16 @@ class Scanner():
 
     def devices_appender(self, scan_result):
         """
-        Append scan results to self.devices
+        Append scan results to self.devices (MAC-centric table in Clumsy hotspot mode).
         """
-        nicknames = Nicknames()
-
-        self.devices = []
-        seen_profiles = set()
-
-        # Sort by last IPv4 octet (tolerant of odd rows so we never abort the scan thread).
-        def _ip_sort_key(item):
-            try:
-                return int(str(item[0]).rsplit('.', 1)[-1])
-            except (ValueError, IndexError, TypeError, AttributeError):
-                return 0
-
-        scan_result = sorted(scan_result, key=_ip_sort_key)
-
-        for ip, mac in scan_result:
-            mac = good_mac(mac)
-            profile = nickname_profile_key(mac, ip)
-
-            # Skip me/router; allow same MAC on different subnets as separate rows.
-            if ip in [self.router_ip, self.my_ip] or not profile or profile in seen_profiles:
-                continue
-
-            if self.old_ips.get(profile, ip) != ip:
-                self.old_ips[profile] = ip
-            seen_profiles.add(profile)
-
-            vend = get_vendor(mac)
-            try:
-                dev_type = infer_network_device_type(mac, vend, '')
-            except Exception:
-                dev_type = 'User'
-            nm = nicknames.get_name(mac, ip)
-            self.devices.append(
-                {
-                    'ip':     ip,
-                    'mac':    mac,
-                    'vendor': vend,
-                    'type':   dev_type,
-                    'name':   nm,
-                    'admin':  False
-                }
-            )
-            if nm and nm != '-':
-                record_nickname_last_ip(mac, ip)
-
-        # Drop stale row when this profile's IP changed on the same subnet.
-        for device in self.devices[:]:
-            pk = nickname_profile_key(device['mac'], device['ip'])
-            if pk and self.old_ips.get(pk, device['ip']) != device['ip']:
-                self.devices.remove(device)
+        hits: list = list(scan_result or [])
+        try:
+            for pair in extra_scan_hits_from_ics_arp(self):
+                if pair not in hits:
+                    hits.append(pair)
+        except Exception:
+            pass
+        self.devices = build_client_rows_from_scan(self, hits)
 
         self.old_ips = {
             nickname_profile_key(d['mac'], d['ip']): d['ip']
@@ -328,7 +335,7 @@ class Scanner():
             for d in self.devices
             if not d.get('admin')
         }
-        sync_clumsy_row(self)
+        sync_device_table(self, allow_subnet_ping=True)
 
         # Clear arp cache to avoid duplicates next time
         if unique:
@@ -341,41 +348,53 @@ class Scanner():
         """
         if not hits:
             return
-        nicknames = Nicknames()
-        by_profile = {
-            nickname_profile_key(d['mac'], d['ip']): d
-            for d in self.devices
-            if not d.get('admin')
-        }
+        admins = [d for d in self.devices if d.get('admin')]
+        existing = [d for d in self.devices if not d.get('admin')]
+        merged_hits = []
+        seen = set()
+        try:
+            from networking.device_table import _home_lan_ip_for_row, _ics_prefix, _is_ics_ip
+
+            ics_prefix = _ics_prefix()
+        except Exception:
+            ics_prefix = '192.168.137.'
+            _home_lan_ip_for_row = None
+            _is_ics_ip = None
+        for d in existing:
+            mac = good_mac(d.get('mac'))
+            if not mac:
+                continue
+            if clumsy_mode_enabled():
+                ip = str(d.get('ip') or '').strip()
+                if ip:
+                    pair = (ip, mac)
+                    if pair not in seen:
+                        merged_hits.append(pair)
+                        seen.add(pair)
+            lan = str(d.get('lan_ip') or '').strip()
+            if _home_lan_ip_for_row is not None:
+                home = _home_lan_ip_for_row(d, ics_prefix)
+                if home:
+                    lan = home
+            elif lan and _is_ics_ip and _is_ics_ip(lan, ics_prefix):
+                lan = ''
+            if not lan:
+                ip = str(d.get('ip') or '').strip()
+                if _is_ics_ip and _is_ics_ip(ip, ics_prefix):
+                    ip = ''
+                lan = ip
+            if lan and (lan, mac) not in seen:
+                merged_hits.append((lan, mac))
+                seen.add((lan, mac))
         for ip, mac in hits:
             mac = good_mac(mac)
-            profile = nickname_profile_key(mac, ip)
-            if ip in [self.router_ip, self.my_ip] or not profile:
+            if not mac:
                 continue
-            vend = get_vendor(mac)
-            try:
-                dev_type = infer_network_device_type(mac, vend, '')
-            except Exception:
-                dev_type = 'User'
-            nm = nicknames.get_name(mac, ip)
-            by_profile[profile] = {
-                'ip': ip,
-                'mac': mac,
-                'vendor': vend,
-                'type': dev_type,
-                'name': nm,
-                'admin': False,
-            }
-            if nm and nm != '-':
-                record_nickname_last_ip(mac, ip)
-
-        def _sort_dev(d):
-            try:
-                return int(str(d['ip']).rsplit('.', 1)[-1])
-            except (ValueError, IndexError, TypeError, AttributeError):
-                return 0
-
-        self.devices = sorted(by_profile.values(), key=_sort_dev)
+            pair = (str(ip).strip(), mac)
+            if pair not in seen:
+                merged_hits.append(pair)
+                seen.add(pair)
+        self.devices = build_client_rows_from_scan(self, merged_hits)
         self.old_ips = {
             nickname_profile_key(d['mac'], d['ip']): d['ip']
             for d in self.devices
@@ -389,8 +408,7 @@ class Scanner():
             for d in self.devices
             if not d.get('admin')
         }
-        # Ping sweep can take seconds; this runs on the scan QThread, not the GUI thread.
-        sync_clumsy_row(self, allow_subnet_ping=True)
+        sync_device_table(self, allow_subnet_ping=True)
 
     def _windows_arp_raw_text(self):
         """Merge interface-scoped and full ARP output (``-N`` often returns nothing on some builds)."""

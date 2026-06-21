@@ -50,10 +50,10 @@ class TestLagCountdown(unittest.TestCase):
         self.assertNotIn('_lag_ics_force_unpause', tick)
 
     def test_allow_phase_uses_same_countdown_format(self) -> None:
-        from gui.main import ElmoCut
+        from gui.main import ZubCutApp
 
-        self.assertEqual(ElmoCut._lag_countdown_label(True, 1500), 'Time left: 2 s')
-        self.assertEqual(ElmoCut._lag_countdown_label(False, 9000), 'Time left: 9 s')
+        self.assertEqual(ZubCutApp._lag_countdown_label(True, 1500), 'Time left: 2 s')
+        self.assertEqual(ZubCutApp._lag_countdown_label(False, 9000), 'Time left: 9 s')
 
     def test_phase_flag_before_timing_sync_in_begin(self) -> None:
         src = self._main_py()
@@ -71,7 +71,14 @@ class TestLagCountdown(unittest.TestCase):
     def test_tick_advances_phase_at_zero(self) -> None:
         src = self._main_py()
         tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
-        self.assertIn('_lag_request_phase_advance', tick)
+        # Tick must advance the phase when rem <= 0 (either via the deferred
+        # _lag_request_phase_advance helper or directly via _lag_do_phase_advance
+        # when no advance is already pending). Both keep the single-shot phase
+        # timer from being relied on as the only escape from a stuck block.
+        self.assertTrue(
+            '_lag_request_phase_advance' in tick or '_lag_do_phase_advance' in tick,
+            'Tick must call into a phase-advance helper at rem <= 0',
+        )
         self.assertIn('rem <= 0', tick)
         self.assertNotIn('_lag_phase_end_timer_fired()', tick)
 

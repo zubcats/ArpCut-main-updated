@@ -13,6 +13,33 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 
 
+def license_transient_reason(reason: str) -> str:
+    """Collapse transport/DNS errors into a single user-facing line."""
+    s = str(reason or '').strip()
+    if not s:
+        return 'License server unreachable (will retry).'
+    low = s.casefold()
+    if any(
+        token in low
+        for token in (
+            'getaddrinfo',
+            'name resolution',
+            'failed to resolve',
+            'nameresolutionerror',
+        )
+    ):
+        return 'Offline — cannot resolve license server (check internet/DNS). Will retry.'
+    if 'timed out' in low or 'timeout' in low:
+        return 'License server timed out. Will retry.'
+    if 'could not reach' in low or 'max retries exceeded' in low:
+        return 'License server unreachable. Will retry.'
+    if 'connection refused' in low or 'connection aborted' in low:
+        return 'License server unreachable. Will retry.'
+    if len(s) > 100:
+        return s[:97] + '...'
+    return s
+
+
 def effective_signin_url() -> str:
     """HTTPS license server URL (empty if not configured)."""
     try:
@@ -56,7 +83,7 @@ def fetch_license_document_via_signin(
             timeout=timeout_sec,
         )
     except requests.RequestException as e:
-        return None, f'Could not reach the sign-in server ({e}).'
+        return None, license_transient_reason(str(e))
 
     try:
         body = r.json()
@@ -125,7 +152,7 @@ def validate_active_license_session(
             timeout=timeout_sec,
         )
     except requests.RequestException as e:
-        return None, f'Could not reach license server ({e}).'
+        return None, license_transient_reason(str(e))
 
     try:
         body = r.json()

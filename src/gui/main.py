@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import sys
 import time
@@ -67,7 +67,6 @@ from tools.clumsy_inline import (
     clumsy_ics_lag_can_use_windivert,
     clumsy_ics_downstream_prefix,
     clumsy_ics_resolve_victim_ip,
-    clumsy_ics_use_firewall_only,
     clumsy_windivert_unavailable_reason,
     clumsy_windivert_probe_detail,
     heal_ics_client_after_mitm,
@@ -80,8 +79,10 @@ from tools.clumsy_inline import (
 )
 from tools.ics_impairment_policy import (
     classify_device_impairment,
+    device_row_for_impairment,
     impairment_status_line,
     quiesce_legacy_stack,
+    should_restore_remembered_kill,
 )
 from tools.keybinds import keyseq_from_setting
 from tools.branding import (
@@ -114,6 +115,60 @@ def _dupe_net_run_block(iface: str, ip: str, direction: str):
         return None
     except Exception as exc:
         return exc
+
+
+def _bg_unblock_ip(ip: str | None) -> None:
+    """Fire-and-forget unblock_ip on a background thread.
+
+    netsh delete firewall rules cost 1-3 s synchronously which would freeze
+    the Qt event loop during impairment toggles. The firewall layer is only
+    a backstop on top of ARP/WinDivert, so dropping the rules a few hundred
+    ms late is safe — and dropping them entirely on thread-spawn failure is
+    also safe (Windows will keep the rule until next reboot but ARP poison
+    is already gone via the killer path).
+    """
+    if not ip:
+        return
+    ip_s = str(ip).strip()
+    if not ip_s:
+        return
+    try:
+        threading.Thread(
+            target=lambda: _dupe_net_run_unblock(ip_s),
+            name='zubcut-unblockip-bg',
+            daemon=True,
+        ).start()
+    except Exception:
+        # F5: do NOT fall back to a synchronous unblock_ip here. The fallback
+        # ran on the GUI thread and re-introduced the multi-second freeze the
+        # helper exists to prevent, exactly when the system is already short
+        # on resources (thread-handle exhaustion). Firewall is a backstop —
+        # leaving the rule live until reboot is preferable to freezing the UI.
+        pass
+
+
+def _bg_block_ip(iface: str | None, ip: str | None, direction: str = 'both') -> None:
+    """Fire-and-forget block_ip on a background thread (see _bg_unblock_ip).
+
+    On thread-spawn failure we silently drop the call rather than fall back
+    to a synchronous netsh add on the GUI thread (firewall is a backstop;
+    ARP/WinDivert already cut the victim).
+    """
+    if not ip:
+        return
+    ip_s = str(ip).strip()
+    if not ip_s:
+        return
+    iface_s = str(iface or 'en0').strip() or 'en0'
+    direction_s = str(direction or 'both').strip() or 'both'
+    try:
+        threading.Thread(
+            target=lambda: _dupe_net_run_block(iface_s, ip_s, direction_s),
+            name='zubcut-blockip-bg',
+            daemon=True,
+        ).start()
+    except Exception:
+        pass
 
 
 from assets import *
@@ -754,7 +809,8 @@ class DupeDialog(FramelessResizableMixin, QDialog):
 
 
 
-class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
+class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
+    """Main ZubCut window (network scan, impairment toggles, Clumsy hotspot path)."""
     mitm_teardown_finished = pyqtSignal(str, bool, str, bool, object)
     flow_net_main_done = pyqtSignal(object)
 
@@ -804,6 +860,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Left status strip (lblleft): elide long lines to fit; full text in tooltip.
         self._status_strip_plain = None
         self._status_strip_color = 'white'
+        self.lblleft.setWordWrap(False)
+        self.lblleft.setMaximumHeight(self.lblleft.fontMetrics().height() + 6)
 
         # Space was bound in the .ui to ARP scan; only fire when the main window is foreground.
         self.btnScanEasy.setShortcut(QKeySequence())
@@ -832,7 +890,26 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Main Props
         self.scanner = Scanner()
         self.killer = Killer()
+        # Pre-warm the Npcap L2 socket on a background thread so the first Kill ON
+        # doesn't wait ~0.5–2 s on conf.L2socket() opening Npcap. Pure no-op on Linux.
+        def _prewarm_kill_socket():
+            try:
+                self.killer._get_socket()
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(
+                target=_prewarm_kill_socket,
+                name='zubcut-prewarm-l2',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
         self.killed_devices = {}  # profile key (mac|subnet) -> explicit Kill toggle state
+        # Immediate visual latch: keep Kill row highlighted between toggle-on click
+        # and backend apply completion, even if sync paths briefly clear killed_devices.
+        self._kill_pending_profiles = set()
         # Per-MAC intent generation for kill toggle; delayed OFF reinforcement only runs
         # when generation still matches (prevents stale delayed actions from reapplying).
         self._kill_intent_seq = {}
@@ -848,6 +925,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_phase_seq = 0
         self.lag_device_mac = None
         self.lag_device_ip = None
+        self._lag_net_prepared_mac = None
         self.lag_direction = 'both'  # 'both', 'in', or 'out'
         self._lag_phase_end_timer = QTimer(self)
         self._lag_phase_end_timer.setSingleShot(True)
@@ -919,6 +997,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_dlg_refresh_mono = 0.0
         self._dupe_net_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='dupe_net')
         self._dupe_end_mono = None  # wall deadline for countdown (set when block_ip finishes)
+        self._idle_mitm_reconcile_timer = QTimer(self)
+        self._idle_mitm_reconcile_timer.setInterval(20000)
+        self._idle_mitm_reconcile_timer.timeout.connect(
+            lambda: self._reconcile_idle_mitm_state(quiet=True)
+        )
+        self._idle_mitm_reconcile_timer.start()
         self._dupe_clear_future = None
         self._dupe_async_unblock_ctx = None  # (device, prev_mac) until post-unblock slot runs
         self._dupe_block_future = None
@@ -1360,30 +1444,94 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def log(self, text, color='white'):
         """
         Print log info at left label (elided if long; hover shows full text).
+
+        There is no separate log window — only ``lblleft`` plus flow-specific labels
+        (e.g. ``lblDupeCountdownMain``). Messages are replaced by the next ``log()``.
         """
         self._status_strip_plain = text
         self._status_strip_color = color
         self.lblleft.setToolTip(text)
         self._apply_status_strip_elide()
         QTimer.singleShot(0, self._apply_status_strip_elide)
+
+    def _show_dupe_status(self, text, color=UI_LOG_VICTIM_BLOCK_FG, *, hold_ms=8000):
+        """Dupe feedback on the inline label under Dupe controls + left status strip."""
+        plain = str(text or '').strip()
+        if not plain:
+            return
+        self.log(plain, color)
+        self.lblDupeCountdownMain.setVisible(True)
+        self._set_countdown_label(self.lblDupeCountdownMain, plain)
+        if hold_ms > 0 and not self.dupe_active:
+            QTimer.singleShot(hold_ms, self._clear_dupe_status_label_if_idle)
+
+    def _clear_dupe_status_label_if_idle(self):
+        if self.dupe_active:
+            return
+        self.lblDupeCountdownMain.setVisible(False)
+        self.lblDupeCountdownMain.setText('')
+
+    def _log_dupe_restore_result(self, device) -> None:
+        """After Dupe OFF, report whether MITM/forwarder actually cleared."""
+        if not isinstance(device, dict):
+            self._show_dupe_status('Dupe OFF', UI_LOG_RESTORE_FG)
+            return
+        ip = str(device.get('ip') or '').strip()
+        mac = str(device.get('mac') or '').strip()
+        still = bool(
+            mac
+            and (
+                mac in getattr(self.killer, 'killed', {})
+                or mac in getattr(self.killer, 'forwarders', {})
+            )
+        )
+        if still:
+            self._show_dupe_status(
+                f'Dupe OFF: cut still active on {ip} — press Dupe or Kill OFF, then rescan',
+                'red',
+                hold_ms=12000,
+            )
+            return
+        if mac:
+            self._show_dupe_status(
+                f'Dupe OFF: restored {ip} ({mac})',
+                UI_LOG_RESTORE_FG,
+                hold_ms=10000,
+            )
+        else:
+            self._show_dupe_status(f'Dupe OFF: restored {ip}', UI_LOG_RESTORE_FG, hold_ms=10000)
     
     def openSettings(self):
-        """
-        Open settings window
-        """
-        self.settings_window.hide()
-        self.settings_window.loadInterfaces(use_cache=True)
-        self.settings_window.currentSettings()
-        self.settings_window.show()
-        self.settings_window.setWindowState(Qt.WindowNoState)
-        QTimer.singleShot(0, self.settings_window._load_interfaces_background)
+        """Open Settings, or focus it if already open (avoid reload/freeze on re-click)."""
+        w = self.settings_window
+        already_open = w.isVisible() and not w.isMinimized()
+        if already_open:
+            w.raise_()
+            w.activateWindow()
+            return
+        if w.isMinimized():
+            w.showNormal()
+        else:
+            w.show()
+            w.setWindowState(Qt.WindowNoState)
+        w.raise_()
+        w.activateWindow()
+        # Paint first; avoid ipconfig / settings merge on the click stack.
+        QTimer.singleShot(0, w.currentSettings)
+        QTimer.singleShot(0, w._load_interfaces_background)
 
     def openAbout(self):
         """
         Open about window
         """
-        self.about_window.hide()
-        self.about_window.show()
+        w = self.about_window
+        if w.isVisible() and not w.isMinimized():
+            w.raise_()
+            w.activateWindow()
+            return
+        w.show()
+        w.raise_()
+        w.activateWindow()
     
     def openTraffic(self):
         if not self.tableScan.selectedItems():
@@ -1514,7 +1662,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Apply saved settings
         """
-        self.settings_window.updateElmocutSettings()
+        self.settings_window.apply_app_settings()
 
     def trayShowClicked(self):
         self.show()
@@ -1770,19 +1918,38 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Classify how Kill/Lag/Dupe/Cut/Advanced should affect this device (fresh each call)."""
         return classify_device_impairment(device, self.scanner)
 
+    def _uses_windivert(self, device) -> bool:
+        return self._impairment_plan_for(device).use_windivert
+
+    def _is_ics_downstream(self, device) -> bool:
+        return self._impairment_plan_for(device).is_ics_downstream
+
+    def _victim_row(self, device, plan=None, *, lag=False, dupe=False, pctcut=False, mitmshape=False):
+        """Resolved device row + plan (single entry point for victim IP)."""
+        plan = plan or self._impairment_plan_for(device)
+        row = device_row_for_impairment(device, self.scanner, plan)
+        ip = self._flow_stable_victim_ip(
+            row, lag=lag, dupe=dupe, pctcut=pctcut, mitmshape=mitmshape
+        )
+        if ip:
+            row = dict(row)
+            row['ip'] = ip
+        return row, plan
+
+    def _write_remembered_killed_macs(self) -> None:
+        """Persist LAN ARP kill MACs only (WinDivert kill uses ``killed_devices`` / ICS profiles)."""
+        if not self.remember:
+            set_settings('killed', [])
+            return
+        set_settings('killed', list(self.killer.killed.keys()))
+
     def _device_with_plan_ip(self, device):
-        """Return device dict with resolved downstream IP when on ICS path."""
+        """Return device dict with resolved IP for the active impairment path."""
         if not isinstance(device, dict):
             return device
-        plan = self._impairment_plan_for(device)
-        if not plan.is_ics_downstream:
-            return device
-        ip = plan.resolved_ip or str(device.get('ip') or '').strip()
-        if not ip:
-            return device
-        out = dict(device)
-        out['ip'] = ip
-        return out
+        return device_row_for_impairment(
+            device, self.scanner, self._impairment_plan_for(device)
+        )
 
     def _refresh_selected_device_impairment_plan(self) -> None:
         """On row select: classify hotspot vs ethernet-console vs regular LAN."""
@@ -1805,8 +1972,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Disable per-device controls when an admin row is selected.
         """
-        not_enabled = not self.current_index()['admin']
+        device = self._get_selected_device()
+        if not device:
+            return
+        not_enabled = not device.get('admin')
         self._refresh_selected_device_impairment_plan()
+        self._reconcile_idle_mitm_state(quiet=True)
 
         self.btnKill.setEnabled(not_enabled)
         self.btnLagSwitch.setEnabled(not_enabled)
@@ -1970,11 +2141,18 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             device, self.dupe_device_mac, getattr(self, 'dupe_device_ip', None)
         ):
             return True
-        if not self._killed_profile_on(device):
-            return False
-        if mac in getattr(self, '_ics_kill_profile_macs', set()):
+        pk = self._killed_profile_key(device)
+        if pk and pk in getattr(self, '_kill_pending_profiles', set()):
             return True
-        return mac in self.killer.killed
+        # Honor the user's intent (_killed_profile_on) instead of the ARP-thread
+        # state (mac in killer.killed). The button already uses the intent flag
+        # via _kill_ui_shows_on, so the previous behavior left the row repaint
+        # racing the ARP worker thread — the user saw "KILL: ON" on the button
+        # but the row stayed un-highlighted until the worker spawned + first
+        # _send_packet completed (which on a cold Npcap socket can be 0.5–2 s).
+        # If the kill actually fails the WinDivert/LAN branches clear the
+        # killed_profile so the row de-highlights instantly too.
+        return self._killed_profile_on(device)
 
     def _table_hover_cell_palette(self, row, device):
         """
@@ -2066,22 +2244,35 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         View scanlist devices with correct colors processed
         """
         # Ensure "Me" and "Router" are always shown even if scan hasn't run
-        if not self.scanner.devices or not any(d.get('type') == 'Me' for d in self.scanner.devices):
-            try:
-                self.scanner.add_me()
-            except Exception:
-                pass
-        if not self.scanner.devices or not any(d.get('type') == 'Router' for d in self.scanner.devices):
-            try:
-                self.scanner.add_router()
-            except Exception:
-                pass
         try:
-            sync_clumsy_row(self.scanner)
+            self.scanner.refresh_local_topology()
+            self.scanner.add_me()
+            self.scanner.add_router()
+        except Exception:
+            if not self.scanner.devices or not any(d.get('type') == 'Me' for d in self.scanner.devices):
+                try:
+                    self.scanner.add_me()
+                except Exception:
+                    pass
+            if not self.scanner.devices or not any(d.get('type') == 'Router' for d in self.scanner.devices):
+                try:
+                    self.scanner.add_router()
+                except Exception:
+                    pass
+        try:
+            sync_clumsy_row(self.scanner, allow_subnet_ping=False)
         except Exception:
             pass
         try:
             self.scanner.inject_nicknamed_favorites()
+        except Exception:
+            pass
+        try:
+            from networking.device_table import dedupe_home_lan_rows_by_ip
+
+            self.scanner.devices = dedupe_home_lan_rows_by_ip(
+                self.scanner.devices, self.scanner
+            )
         except Exception:
             pass
         current_row = self.tableScan.currentRow()
@@ -2142,13 +2333,25 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killer.rekill_stored(self.scanner.devices)
         self._sync_killed_devices()
         
-        # re-kill saved devices after exit
+        # Re-apply remembered kills (LAN ARP only — never ARP-kill ICS / WinDivert victims).
+        remembered = (get_settings('killed') or []) if self.remember else []
         for rem_device in self.scanner.devices:
-            if rem_device['mac'] in get_settings('killed') * self.remember:
-                self.killer.kill(rem_device)
+            if rem_device.get('admin'):
+                continue
+            mac = str(rem_device.get('mac') or '').strip()
+            if not mac or mac not in remembered:
+                continue
+            if should_restore_remembered_kill(rem_device, self.scanner):
+                self._apply_victim_block(rem_device, 'both')
+            elif self._is_ics_downstream(rem_device) and self._kill_ui_shows_on(
+                mac, rem_device.get('ip'), rem_device
+            ):
+                self._apply_victim_block(rem_device, 'both')
 
-        # Killer holds ARP for lag/dupe too; Kill button tracks explicit kill / restore only.
+        # Killer holds ARP for lag/dupe on LAN; explicit Kill uses killed_devices / ICS profiles.
         for mac, victim in self.killer.killed.items():
+            if not should_restore_remembered_kill(victim, self.scanner):
+                continue
             pk = nickname_profile_key(mac, victim.get('ip', ''))
             if pk:
                 self.killed_devices[pk] = True
@@ -2170,6 +2373,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Apply ARP spoofing to selected device
         """
+        # Mirror killAll's cross-flow stop set so the legacy/API path can't
+        # stack on top of a lag/dupe/pctcut/MITM-shape already running on the
+        # same victim (would leave _op_seq mismatched and ARP poison silently
+        # exiting). See start/stop symmetry audit findings A1.
+        self.stopLagSwitch()
+        self.stopDupe(log=False)
+        self._flush_pending_dupe_clear_sync()
+        self.stopPercentCut(log=False)
+        self.stop_mitm_shaping(log=False)
+        self._await_mitm_teardown_thread()
         if not self.connected():
             return
         
@@ -2178,6 +2391,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         device = self.current_index()
+        if device.get('admin'):
+            self.log('Cannot kill Router / Me', UI_LOG_VICTIM_BLOCK_FG)
+            return
+        resolved = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
+            device.get('ip') or ''
+        ).strip()
+        if resolved:
+            device = dict(device)
+            device['ip'] = resolved
         if not _is_valid_ip(device.get('ip') or ''):
             self.log('Target has no IP yet — enable Internet sharing and rescan.', 'red')
             return
@@ -2186,7 +2408,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log('Device is already killed', 'red')
             return
 
-        if clumsy_ics_use_firewall_only(device, self.scanner):
+        if self._uses_windivert(device):
             if not self._apply_victim_block(device, 'both'):
                 return
             self._set_killed_profile(device, True)
@@ -2194,13 +2416,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._ensure_network_context_for_victim(device)
             self.killer.kill(device)
             try:
-                iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-                block_ip(iface, device['ip'], 'both')
+                iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
             except Exception:
-                pass
+                iface_name = 'en0'
+            _bg_block_ip(iface_name, device.get('ip'), 'both')
             self._set_killed_profile(device, True)
         self._sync_killed_devices()
-        set_settings('killed', list(self.killer.killed) * self.remember)
+        self._write_remembered_killed_macs()
         self.log('Killed ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
         self._updateKillButtonState()
         
@@ -2210,11 +2432,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def unkill(self):
         """
         Disable ARP spoofing on the selected device (internal / API).
-        Clears lag switch and dupe burst for that flow.
+        Clears lag switch, dupe burst, percent cut and MITM shaping for that flow.
         """
+        # Mirror unkillAll: stop every flow on the same victim so killer.unkill
+        # doesn't race a still-running MitmForwarder / WinDivert gate. See
+        # start/stop symmetry audit finding A2.
         self.stopLagSwitch()
         self.stopDupe(log=False)
         self._flush_pending_dupe_clear_sync()
+        self.stopPercentCut(log=False)
+        self.stop_mitm_shaping(log=False)
+        self._await_mitm_teardown_thread()
         if not self.connected():
             return
         
@@ -2235,14 +2463,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._ics_teardown_gate_if_idle(device['mac'])
         else:
             self._ensure_network_context_for_victim(victim)
-            try:
-                unblock_ip(victim.get('ip') or '')
-            except Exception:
-                pass
+            _bg_unblock_ip(victim.get('ip'))
             self.killer.unkill(victim)
         self._set_killed_profile(device, False)
         self._sync_killed_devices()
-        set_settings('killed', list(self.killer.killed) * self.remember)
+        self._write_remembered_killed_macs()
         self.log('Unkilled ' + device['ip'], UI_LOG_RESTORE_FG)
 
         self._updateKillButtonState()
@@ -2265,19 +2490,19 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for d in self.scanner.devices:
             if d.get('admin'):
                 continue
-            if clumsy_ics_use_firewall_only(d, self.scanner):
+            if self._uses_windivert(d):
                 self._apply_victim_block(d, 'both')
                 self._set_killed_profile(d, True)
             else:
                 self.killer.kill(d)
                 try:
                     iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-                    block_ip(iface, d['ip'], 'both')
                 except Exception:
-                    pass
+                    iface = 'en0'
+                _bg_block_ip(iface, d.get('ip'), 'both')
                 self._set_killed_profile(d, True)
         self._sync_killed_devices()
-        set_settings('killed', list(self.killer.killed) * self.remember)
+        self._write_remembered_killed_macs()
         self.log('Killed All devices', UI_LOG_VICTIM_BLOCK_FG)
 
         self.showDevices()
@@ -2299,7 +2524,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         
         victims_before = [dict(v) for v in self.killer.killed.values()]
         for d in self.scanner.devices:
-            if clumsy_ics_use_firewall_only(d, self.scanner):
+            if self._is_ics_downstream(d):
                 try:
                     self._clear_victim_block(d)
                 except Exception:
@@ -2308,16 +2533,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for v in victims_before:
             if self._impairment_plan_for(v).is_ics_downstream:
                 continue
-            try:
-                unblock_ip(v.get('ip') or '')
-            except Exception:
-                pass
+            _bg_unblock_ip(v.get('ip'))
         self.killer.unkill_all(self.scanner)
         for victim in victims_before:
             mac = victim.get('mac')
             if not mac:
                 continue
-            if clumsy_ics_use_firewall_only(victim, self.scanner):
+            if self._uses_windivert(victim):
                 continue
             # OFF-only reinforcement for bulk unkill (same cadence as per-device kill OFF).
             self.killer.reinforce_restore(victim)
@@ -2326,7 +2548,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._schedule_flow_off_reinforce('all', mac, off_seq, 100, victim)
         self.killed_devices.clear()
         self._sync_killed_devices()
-        set_settings('killed', list(self.killer.killed) * self.remember)
+        self._write_remembered_killed_macs()
         self.log('Unkilled All devices', UI_LOG_RESTORE_FG)
 
         self._updateKillButtonState()
@@ -2366,10 +2588,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         _pre_scan_ips = [v.get('ip') for v in self.killer.killed.values() if v.get('ip')]
         self.killer.unkill_all(self.scanner)
         for _ip in _pre_scan_ips:
-            try:
-                unblock_ip(_ip)
-            except Exception:
-                pass
+            _bg_unblock_ip(_ip)
         
         self.log(
             ['Arping', 'Pinging'][scan_type] + ' your network...',
@@ -2397,7 +2616,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self.taskbar_progress:
             self.taskbar_progress.setVisible(False)
         self.processDevices()
-    
+        try:
+            threading.Thread(
+                target=lambda: self.killer._get_socket(),
+                name='zubcut-postscan-prewarm',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
     def UpdateThread_Starter(self):
         """
         Periodic HEAD polling refreshes the settings update badge (gear hint).
@@ -2886,24 +3113,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if self._toggle_start_blocked('lag'):
             return
-        self.stopDupe(refresh_dialog=True, log=False)
-        if self._dupe_pending_clear or getattr(self, '_dupe_clear_future', None):
-            self._flush_pending_dupe_clear_sync(max_wait_ms=400)
-        self._drop_dupe_restoring_banner()
-        self.stop_mitm_shaping(log=False)
-        if self.percent_cut_active:
-            self.stopPercentCut(log=False)
-        if self.lag_active:
-            self.stopLagSwitch(refresh_dialog=False)
-        self.lag_device_mac = device['mac']
+        mac = device['mac']
         resolved_ip = self._ics_hotspot_victim_ip(device, lag=True) or clumsy_ics_resolve_victim_ip(
             device, self.scanner
         )
+        self.lag_device_mac = mac
         self.lag_device_ip = resolved_ip or device.get('ip')
         snap = dict(device)
         if resolved_ip:
             snap['ip'] = resolved_ip
         self._lag_device_snapshot = snap
+        self._lag_net_prepared_mac = None
         self.lag_active = True
         self._refresh_lag_timing_from_dialog()
         self.btnLagSwitch.setText('■ LAGGING')
@@ -2913,8 +3133,76 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             f'Lag switch ON: {self.lag_block_ms}ms lag ({dir_text}) / {self.lag_release_ms}ms normal',
             UI_LOG_VICTIM_BLOCK_FG,
         )
+        # Paint UI first — cross-flow teardown / MITM await can take seconds on a
+        # Driver-Easy-reset NIC (PCIe power saving wake). Dupe feels instant because
+        # it sets dupe_active before heavy work; lag used to block here first.
+        self._refresh_flow_toggle_ui()
+        self._repaint_all_table_rows_for_hover()
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        except Exception:
+            pass
+
+        # Warm NIC + Npcap while cross-flow teardown runs (PS5 LAN path).
+        def _lag_prep_net():
+            try:
+                self._ensure_network_context_for_victim(snap)
+                self.killer._get_socket()
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(target=_lag_prep_net, name='zubcut-lag-prep', daemon=True).start()
+        except Exception:
+            pass
+
+        if self.dupe_active:
+            self.stopDupe(refresh_dialog=True, log=False)
+            if self._dupe_pending_clear or getattr(self, '_dupe_clear_future', None):
+                self._flush_pending_dupe_clear_sync(max_wait_ms=400)
+            self._drop_dupe_restoring_banner()
+        was_mitm = bool(self.mitm_shaping_active)
+        self.stop_mitm_shaping(log=False)
+        # stop_mitm_shaping flips mitm_shaping_active = False immediately but its
+        # _teardown_worker runs killer.unkill() on a daemon thread. If we start
+        # the lag ARP poison before that worker finishes, the worker's unkill()
+        # races and silently kills our fresh kill() — UI shows LAGGING with no
+        # actual MITM traffic. Wait for the teardown to settle before proceeding.
+        if was_mitm:
+            self._await_mitm_teardown_thread()
+        if self.percent_cut_active:
+            self.stopPercentCut(log=False)
         dev = dict(device)
-        mac = device['mac']
+        try:
+            self._ensure_network_context_for_victim(snap)
+            mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(snap)
+            if not mitm_ok:
+                self.lag_active = False
+                self.lag_device_mac = None
+                self.lag_device_ip = None
+                self._lag_device_snapshot = None
+                self.btnLagSwitch.setText('Lag Switch')
+                self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+                self.log(f'Lag failed: {mitm_reason}', 'red')
+                self._refresh_flow_toggle_ui()
+                return
+            iface = self.scanner.iface
+            self.log(
+                f'Lag via {iface.name} ({getattr(iface, "ip", "") or "?"}) → {snap.get("ip", "")}',
+                'gray',
+            )
+        except Exception as exc:
+            self.lag_active = False
+            self.lag_device_mac = None
+            self.lag_device_ip = None
+            self._lag_device_snapshot = None
+            self.btnLagSwitch.setText('Lag Switch')
+            self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+            self.log(f'Lag failed: {exc}', 'red')
+            self._refresh_flow_toggle_ui()
+            return
 
         def _arm_lag_start():
             if not self.lag_active or self.lag_device_mac != mac:
@@ -2925,9 +3213,26 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._refresh_flow_toggle_ui()
             self._repaint_all_table_rows_for_hover()
 
-        self._refresh_flow_toggle_ui()
-        self._repaint_all_table_rows_for_hover()
         _arm_lag_start()
+
+    def _lag_reassert_poison(self, device) -> None:
+        """Poison burst only — never restart the ARP worker (see killer.reassert_poison)."""
+        if not self.lag_active or not isinstance(device, dict):
+            return
+        plan = self._impairment_plan_for(device)
+        if not plan.use_arp_mitm:
+            return
+        device = self._device_with_plan_ip(device)
+        mac = str(device.get('mac') or '').strip()
+        if not mac:
+            return
+        try:
+            if mac in self.killer.killed:
+                self.killer.reassert_poison(device)
+            else:
+                self._lag_apply_block(device)
+        except Exception:
+            pass
 
     def _schedule_lag_start_reassert(self, mac):
         """Quick ON reasserts so lag takes effect immediately despite ARP/firewall race timing."""
@@ -2942,10 +3247,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             dev = self._lag_resolved_victim()
             if not dev:
                 return
-            try:
-                self._lag_apply_block(dev)
-            except Exception:
-                pass
+            self._lag_reassert_poison(dev)
 
         QTimer.singleShot(0, _reassert)
         QTimer.singleShot(40, _reassert)
@@ -2980,6 +3282,167 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if want_ip:
                 return
 
+    def _refresh_router_mac_from_system_arp(self) -> None:
+        """Populate scanner/killer router MAC from the OS ARP cache (fast ping if missing)."""
+        try:
+            from tools.utils import lookup_mac_from_arp_table, mac_address_is_usable, run_command
+
+            router_ip = str(
+                getattr(self.scanner, 'router_ip', None)
+                or (getattr(self.scanner, 'router', None) or {}).get('ip')
+                or ''
+            ).strip()
+            if not router_ip:
+                return
+            iface_ip = str(getattr(self.scanner.iface, 'ip', None) or '').strip()
+            mac = lookup_mac_from_arp_table(router_ip, iface_ip)
+            if not mac_address_is_usable(mac) and sys.platform.startswith('win'):
+                try:
+                    run_command(
+                        ['ping', '-n', '1', '-w', '500', router_ip],
+                        shell=False,
+                        timeout=2,
+                    )
+                except Exception:
+                    pass
+                mac = lookup_mac_from_arp_table(router_ip, iface_ip)
+            if not mac_address_is_usable(mac):
+                return
+            self.scanner.router_mac = mac
+            if isinstance(getattr(self.scanner, 'router', None), dict):
+                self.scanner.router['mac'] = mac
+            if isinstance(getattr(self.killer, 'router', None), dict):
+                self.killer.router['mac'] = mac
+        except Exception:
+            pass
+
+    def _rekey_kill_bookkeeping(self, old_mac: str, device: dict) -> str:
+        """Keep intent/snapshot keys aligned when ARP refresh updates the victim MAC."""
+        new_mac = str((device or {}).get('mac') or '').strip()
+        if not new_mac or new_mac == old_mac:
+            return old_mac or new_mac
+        seq = self._kill_intent_seq.pop(old_mac, None)
+        if seq is not None:
+            self._kill_intent_seq[new_mac] = seq
+        snap_map = getattr(self, '_kill_device_snapshot', None)
+        if isinstance(snap_map, dict) and old_mac in snap_map:
+            snap_map[new_mac] = dict(device)
+            snap_map.pop(old_mac, None)
+        return new_mac
+
+    def _refresh_victim_mac_from_system_arp(self, device) -> None:
+        """Use the OS ARP cache (ping once if missing) so poison targets the live PS5 MAC."""
+        if not isinstance(device, dict):
+            return
+        try:
+            from tools.utils import (
+                lookup_mac_from_arp_table,
+                mac_address_is_usable,
+                run_command,
+            )
+
+            ip = str(device.get('ip') or '').strip()
+            if not ip:
+                return
+            iface_ip = str(getattr(self.scanner.iface, 'ip', None) or '').strip()
+            mac = lookup_mac_from_arp_table(ip, iface_ip)
+            if not mac_address_is_usable(mac) and sys.platform.startswith('win'):
+                try:
+                    run_command(
+                        ['ping', '-n', '1', '-w', '400', ip],
+                        shell=False,
+                        timeout=2,
+                    )
+                except Exception:
+                    pass
+                mac = lookup_mac_from_arp_table(ip, iface_ip)
+            if mac_address_is_usable(mac):
+                old_mac = str(device.get('mac') or '').strip()
+                device['mac'] = mac
+                if old_mac and old_mac != mac and old_mac in self.killer.killed:
+                    entry = dict(self.killer.killed.pop(old_mac))
+                    entry['mac'] = mac
+                    self.killer.killed[mac] = entry
+                elif mac in self.killer.killed:
+                    self.killer.killed[mac] = dict(device)
+        except Exception:
+            pass
+
+    def _log_mitm_arm_status(self, device, *, action: str = 'Kill') -> None:
+        """Surface silent MITM failures (stale MAC / bad router) in the log box."""
+        try:
+            from tools.utils import mac_address_is_usable
+
+            if not isinstance(device, dict):
+                return
+            iface = getattr(self.scanner.iface, 'name', None) or '?'
+            victim_mac = str(device.get('mac') or '')
+            router_mac = str(
+                (getattr(self.killer, 'router', None) or {}).get('mac')
+                or getattr(self.scanner, 'router_mac', '')
+                or ''
+            )
+            if not mac_address_is_usable(victim_mac):
+                self.log(
+                    f'{action} ON: victim MAC unknown for {device.get("ip")} — '
+                    'ping the PS5 once, then rescan.',
+                    'red',
+                )
+                return
+            if not mac_address_is_usable(router_mac):
+                self.log(
+                    f'{action} ON: router MAC unknown on {iface} — '
+                    'ARP cannot MITM. Check Npcap + Ethernet driver.',
+                    'red',
+                )
+                return
+            self.log(
+                f'{action} MITM armed on {iface}: victim {victim_mac} router {router_mac}',
+                UI_LOG_VICTIM_BLOCK_FG,
+            )
+        except Exception:
+            pass
+
+    def _schedule_mitm_traffic_probe(self, device, *, flow: str = 'Kill') -> None:
+        """After MITM arms, warn if no victim IP traffic reaches this NIC (common on Wi‑Fi → Ethernet)."""
+        if not isinstance(device, dict):
+            return
+        mac = str(device.get('mac') or '').strip()
+        ip = str(device.get('ip') or '').strip()
+        iface = getattr(self.scanner, 'iface', None)
+        guid = str(getattr(iface, 'guid', None) or '').strip()
+        if not mac or not ip or not guid:
+            return
+
+        def _probe() -> None:
+            import time
+
+            time.sleep(0.9)
+            if mac not in getattr(self.killer, 'killed', {}):
+                return
+            try:
+                from tools.mitm_probe import count_victim_ip_packets, mitm_path_warning
+
+                seen = count_victim_ip_packets(guid, ip, 1.0)
+            except Exception:
+                return
+            if seen != 0:
+                return
+            msg = mitm_path_warning(iface, ip)
+
+            def _log_warning() -> None:
+                self.log(f'{flow}: {msg}', 'red')
+
+            try:
+                QTimer.singleShot(0, _log_warning)
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(target=_probe, name='zubcut-mitm-probe', daemon=True).start()
+        except Exception:
+            pass
+
     def _ensure_network_context_for_victim(self, device) -> bool:
         """
         Bind scanner + killer to the NIC that routes to the victim (e.g. hotspot vs Ethernet).
@@ -2996,13 +3459,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             changed = bool(self.scanner.sync_iface_for_victim_ip(device['ip']))
         except Exception:
             pass
-        if not clumsy_mode_enabled():
-            try:
-                self.scanner.flush_arp()
-            except Exception:
-                pass
+        # Only refresh router/local topology when we actually changed iface OR the
+        # scanner doesn't have a valid router_mac yet. The previous unconditional
+        # refresh ran get_gateway_mac, which falls back to scapy.getmacbyip() with a
+        # ~4 s ARP timeout when the system ARP cache is empty — and we ourselves
+        # wipe that cache with flush_arp on every kill, guaranteeing the next Kill
+        # ON pays the full 4 s timeout. Skip both when the cache is still good.
         try:
-            self.scanner.refresh_local_topology()
+            from tools.utils import lookup_mac_from_arp_table, mac_address_is_usable
+
+            self._refresh_victim_mac_from_system_arp(device)
+            self._refresh_router_mac_from_system_arp()
+            router_mac = getattr(self.scanner, 'router_mac', '') or ''
+            if changed or not mac_address_is_usable(router_mac):
+                self.scanner.refresh_local_topology()
+                self._refresh_router_mac_from_system_arp()
         except Exception:
             pass
         if clumsy_mode_enabled():
@@ -3010,15 +3481,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 apply_clumsy_ics_router_context(self.scanner, self.killer, device['ip'])
             except Exception:
                 pass
+        # Only invalidate the cached L2 socket if the iface actually changed. The
+        # unconditional close here was a major Kill ON delay: Npcap/conf.L2socket()
+        # reopen on Windows costs ~0.5–2 s, which fires inside the ARP worker on the
+        # very first _send_packet after every Kill ON. Kill OFF was instant because it
+        # never reaches this function and the socket stays warm.
+        prev_iface_guid = getattr(getattr(self.killer, 'iface', None), 'guid', None)
+        new_iface_guid = getattr(self.scanner.iface, 'guid', None)
         self.killer.iface = self.scanner.iface
         self.killer.router = self.scanner.router
-        self.killer._close_socket()
-        try:
-            from networking.killer import enable_ip_forwarding
-
-            enable_ip_forwarding()
-        except Exception:
-            pass
+        if prev_iface_guid != new_iface_guid:
+            self.killer._close_socket()
         try:
             from scapy.all import conf as scapy_conf
 
@@ -3051,7 +3524,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """ARP reinforce only; WinDivert-only ICS dupe skips delayed callbacks."""
         if not device or not prev_mac:
             return
-        if clumsy_ics_use_firewall_only(device, self.scanner) and prev_mac not in self.killer.killed:
+        if self._uses_windivert(device) and prev_mac not in self.killer.killed:
             return
         dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
         self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
@@ -3136,11 +3609,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         quiesce_legacy_stack(self.scanner, self.killer, victim)
 
     def _ics_device_with_resolved_ip(self, device) -> dict:
-        dev = dict(device) if isinstance(device, dict) else {}
-        ip = clumsy_ics_resolve_victim_ip(dev, self.scanner) or str(dev.get('ip') or '').strip()
-        if ip:
-            dev['ip'] = ip
-        return dev
+        row, _plan = self._victim_row(device)
+        return row
 
     def _ics_hotspot_victim_ip(
         self,
@@ -3151,19 +3621,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         pctcut: bool = False,
         mitmshape: bool = False,
     ) -> str:
-        """Resolved 137.x hotspot IP for WinDivert, or '' if the console is not on ICS."""
-        dev = self._ics_device_with_resolved_ip(device)
-        ip = self._flow_stable_victim_ip(
-            dev, lag=lag, dupe=dupe, pctcut=pctcut, mitmshape=mitmshape
+        """Resolved downstream IP for WinDivert, or '' if not on ICS path."""
+        row, plan = self._victim_row(
+            device, lag=lag, dupe=dupe, pctcut=pctcut, mitmshape=mitmshape
         )
-        if not ip:
-            ip = str(dev.get('ip') or '').strip()
-        if not victim_on_clumsy_ics_subnet(ip):
-            resolved = clumsy_ics_resolve_victim_ip(dev, self.scanner)
-            if resolved and victim_on_clumsy_ics_subnet(resolved):
-                ip = resolved.strip()
-        if victim_on_clumsy_ics_subnet(ip):
-            return ip
+        if plan.is_ics_downstream:
+            return str(row.get('ip') or plan.resolved_ip or '').strip()
         return ''
 
     def _ics_apply_percent_cut_windivert(self, device, cut_pct: int) -> bool:
@@ -3249,9 +3712,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
         self._stop_ics_lag_gate(join_timeout=0.35)
         if heal and resolved_ip:
-            victim = dict(device)
-            victim['ip'] = resolved_ip
-            self._schedule_ics_hotspot_heal(victim)
+            # F3: only schedule hotspot heal pulses when victim is actually on
+            # the ICS downstream subnet. _ics_emergency_release now reaches
+            # this code path for LAN Kill OFF too (via the has_ics_state probe)
+            # — without this guard we'd queue 4 inert QTimer pulses per LAN
+            # Kill OFF (each pulse early-returns inside restore_ics_hotspot_
+            # connectivity on victim_on_clumsy_ics_subnet).
+            try:
+                on_ics = bool(victim_on_clumsy_ics_subnet(resolved_ip))
+            except Exception:
+                on_ics = False
+            if on_ics:
+                victim = dict(device)
+                victim['ip'] = resolved_ip
+                self._schedule_ics_hotspot_heal(victim)
 
     def _ics_hotspot_pause_release(self, device, *, heal: bool = False) -> None:
         """
@@ -3271,11 +3745,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 or plan.resolved_ip
                 or str(device.get('ip') or '').strip()
             )
-            if ip:
-                try:
-                    unblock_ip(ip)
-                except Exception:
-                    pass
+            _bg_unblock_ip(ip)
 
     def _release_ics_windivert_block(self, device, *, heal: bool = True) -> None:
         """Full WinDivert OFF: unpause, stop gate, clear killer bookkeeping, heal PS5 gateway ARP."""
@@ -3312,28 +3782,45 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Hotspot OFF: WinDivert gate, any stray ARP MITM, and firewall rules for this victim.
         Used when dupe/kill/lag ends (including instant toggle-off before timers fire).
+
+        Plan-drift safe: if the victim hopped LAN ↔ hotspot between ON and OFF
+        the current plan no longer matches what we laid down. We still tear down
+        whatever ICS state actually exists (gate, _ics_kill_profile_macs,
+        killer.killed entry, firewall) rather than gating on plan.is_ics_downstream.
         """
         if not isinstance(device, dict):
             return
         plan = self._impairment_plan_for(device)
-        if not plan.is_ics_downstream:
-            return
         device = self._device_with_plan_ip(device)
-        self._release_ics_windivert_block(device, heal=heal)
         mac = str(device.get('mac') or '').strip()
+        # Has-state probe: only skip when nothing to clean. If any of these are
+        # live we tear them down regardless of the current plan classification.
+        has_ics_state = bool(
+            mac and (
+                mac in getattr(self, '_ics_kill_profile_macs', set())
+                or mac in self.killer.killed
+                or self._ics_windivert_busy(mac)
+            )
+        )
+        if not plan.is_ics_downstream and not has_ics_state:
+            return
         victim = self._victim_record_for_mac(mac) or device
+        # release_ics_victim_block must run BEFORE _release_ics_windivert_block:
+        # the latter pops killer.killed[mac] which would make the `mac in killed`
+        # guard below always False, leaving any stacked ARP MITM (from kill ON
+        # _apply_ics_client_block) running silently after the UI says OFF.
         if mac and mac in self.killer.killed:
             try:
                 release_ics_victim_block(self.scanner, self.killer, victim)
             except Exception:
                 pass
-        if plan.use_block_ip:
-            ip = plan.resolved_ip or str(device.get('ip') or '')
-            if ip:
-                try:
-                    unblock_ip(ip)
-                except Exception:
-                    pass
+        self._release_ics_windivert_block(device, heal=heal)
+        ip = (
+            plan.resolved_ip
+            or clumsy_ics_resolve_victim_ip(device, self.scanner)
+            or str(device.get('ip') or '').strip()
+        )
+        _bg_unblock_ip(ip)
 
     def _ics_teardown_gate_if_idle(self, mac: str | None = None) -> None:
         if not self._ics_windivert_busy(mac):
@@ -3374,13 +3861,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _schedule_ics_windivert_traffic_check(self, victim_ip: str) -> None:
         """
-        Once per new gate: hint if WinDivert never sees traffic for the filter IP.
-
-        Not used while Kill/Dupe/Lag (or other flows) are pausing the victim — zero packets
-        then usually means the pause worked, not that the PS5 is offline.
+        After Kill ON: if WinDivert sees no traffic, log a hint (ICS-ARP may still block).
         """
         ip = str(victim_ip or '').strip()
-        if self._ics_victim_impairment_active(ip):
+        if not ip:
             return
         gate = getattr(self, '_ics_lag_gate', None)
         if gate is None or gate.victim_ip != ip:
@@ -3389,26 +3873,37 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if getattr(self, '_ics_wd_traffic_warn_session', None) == session:
             return
         self._ics_wd_traffic_warn_session = session
+        mac = ''
+        dev = self._get_device_by_mac(None, ip)
+        if isinstance(dev, dict):
+            mac = str(dev.get('mac') or '').strip()
 
         def _check() -> None:
             gate = getattr(self, '_ics_lag_gate', None)
             if gate is None or gate.victim_ip != ip or not gate.is_running():
                 return
-            if self._ics_victim_impairment_active(ip):
+            if not self._ics_victim_impairment_active(ip):
                 return
-            if gate.packets_matched > 0 or gate.packets_seen > 0:
+            if gate.packets_matched > 0:
                 return
             if gate.packets_held > 0:
                 return
             layers = gate.active_layers or ()
-            self.log(
-                f'WinDivert is open but no packets yet for {ip} '
-                f'(layers {layers}, seen {gate.packets_seen}). '
-                'Generate traffic on the PS5 (game, store, or connection test), then try again.',
-                'red',
-            )
+            seen = gate.packets_seen
+            arp_active = bool(mac and mac in self.killer.killed)
+            if seen == 0 and not arp_active:
+                self.log(
+                    f'WinDivert sees no traffic for {ip} (layers {layers}). '
+                    'Run as Administrator; confirm PS5 is on 192.168.137.x.',
+                    'red',
+                )
+            elif seen == 0 and arp_active:
+                self.log(
+                    f'WinDivert idle for {ip}; ICS-ARP kill is active.',
+                    UI_LOG_VICTIM_BLOCK_FG,
+                )
 
-        QTimer.singleShot(5000, _check)
+        QTimer.singleShot(4000, _check)
 
     def _flow_stable_victim_ip(
         self,
@@ -3442,7 +3937,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             ).strip()
         return ''
 
-    def _ensure_ics_lag_gate(self, device, direction: str) -> bool:
+    def _ensure_ics_lag_gate(
+        self, device, direction: str, *, start_paused: bool = False
+    ) -> bool:
+        plan = self._impairment_plan_for(device)
+        if not plan.is_ics_downstream:
+            return False
         if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
             return False
         ip = self._ics_hotspot_victim_ip(
@@ -3452,13 +3952,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             pctcut=getattr(self, 'percent_cut_active', False),
             mitmshape=getattr(self, 'mitm_shaping_active', False),
         )
-        if not ip and isinstance(device, dict):
-            ip = str(device.get('ip') or '').strip()
-        if not victim_on_clumsy_ics_subnet(ip):
-            resolved = clumsy_ics_resolve_victim_ip(device, self.scanner)
-            if resolved and victim_on_clumsy_ics_subnet(resolved):
-                ip = resolved.strip()
-        if not ip or not victim_on_clumsy_ics_subnet(ip):
+        if not ip:
+            ip = plan.resolved_ip or (
+                str(device.get('ip') or '').strip() if isinstance(device, dict) else ''
+            )
+        if not ip:
             return False
         if isinstance(device, dict):
             device['ip'] = ip
@@ -3473,7 +3971,9 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 gate.set_direction(direction)
                 if hasattr(gate, 'set_victim_ip'):
                     gate.set_victim_ip(ip)
-                if getattr(self, 'percent_cut_active', False):
+                if start_paused:
+                    gate.pause_connection()
+                elif getattr(self, 'percent_cut_active', False):
                     pct = self._clamp_percent(self.spinPercentCutMain.value())
                     gate.apply_percent_cut(pct)
                 return True
@@ -3483,25 +3983,27 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 except Exception:
                     pass
                 gate = IcsWinDivertLagGate(ip)
-                gate.start(direction=direction)
+                gate.start(direction=direction, start_paused=start_paused)
                 self._ics_lag_gate = gate
-                if getattr(self, 'lag_active', False) and not getattr(
-                    self, '_lag_in_allow_phase', False
+                if start_paused or (
+                    getattr(self, 'lag_active', False)
+                    and not getattr(self, '_lag_in_allow_phase', False)
                 ):
                     gate.pause_connection()
                 return True
         if gate is not None:
             self._stop_ics_lag_gate(join_timeout=0.5)
         gate = IcsWinDivertLagGate(ip)
-        gate.start(direction=direction)
+        gate.start(direction=direction, start_paused=start_paused)
         self._ics_lag_gate = gate
-        if getattr(self, 'lag_active', False) and not getattr(
-            self, '_lag_in_allow_phase', False
+        if start_paused or (
+            getattr(self, 'lag_active', False)
+            and not getattr(self, '_lag_in_allow_phase', False)
         ):
             gate.pause_connection()
         if hasattr(gate, 'set_victim_ip'):
             gate.set_victim_ip(ip)
-        if not getattr(self, 'lag_active', False):
+        if not getattr(self, 'lag_active', False) and not getattr(self, 'dupe_active', False):
             self._schedule_ics_windivert_traffic_check(ip)
         return True
 
@@ -3526,67 +4028,110 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if ip:
             device['ip'] = ip
         self.killer.disable_percent_cut(device['mac'])
+        windivert_ok = False
+        arp_ok = False
+        fw_ok = False
+        gate = None
+        stack_arp = bool(ip) and not for_lag and not for_dupe
+        if stack_arp:
+            try:
+                from tools.clumsy_inline import (
+                    apply_ics_victim_arp_block,
+                    sync_scanner_iface_for_ics_downstream,
+                )
+
+                sync_scanner_iface_for_ics_downstream(self.scanner)
+                arp_ok = bool(
+                    apply_ics_victim_arp_block(self.scanner, self.killer, device)
+                )
+            except Exception:
+                arp_ok = False
         if clumsy_ics_lag_can_use_windivert(device, self.scanner):
             try:
-                self._ics_quiesce_killer_mitm(device)
-                if self._ensure_ics_lag_gate(device, direction):
+                if for_lag or for_dupe:
+                    self._ics_quiesce_killer_mitm(device)
+                if self._ensure_ics_lag_gate(
+                    device, direction, start_paused=not for_lag
+                ):
                     gate = self._ics_lag_gate
                     if gate is not None:
-                        gate.clear_shaping()
                         if hasattr(gate, 'pause_connection'):
                             gate.pause_connection()
                         else:
                             gate.set_blocking(True, mode='pause')
-                    if for_dupe:
-                        pass
-                    elif for_lag:
-                        self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
-                    else:
-                        self._ics_kill_profile_macs.add(device['mac'])
-                        self._set_killed_profile(device, True)
-                        self._sync_killed_devices()
-                        self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
-                        self._updateKillButtonState()
-                    if not for_lag:
-                        layers = gate.active_layers if gate is not None else ()
-                        cap = getattr(gate, '_capture_desc', '?')
-                        ifidx = 0
-                        try:
-                            from tools.clumsy_inline import clumsy_ics_downstream_ifidx
-
-                            ifidx = clumsy_ics_downstream_ifidx()
-                        except Exception:
-                            pass
-                        self.log(
-                            f'Hotspot pause on {ip} (WinDivert {cap} ifIdx={ifidx} '
-                            f'layers {layers})',
-                            UI_LOG_VICTIM_BLOCK_FG,
-                        )
-                    return True
+                        windivert_ok = gate.is_running()
             except OSError as exc:
                 detail = clumsy_windivert_probe_detail(ip)
                 self.log(
                     f'WinDivert lag failed for {ip}: {exc} [{detail}]',
                     'red',
                 )
-        else:
+        elif ip and not stack_arp:
             self.log(
                 'Hotspot lag needs WinDivert: '
                 + clumsy_windivert_unavailable_reason(device),
                 'red',
             )
+        if stack_arp and ip and sys.platform.startswith('win'):
+            # Firewall is a real fallback when WinDivert AND ARP both fail
+            # (rare, but happens if Npcap is half-installed or the gateway
+            # cannot be ARP-resolved). Keep this sync so fw_ok accurately
+            # reflects the firewall layer in the success gate below — this
+            # is only hit ONCE per hotspot Kill ON (stack_arp is False for
+            # Lag/Dupe block phases), so the 1-3 s netsh cost is acceptable
+            # vs. silently reporting Kill ON without any active block.
+            try:
+                fw_ok = bool(block_ip('', ip, direction))
+            except Exception:
+                fw_ok = False
+        if windivert_ok or arp_ok or fw_ok:
+            if for_dupe:
+                pass
+            elif for_lag:
+                self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
+            else:
+                self._ics_kill_profile_macs.add(device['mac'])
+                self._set_killed_profile(device, True)
+                self._sync_killed_devices()
+                self._refresh_table_row_for_mac(device['mac'], device.get('ip'))
+                self._updateKillButtonState()
+            if not for_lag:
+                parts = []
+                if windivert_ok and gate is not None:
+                    cap = getattr(gate, '_capture_desc', '?')
+                    n_h = len(getattr(gate, '_handles', []) or [])
+                    parts.append(f'WinDivert {cap} h={n_h}')
+                if arp_ok:
+                    parts.append('ICS-ARP')
+                if fw_ok:
+                    parts.append('firewall')
+                if not arp_ok and stack_arp:
+                    parts.append('ARP-miss')
+                self.log(
+                    f'Hotspot pause on {ip} ({", ".join(parts) or "active"})',
+                    UI_LOG_VICTIM_BLOCK_FG,
+                )
+            return True
         self._stop_ics_lag_gate()
-        self.log(
-            'Kill/lag on hotspot needs WinDivert — firewall rules usually do not affect the PS5.',
-            'red',
-        )
+        if stack_arp and not arp_ok:
+            self.log(
+                f'Hotspot block failed for {ip} — rescan so the PS5 shows 192.168.137.x, '
+                'run as Administrator, then Kill again.',
+                'red',
+            )
+        else:
+            self.log(
+                'Hotspot block failed — run as Administrator, confirm WinDivert bundle, '
+                'then rescan the PS5 on 192.168.137.x.',
+                'red',
+            )
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
         return False
 
     def _clear_ics_client_block(self, device, *, pause_only: bool = False) -> bool:
-        if not clumsy_ics_use_firewall_only(device, self.scanner):
+        if not self._is_ics_downstream(device):
             return False
         mac = str(device.get('mac') or '').strip()
         windivert = clumsy_ics_lag_can_use_windivert(device, self.scanner)
@@ -3594,7 +4139,15 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if pause_only:
                 self._ics_unpause_victim(device)
             else:
-                self._release_ics_windivert_block(device, heal=True)
+                # Kill ON for hotspot stacked WinDivert + ICS-ARP + firewall
+                # via _apply_ics_client_block(stack_arp=True). The plain
+                # _release_ics_windivert_block only tears down WinDivert and
+                # pops killer.killed[mac] — it does NOT send the gratuitous
+                # ARPs that release_ics_victim_block uses to heal the PS5's
+                # poisoned gateway cache, and it does NOT remove the netsh
+                # firewall rules. Use _ics_emergency_release so every layer
+                # we stacked on Kill ON is unwound on Kill OFF.
+                self._ics_emergency_release(device, heal=True)
         else:
             self._ics_unpause_victim(device)
             if not pause_only:
@@ -3603,10 +4156,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     release_ics_victim_block(self.scanner, self.killer, victim)
                 except Exception:
                     pass
-                try:
-                    unblock_ip(device['ip'])
-                except Exception:
-                    pass
+                _bg_unblock_ip(device.get('ip'))
                 self._ics_teardown_gate_if_idle(mac)
         if pause_only:
             if getattr(self, 'lag_active', False):
@@ -3678,6 +4228,99 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._finish_dupe_ics_teardown_ui(device)
         return True
 
+    def _sync_dupe_device_identity(self, device) -> None:
+        """Keep dupe_device_mac/ip aligned after ARP refresh (killer may rekey MAC)."""
+        if not isinstance(device, dict):
+            return
+        mac = str(device.get('mac') or '').strip()
+        ip = str(device.get('ip') or '').strip()
+        if mac:
+            self.dupe_device_mac = mac
+        if ip:
+            self.dupe_device_ip = ip
+
+    def _resolve_dupe_stop_snapshot(self, prev_mac, prev_ip, arm_snap):
+        """Victim dict for dupe OFF — match by IP/MAC even when ARP rekeyed mid-burst."""
+        ip = str(prev_ip or '').strip()
+        mac = str(prev_mac or '').strip()
+        live = self._get_device_by_mac(mac, ip) if mac or ip else None
+        if not live and ip:
+            for row in self.scanner.devices:
+                if str(row.get('ip') or '').strip() == ip:
+                    live = row
+                    break
+        for victim in (self.killer.killed or {}).values():
+            if not isinstance(victim, dict):
+                continue
+            v_ip = str(victim.get('ip') or '').strip()
+            v_mac = str(victim.get('mac') or '').strip()
+            if ip and v_ip == ip:
+                return dict(victim)
+            if mac and v_mac == mac:
+                return dict(victim)
+        if isinstance(arm_snap, dict):
+            if ip and str(arm_snap.get('ip') or '').strip() == ip:
+                snap = dict(arm_snap)
+            elif mac and str(arm_snap.get('mac') or '').strip() == mac:
+                snap = dict(arm_snap)
+            else:
+                snap = None
+            if snap:
+                if live:
+                    if not str(snap.get('ip') or '').strip():
+                        snap['ip'] = live.get('ip')
+                    if not str(snap.get('mac') or '').strip():
+                        snap['mac'] = live.get('mac')
+                return snap
+        if live:
+            return dict(live)
+        return None
+
+    def _release_dupe_victim_immediate(self, device) -> None:
+        """Restore connectivity on the GUI thread (Lag Switch OFF parity).
+
+        Deferred ``_do_deferred_dupe_clear`` only drops leftover firewall rules;
+        waiting for netsh unblock before ``unkill`` left victims cut for 1–3+ s.
+        """
+        if not isinstance(device, dict):
+            return
+        device = self._device_with_plan_ip(device)
+        plan = self._impairment_plan_for(device)
+        if plan.use_windivert or plan.is_ics_downstream:
+            try:
+                self._ics_emergency_release(device, heal=True)
+            except Exception:
+                pass
+            return
+        ip = (device.get('ip') or '').strip()
+        if ip and _is_valid_ip(ip):
+            _bg_unblock_ip(ip)
+        victims = []
+        primary = self._victim_record_for_mac(device.get('mac') or '') or device
+        if isinstance(primary, dict):
+            victims.append(primary)
+        if ip:
+            for victim in (self.killer.killed or {}).values():
+                if not isinstance(victim, dict):
+                    continue
+                if str(victim.get('ip') or '').strip() == ip and victim not in victims:
+                    victims.append(victim)
+        seen_macs = set()
+        for victim in victims:
+            mac = str(victim.get('mac') or '').strip()
+            if mac in seen_macs:
+                continue
+            seen_macs.add(mac)
+            try:
+                self.killer.unkill(victim, ics_mode=True)
+            except Exception:
+                pass
+            try:
+                self.killer.reinforce_restore(victim, ics_mode=True)
+            except Exception:
+                pass
+        self._schedule_dupe_off_reinforce(device.get('mac'), device)
+
     def _apply_victim_block(self, device, direction, **ics_block_kw) -> bool:
         plan = self._impairment_plan_for(device)
         device = self._device_with_plan_ip(device)
@@ -3685,12 +4328,36 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return self._apply_ics_client_block(device, direction, **ics_block_kw)
         if not plan.use_arp_mitm:
             return False
-        self._ensure_network_context_for_victim(device)
+        mac = str(device.get('mac') or '').strip()
+        for_lag = bool(ics_block_kw.get('for_lag'))
+        if for_lag and mac and getattr(self, '_lag_net_prepared_mac', None) == mac:
+            pass
+        else:
+            self._ensure_network_context_for_victim(device)
+            if for_lag and mac:
+                self._lag_net_prepared_mac = mac
+        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device)
+        if not mitm_ok:
+            if for_lag:
+                self.log(f'Lag MITM blocked: {mitm_reason}', 'red')
+            return False
         self.killer.disable_percent_cut(device['mac'])
+        wait_after = 0.08 if for_lag else 2
         if device['mac'] not in self.killer.killed:
-            self.killer.kill(device)
-        iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-        block_ip(iface, device['ip'], direction)
+            self.killer.kill(device, wait_after=wait_after)
+        elif for_lag:
+            # Mid-block safety only — start reasserts use _lag_reassert_poison so
+            # we do not call kill() again (that bumps _op_seq and kills the worker).
+            self.killer.reassert_poison(device)
+        # block_ip is 4x netsh add (in/out + IPv4/IPv6) — ~1–3 s synchronous. Lag
+        # Switch calls _apply_victim_block on every block phase, so a sync call here
+        # froze the UI for seconds per cycle. ARP poison above already cuts the
+        # victim instantly; firewall layer is a backstop and is safe to defer.
+        try:
+            iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
+        except Exception:
+            iface_name = 'en0'
+        _bg_block_ip(iface_name, device.get('ip'), direction)
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
@@ -3704,11 +4371,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
         elif not plan.use_arp_mitm:
             return
-        self._ensure_network_context_for_victim(device)
-        try:
-            unblock_ip(device['ip'])
-        except Exception:
+        mac = str(device.get('mac') or '').strip()
+        if getattr(self, 'lag_active', False) and mac and getattr(self, '_lag_net_prepared_mac', None) == mac:
             pass
+        else:
+            self._ensure_network_context_for_victim(device)
+        _bg_unblock_ip(device.get('ip'))
         if device['mac'] in self.killer.killed:
             try:
                 victim = self._victim_record_for_mac(device['mac']) or device
@@ -3776,9 +4444,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._dupe_async_unblock_ctx = None
             try:
                 if device and device.get('mac') == prev_mac:
-                    if not self._finish_dupe_ics_teardown(device, prev_mac):
-                        self._clear_victim_block(device)
-                        self._schedule_dupe_off_reinforce(prev_mac, device)
+                    self._release_dupe_victim_immediate(device)
             except Exception:
                 pass
             self._sync_killed_devices()
@@ -3842,22 +4508,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not pending:
             return
         prev_mac, snap = pending[0], pending[1]
-        device = self._get_device_by_mac(prev_mac) or snap
-        if not device or device.get('mac') != prev_mac:
+        prev_ip = str((snap or {}).get('ip') or getattr(self, '_dupe_restoring_ip', None) or '').strip()
+        device = self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, snap)
+        if not device:
             self._sync_killed_devices()
             self._drop_dupe_restoring_banner()
             return
         try:
-            if not self._finish_dupe_ics_teardown(device, prev_mac):
-                self._clear_victim_block(device)
-                self._schedule_dupe_off_reinforce(prev_mac, device)
+            self._release_dupe_victim_immediate(device)
         except Exception:
             pass
         self._sync_killed_devices()
         self._drop_dupe_restoring_banner()
 
     def _do_deferred_dupe_clear(self):
-        """Teardown unblock_ip off the GUI thread; unkill/reinforce on the main thread."""
+        """Background firewall cleanup only; ARP/WinDivert restore runs in stopDupe."""
         self._dupe_deferred_clear_timer.stop()
         try:
             self._dupe_deferred_clear_timer.timeout.disconnect()
@@ -3868,33 +4533,20 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not pending:
             return
         prev_mac, snap = pending[0], pending[1]
-        device = self._get_device_by_mac(prev_mac) or snap
-        if not device or device.get('mac') != prev_mac:
+        prev_ip = str((snap or {}).get('ip') or getattr(self, '_dupe_restoring_ip', None) or '').strip()
+        device = self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, snap)
+        if not device:
             self._sync_killed_devices()
             self._drop_dupe_restoring_banner()
             return
-        if clumsy_ics_use_firewall_only(device, self.scanner):
-            snap = dict(device)
-
-            def _ics_teardown_done() -> None:
-                if snap.get('mac') != prev_mac:
-                    self._drop_dupe_restoring_banner()
-                    return
-                self._finish_dupe_ics_teardown_ui(snap)
-
-            self._run_on_flow_net_thread(
-                lambda: self._finish_dupe_ics_teardown_net(snap),
-                main_after=_ics_teardown_done,
-            )
+        snap = dict(device)
+        if self._uses_windivert(snap):
+            self._finish_dupe_ics_teardown_ui(snap)
+            self._drop_dupe_restoring_banner()
             return
-        ip = device.get('ip') or ''
+        ip = (device.get('ip') or '').strip()
         ex = getattr(self, '_dupe_net_executor', None)
-        if ex is None:
-            try:
-                self._clear_victim_block(device)
-                self._schedule_dupe_off_reinforce(prev_mac, device)
-            except Exception:
-                pass
+        if ex is None or not ip:
             self._sync_killed_devices()
             self._drop_dupe_restoring_banner()
             return
@@ -3920,28 +4572,14 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._sync_killed_devices()
             self._drop_dupe_restoring_banner()
             return
-        snap = dict(device)
-
-        def _ics_teardown_done() -> None:
-            if snap.get('mac') != prev_mac:
-                self._drop_dupe_restoring_banner()
-                return
-            self._finish_dupe_ics_teardown_ui(snap)
-
         try:
-            if clumsy_ics_use_firewall_only(snap, self.scanner):
-                self._run_on_flow_net_thread(
-                    lambda: self._finish_dupe_ics_teardown_net(snap),
-                    main_after=_ics_teardown_done,
-                )
-                return
-            if not self._finish_dupe_ics_teardown(snap, prev_mac):
-                self._clear_victim_block(snap)
-                self._schedule_dupe_off_reinforce(prev_mac, snap)
+            if self._uses_windivert(device):
+                self._finish_dupe_ics_teardown_ui(dict(device))
         except Exception:
             pass
         self._sync_killed_devices()
-        self._refresh_table_row_for_mac(prev_mac)
+        if prev_mac:
+            self._refresh_table_row_for_mac(prev_mac)
         self._updateKillButtonState()
         self._drop_dupe_restoring_banner()
 
@@ -3958,6 +4596,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_countdown_timer.stop()
         self.dupe_timer.stop()
         self._dupe_end_mono = None
+        # D5: clear the queued countdown-finish flag so a late callback won't
+        # re-enter the teardown after stopDupe already restored state. Only set
+        # in _tick_dupe_countdown after a successful apply, but defensive here
+        # since the apply path also reaches this on the dupe_duration_ms < apply
+        # time edge case.
+        self._dupe_finish_from_countdown_pending = False
         self.lblDupeCountdownMain.setVisible(False)
         self.lblDupeCountdownMain.setText('')
 
@@ -3965,18 +4609,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Kill on main thread; block_ip in worker; stopDupe scheduled for remaining time after block."""
         dev = self._dupe_arm_device
         self._dupe_arm_device = None
-        if not dev or not self.dupe_active or self.dupe_device_mac != dev.get('mac'):
+        if not dev or not self.dupe_active:
+            return
+        dev_ip = str(dev.get('ip') or '').strip()
+        if dev_ip and dev_ip != str(self.dupe_device_ip or '').strip():
             return
         direction = getattr(self, '_dupe_arm_direction', 'both')
         ex = getattr(self, '_dupe_net_executor', None)
         try:
-            if clumsy_ics_use_firewall_only(dev, self.scanner):
+            if self._uses_windivert(dev):
                 if self._apply_ics_client_block(dev, direction, for_dupe=True):
                     self._arm_dupe_burst_wall_clock()
                     self._start_dupe_timers_after_network_ready()
                     return
                 self.dupe_active = False
                 self.dupe_device_mac = None
+                self.dupe_device_ip = None
+                self._dupe_finish_from_countdown_pending = False
                 self._abort_dupe_apply_failed()
                 self.btnDupe.setText('Dupe')
                 self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
@@ -3991,9 +4640,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             self._arm_dupe_burst_wall_clock()
             self._ensure_network_context_for_victim(dev)
+            self._sync_dupe_device_identity(dev)
             self.killer.disable_percent_cut(dev['mac'])
             if dev['mac'] not in self.killer.killed:
-                self.killer.kill(dev)
+                self.killer.kill(dev, wait_after=0.08)
             iface = self.scanner.iface.name if self.scanner.iface else 'en0'
             if ex is None:
                 exc = _dupe_net_run_block(iface, dev['ip'], direction)
@@ -4002,6 +4652,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._sync_killed_devices()
                 self._refresh_table_row_for_mac(dev['mac'])
                 self._updateKillButtonState()
+                self._log_mitm_arm_status(dev, action='Dupe')
                 self._start_dupe_timers_after_network_ready()
                 return
             self._dupe_block_ctx = (dev, direction)
@@ -4016,6 +4667,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception as exc:
             self.dupe_active = False
             self.dupe_device_mac = None
+            self.dupe_device_ip = None
+            self._dupe_finish_from_countdown_pending = False
             self._dupe_block_apply_pending = False
             self._dupe_block_ctx = None
             self._dupe_block_future = None
@@ -4023,7 +4676,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
             try:
-                if clumsy_ics_use_firewall_only(dev, self.scanner):
+                if self._uses_windivert(dev):
                     self._ics_emergency_release(dev, heal=True)
                 else:
                     self._clear_victim_block(dev)
@@ -4052,11 +4705,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if exc is not None:
             self.dupe_active = False
             self.dupe_device_mac = None
+            self.dupe_device_ip = None
+            self._dupe_finish_from_countdown_pending = False
             self._abort_dupe_apply_failed()
             self.btnDupe.setText('Dupe')
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
             try:
-                if clumsy_ics_use_firewall_only(dev, self.scanner):
+                if self._uses_windivert(dev):
                     self._ics_emergency_release(dev, heal=True)
                 else:
                     self._clear_victim_block(dev)
@@ -4072,6 +4727,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._sync_killed_devices()
             self._refresh_table_row_for_mac(dev['mac'])
             self._updateKillButtonState()
+            self._log_mitm_arm_status(dev, action='Dupe')
         except Exception:
             pass
         self._start_dupe_timers_after_network_ready()
@@ -4166,11 +4822,8 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             or str(device.get('ip') or '').strip()
         )
         plan = self._impairment_plan_for(device)
-        if ip and plan.use_block_ip:
-            try:
-                unblock_ip(ip)
-            except Exception:
-                pass
+        if plan.use_block_ip:
+            _bg_unblock_ip(ip)
 
     def _lag_apply_allow_phase_sync(self, device) -> None:
         """Main-thread allow: must run immediately so a queued block job cannot skip release."""
@@ -4347,10 +5000,17 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 mac = str(device.get('mac') or '').strip()
                 if mac:
                     self._refresh_table_row_for_mac(mac, device.get('ip'))
-                return
-            self._apply_ics_client_block(device, self.lag_direction, for_lag=True)
-        else:
-            self._apply_victim_block(device, self.lag_direction, for_lag=True)
+                return True
+            return bool(self._apply_ics_client_block(device, self.lag_direction, for_lag=True))
+        ok = self._apply_victim_block(device, self.lag_direction, for_lag=True)
+        if ok:
+            self._schedule_mitm_traffic_probe(device, flow='Lag')
+        if not ok:
+            self.log(
+                f'Lag block failed for {device.get("ip", "")} — rescan, pick Wi‑Fi in Settings if PC is on Wi‑Fi',
+                'red',
+            )
+        return ok
 
     def _lag_resolved_victim(self):
         """
@@ -4401,14 +5061,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._clear_ics_client_block(device, pause_only=True)
                     ip = (device.get('ip') or '').strip()
                     if ip and _is_valid_ip(ip):
-                        try:
-                            unblock_ip(ip)
-                        except Exception:
-                            pass
+                        _bg_unblock_ip(ip)
+                    # The previous "not in self.killer.killed" guard was inverted: lag
+                    # ON paths call killer.kill() which adds the mac to killer.killed,
+                    # so this branch skipped unkill exactly when it was needed and the
+                    # ARP poison thread kept running after the UI showed OFF. Call
+                    # unkill unconditionally — it's a safe no-op if not actually killed,
+                    # and the only path that stops the ARP worker thread.
                     victim = self._victim_record_for_mac(device.get('mac') or '') or device
-                    if victim and victim.get('mac') not in self.killer.killed:
+                    if victim:
                         try:
                             self.killer.unkill(victim)
+                        except Exception:
+                            pass
+                        try:
+                            self.killer.reinforce_restore(victim)
                         except Exception:
                             pass
             except Exception:
@@ -4419,6 +5086,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_active = False
         self.lag_device_mac = None
         self.lag_device_ip = None
+        self._lag_net_prepared_mac = None
         self._lag_in_allow_phase = False
         self._lag_device_snapshot = None
         self._lag_restoring_after_stop = False
@@ -4451,11 +5119,23 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.stopDupe(refresh_dialog=False, log=False)
         self._flush_pending_dupe_clear_sync()
         self._drop_dupe_restoring_banner()
+        # Same race window as startLagSwitch: a still-running MITM teardown can
+        # call killer.unkill() AFTER _apply_dupe_deferred calls killer.kill(),
+        # silently shutting down the dupe ARP worker. _toggle_start_blocked
+        # doesn't catch it because mitm_shaping_active was flipped to False
+        # synchronously, even though the daemon thread keeps running.
+        if self.mitm_shaping_active:
+            self.stop_mitm_shaping(log=False)
+        self._await_mitm_teardown_thread()
+        if self.percent_cut_active:
+            self.stopPercentCut(log=False)
         self._dupe_arm_timer.stop()
         try:
             self._dupe_arm_timer.timeout.disconnect()
         except TypeError:
             pass
+        device = dict(device)
+        self._refresh_victim_mac_from_system_arp(device)
         self.dupe_device_mac = device['mac']
         self.dupe_device_ip = device.get('ip')
         self.dupe_direction = direction
@@ -4465,7 +5145,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnDupe.setText('■ DUPE')
         self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         dir_text = {'both': 'all', 'in': 'incoming', 'out': 'outgoing'}[direction]
-        self.log(f'Dupe: {duration_ms}ms ({dir_text}), then full stop', UI_LOG_VICTIM_BLOCK_FG)
+        self._show_dupe_status(
+            f'Dupe ON {duration_ms}ms ({dir_text}) → {device.get("ip")} — Dupe/P to stop early',
+            UI_LOG_VICTIM_BLOCK_FG,
+            hold_ms=0,
+        )
         self._dupe_arm_device = dict(device)
         self._dupe_arm_direction = direction
         self._refresh_flow_toggle_ui()
@@ -4541,17 +5225,41 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_restoring_after_stop = True
         self._dupe_restoring_mac = prev_mac
         self._dupe_restoring_ip = prev_ip
-        # Idle chrome immediately; firewall/ARP finish asynchronously (_do_deferred_dupe_clear).
-        self.lblDupeCountdownMain.setVisible(False)
-        self.lblDupeCountdownMain.setText('')
+        self._show_dupe_status('Dupe OFF — restoring connection…', UI_LOG_RESTORE_FG, hold_ms=0)
         # Mark inactive after timers are stopped so _tick cannot race with teardown.
         self.dupe_active = False
         self.dupe_device_mac = None
         self.dupe_device_ip = None
         self.btnDupe.setText('Dupe')
         self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-        if log:
-            self.log(log_message, UI_LOG_RESTORE_FG)
+        snap = self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, arm_snap)
+        if snap:
+            try:
+                self._release_dupe_victim_immediate(snap)
+            except Exception:
+                pass
+            self._sync_killed_devices()
+            refresh_mac = str(snap.get('mac') or prev_mac or '').strip()
+            if refresh_mac:
+                self._refresh_table_row_for_mac(refresh_mac)
+            self._updateKillButtonState()
+        elif prev_ip or prev_mac:
+            try:
+                for victim in list((self.killer.killed or {}).values()):
+                    v_ip = str(victim.get('ip') or '').strip()
+                    v_mac = str(victim.get('mac') or '').strip()
+                    if (prev_ip and v_ip == str(prev_ip).strip()) or (
+                        prev_mac and v_mac == str(prev_mac).strip()
+                    ):
+                        self._release_dupe_victim_immediate(victim)
+                self._sync_killed_devices()
+                self._updateKillButtonState()
+            except Exception:
+                pass
+        if snap:
+            self._log_dupe_restore_result(snap)
+        elif log:
+            self._show_dupe_status(log_message, UI_LOG_RESTORE_FG)
         if refresh_dialog:
             self._refresh_flow_toggle_ui()
         else:
@@ -4570,32 +5278,10 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 app.processEvents(QEventLoop.ExcludeUserInputEvents)
         except Exception:
             pass
-        self._drain_dupe_block_if_needed()
-        live = self._get_device_by_mac(prev_mac) if prev_mac else None
-        arm_ok = arm_snap if (isinstance(arm_snap, dict) and arm_snap.get('mac') == prev_mac) else None
-        if live and arm_ok:
-            snap = dict(live)
-            lip = (live.get('ip') or '').strip()
-            sip = (arm_ok.get('ip') or '').strip()
-            if (not lip) and sip:
-                snap['ip'] = sip
-        elif live:
-            snap = dict(live)
-        elif arm_ok:
-            snap = dict(arm_ok)
-        else:
-            snap = None
-        if snap and clumsy_ics_use_firewall_only(snap, self.scanner):
-            self._dupe_pending_clear = (prev_mac, snap)
-            try:
-                self._dupe_deferred_clear_timer.timeout.disconnect()
-            except TypeError:
-                pass
-            self._dupe_deferred_clear_timer.timeout.connect(
-                self._do_deferred_dupe_clear, Qt.UniqueConnection
-            )
-            self._dupe_deferred_clear_timer.start(0)
-            return
+        # Do not drain in-flight block_ip here — restore must not wait on netsh add.
+        self._dupe_block_apply_pending = False
+        self._dupe_block_ctx = None
+        self._dupe_block_future = None
         self._dupe_pending_clear = (prev_mac, snap)
         try:
             self._dupe_deferred_clear_timer.timeout.disconnect()
@@ -4614,10 +5300,28 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         self._sync_inline_flow_controls_enabled()
 
+    def _percent_cut_ui_shows_on(self, mac: str | None = None, ip: str | None = None) -> bool:
+        """True when Percent Cut is armed for the selected row or any active victim."""
+        if not self.percent_cut_active:
+            return False
+        stored_mac = str(self.percent_cut_device_mac or '').strip()
+        stored_ip = str(getattr(self, 'percent_cut_device_ip', None) or '').strip()
+        if not mac and not ip:
+            return bool(stored_mac or stored_ip)
+        if stored_mac and mac and stored_mac == str(mac).strip():
+            return True
+        if stored_ip and ip and stored_ip == str(ip).strip():
+            return True
+        return bool(stored_mac or stored_ip)
+
     def _updatePercentCutButtonState(self):
         pct = self._clamp_percent(self.spinPercentCutMain.value())
         key = getattr(self, '_shortcut_label_pctcut', 'K')
-        if self.percent_cut_active and self.percent_cut_device_mac:
+        dev = self._get_selected_device()
+        mac = str(dev.get('mac') or '').strip() if dev else ''
+        ip = str(dev.get('ip') or '').strip() if dev else ''
+        on = self._percent_cut_ui_shows_on(mac, ip)
+        if on:
             self.btnPercentCut.setText(f'■ CUT {pct}% (Press {key} to turn off)')
             self.btnPercentCut.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
         else:
@@ -4652,15 +5356,21 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
         if self.percent_cut_active and self.percent_cut_device_mac:
-            dev = self._get_device_by_mac(self.percent_cut_device_mac) or self._victim_record_for_mac(self.percent_cut_device_mac)
+            dev = self._get_device_by_mac(
+                self.percent_cut_device_mac, getattr(self, 'percent_cut_device_ip', None)
+            ) or self._victim_record_for_mac(self.percent_cut_device_mac)
             if dev:
                 try:
-                    if clumsy_ics_use_firewall_only(dev, self.scanner):
+                    if self._uses_windivert(dev):
                         self._ics_apply_percent_cut_windivert(dev, pct)
                     else:
                         allow_pct = max(0, 100 - pct)
+                        dev = dict(dev)
                         self._ensure_network_context_for_victim(dev)
-                        self.killer.apply_percent_cut(dev, pass_percent=allow_pct)
+                        self._refresh_victim_mac_from_system_arp(dev)
+                        self.percent_cut_device_mac = dev.get('mac')
+                        if not self.killer.apply_percent_cut(dev, pass_percent=allow_pct):
+                            self.log('Percent Cut update failed — rescan target', 'red')
                 except Exception:
                     pass
         self._updatePercentCutButtonState()
@@ -4742,6 +5452,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         mac = device['mac']
         row_pk = self._killed_profile_key(device)
+        self._reconcile_stale_kill_profile(device)
         current_ui_on = self._kill_ui_shows_on(mac, device.get('ip'), device)
         if not current_ui_on and len(active_explicit) == 1 and active_explicit[0] != row_pk:
             # Selection drifted to a different row while one kill victim is active.
@@ -4751,31 +5462,151 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 mac = device['mac']
             current_ui_on = self._kill_ui_shows_on(mac, device.get('ip'), device)
         next_state = not current_ui_on
+        shaping_mac = str(getattr(self, 'mitm_shaping_mac', None) or '').strip()
+        shaping_ip = str(getattr(self, 'mitm_shaping_device_ip', None) or '').strip()
+        sel_ip = str(device.get('ip') or '').strip()
+        if (
+            next_state
+            and getattr(self, 'mitm_shaping_active', False)
+            and (
+                (shaping_mac and shaping_mac != mac)
+                or (shaping_ip and sel_ip and shaping_ip != sel_ip)
+            )
+        ):
+            self.stop_mitm_shaping(log=True)
+            self.log(
+                'Advanced lag stopped — select the live PS5 row (Wi‑Fi .165), not a stale Ethernet IP.',
+                UI_LOG_RESTORE_FG,
+            )
+            return
         if next_state and self._toggle_start_blocked('kill'):
             return
         if next_state and clumsy_mode_enabled():
-            resolved = clumsy_ics_resolve_victim_ip(device, self.scanner)
-            prefix = clumsy_ics_downstream_prefix()
-            if resolved and not victim_on_clumsy_ics_subnet(resolved):
+            plan = self._impairment_plan_for(device)
+            if plan.is_ics_downstream and not clumsy_ics_lag_can_use_windivert(
+                device, self.scanner
+            ):
                 self.log(
-                    f'PS5 is on {resolved or device.get("ip")} — Clumsy hotspot expects '
-                    f'{prefix}x. Connect the PS5 to PC Mobile Hotspot and rescan.',
+                    'Kill on hotspot needs WinDivert: '
+                    + clumsy_windivert_unavailable_reason(device),
                     'red',
                 )
                 return
+        import time as _tk_time
+        _tk_t0 = _tk_time.perf_counter()
+        pk = self._killed_profile_key(device)
+        if pk:
+            pending = getattr(self, '_kill_pending_profiles', set())
+            if next_state:
+                pending.add(pk)
+            else:
+                pending.discard(pk)
+            self._kill_pending_profiles = pending
         self._set_killed_profile(device, next_state)
+        _tk_t1 = _tk_time.perf_counter()
         self._updateKillButtonState()
+        _tk_t2 = _tk_time.perf_counter()
         self._repaint_all_table_rows_for_hover()
+        _tk_t3 = _tk_time.perf_counter()
         try:
             app = QApplication.instance()
             if app is not None:
                 app.processEvents(QEventLoop.ExcludeUserInputEvents)
         except Exception:
             pass
+        _tk_t4 = _tk_time.perf_counter()
         dev = dict(device)
         on = next_state
         src = source
-        self._run_kill_command(mac, dev, turn_on=on, source=src)
+        self._schedule_kill_command(mac, dev, turn_on=on, source=src)
+        if bool(get_settings('debug_kill_timing')):
+            _tk_t5 = _tk_time.perf_counter()
+            try:
+                direction = 'ON' if next_state else 'OFF'
+                self.log(
+                    f'[TOGGLE-KILL {direction}] profile={int((_tk_t1-_tk_t0)*1000)}ms '
+                    f'btnstate={int((_tk_t2-_tk_t1)*1000)}ms '
+                    f'rowsrepaint={int((_tk_t3-_tk_t2)*1000)}ms '
+                    f'processEvents={int((_tk_t4-_tk_t3)*1000)}ms '
+                    f'schedule={int((_tk_t5-_tk_t4)*1000)}ms '
+                    f'total={int((_tk_t5-_tk_t0)*1000)}ms',
+                    'gray',
+                )
+            except Exception:
+                pass
+
+    def _percent_cut_backend_active(self, mac: str | None, ip: str | None = None) -> bool:
+        """True when MITM forwarder or killer entry still shapes this victim."""
+        mac = str(mac or '').strip()
+        ip = str(ip or '').strip()
+        if mac and mac in getattr(self.killer, 'forwarders', {}):
+            fw = self.killer.forwarders.get(mac)
+            if fw is not None and getattr(fw, 'running', False):
+                return True
+        if mac and mac in getattr(self.killer, 'killed', {}):
+            return True
+        if ip:
+            for victim in (self.killer.killed or {}).values():
+                if isinstance(victim, dict) and str(victim.get('ip') or '').strip() == ip:
+                    return True
+            for victim in (self.killer.killed or {}).values():
+                vm = str(victim.get('mac') or '').strip()
+                if vm and vm in getattr(self.killer, 'forwarders', {}):
+                    if str(victim.get('ip') or '').strip() == ip:
+                        return True
+        return False
+
+    def _resolve_pctcut_stop_snapshot(self, prev_mac, prev_ip):
+        """Victim for Percent Cut OFF (MAC may have been refreshed while ON)."""
+        return self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, None)
+
+    def _release_pctcut_victim_immediate(self, victim) -> None:
+        """Stop Percent Cut MITM on the GUI thread (no slow iface refresh on OFF)."""
+        if not isinstance(victim, dict):
+            return
+        victim = self._device_with_plan_ip(victim)
+        plan = self._impairment_plan_for(victim)
+        if plan.use_windivert or plan.is_ics_downstream:
+            try:
+                gate = getattr(self, '_ics_lag_gate', None)
+                if gate is not None:
+                    gate.apply_percent_cut(0)
+            except Exception:
+                pass
+            if not self._ics_windivert_busy(str(victim.get('mac') or '')):
+                self._stop_ics_lag_gate()
+            return
+        ip = (victim.get('ip') or '').strip()
+        if ip and _is_valid_ip(ip):
+            _bg_unblock_ip(ip)
+        victims = []
+        primary = self._victim_record_for_mac(victim.get('mac') or '') or victim
+        if isinstance(primary, dict):
+            victims.append(primary)
+        if ip:
+            for entry in (self.killer.killed or {}).values():
+                if isinstance(entry, dict) and str(entry.get('ip') or '').strip() == ip:
+                    if entry not in victims:
+                        victims.append(entry)
+        seen = set()
+        for v in victims:
+            mac = str(v.get('mac') or '').strip()
+            if mac in seen:
+                continue
+            seen.add(mac)
+            try:
+                self.killer.disable_percent_cut(mac)
+            except Exception:
+                pass
+            is_ics = self._is_ics_downstream(v)
+            try:
+                self.killer.unkill(v, ics_mode=is_ics)
+            except Exception:
+                pass
+            try:
+                self.killer.reinforce_restore(v, ics_mode=is_ics)
+            except Exception:
+                pass
 
     def togglePercentCut(self, source='unknown'):
         if not self.connected():
@@ -4788,106 +5619,135 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log('Cannot cut admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
 
-        mac = device['mac']
-        turning_on = not (self.percent_cut_active and self.percent_cut_device_mac == mac)
-        if turning_on and self._toggle_start_blocked('pctcut'):
+        mac = str(device.get('mac') or '').strip()
+        ip = str(device.get('ip') or '').strip()
+        if self._percent_cut_ui_shows_on(mac, ip) or self._percent_cut_backend_active(
+            self.percent_cut_device_mac or mac, getattr(self, 'percent_cut_device_ip', None) or ip
+        ):
+            self.stopPercentCut(log=True)
+            return
+        if self._toggle_start_blocked('pctcut'):
             return
 
-        if turning_on:
-            if self.percent_cut_active and self.percent_cut_device_mac and self.percent_cut_device_mac != mac:
-                self.stopPercentCut(log=False)
-            if self.mitm_shaping_active:
-                self.stop_mitm_shaping(log=False)
-                self._await_mitm_teardown_thread()
-            if self.lag_active and self.lag_device_mac == mac:
-                self.stopLagSwitch(refresh_dialog=True)
-            if self.dupe_active and self.dupe_device_mac == mac:
-                self.stopDupe(log=False)
-                self._flush_pending_dupe_clear_sync()
-            if self._kill_ui_shows_on(mac, device.get('ip'), device):
-                dev = dict(device)
-                self._run_kill_command(mac, dev, turn_on=False, source='pctcut_auto_off_kill')
-            pct = self._clamp_percent(self.spinPercentCutMain.value())
-            allow_pct = max(0, 100 - pct)
-            plan = self._impairment_plan_for(device)
-            if plan.is_ics_downstream:
-                if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
-                    self.log(
-                        'Percent Cut on hotspot needs WinDivert: '
-                        + clumsy_windivert_unavailable_reason(device),
-                        'red',
-                    )
-                    return
-                resolved = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
-                    device.get('ip') or ''
-                ).strip()
-                if not victim_on_clumsy_ics_subnet(resolved):
-                    self.log(
-                        'Percent Cut needs the PS5 on the hotspot subnet (192.168.137.x). '
-                        'Connect the console to PC Mobile Hotspot, then rescan.',
-                        'red',
-                    )
-                    return
-                if not self._ics_apply_percent_cut_windivert(device, pct):
-                    self.log(
-                        'Percent Cut needs WinDivert (run as Administrator).',
-                        'red',
-                    )
-                    return
-                resolved_ip = self._ics_hotspot_victim_ip(device, pctcut=True)
-            else:
-                self._ensure_network_context_for_victim(device)
-                self.killer.apply_percent_cut(device, pass_percent=allow_pct)
-                resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
-                    device.get('ip') or ''
-                ).strip()
-            self.percent_cut_active = True
+        if self.percent_cut_active and self.percent_cut_device_mac and self.percent_cut_device_mac != mac:
+            self.stopPercentCut(log=False)
+        if self.mitm_shaping_active:
+            self.stop_mitm_shaping(log=False)
+            self._await_mitm_teardown_thread()
+        if self.lag_active and self.lag_device_mac == mac:
+            self.stopLagSwitch(refresh_dialog=True)
+        if self.dupe_active and self.dupe_device_mac == mac:
+            self.stopDupe(log=False)
+            self._flush_pending_dupe_clear_sync()
+        if self._kill_ui_shows_on(mac, device.get('ip'), device):
+            dev = dict(device)
+            self._run_kill_command(mac, dev, turn_on=False, source='pctcut_auto_off_kill')
+        pct = self._clamp_percent(self.spinPercentCutMain.value())
+        allow_pct = max(0, 100 - pct)
+        self.percent_cut_active = True
+        self.percent_cut_device_mac = mac
+        self.percent_cut_device_ip = ip
+        self.btnPercentCut.setText(f'■ CUT {pct}%')
+        self.btnPercentCut.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
+        self._refresh_flow_toggle_ui()
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        except Exception:
+            pass
+        plan = self._impairment_plan_for(device)
+        if plan.is_ics_downstream:
+            if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
+                self.percent_cut_active = False
+                self.percent_cut_device_mac = None
+                self.percent_cut_device_ip = None
+                self.log(
+                    'Percent Cut on hotspot needs WinDivert: '
+                    + clumsy_windivert_unavailable_reason(device),
+                    'red',
+                )
+                self._refresh_flow_toggle_ui()
+                return
+            if not self._ics_apply_percent_cut_windivert(device, pct):
+                self.percent_cut_active = False
+                self.percent_cut_device_mac = None
+                self.percent_cut_device_ip = None
+                self.log(
+                    'Percent Cut needs WinDivert (run as Administrator).',
+                    'red',
+                )
+                self._refresh_flow_toggle_ui()
+                return
+            resolved_ip = self._ics_hotspot_victim_ip(device, pctcut=True)
+        else:
+            device = dict(device)
+            self._ensure_network_context_for_victim(device)
+            self._refresh_victim_mac_from_system_arp(device)
+            mac = str(device.get('mac') or '').strip()
             self.percent_cut_device_mac = mac
-            self.percent_cut_device_ip = resolved_ip
-            self.log(
-                f'Percent Cut ON for {resolved_ip or device["ip"]}: {pct}% cut ({allow_pct}% allowed)',
-                UI_LOG_VICTIM_BLOCK_FG,
-            )
-            self._refresh_flow_toggle_ui()
-            self.showDevices()
-            return
-
-        self.stopPercentCut(log=True)
+            if not self.killer.apply_percent_cut(device, pass_percent=allow_pct):
+                self.percent_cut_active = False
+                self.percent_cut_device_mac = None
+                self.percent_cut_device_ip = None
+                try:
+                    self._release_pctcut_victim_immediate(device)
+                except Exception:
+                    pass
+                self.log(
+                    'Percent Cut failed — router MAC or adapter missing (rescan, ping PS5)',
+                    'red',
+                )
+                self._refresh_flow_toggle_ui()
+                return
+            self._log_mitm_arm_status(device, action='Percent Cut')
+            resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
+                device.get('ip') or ''
+            ).strip()
+        self.percent_cut_device_ip = resolved_ip
+        self.log(
+            f'Percent Cut ON for {resolved_ip or ip}: {pct}% cut ({allow_pct}% pass)',
+            UI_LOG_VICTIM_BLOCK_FG,
+        )
+        self._refresh_flow_toggle_ui()
 
     def stopPercentCut(self, log=True):
-        if not self.percent_cut_active:
-            return
         prev_mac = self.percent_cut_device_mac
+        prev_ip = getattr(self, 'percent_cut_device_ip', None)
+        was_ui_on = bool(self.percent_cut_active)
         self.percent_cut_active = False
         self.percent_cut_device_mac = None
         self.percent_cut_device_ip = None
-        victim = self._victim_record_for_mac(prev_mac) or self._get_device_by_mac(prev_mac)
+        self.btnPercentCut.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        self._refresh_flow_toggle_ui()
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        except Exception:
+            pass
+        victim = self._resolve_pctcut_stop_snapshot(prev_mac, prev_ip)
         if victim:
             try:
-                if clumsy_ics_lag_can_use_windivert(victim, self.scanner):
-                    gate = getattr(self, '_ics_lag_gate', None)
-                    if gate is not None:
-                        try:
-                            gate.apply_percent_cut(0)
-                        except Exception:
-                            pass
-                    if not self._ics_windivert_busy(prev_mac):
-                        self._stop_ics_lag_gate()
-                else:
-                    self._ensure_network_context_for_victim(victim)
-                    self.killer.disable_percent_cut(prev_mac)
-                    self.killer.unkill(victim)
-                    self.killer.reinforce_restore(victim)
-                    pct_off_seq = self._bump_flow_off_intent('pctcut', prev_mac)
-                    self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 25, victim)
-                    self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 90, victim)
-                    self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 200, victim)
+                self._release_pctcut_victim_immediate(victim)
             except Exception:
                 pass
-        if log and victim:
-            self.log('Percent Cut OFF for ' + victim['ip'], UI_LOG_RESTORE_FG)
+        if log:
+            if victim:
+                ip = str(victim.get('ip') or prev_ip or '')
+                still = self._percent_cut_backend_active(
+                    str(victim.get('mac') or ''), ip
+                )
+                if still:
+                    self.log(
+                        f'Percent Cut OFF: cut still active on {ip} — toggle again',
+                        'red',
+                    )
+                else:
+                    self.log('Percent Cut OFF for ' + ip, UI_LOG_RESTORE_FG)
+            elif was_ui_on:
+                self.log('Percent Cut OFF', UI_LOG_RESTORE_FG)
         self._refresh_flow_toggle_ui()
-        self.showDevices()
 
     def _refresh_advanced_lag_mitm_if_visible(self) -> None:
         dlg = getattr(self, 'advanced_lag_settings_dialog', None)
@@ -4958,6 +5818,11 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         du, dd, ju, jd, cu, cd, lu, ld, gates = mitm_adv_sched.gated_mitm_params(
             now, t0, self._mitm_adv_get, row_t0
         )
+        if mitm_adv_sched.all_enabled_timers_finished(
+            now, t0, self._mitm_adv_get, row_t0
+        ):
+            self.stop_mitm_shaping(log=True)
+            return
         prev = getattr(self, '_mitm_adv_last_sched', None)
         cur_tuple = mitm_adv_sched.sched_apply_tuple(
             du, dd, ju, jd, cu, cd, lu, ld, gates
@@ -4988,7 +5853,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if getattr(self, 'lag_active', False) or getattr(self, 'dupe_active', False):
             self._refresh_advanced_lag_mitm_if_visible()
             return True
-        if use_wd and clumsy_ics_use_firewall_only(device, self.scanner):
+        if use_wd and self._uses_windivert(device):
             if self._ics_apply_advanced_shaping_windivert(
                 device,
                 du=du,
@@ -5038,7 +5903,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._mitm_shaping_backend = 'forwarder'
             backend = 'forwarder'
         if backend == 'forwarder':
-            if clumsy_ics_use_firewall_only(device, self.scanner):
+            if self._uses_windivert(device):
                 self._refresh_advanced_lag_mitm_if_visible()
                 return True
             try:
@@ -5247,7 +6112,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 use_forwarder = False
             except Exception as exc:
                 detail = clumsy_windivert_unavailable_reason(device)
-                if clumsy_ics_use_firewall_only(device, self.scanner):
+                if self._uses_windivert(device):
                     self.log(
                         f'Advanced lag WinDivert failed ({exc}) [{detail}]',
                         'red',
@@ -5258,12 +6123,12 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         'red',
                     )
                 self._ics_windivert_shaper = None
-                if clumsy_ics_use_firewall_only(device, self.scanner):
+                if self._uses_windivert(device):
                     self._refresh_advanced_lag_mitm_if_visible()
                     return
 
         if use_forwarder:
-            if clumsy_ics_use_firewall_only(device, self.scanner):
+            if self._uses_windivert(device):
                 if not sched_tick:
                     reason = clumsy_windivert_unavailable_reason(device)
                     self.log(
@@ -5293,7 +6158,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._ics_windivert_shaper = None
             self._mitm_shaping_backend = 'forwarder'
 
-        if use_wd and clumsy_ics_use_firewall_only(device, self.scanner):
+        if use_wd and self._uses_windivert(device):
             resolved_ip = self._ics_hotspot_victim_ip(device, mitmshape=True) or str(
                 device.get('ip') or ''
             ).strip()
@@ -5307,7 +6172,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if self._mitm_shaping_backend == 'forwarder':
             self._set_killed_profile(device, True)
             self._sync_killed_devices()
-            set_settings('killed', list(self.killer.killed) * self.remember)
+            self._write_remembered_killed_macs()
         parts = []
         if du > 0:
             parts.append(f'out delay {du}ms')
@@ -5376,7 +6241,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         elif mac:
             self._set_killed_profile({'mac': mac, 'ip': log_ip or ''}, False)
         self._sync_killed_devices()
-        set_settings('killed', list(self.killer.killed) * self.remember)
+        self._write_remembered_killed_macs()
         if (
             mac
             and isinstance(victim_snap, dict)
@@ -5404,6 +6269,65 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         elif mac:
             self.log('Advanced lag shaping stopped (device no longer in list).', UI_LOG_RESTORE_FG)
 
+    def _halt_mitm_shaping_traffic_now(
+        self,
+        prev_mac: str | None,
+        backend: str | None,
+        victim_snap: dict | None,
+        *,
+        wd_gate,
+    ) -> bool:
+        """
+        Stop delay/jitter/loss and ARP MITM on the caller thread.
+
+        Advanced Lag master toggle OFF must not wait on a daemon thread — the UI
+        already shows Off while the forwarder/WinDivert gate was still shaping.
+        Returns True when WinDivert still needs async gate.stop().
+        """
+        was_wd = backend == 'windivert' and wd_gate is not None
+        if was_wd:
+            try:
+                wd_gate.clear_shaping()
+                if hasattr(wd_gate, 'clear_blocking_pause'):
+                    wd_gate.clear_blocking_pause()
+                elif hasattr(wd_gate, 'set_blocking'):
+                    wd_gate.set_blocking(False)
+            except Exception:
+                pass
+            return True
+
+        mac = str(prev_mac or '').strip()
+        victim = dict(victim_snap) if isinstance(victim_snap, dict) else None
+        if victim is None and mac:
+            key = self._killer_mac_key(mac)
+            killed = getattr(self.killer, 'killed', {}) or {}
+            if key and key in killed:
+                victim = dict(killed[key])
+            elif mac in killed:
+                victim = dict(killed[mac])
+
+        if mac:
+            key = self._killer_mac_key(mac) or mac
+            try:
+                self.killer.disable_percent_cut(key)
+            except Exception:
+                pass
+            try:
+                self.killer._stop_forwarder(key)
+            except Exception:
+                pass
+
+        if isinstance(victim, dict):
+            try:
+                unblock_ip(victim.get('ip') or '')
+            except Exception:
+                pass
+            try:
+                self.killer.unkill(victim)
+            except Exception:
+                pass
+        return False
+
     def stop_mitm_shaping(self, log=True):
         if not self.mitm_shaping_active:
             return
@@ -5418,28 +6342,37 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             victim = (getattr(self.killer, 'killed', None) or {}).get(prev_mac)
         victim_snap = dict(victim) if isinstance(victim, dict) else None
 
+        was_wd = backend == 'windivert' and shaper is not None
+        gate = getattr(self, '_ics_lag_gate', None) if was_wd else None
+        need_async_wd_stop = self._halt_mitm_shaping_traffic_now(
+            prev_mac,
+            backend,
+            victim_snap,
+            wd_gate=gate,
+        )
+
+        if isinstance(victim_snap, dict):
+            self._set_killed_profile(victim_snap, False)
+        elif prev_mac:
+            self._set_killed_profile({'mac': prev_mac, 'ip': ''}, False)
+
         self.mitm_shaping_active = False
         self.mitm_shaping_mac = None
         self.mitm_shaping_device_ip = None
         self._mitm_shaping_backend = None
         self._ics_windivert_shaper = None
 
+        self._sync_killed_devices()
+        self._write_remembered_killed_macs()
+        self._updateKillButtonState()
+        self._refresh_flow_toggle_ui()
         self._refresh_advanced_lag_mitm_if_visible()
-
-        was_wd = backend == 'windivert' and shaper is not None
-        gate = self._ics_lag_gate if was_wd else None
 
         def _teardown_worker():
             log_ip = ''
             try:
-                if prev_mac:
+                if need_async_wd_stop and gate is not None:
                     try:
-                        self.killer.disable_percent_cut(prev_mac)
-                    except Exception:
-                        pass
-                if was_wd and gate is not None:
-                    try:
-                        gate.clear_shaping()
                         gate.prepare_stop()
                     except Exception:
                         pass
@@ -5447,15 +6380,6 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         log_ip = str(victim_snap.get('ip') or '')
                 elif isinstance(victim_snap, dict):
                     try:
-                        self._ensure_network_context_for_victim(victim_snap)
-                    except Exception:
-                        pass
-                    try:
-                        unblock_ip(victim_snap.get('ip') or '')
-                    except Exception:
-                        pass
-                    try:
-                        self.killer.unkill(victim_snap)
                         self.killer.reinforce_restore(victim_snap)
                     except Exception:
                         pass
@@ -5466,7 +6390,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         str(prev_mac or ''),
                         bool(log),
                         log_ip,
-                        bool(was_wd),
+                        bool(need_async_wd_stop),
                         victim_snap,
                     )
                 except Exception:
@@ -5476,8 +6400,28 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._mitm_teardown_thread = t
         t.start()
 
+    def _schedule_kill_command(self, mac, device, turn_on, source='unknown'):
+        """Paint optimistic Kill UI first; run Npcap/ARP work on the next event-loop tick."""
+        dev = dict(device)
+        QTimer.singleShot(
+            0,
+            lambda m=str(mac), d=dev, on=bool(turn_on), src=str(source): self._run_kill_command(
+                m, d, on, src
+            ),
+        )
+
     def _run_kill_command(self, mac, device, turn_on, source='unknown'):
         """Immediate explicit command path: one click => one kill/unkill command."""
+        import time as _kill_time
+        _kill_dbg = bool(get_settings('debug_kill_timing'))
+        _kill_t0 = _kill_time.perf_counter()
+        _kill_marks: list[tuple[str, float]] = []
+
+        def _mark(label: str) -> None:
+            if _kill_dbg:
+                _kill_marks.append((label, _kill_time.perf_counter()))
+
+        _mark('enter')
         if turn_on:
             if getattr(self, '_kill_teardown_mac', None) == mac:
                 self._kill_teardown_mac = None
@@ -5495,8 +6439,16 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             actual_on = mac in self.killer.killed
             next_seq = int(self._kill_intent_seq.get(mac, 0)) + 1
             self._kill_intent_seq[mac] = next_seq
+            my_seq = next_seq
+
+            def _superseded() -> bool:
+                return int(self._kill_intent_seq.get(mac, 0)) != my_seq
+
+            if turn_on and not self._killed_profile_on(device):
+                return
             kill_applied = False
             if turn_on:
+                _mark('crossflow_start')
                 if self.lag_active and self.lag_device_mac == mac:
                     self.stopLagSwitch(refresh_dialog=True)
                 if self.dupe_active and self.dupe_device_mac == mac:
@@ -5504,14 +6456,25 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._flush_pending_dupe_clear_sync()
                 if self.percent_cut_active and self.percent_cut_device_mac == mac:
                     self.stopPercentCut(log=False)
+                elif self._percent_cut_backend_active(mac, device.get('ip')):
+                    try:
+                        self._release_pctcut_victim_immediate(device)
+                    except Exception:
+                        pass
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
                     self.stop_mitm_shaping(log=False)
                     self._await_mitm_teardown_thread()
-                if not actual_on and device:
+                _mark('crossflow_done')
+                # Always re-arm on explicit Kill ON. Skipping when actual_on was true
+                # caused "works once then never again" if killer.killed still held the
+                # victim while the UI showed OFF (partial unkill / profile desync).
+                if device:
                     if not _is_valid_ip(device.get('ip') or ''):
                         self.log('Target has no IP yet — enable sharing and rescan.', 'red')
-                    elif clumsy_ics_use_firewall_only(device, self.scanner):
+                    elif self._uses_windivert(device):
+                        _mark('windivert_start')
                         kill_applied = bool(self._apply_victim_block(device, 'both'))
+                        _mark('windivert_done')
                         if kill_applied:
                             self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
                         else:
@@ -5523,55 +6486,154 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                                 'red',
                             )
                     else:
+                        _mark('lan_start')
                         self._ensure_network_context_for_victim(device)
+                        _mark('lan_ensure_net_done')
+                        self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
                         self.killer.disable_percent_cut(mac)
-                        self.killer.kill(device)
-                        try:
-                            iface = self.scanner.iface.name if self.scanner.iface else 'en0'
-                            block_ip(iface, device['ip'], 'both')
-                        except Exception:
-                            pass
-                        self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
-                        kill_applied = True
+                        _mark('lan_disable_pctcut_done')
+                        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device)
+                        if not mitm_ok:
+                            self.log(
+                                f'Kill ON failed: {mitm_reason}',
+                                'red',
+                            )
+                            kill_applied = False
+                        else:
+                            self.killer.kill(device, wait_after=0.08)
+                            mac = self._rekey_kill_bookkeeping(mac, device)
+                            _mark('lan_killer_kill_done')
+                            fw = self.killer.forwarders.get(mac)
+                            if not (fw and getattr(fw, 'running', False)):
+                                self.log(
+                                    'Kill ON: traffic cut forwarder did not start — '
+                                    'check Npcap adapter in Settings.',
+                                    'red',
+                                )
+                                try:
+                                    self.killer.unkill(device)
+                                except Exception:
+                                    pass
+                                kill_applied = False
+                            else:
+                                self._log_mitm_arm_status(device, action='Kill')
+                                try:
+                                    iface_name = (
+                                        self.scanner.iface.name if self.scanner.iface else 'en0'
+                                    )
+                                except Exception:
+                                    iface_name = 'en0'
+                                _bg_block_ip(iface_name, device.get('ip'), 'both')
+                                _mark('lan_bg_block_ip_done')
+                                self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                                kill_applied = True
+                                self._schedule_mitm_traffic_probe(device, flow='Kill')
             else:
+                # B1: mirror Kill ON's cross-flow stop set — if any of the other
+                # flows are still running on this victim (toggle-blocked logic
+                # should have prevented it but be defensive), tear them down
+                # before unkill so killer.unkill doesn't race a live forwarder.
+                if self.lag_active and self.lag_device_mac == mac:
+                    self.stopLagSwitch(refresh_dialog=True)
+                if self.dupe_active and self.dupe_device_mac == mac:
+                    self.stopDupe(log=False)
+                    self._flush_pending_dupe_clear_sync()
+                if self.percent_cut_active and self.percent_cut_device_mac == mac:
+                    self.stopPercentCut(log=False)
+                elif self._percent_cut_backend_active(mac, device.get('ip')):
+                    try:
+                        self._release_pctcut_victim_immediate(device)
+                    except Exception:
+                        pass
                 if self.mitm_shaping_active and self.mitm_shaping_mac == mac:
                     self.stop_mitm_shaping(log=False)
                     self._await_mitm_teardown_thread()
                 victim = self._victim_record_for_mac(mac) or device
                 if victim:
-                    if clumsy_ics_use_firewall_only(victim, self.scanner):
-                        self._ics_emergency_release(victim, heal=True)
-                    else:
+                    # A3-A5: if the victim hopped hotspot↔LAN between ON and OFF,
+                    # the current plan no longer matches what we laid down. Run
+                    # the ICS teardown defensively first (safe no-op when nothing
+                    # ICS is live). Only run the LAN teardown when the device is
+                    # NOT on the ICS path — running killer.unkill(ics_mode=False)
+                    # for an ICS victim cancels the fast ICS restore worker that
+                    # _ics_emergency_release just scheduled (it bumps _op_seq)
+                    # and emits 1.5 s of LAN-router ARPs on the hotspot NIC
+                    # (killer.unkill default refresh_router=True picks the LAN
+                    # gateway via route fallback — see killer.py:123-126).
+                    self._ics_emergency_release(victim, heal=True)
+                    is_ics_now = self._is_ics_downstream(victim)
+                    if not is_ics_now:
+                        _bg_unblock_ip(victim.get('ip'))
                         try:
-                            unblock_ip(victim.get('ip') or '')
+                            self.killer.unkill(victim)
                         except Exception:
                             pass
-                        self.killer.unkill(victim)
-                        self.killer.reinforce_restore(victim)
-                        if actual_on:
+                        try:
                             self.killer.reinforce_restore(victim)
+                        except Exception:
+                            pass
+                        if actual_on:
+                            try:
+                                self.killer.reinforce_restore(victim)
+                            except Exception:
+                                pass
                     self.log('Kill OFF for ' + str(victim.get('ip', '')), UI_LOG_RESTORE_FG)
                     # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
-                    self._schedule_kill_off_reinforce(mac, next_seq, 25)
-                    self._schedule_kill_off_reinforce(mac, next_seq, 100)
+                    self._schedule_kill_off_reinforce(mac, my_seq, 25)
+                    self._schedule_kill_off_reinforce(mac, my_seq, 100)
 
-            self._set_killed_profile(device, bool(kill_applied) if turn_on else False)
-            self._sync_killed_devices()
-            set_settings('killed', list(self.killer.killed) * self.remember)
-            self._updateKillButtonState()
-            self._update_scan_count_status()
-            self._refresh_table_row_for_mac(mac, device.get('ip'))
-            self._repaint_all_table_rows_for_hover()
-            try:
-                app = QApplication.instance()
-                if app is not None:
-                    app.processEvents(QEventLoop.ExcludeUserInputEvents)
-            except Exception:
-                pass
+            if turn_on and kill_applied and _superseded():
+                try:
+                    victim = self._victim_record_for_mac(mac) or device
+                    if victim:
+                        self.killer.unkill(victim)
+                except Exception:
+                    pass
+                kill_applied = False
+
+            _mark('tail_start')
+            if not _superseded():
+                self._set_killed_profile(device, bool(kill_applied) if turn_on else False)
+                self._sync_killed_devices()
+                _mark('tail_sync_killed_devices_done')
+                self._write_remembered_killed_macs()
+                _mark('tail_write_remembered_done')
+                self._updateKillButtonState()
+                self._update_scan_count_status()
+                self._refresh_table_row_for_mac(mac, device.get('ip'))
+                self._repaint_all_table_rows_for_hover()
+                try:
+                    app = QApplication.instance()
+                    if app is not None:
+                        app.processEvents(QEventLoop.ExcludeUserInputEvents)
+                except Exception:
+                    pass
+            _mark('tail_done')
         finally:
             if teardown_off and getattr(self, '_kill_teardown_mac', None) == mac:
                 self._kill_teardown_mac = None
                 self._kill_teardown_ip = None
+            try:
+                pk = self._killed_profile_key(device)
+                if pk:
+                    self._kill_pending_profiles.discard(pk)
+            except Exception:
+                pass
+            if _kill_dbg and _kill_marks:
+                try:
+                    parts = []
+                    prev_t = _kill_t0
+                    for label, t in _kill_marks:
+                        parts.append(f'{label}+{int((t - prev_t) * 1000)}ms')
+                        prev_t = t
+                    total_ms = int((_kill_time.perf_counter() - _kill_t0) * 1000)
+                    direction = 'ON' if turn_on else 'OFF'
+                    self.log(
+                        f'[KILL-TIMING {direction} total={total_ms}ms] ' + ' '.join(parts),
+                        'gray',
+                    )
+                except Exception:
+                    pass
 
     def _schedule_kill_off_reinforce(self, mac, intent_seq, delay_ms):
         """Delayed OFF reinforcement that self-cancels if intent changed."""
@@ -5594,10 +6656,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if self._ics_windivert_busy(mac):
                         return
                     if plan.use_block_ip:
-                        try:
-                            unblock_ip(victim.get('ip') or '')
-                        except Exception:
-                            pass
+                        _bg_unblock_ip(victim.get('ip'))
                     self._ics_teardown_gate_if_idle(mac)
                 else:
                     self._ensure_network_context_for_victim(victim)
@@ -5642,10 +6701,7 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if mac in self.killer.killed:
                         release_ics_victim_block(self.scanner, self.killer, victim)
                     if plan.use_block_ip:
-                        try:
-                            unblock_ip(victim.get('ip') or '')
-                        except Exception:
-                            pass
+                        _bg_unblock_ip(victim.get('ip'))
                     self._ics_teardown_gate_if_idle(mac)
                 else:
                     self._ensure_network_context_for_victim(victim)
@@ -5687,15 +6743,137 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return None
         return self.scanner.devices[row]
 
+    def _kill_toggle_pending_for_mac(self, mac: str | None) -> bool:
+        mac = str(mac or '').strip()
+        if not mac:
+            return False
+        for pk in getattr(self, '_kill_pending_profiles', set()):
+            pm, _pfx = parse_nickname_profile_key(pk)
+            if pm == mac or pk == mac:
+                return True
+        return False
+
+    def _any_explicit_kill_profile_for_mac(self, mac: str | None) -> bool:
+        mac = str(mac or '').strip()
+        if not mac:
+            return False
+        for d in self.scanner.devices:
+            if d.get('mac') == mac and self._killed_profile_on(d):
+                return True
+        for pk, on in self.killed_devices.items():
+            if not on:
+                continue
+            pm, _pfx = parse_nickname_profile_key(pk)
+            if pm == mac or pk == mac:
+                return True
+        return False
+
+    def _killer_mac_key(self, mac: str | None) -> str | None:
+        """Resolve killer.killed / forwarders key (MAC casing may differ from profile keys)."""
+        from tools.utils import good_mac
+
+        want = good_mac(str(mac or '').strip())
+        if not want:
+            return None
+        killed = getattr(self.killer, 'killed', {}) or {}
+        if want in killed:
+            return want
+        for key in killed:
+            if good_mac(str(key)) == want:
+                return str(key)
+        forwarders = getattr(self.killer, 'forwarders', {}) or {}
+        if want in forwarders:
+            return want
+        for key in forwarders:
+            if good_mac(str(key)) == want:
+                return str(key)
+        return None
+
+    def _explicit_kill_backend_live(self, mac: str | None, device=None) -> bool:
+        """True when explicit Kill (not lag/dupe/pctcut) still has live network state."""
+        from tools.utils import good_mac
+
+        mac_n = good_mac(str(mac or '').strip())
+        if not mac_n:
+            return False
+        ics_macs = {good_mac(m) for m in getattr(self, '_ics_kill_profile_macs', set())}
+        if mac_n in ics_macs:
+            gate = getattr(self, '_ics_lag_gate', None)
+            if gate is not None and gate.is_running():
+                return True
+            if self._killer_mac_key(mac_n):
+                return True
+        killer_key = self._killer_mac_key(mac_n)
+        if not killer_key:
+            return False
+        fw = getattr(self.killer, 'forwarders', {}).get(killer_key)
+        if fw is None:
+            return True
+        return bool(getattr(fw, 'running', False))
+
+    def _reconcile_stale_kill_profile(self, device) -> bool:
+        """Clear ghost Kill ON when the UI profile outlived the backend (e.g. after idle)."""
+        if not device:
+            return False
+        pk = self._killed_profile_key(device)
+        if not pk or pk in getattr(self, '_kill_pending_profiles', set()):
+            return False
+        if not self._killed_profile_on(device):
+            return False
+        mac = str(device.get('mac') or '').strip()
+        if self._explicit_kill_backend_live(mac, device):
+            return False
+        self._set_killed_profile(device, False)
+        self.log('Kill state reset (was out of sync).', UI_LOG_RESTORE_FG)
+        return True
+
+    def _reconcile_idle_mitm_state(self, *, quiet: bool = True) -> None:
+        """Drop ghost Kill UI and orphan MITM left behind when flows ended without cleanup."""
+        self._sync_killed_devices()
+        flows_busy = (
+            self.lag_active
+            or self.dupe_active
+            or self.mitm_shaping_active
+            or self.percent_cut_active
+        )
+        if not flows_busy:
+            cleared = False
+            for mac in list(getattr(self.killer, 'killed', {}).keys()):
+                if self._kill_toggle_pending_for_mac(mac):
+                    continue
+                if self._any_explicit_kill_profile_for_mac(mac):
+                    continue
+                victim = self._victim_record_for_mac(mac) or {'mac': mac}
+                try:
+                    self.killer.unkill(victim)
+                    self.killer.reinforce_restore(victim)
+                    cleared = True
+                except Exception:
+                    pass
+            for mac, fw in list(getattr(self.killer, 'forwarders', {}).items()):
+                if mac in getattr(self.killer, 'killed', {}):
+                    continue
+                if fw is not None and getattr(fw, 'running', False):
+                    try:
+                        self.killer.disable_percent_cut(mac)
+                    except Exception:
+                        pass
+                    cleared = True
+            if cleared and not quiet:
+                self.log('Cleared stale network cut after idle.', UI_LOG_RESTORE_FG)
+        self._updateKillButtonState()
+
     def _sync_killed_devices(self):
         """
-        Drop Kill-toggle bookkeeping when killer no longer holds this subnet profile.
-        Lag/dupe also use killer.killed for ARP — do not mirror that onto every nickname row.
+        Sync Kill-toggle bookkeeping with live backend state.
+
+        In-flight toggles stay latched via ``_kill_pending_profiles``. When the
+        profile says ON but nothing is actually cutting traffic anymore, clear the
+        ghost state so Kill is usable again after idle.
         """
-        active_macs = set(self.killer.killed.keys())
-        preserve_profiles = set()
+        pending = getattr(self, '_kill_pending_profiles', set())
         for pk in list(self.killed_devices.keys()):
-            if pk in preserve_profiles:
+            if not self.killed_devices.get(pk):
                 continue
             mac, _pfx = parse_nickname_profile_key(pk)
             if not mac and '|' not in pk:
@@ -5703,17 +6881,13 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if not mac:
                 self.killed_devices.pop(pk, None)
                 continue
-            if mac not in active_macs:
-                if mac in getattr(self, '_ics_kill_profile_macs', set()):
-                    continue
-                self.killed_devices[pk] = False
+            if pk in pending:
                 continue
-            if '|' in pk:
-                victim = self.killer.killed.get(mac)
-                if victim:
-                    vpk = nickname_profile_key(mac, victim.get('ip', ''))
-                    if pk != vpk:
-                        self.killed_devices[pk] = False
+            if mac in getattr(self, '_ics_kill_profile_macs', set()):
+                continue
+            if self._explicit_kill_backend_live(mac):
+                continue
+            self.killed_devices[pk] = False
 
     def _set_kill_button_idle_look(self):
         """Icon + compact width for Kill: OFF (matches Lag/Dupe footprint)."""
@@ -5813,5 +6987,5 @@ class ElmoCut(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._set_killed_profile(device, False)
         self._updateKillButtonState()
         dev = dict(device)
-        self._run_kill_command(mac, dev, turn_on=False, source='enqueue_off_only')
+        self._schedule_kill_command(mac, dev, turn_on=False, source='enqueue_off_only')
 

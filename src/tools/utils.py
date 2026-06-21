@@ -23,7 +23,43 @@ def _windows_subprocess_no_window_kwargs():
     si = subprocess.STARTUPINFO()
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     si.wShowWindow = subprocess.SW_HIDE
-    return {'startupinfo': si}
+    kw = {'startupinfo': si}
+    no_window = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    if no_window:
+        kw['creationflags'] = no_window
+    return kw
+
+
+def run_command(command, *, shell=True, timeout=None, check=False):
+    """
+    Run a subprocess without flashing cmd.exe / PowerShell on Windows.
+
+    String commands with shell=True use ``cmd.exe /d /c`` (not COMSPEC) so PCs
+    with COMSPEC pointing at PowerShell do not spawn a visible console per call.
+    """
+    kwargs = {
+        'stdout': subprocess.PIPE,
+        'stderr': subprocess.PIPE,
+        'text': True,
+        'check': check,
+    }
+    if timeout is not None:
+        kwargs['timeout'] = timeout
+    if sys.platform.startswith('win'):
+        kwargs.update(_windows_subprocess_no_window_kwargs())
+        if shell and isinstance(command, str):
+            cmd_exe = os.path.join(
+                os.environ.get('SystemRoot', r'C:\Windows'),
+                'System32',
+                'cmd.exe',
+            )
+            if os.path.isfile(cmd_exe):
+                return subprocess.run(
+                    [cmd_exe, '/d', '/c', command],
+                    shell=False,
+                    **kwargs,
+                )
+    return subprocess.run(command, shell=shell, **kwargs)
 
 
 def _is_bad_iface_display_name(s: str) -> bool:
@@ -31,7 +67,7 @@ def _is_bad_iface_display_name(s: str) -> bool:
     t = (s or '').strip().lower()
     if not t:
         return True
-    if t == 'description':
+    if t == 'description' or t.startswith('description'):
         return True
     if t in ('connected', 'disconnected', 'enabled', 'disabled', 'dedicated'):
         return True
@@ -47,6 +83,12 @@ def format_iface_settings_label(iface: NetFace) -> str:
     """
     name = (iface.name or '').strip()
     ip = getattr(iface, 'ip', None) or ''
+    try:
+        lip = _iface_live_ipv4(iface)
+        if lip:
+            ip = lip
+    except Exception:
+        pass
     if ip in ('0.0.0.0', '127.0.0.1'):
         ip = ''
     mac = getattr(iface, 'mac', None) or ''
@@ -144,6 +186,7 @@ def get_my_ip(iface_name):
 
     invalid_ips = ('0.0.0.0', '127.0.0.1', None)
     iface_name = iface_name or str(conf.iface)
+    candidates: list[str] = []
 
     # Preferred: walk the scapy route table for the specific interface
     try:
@@ -151,15 +194,26 @@ def get_my_ip(iface_name):
             if len(entry) >= 5:
                 dst, mask, gw, iface, src_ip = entry[:5]
                 if iface == iface_name and src_ip not in invalid_ips:
-                    return src_ip
+                    candidates.append(str(src_ip))
     except Exception:
         pass
+
+    for src_ip in candidates:
+        if _ipv4_usable_for_lan(src_ip):
+            return src_ip
+    for src_ip in candidates:
+        if _ipv4_valid(src_ip) and src_ip not in invalid_ips:
+            return src_ip
 
     # Fallback: use the default route (first non-loopback source IP)
     try:
         route_result = conf.route.route("0.0.0.0")
         if len(route_result) >= 2 and route_result[1] not in invalid_ips:
-            return route_result[1]
+            src_ip = str(route_result[1])
+            if _ipv4_usable_for_lan(src_ip):
+                return src_ip
+            if _ipv4_valid(src_ip):
+                return src_ip
     except Exception:
         pass
 
@@ -246,6 +300,145 @@ def get_gateway_mac(iface_ip, router_ip):
         pass
     return GLOBAL_MAC
 
+
+def lookup_mac_from_arp_table(ip: str, iface_ip: str | None = None) -> str:
+    """
+    Read the Windows/macOS ARP cache for ``ip`` without Scapy (fast, no 4s timeout).
+
+    PS5/Wi‑Fi clients are often missing from the cache until something pings them;
+    ZubCut's scan MAC can go stale while the UI still shows KILL:ON in ~20ms.
+    """
+    ip = str(ip or '').strip()
+    if not ip or not _ipv4_valid(ip):
+        return GLOBAL_MAC
+    if sys.platform.startswith('win'):
+        if iface_ip and iface_ip not in ('127.0.0.1', '0.0.0.0'):
+            response = terminal(f'arp -a {ip} -N {iface_ip}')
+        else:
+            response = terminal(f'arp -a {ip}')
+        if response:
+            for line in response.split('\n'):
+                line = line.strip()
+                if not line or 'Interface:' in line:
+                    continue
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == ip:
+                    mac = good_mac(parts[1].replace('-', ':'))
+                    if mac and mac != GLOBAL_MAC:
+                        return mac
+    else:
+        response = terminal(f'arp -n {ip}')
+        if response:
+            for token in response.split():
+                if ':' in token and len(token) >= 17:
+                    mac = good_mac(token)
+                    if mac and mac != GLOBAL_MAC:
+                        return mac
+    return GLOBAL_MAC
+
+
+def ipv4_ping_reachable(ip: str, *, timeout_ms: int = 500) -> bool:
+    """True when a single ICMP echo to ``ip`` gets a reply (ignores stale ARP ghosts)."""
+    ip = str(ip or '').strip()
+    if not ip or not _ipv4_valid(ip):
+        return False
+    try:
+        if sys.platform.startswith('win'):
+            out = run_command(
+                ['ping', '-n', '1', '-w', str(max(100, int(timeout_ms))), ip],
+                shell=False,
+                timeout=max(2, int(timeout_ms / 1000) + 1),
+            )
+            text = str(out or '').lower()
+            return 'ttl=' in text and 'unreachable' not in text and 'timed out' not in text
+        out = run_command(
+            ['ping', '-c', '1', '-W', str(max(1, int(timeout_ms / 1000))), ip],
+            shell=False,
+            timeout=max(2, int(timeout_ms / 1000) + 1),
+        )
+        text = str(out or '').lower()
+        return 'ttl=' in text or 'time=' in text
+    except Exception:
+        return False
+
+
+def victim_endpoint_live_for_mitm(
+    ip: str, expected_mac: str, iface_ip: str | None = None
+) -> tuple[bool, str]:
+    """
+    PS5 Ethernet vs Wi‑Fi rows use different MACs — do not MITM a ghost favorite IP.
+    Requires ping success so a stale ARP entry for an old .248 does not count as live.
+    """
+    ip = str(ip or '').strip()
+    expected_mac = good_mac(str(expected_mac or '').strip())
+    if not ip or not _ipv4_valid(ip):
+        return False, 'invalid victim IP'
+    if not ipv4_ping_reachable(ip):
+        live_ip = ''
+        if expected_mac:
+            try:
+                live_ip = str(lookup_ip_from_arp_table(expected_mac, iface_ip) or '').strip()
+            except Exception:
+                live_ip = ''
+        if live_ip and live_ip != ip:
+            return (
+                False,
+                f'{ip} is offline — this device is now at {live_ip}. Rescan and use that row.',
+            )
+        return (
+            False,
+            f'{ip} is not reachable — rescan after switching the PS5 between Ethernet and Wi‑Fi.',
+        )
+    arp_mac = lookup_mac_from_arp_table(ip, iface_ip)
+    if mac_address_is_usable(arp_mac) and expected_mac and arp_mac != expected_mac:
+        live_ip = str(lookup_ip_from_arp_table(expected_mac, iface_ip) or '').strip()
+        hint = f' It may be at {live_ip} now.' if live_ip and live_ip != ip else ''
+        return (
+            False,
+            f'{ip} belongs to another device (ARP MAC mismatch).{hint} Rescan and pick the live PS5 row.',
+        )
+    return True, ''
+
+
+def lookup_ip_from_arp_table(mac: str, iface_ip: str | None = None) -> str:
+    """Reverse ARP lookup: IPv4 currently associated with ``mac`` in the OS cache."""
+    mac = good_mac(mac)
+    if not mac or mac in (GLOBAL_MAC, '00:00:00:00:00:00'):
+        return ''
+    if sys.platform.startswith('win'):
+        if iface_ip and iface_ip not in ('127.0.0.1', '0.0.0.0'):
+            response = terminal(f'arp -a -N {iface_ip}')
+        else:
+            response = terminal('arp -a')
+        if response:
+            for line in response.split('\n'):
+                line = line.strip()
+                if not line or 'Interface:' in line or 'Internet Address' in line:
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    ip_candidate = parts[0]
+                    mac_candidate = good_mac(parts[1].replace('-', ':'))
+                    if mac_candidate == mac and _ipv4_valid(ip_candidate):
+                        return ip_candidate
+    else:
+        response = terminal('arp -a') or terminal('arp -n') or ''
+        if response:
+            for line in response.split('\n'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    ip_candidate = parts[0]
+                    mac_candidate = good_mac(parts[1])
+                    if mac_candidate == mac and _ipv4_valid(ip_candidate):
+                        return ip_candidate
+    return ''
+
+
+def mac_address_is_usable(mac: str) -> bool:
+    m = good_mac(str(mac or '').strip())
+    return bool(m and m not in (GLOBAL_MAC, '00:00:00:00:00:00'))
+
+
 def goto(url):
     """
     Open url in default browser (cross-platform)
@@ -261,19 +454,68 @@ def check_connection(func):
     """
     def wrapper(*args, **kargs):
         if is_connected():
-            # args[0] == "self" in ElmoCut class
+            # args[0] == "self" in ZubCutApp class
             return func(args[0])
     return wrapper
 
 _IFACES_CACHE: list | None = None
 _IFACES_CACHE_AT: float = 0.0
 _IFACES_CACHE_TTL_S = 45.0
+_WIN_ADAPTER_NAMES: dict[str, str] | None = None
 
 
-def invalidate_ifaces_cache() -> None:
-    global _IFACES_CACHE, _IFACES_CACHE_AT
+def _guid_lookup_key(guid: str) -> str:
+    g = str(guid or '').strip().upper()
+    if not g:
+        return ''
+    if not g.startswith('{'):
+        g = '{' + g + '}'
+    return g
+
+
+def _windows_adapter_friendly_by_guid() -> dict[str, str]:
+    """One-shot GUID → 'Wi-Fi' / 'Ethernet' map (cached; Realtek USB Wi‑Fi breaks ipconfig labels)."""
+    global _WIN_ADAPTER_NAMES
+    if _WIN_ADAPTER_NAMES is not None:
+        return _WIN_ADAPTER_NAMES
+    out: dict[str, str] = {}
+    if sys.platform.startswith('win'):
+        try:
+            r = run_command(
+                [
+                    'powershell',
+                    '-NoProfile',
+                    '-WindowStyle',
+                    'Hidden',
+                    '-Command',
+                    "Get-NetAdapter | ForEach-Object { $_.InterfaceGuid.ToString().ToUpper() + '|' + $_.Name }",
+                ],
+                shell=False,
+                timeout=8,
+            )
+            if r.returncode == 0 and r.stdout:
+                for line in str(r.stdout).splitlines():
+                    line = line.strip()
+                    if '|' not in line:
+                        continue
+                    gid, fname = line.split('|', 1)
+                    gid = _guid_lookup_key(gid.strip())
+                    fname = fname.strip()
+                    if gid and fname:
+                        out[gid] = fname
+        except Exception:
+            pass
+    _WIN_ADAPTER_NAMES = out
+    return out
+
+
+def invalidate_ifaces_cache(*, full: bool = False) -> None:
+    """Drop cached adapter list. ``full=True`` also refreshes Windows friendly names (PowerShell)."""
+    global _IFACES_CACHE, _IFACES_CACHE_AT, _WIN_ADAPTER_NAMES
     _IFACES_CACHE = None
     _IFACES_CACHE_AT = 0.0
+    if full:
+        _WIN_ADAPTER_NAMES = None
 
 
 def get_ifaces_cached(*, max_age_s: float | None = None):
@@ -286,8 +528,10 @@ def get_ifaces_cached(*, max_age_s: float | None = None):
     if _IFACES_CACHE is not None and (now - _IFACES_CACHE_AT) < ttl:
         return list(_IFACES_CACHE)
     ifaces = get_ifaces()
-    _IFACES_CACHE = list(ifaces)
-    _IFACES_CACHE_AT = now
+    # Do not cache an empty scan (Npcap may not be ready on first Settings open).
+    if ifaces:
+        _IFACES_CACHE = list(ifaces)
+        _IFACES_CACHE_AT = now
     return list(ifaces)
 
 
@@ -320,17 +564,23 @@ def get_ifaces():
                             current_adapter = adapter_name
                         interface_map[current_adapter] = {'ip': '0.0.0.0', 'mac': GLOBAL_MAC, 'guid': None}
                 elif current_adapter:
-                    # Look for IPv4 address with a regex to handle "(Preferred)" or localized text
+                    # Only the adapter's own IPv4 — skip gateway/DHCP/DNS/mask lines
+                    if not _ipconfig_line_is_host_ipv4(line):
+                        mac_match = re.search(r'([0-9A-Fa-f]{2}(?:[-:][0-9A-Fa-f]{2}){5})', line)
+                        if mac_match:
+                            interface_map[current_adapter]['mac'] = good_mac(mac_match.group(1))
+                        continue
                     ip_match = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', line)
                     if ip_match:
                         ip = ip_match.group(1)
                         try:
                             nums = ip.split('.')
                             if all(0 <= int(n) <= 255 for n in nums) and ip != '0.0.0.0':
-                                interface_map[current_adapter]['ip'] = ip
+                                interface_map[current_adapter]['ip'] = _prefer_ipv4(
+                                    interface_map[current_adapter]['ip'], ip
+                                )
                         except ValueError:
                             pass
-                    # Look for Physical Address (MAC) using regex for locale-agnostic parsing
                     mac_match = re.search(r'([0-9A-Fa-f]{2}(?:[-:][0-9A-Fa-f]{2}){5})', line)
                     if mac_match:
                         interface_map[current_adapter]['mac'] = good_mac(mac_match.group(1))
@@ -338,6 +588,7 @@ def get_ifaces():
         # Step 2: Get GUID mapping from netsh (may be localized - best effort)
         netsh_output = terminal('netsh interface show interface')
         guid_to_friendly = {}  # guid -> friendly_name
+        guid_names = _windows_adapter_friendly_by_guid()
         if netsh_output:
             for line in netsh_output.split('\n'):
                 line = line.strip()
@@ -359,8 +610,13 @@ def get_ifaces():
         # Step 3: Get Scapy interfaces and match with our map
         from scapy.all import get_if_hwaddr
         scapy_ifaces = get_if_list()
+        # Driver Easy / Npcap reinstall often leaves several ghost NPF_{GUID} bindings
+        # on the same IPv4; keep the one with a real MAC (others are FF:FF:FF:FF:FF:FF).
+        best_by_ip: dict[str, NetFace] = {}
 
         for scapy_name in scapy_ifaces:
+            if 'Loopback' in scapy_name:
+                continue
             # Extract GUID from Scapy name: \\Device\\NPF_{GUID}
             guid = None
             if 'NPF_' in scapy_name:
@@ -393,6 +649,8 @@ def get_ifaces():
             # powershell.exe on every refresh; ipconfig + MAC match remains the source of truth).
             if friendly_name and _is_bad_iface_display_name(friendly_name):
                 friendly_name = None
+            if not friendly_name and guid:
+                friendly_name = guid_names.get(_guid_lookup_key(guid))
 
             # Get IP and MAC
             ip = '0.0.0.0'
@@ -431,7 +689,7 @@ def get_ifaces():
                     if route_result and len(route_result) > 1:
                         potential_ip = route_result[1]
                         if potential_ip and potential_ip not in ('0.0.0.0', '127.0.0.1'):
-                            ip = potential_ip
+                            ip = _prefer_ipv4(ip, potential_ip)
                             found_ip = True
                 except TypeError:
                     # Newer scapy versions do not accept iface kwarg
@@ -447,7 +705,7 @@ def get_ifaces():
                             if len(route) >= 5 and route[3] == scapy_name:
                                 route_ip = route[4]
                                 if route_ip and route_ip not in ('0.0.0.0', '127.0.0.1'):
-                                    ip = route_ip
+                                    ip = _prefer_ipv4(ip, route_ip)
                                     found_ip = True
                                     break
                     except Exception:
@@ -463,14 +721,16 @@ def get_ifaces():
                 try:
                     potential_ip = get_my_ip(scapy_name)
                     if potential_ip and potential_ip != '0.0.0.0' and potential_ip != '127.0.0.1':
-                        ip = potential_ip
+                        ip = _prefer_ipv4(ip, potential_ip)
                         found_ip = True
                 except Exception:
                     pass
             
             # Use friendly name if available, otherwise use Scapy name (cleaned up)
-            if friendly_name:
+            if friendly_name and not _is_bad_iface_display_name(friendly_name):
                 display_name = friendly_name
+            elif guid and _guid_lookup_key(guid) in guid_names:
+                display_name = guid_names[_guid_lookup_key(guid)]
             else:
                 # Clean up Scapy name for display
                 display_name = scapy_name.replace('\\Device\\NPF_', '').strip('{}')
@@ -488,7 +748,27 @@ def get_ifaces():
                 'ips': [ip],
                 'win_guid': guid,            # optional: keep Windows GUID if needed
             }
-            yield NetFace(iface)
+            face = NetFace(iface)
+            refresh_netface_live_ip(face)
+            lip = str(face.ip or ip or '').strip()
+            if lip in ('127.0.0.1', '0.0.0.0'):
+                if mac_address_is_usable(mac):
+                    yield face
+                continue
+            # Skip ghost Npcap bindings (00:00… / FF:FF…) that share a live LAN IP with a real NIC.
+            if not mac_address_is_usable(mac):
+                continue
+            # Disconnected adapters (Bluetooth, unplugged Ethernet) often show APIPA only —
+            # do not treat them as the active LAN NIC (breaks Lag/Kill MITM on Wi‑Fi).
+            if not _ipv4_usable_for_lan(lip):
+                continue
+            prev = best_by_ip.get(lip)
+            if prev is None:
+                best_by_ip[lip] = face
+            elif mac_address_is_usable(mac) and not mac_address_is_usable(prev.mac):
+                best_by_ip[lip] = face
+        for face in best_by_ip.values():
+            yield face
     else:
         # macOS/Linux: Build iface dicts similar to Windows structure
         # name, guid=name, mac via scapy, ips via route table
@@ -519,20 +799,30 @@ def get_default_iface():
     """
     Get default pcap interface (cross-platform)
     """
+    try:
+        best = pick_best_live_iface()
+        if best is not None and best.name != 'NULL' and _iface_live_ipv4(best):
+            refresh_netface_live_ip(best)
+            return best
+    except Exception:
+        pass
     ifaces_list = list(get_ifaces())
     if not ifaces_list:
         return NetFace(DUMMY_IFACE)
-    
+
     # Try to match with scapy's default interface
     for iface in ifaces_list:
         if iface.guid in str(conf.iface) or iface.name in str(conf.iface):
-            return iface
-    
-    # Fallback: return first non-loopback interface
+            refresh_netface_live_ip(iface)
+            if _iface_live_ipv4(iface):
+                return iface
+
+    # Fallback: first connected LAN interface (not APIPA)
     for iface in ifaces_list:
-        if iface.ip and iface.ip != '127.0.0.1' and iface.ip != '0.0.0.0':
+        refresh_netface_live_ip(iface)
+        if _iface_live_ipv4(iface):
             return iface
-    
+
     # Last resort: return first interface
     return ifaces_list[0] if ifaces_list else NetFace(DUMMY_IFACE)
 
@@ -546,6 +836,58 @@ def _ipv4_valid(ip: str) -> bool:
         return all(0 <= int(p) <= 255 for p in ip.split('.'))
     except ValueError:
         return False
+
+
+def _ipv4_usable_for_lan(ip: str) -> bool:
+    """Routable LAN IPv4 — excludes loopback, unset, and APIPA (169.254.x.x)."""
+    if not _ipv4_valid(ip):
+        return False
+    if ip in ('0.0.0.0', '127.0.0.1'):
+        return False
+    return not ip.startswith('169.254.')
+
+
+def _prefer_ipv4(current: str, new: str) -> str:
+    """Keep DHCP/home LAN over APIPA; never replace a good host IP with another."""
+    cur = str(current or '').strip()
+    nxt = str(new or '').strip()
+    cur_ok = _ipv4_usable_for_lan(cur)
+    nxt_ok = _ipv4_usable_for_lan(nxt)
+    if cur_ok and nxt_ok:
+        return cur
+    if nxt_ok:
+        return nxt
+    if cur_ok:
+        return cur
+    return nxt or cur
+
+
+def _ipconfig_line_is_host_ipv4(line: str) -> bool:
+    """True only for adapter IPv4 assignment lines — not gateway/DNS/mask."""
+    low = (line or '').lower()
+    if any(
+        token in low
+        for token in (
+            'gateway',
+            'dhcp server',
+            'dns',
+            'wins',
+            'mask',
+            'subnet',
+            'route',
+        )
+    ):
+        return False
+    return any(
+        token in low
+        for token in (
+            'ipv4 address',
+            'ip address',
+            'ip-adresse',
+            'adresse ipv4',
+            'indirizzo ipv4',
+        )
+    )
 
 
 def _mask_prefix_len(mask_value) -> int:
@@ -577,6 +919,106 @@ def _network_for_route(route_entry):
         return None
 
 
+def refresh_netface_live_ip(iface: NetFace) -> None:
+    """Refresh NetFace.ip from the OS (Settings/scan objects go stale after NIC changes)."""
+    lip = _iface_live_ipv4(iface)
+    if lip:
+        iface.ip = lip
+
+
+def resolve_iface_my_ip(iface) -> str:
+    """Best IPv4 for scanner Me/router topology — DHCP LAN over APIPA."""
+    refresh_netface_live_ip(iface)
+    guid = str(getattr(iface, 'guid', None) or '').strip()
+    ip = str(get_my_ip(guid) if guid else '') or ''
+    cached = str(getattr(iface, 'ip', None) or '').strip()
+    if _ipv4_usable_for_lan(ip):
+        return ip
+    if _ipv4_usable_for_lan(cached):
+        return cached
+    return ip if _ipv4_valid(ip) else cached
+
+
+def _pick_first_live_iface(ifaces):
+    for iface in ifaces:
+        refresh_netface_live_ip(iface)
+        if _iface_live_ipv4(iface):
+            return iface
+    return None
+
+
+def _iface_live_ipv4(iface) -> str:
+    """Current IPv4 on this Npcap iface (not the stale NetFace.ip cache)."""
+    guid = str(getattr(iface, 'guid', None) or '').strip()
+    if not guid:
+        return ''
+    try:
+        ip = str(get_my_ip(guid) or '').strip()
+    except Exception:
+        return ''
+    if ip in ('0.0.0.0', '127.0.0.1') or not _ipv4_usable_for_lan(ip):
+        return ''
+    return ip
+
+
+def _iface_for_route_tokens(route_tokens, ifaces):
+    if not route_tokens:
+        return None
+    for token in route_tokens:
+        ts = str(token)
+        for iface in ifaces:
+            if iface.guid == ts or ts == iface.guid:
+                return iface
+    for token in route_tokens:
+        ts = str(token)
+        if 'NPF_' in ts or ts.startswith('\\Device'):
+            for iface in ifaces:
+                if iface.guid == ts:
+                    return iface
+    return None
+
+
+def _parse_windows_arp_by_interface() -> dict[str, set[str]]:
+    """Map local interface IPv4 -> remote IPs listed under that ARP section."""
+    if not sys.platform.startswith('win'):
+        return {}
+    text = terminal('arp -a') or ''
+    result: dict[str, set[str]] = {}
+    current_iface_ip = ''
+    for raw in text.split('\n'):
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith('interface:'):
+            parts = line.split()
+            current_iface_ip = parts[1] if len(parts) >= 2 else ''
+            if current_iface_ip:
+                result.setdefault(current_iface_ip, set())
+            continue
+        if not current_iface_ip:
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and _ipv4_valid(parts[0]):
+            result.setdefault(current_iface_ip, set()).add(parts[0])
+    return result
+
+
+def _iface_for_victim_arp(victim_ip: str, ifaces) -> 'NetFace | None':
+    """Pick the NIC whose OS ARP cache already lists this victim (Wi‑Fi vs Ethernet)."""
+    victim_ip = str(victim_ip or '').strip()
+    if not victim_ip or not ifaces:
+        return None
+    by_iface = _parse_windows_arp_by_interface()
+    if not by_iface:
+        return None
+    for iface in ifaces:
+        lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
+        if lip and victim_ip in by_iface.get(lip, set()):
+            return iface
+    return None
+
+
 def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     """
     Pick the local NetFace Scapy would use to reach victim_ip (same subnet / route table).
@@ -586,32 +1028,74 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     """
     if not _ipv4_valid(victim_ip) or victim_ip in ('0.0.0.0', '127.0.0.1'):
         return fallback if fallback is not None else get_default_iface()
+    # Cached iface list keeps Kill ON snappy when a Wi-Fi/BT combo dongle inflates
+    # ipconfig output (1–3 s parse). The cache is invalidated by Settings/Clumsy flows.
     try:
-        conf.route.resync()
+        ifaces = list(get_ifaces_cached())
     except Exception:
-        pass
-    ifaces = list(get_ifaces())
+        ifaces = list(get_ifaces())
     if not ifaces:
         return fallback if fallback is not None else get_default_iface()
 
-    rt = None
-    try:
-        rt = conf.route.route(victim_ip)
-    except Exception:
-        rt = None
+    # ARP cache first: when PC has Ethernet + Wi‑Fi on the same /24, the route
+    # table often picks Ethernet while the victim (PS5 on Wi‑Fi) is only reachable
+    # via the Wi‑Fi ARP segment — poisoning on the wrong NIC does nothing.
+    arp_hit = _iface_for_victim_arp(victim_ip, ifaces)
+    if arp_hit is not None:
+        return arp_hit
+    if fallback is not None:
+        live_fb = _iface_live_ipv4(fallback)
+        if live_fb and victim_ip in _parse_windows_arp_by_interface().get(live_fb, set()):
+            return fallback
 
-    if rt:
-        for token in rt:
-            ts = str(token)
-            for iface in ifaces:
-                if iface.guid == ts or ts == iface.guid:
-                    return iface
-        for token in rt:
-            ts = str(token)
-            if 'NPF_' in ts or ts.startswith('\\Device'):
-                for iface in ifaces:
-                    if iface.guid == ts:
-                        return iface
+    def _route_iface(*, resync: bool = False):
+        if resync:
+            try:
+                conf.route.resync()
+            except Exception:
+                pass
+        try:
+            rt = conf.route.route(victim_ip)
+        except Exception:
+            return None
+        return _iface_for_route_tokens(rt, ifaces)
+
+    # Route table first — authoritative when the PC hops Ethernet ↔ Wi‑Fi on the same /24.
+    # The old /24 fast-accept on fallback.NetFace.ip kept using unplugged Ethernet after
+    # switching to Wi‑Fi (stale 192.168.1.x on the cached object), so Lag/Kill sent no traffic.
+    hit = _route_iface(resync=False)
+    if hit is not None:
+        # Same /24: prefer Settings/fallback when route picked a different NIC.
+        try:
+            if fallback is not None:
+                live_fb = _iface_live_ipv4(fallback)
+                v_oct = [int(x) for x in victim_ip.split('.')]
+                f_oct = [int(x) for x in live_fb.split('.')] if live_fb else []
+                if (
+                    len(v_oct) == 4
+                    and len(f_oct) == 4
+                    and v_oct[:3] == f_oct[:3]
+                    and str(hit.guid) != str(fallback.guid)
+                ):
+                    return fallback
+        except Exception:
+            pass
+        return hit
+    hit = _route_iface(resync=True)
+    if hit is not None:
+        return hit
+
+    # Fast accept only when fallback still has a live address on the victim's /24.
+    try:
+        if fallback is not None:
+            live_ip = _iface_live_ipv4(fallback)
+            if live_ip:
+                f_oct = [int(x) for x in live_ip.split('.')]
+                v_oct = [int(x) for x in victim_ip.split('.')]
+                if len(f_oct) == 4 and len(v_oct) == 4 and f_oct[:3] == v_oct[:3]:
+                    return fallback
+    except Exception:
+        pass
 
     # Fallback #1: longest-prefix match from full route table.
     try:
@@ -641,13 +1125,13 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     except Exception:
         pass
 
-    # Fallback #2: same /24 as a configured interface (hotspot clients, odd route tables).
+    # Fallback #2: same /24 as a live interface (hotspot clients, odd route tables).
     try:
         v_oct = [int(x) for x in victim_ip.split('.')]
     except ValueError:
         return fallback if fallback is not None else get_default_iface()
     for iface in ifaces:
-        ip = getattr(iface, 'ip', None) or ''
+        ip = _iface_live_ipv4(iface)
         if not ip or ip in ('0.0.0.0', '127.0.0.1'):
             continue
         try:
@@ -657,7 +1141,154 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
         if len(a) == 4 and len(v_oct) == 4 and a[:3] == v_oct[:3]:
             return iface
 
-    return fallback if fallback is not None else get_default_iface()
+    if fallback is not None and _iface_live_ipv4(fallback):
+        return fallback
+    return ifaces[0] if ifaces else get_default_iface()
+
+
+def pick_best_live_iface():
+    """Return the best connected LAN adapter for Settings (live IP, usable MAC, not APIPA)."""
+    ifaces = list(get_ifaces_cached())
+    if not ifaces:
+        ifaces = list(get_ifaces())
+    best = None
+    best_score = -1
+    for iface in ifaces:
+        lip = _iface_live_ipv4(iface)
+        if not lip or lip.startswith('169.254.') or not mac_address_is_usable(iface.mac):
+            continue
+        score = 0
+        if not _is_bad_iface_display_name(iface.name):
+            score += 10
+        try:
+            rt = conf.route.route('0.0.0.0')
+            for token in rt or ():
+                if str(token) == str(iface.guid):
+                    score += 100
+                    break
+        except Exception:
+            pass
+        if score > best_score:
+            best_score = score
+            best = iface
+    if best is not None:
+        return best
+    for iface in ifaces:
+        if _iface_live_ipv4(iface) and mac_address_is_usable(iface.mac):
+            return iface
+    return ifaces[0] if ifaces else NetFace(DUMMY_IFACE)
+
+
+def repair_saved_iface_name(saved: str) -> str:
+    """Map broken Settings labels / ghost bindings to the live default-route NIC."""
+    name = str(saved or '').strip()
+    if not name or name == 'NULL' or _is_bad_iface_display_name(name):
+        invalidate_ifaces_cache(full=True)
+        best = pick_best_live_iface()
+        if best is not None and best.name != 'NULL' and _iface_live_ipv4(best):
+            return best.name
+        for iface in get_ifaces():
+            lip = _iface_live_ipv4(iface)
+            if lip and mac_address_is_usable(iface.mac):
+                return iface.name
+        return name
+
+    invalidate_ifaces_cache(full=True)
+    ifaces = list(get_ifaces())
+    for iface in ifaces:
+        if iface.name != name:
+            continue
+        if mac_address_is_usable(iface.mac) and _iface_live_ipv4(iface):
+            return name
+
+    # Saved adapter disconnected or ghost — remap by last known IP, else default route.
+    want_ip = ''
+    for iface in ifaces:
+        if iface.name == name:
+            want_ip = str(getattr(iface, 'ip', None) or '').strip()
+            break
+    if want_ip and _ipv4_usable_for_lan(want_ip):
+        for iface in ifaces:
+            lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
+            if lip == want_ip and mac_address_is_usable(iface.mac):
+                return iface.name
+    best = pick_best_live_iface()
+    if best is not None and best.name != 'NULL' and _iface_live_ipv4(best):
+        return best.name
+    for iface in ifaces:
+        lip = _iface_live_ipv4(iface)
+        if lip and mac_address_is_usable(iface.mac):
+            return iface.name
+    return name
+
+
+def repair_nickname_last_ips_from_arp(nickname_last_ip: dict, nicknames: dict) -> dict:
+    """Refresh saved last-IP map from the OS ARP table (PS5 moved .165 → .248)."""
+    try:
+        from networking.nicknames import nickname_profile_key, parse_nickname_profile_key
+    except Exception:
+        return dict(nickname_last_ip or {})
+    last = dict(nickname_last_ip or {})
+    iface = pick_best_live_iface()
+    iface_ip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '')
+    keys = set(last.keys()) | {str(k) for k in (nicknames or {})}
+    for key in list(keys):
+        mac, _pfx = parse_nickname_profile_key(str(key))
+        if not mac:
+            continue
+        try:
+            arp_ip = lookup_ip_from_arp_table(mac, iface_ip)
+        except Exception:
+            arp_ip = ''
+        if arp_ip and _ipv4_valid(arp_ip):
+            pk = nickname_profile_key(mac, arp_ip)
+            if pk:
+                last[pk] = arp_ip
+            if str(key) in last and str(key) != pk:
+                del last[str(key)]
+            continue
+        stored = str(last.get(str(key)) or '').strip()
+        if not stored:
+            continue
+        try:
+            owner = lookup_mac_from_arp_table(stored, iface_ip)
+        except Exception:
+            owner = ''
+        if not mac_address_is_usable(owner) or owner != mac:
+            del last[str(key)]
+    return last
+
+
+def resolve_settings_iface_name(saved: str) -> str:
+    """
+    Map stored Settings iface name to a live adapter.
+
+    After Driver Easy / Npcap reinstall, settings may still reference a ghost
+    NPF binding (FF:FF:FF:FF:FF:FF MAC) that no longer captures traffic.
+    """
+    name = str(saved or '').strip()
+    if not name or name == 'NULL':
+        return name
+    if _is_bad_iface_display_name(name):
+        name = ''
+    ifaces = list(get_ifaces_cached())
+    want_ip = ''
+    for iface in ifaces:
+        if iface.name != name:
+            continue
+        if mac_address_is_usable(iface.mac) and _iface_live_ipv4(iface):
+            return name
+        want_ip = str(getattr(iface, 'ip', None) or '').strip()
+        break
+    if want_ip and _ipv4_usable_for_lan(want_ip):
+        for iface in ifaces:
+            lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
+            if lip == want_ip and mac_address_is_usable(iface.mac):
+                return iface.name
+    if not name:
+        best = pick_best_live_iface()
+        return best.name if best and best.name != 'NULL' else ''
+    return name
 
 
 def get_iface_by_name(name):
@@ -666,20 +1297,32 @@ def get_iface_by_name(name):
     """
     if not name or str(name).strip() == '' or name == 'NULL':
         return get_default_iface()
-    name = str(name).strip()
+    name = resolve_settings_iface_name(str(name).strip())
     ifaces = list(get_ifaces())
+    chosen = None
     for iface in ifaces:
         if iface.name == name:
-            return iface
-    # Settings may still store a legacy "Short — long description" label from older builds.
-    for sep in ('\u2014', '\u2013'):
-        if sep in name:
-            stem = name.split(sep, 1)[0].strip()
-            if stem and stem != name:
-                for iface in ifaces:
-                    if iface.name == stem:
-                        return iface
-    return get_default_iface()
+            chosen = iface
+            break
+    if chosen is None:
+        for sep in ('\u2014', '\u2013'):
+            if sep in name:
+                stem = name.split(sep, 1)[0].strip()
+                if stem and stem != name:
+                    for iface in ifaces:
+                        if iface.name == stem:
+                            chosen = iface
+                            break
+            if chosen is not None:
+                break
+    if chosen is None:
+        chosen = get_default_iface()
+    refresh_netface_live_ip(chosen)
+    if not _iface_live_ipv4(chosen):
+        live = _pick_first_live_iface(ifaces)
+        if live is not None:
+            return live
+    return chosen
 
 def is_connected(current_iface=None):
     """

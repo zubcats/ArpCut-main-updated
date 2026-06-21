@@ -80,15 +80,23 @@ jobs:
           import re
           p = Path("src/constants.py")
           text = p.read_text(encoding="utf-8")
+          import os
           build_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          commit = os.environ.get("GITHUB_SHA", "").strip()
           text = re.sub(
               r"^APP_BUILD_TIME_ISO\s*=.*$",
               f"APP_BUILD_TIME_ISO = {build_iso!r}",
               text,
               flags=re.M,
           )
+          text = re.sub(
+              r"^APP_BUILD_COMMIT\s*=.*$",
+              f"APP_BUILD_COMMIT = {commit!r}",
+              text,
+              flags=re.M,
+          )
           p.write_text(text, encoding="utf-8")
-          print("Refreshed APP_BUILD_TIME_ISO to", build_iso)
+          print("Refreshed APP_BUILD_TIME_ISO to", build_iso, "commit", commit[:12])
           PY
 
       - name: Build Windows EXE (PyInstaller via build.py)

@@ -97,11 +97,19 @@ class _InstallerDownloadThread(QThread):
     succeeded = pyqtSignal(str)
     failed = pyqtSignal(str)
 
-    def __init__(self, url, expected_size=0, *, fallback_urls=None):
+    def __init__(
+        self,
+        url,
+        expected_size=0,
+        *,
+        fallback_urls=None,
+        refresh_metadata_first: bool = False,
+    ):
         super().__init__()
         self._url = url
         self._fallback_urls = list(fallback_urls or ())
         self._expected_size = int(expected_size or 0)
+        self._refresh_metadata_first = bool(refresh_metadata_first)
         self._cancel = False
 
     def request_cancel(self):
@@ -109,13 +117,25 @@ class _InstallerDownloadThread(QThread):
 
     def run(self):
         try:
-            updater_log('download thread: urllib start url=%s', self._url)
+            url = self._url
+            fallbacks = self._fallback_urls
+            expected_size = self._expected_size
+            if self._refresh_metadata_first:
+                from tools.updater_core import refresh_installer_download_plan
+
+                updater_log('download thread: refreshing GitHub installer metadata')
+                self.progress.emit(-1, None)
+                url, fallbacks, expected_size = refresh_installer_download_plan()
+                if not url:
+                    self.failed.emit('Could not resolve installer download URL from GitHub.')
+                    return
+            updater_log('download thread: urllib start url=%s', url)
             path = download_installer(
-                self._url,
+                url,
                 progress_callback=lambda r, t: self.progress.emit(r, t),
                 should_cancel=lambda: self._cancel,
-                expected_size=self._expected_size,
-                fallback_urls=self._fallback_urls,
+                expected_size=expected_size,
+                fallback_urls=fallbacks,
             )
             updater_log('download thread: ok path=%s', path)
             self.succeeded.emit(path)
@@ -134,6 +154,7 @@ def download_update_with_progress_dialog(
     show_progress=True,
     expected_size=0,
     fallback_urls=None,
+    refresh_metadata_first: bool = False,
 ):
     """
     Modal download dialog. Returns temp path, None if cancelled, or raises.
@@ -164,10 +185,15 @@ def download_update_with_progress_dialog(
         url,
         expected_size=expected_size,
         fallback_urls=fallback_urls,
+        refresh_metadata_first=refresh_metadata_first,
     )
     holder = {'path': None, 'err': None}
 
     def on_prog(received, total):
+        if received == -1:
+            lbl.setText('Fetching latest installer link from GitHub…')
+            bar.setRange(0, 0)
+            return
         if not show_progress:
             return
         received = int(received)

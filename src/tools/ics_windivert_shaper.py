@@ -188,6 +188,9 @@ def _windivert_service_image_path() -> str:
 
 
 def _windivert_sc_stop_and_delete() -> None:
+    from tools.utils import _windows_subprocess_no_window_kwargs
+
+    sc_kw = _windows_subprocess_no_window_kwargs()
     for args in (['sc.exe', 'stop', 'WinDivert'], ['sc.exe', 'delete', 'WinDivert']):
         try:
             subprocess.run(
@@ -195,7 +198,7 @@ def _windivert_sc_stop_and_delete() -> None:
                 capture_output=True,
                 timeout=15,
                 check=False,
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                **sc_kw,
             )
         except Exception:
             pass
@@ -270,17 +273,35 @@ def _ics_subnet_quad_prefix(prefix: str) -> str:
     return p
 
 
-def _ics_hotspot_ifidx_filter(downstream_prefix: str = '') -> str:
-    """All IPv4/IPv6 on the hotspot NIC (post-NAT PS5 game traffic)."""
-    try:
-        from tools.clumsy_inline import clumsy_ics_downstream_ifidx
-
-        ifidx = clumsy_ics_downstream_ifidx()
-    except Exception:
-        ifidx = 0
+def _ics_ifidx_filter(ifidx: int) -> str:
     if ifidx > 0:
         return f'(ip or ipv6) and ifIdx == {ifidx}'
     return ''
+
+
+def _ics_hotspot_ifidx_filters(downstream_prefix: str = '') -> list[tuple[str, str]]:
+    """Hotspot downstream + internet uplink (ICS post-NAT often appears on uplink ifIdx)."""
+    del downstream_prefix
+    out: list[tuple[str, str]] = []
+    try:
+        from tools.clumsy_inline import (
+            clumsy_ics_downstream_ifidx,
+            clumsy_ics_upstream_ifidx,
+        )
+
+        down = clumsy_ics_downstream_ifidx()
+        up = clumsy_ics_upstream_ifidx()
+    except Exception:
+        down = 0
+        up = 0
+    f_down = _ics_ifidx_filter(down)
+    if f_down:
+        out.append((f_down, 'ifidx-down'))
+    if up > 0 and up != down:
+        f_up = _ics_ifidx_filter(up)
+        if f_up:
+            out.append((f_up, 'ifidx-up'))
+    return out
 
 
 def _ics_hotspot_forward_filter(downstream_prefix: str = '') -> str:
@@ -507,61 +528,107 @@ def _open_windivert_handle(dll: ctypes.WinDLL, filt: str, layer: int) -> int:
     return -1
 
 
-_BROAD_CAPTURE_DESCS = frozenset({'subnet', 'forward', 'ifidx', 'broad'})
+_BROAD_CAPTURE_DESCS = frozenset({
+    'subnet',
+    'forward',
+    'ifidx',
+    'ifidx-down',
+    'ifidx-up',
+    'broad',
+})
 
 
 def _ics_windivert_open_candidates(
-    victim_ip: str, downstream_prefix: str = ''
+    victim_ip: str,
+    downstream_prefix: str = '',
+    *,
+    hotspot_capture: bool = False,
 ) -> list[tuple[str, str]]:
     """
     Filter order for hotspot capture.
 
     Hotspot NIC (ifIdx) first for post-NAT game traffic, then pre-NAT victim IP.
+    When ``hotspot_capture`` is true, use ifIdx/broad filters even if the table IP
+    is still a home LAN address (192.168.1.x).
     """
     vip = _ipv4_quad(victim_ip)
-    if not vip:
+    if not vip and not hotspot_capture:
         return []
     quad = _ics_subnet_quad_prefix(downstream_prefix)
     out: list[tuple[str, str]] = []
-    on_subnet = bool(quad and vip.startswith(quad + '.'))
-    if on_subnet:
-        ifidx_f = _ics_hotspot_ifidx_filter(downstream_prefix)
-        if ifidx_f:
-            out.append((ifidx_f, 'ifidx'))
+    on_subnet = bool(quad and vip and vip.startswith(quad + '.'))
+    if on_subnet or hotspot_capture:
+        for filt, desc in _ics_hotspot_ifidx_filters(downstream_prefix):
+            out.append((filt, desc))
         out.append((_ics_hotspot_forward_filter(downstream_prefix), 'forward'))
         out.append(('ip or ipv6', 'broad'))
-        out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
-        # Victim-only filter misses post-NAT game traffic — last resort only.
-        out.append((_ics_clumsy_victim_filter(vip), 'victim'))
+        if on_subnet and vip:
+            out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
+            out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     elif vip:
         out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     return out
 
 
-def _open_best_windivert_handle(
-    dll: ctypes.WinDLL, victim_ip: str, downstream_prefix: str = ''
-) -> tuple[int, int, str]:
-    """
-    Open exactly one WinDivert handle.
+def _layers_for_capture_desc(desc: str) -> tuple[int, ...]:
+    if desc == 'victim':
+        return (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
+    if desc in ('forward', 'broad'):
+        return (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
+    return (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
 
-    Victim filter: try NETWORK then FORWARD (137.x often visible pre-NAT).
-    Subnet filter: FORWARD then NETWORK (post-NAT game traffic on ICS).
+
+def _open_windivert_handles(
+    dll: ctypes.WinDLL,
+    victim_ip: str,
+    downstream_prefix: str = '',
+    *,
+    hotspot_capture: bool = False,
+) -> list[tuple[int, int, str]]:
     """
-    for filt, desc in _ics_windivert_open_candidates(victim_ip, downstream_prefix):
-        if desc == 'victim':
-            layers = (WINDIVERT_LAYER_NETWORK, WINDIVERT_LAYER_NETWORK_FORWARD)
-        elif desc in ('forward', 'broad'):
-            layers = (WINDIVERT_LAYER_NETWORK_FORWARD,)
-        else:
-            layers = (WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)
-        for layer in layers:
+    Open one or more WinDivert handles (hotspot: downstream + uplink ifIdx).
+
+    Multiple handles are required when ICS post-NAT game traffic appears on the
+    Ethernet uplink while pre-NAT PS5 traffic is on the hotspot adapter.
+    """
+    opened: list[tuple[int, int, str]] = []
+    seen: set[tuple[str, int]] = set()
+    for filt, desc in _ics_windivert_open_candidates(
+        victim_ip, downstream_prefix, hotspot_capture=hotspot_capture
+    ):
+        for layer in _layers_for_capture_desc(desc):
+            key = (filt, layer)
+            if key in seen:
+                continue
             h = _open_windivert_handle(dll, filt, layer)
-            if h >= 0:
-                return h, layer, desc
-    return -1, 0, ''
+            if h < 0:
+                continue
+            seen.add(key)
+            opened.append((h, layer, desc))
+    return opened
 
 
-def probe_windivert_for_victim(victim_ip: str) -> tuple[bool, str]:
+def _open_best_windivert_handle(
+    dll: ctypes.WinDLL,
+    victim_ip: str,
+    downstream_prefix: str = '',
+    *,
+    hotspot_capture: bool = False,
+) -> tuple[int, int, str]:
+    """Open a single handle (first successful candidate). Prefer :func:`_open_windivert_handles`."""
+    opened = _open_windivert_handles(
+        dll, victim_ip, downstream_prefix, hotspot_capture=hotspot_capture
+    )
+    if not opened:
+        return -1, 0, ''
+    return opened[0]
+
+
+def probe_windivert_for_victim(
+    victim_ip: str,
+    *,
+    hotspot_capture: bool | None = None,
+) -> tuple[bool, str]:
     """
     Try opening WinDivert like Clumsy (dll+sys colocated, admin required).
     Returns (ok, message).
@@ -592,13 +659,24 @@ def probe_windivert_for_victim(victim_ip: str) -> tuple[bool, str]:
         prefix = clumsy_ics_downstream_prefix()
     except Exception:
         prefix = '192.168.137.'
-    h, layer, desc = _open_best_windivert_handle(dll, vip, prefix)
-    if h >= 0:
+    if hotspot_capture is None:
         try:
-            dll.WinDivertClose(h)
+            from tools.clumsy_inline import clumsy_hotspot_session_active
+
+            hotspot_capture = clumsy_hotspot_session_active()
         except Exception:
-            pass
-        return True, f'ok (layer {layer}, {desc})'
+            hotspot_capture = False
+    opened = _open_windivert_handles(
+        dll, vip, prefix, hotspot_capture=bool(hotspot_capture)
+    )
+    if opened:
+        for h, layer, desc in opened:
+            try:
+                dll.WinDivertClose(h)
+            except Exception:
+                pass
+        summary = ', '.join(f'{d}@{layer}' for _h, layer, d in opened[:4])
+        return True, f'ok ({len(opened)} handle(s): {summary})'
     last_err = _windivert_last_error_message()
     hint = ''
     if 'code 3' in (last_err or '').lower() or '(code 3)' in (last_err or ''):
@@ -733,13 +811,18 @@ class IcsWinDivertLagGate:
         th = self._thread
         return th is not None and th.is_alive() and bool(self._handles)
 
-    def start(self, direction: str = 'both') -> None:
+    def start(self, direction: str = 'both', *, start_paused: bool = False) -> None:
         d = str(direction or 'both').strip().lower()
         if d not in ('both', 'in', 'out'):
             d = 'both'
         if self.is_running():
             with self._lock:
                 self._direction = d
+                if start_paused:
+                    self._impair_mode = IMPAIR_PAUSE
+                    self._blocking = True
+                    self._hold_pause = True
+                    self._discard_heap = True
             return
         self.stop(join_timeout=0.2)
         self._stop.clear()
@@ -747,8 +830,14 @@ class IcsWinDivertLagGate:
             self._direction = str(direction or 'both').strip().lower()
             if self._direction not in ('both', 'in', 'out'):
                 self._direction = 'both'
-            self._blocking = False
-            self._discard_heap = False
+            self._blocking = bool(start_paused)
+            self._hold_pause = bool(start_paused)
+            if start_paused:
+                self._impair_mode = IMPAIR_PAUSE
+                self._clear_percent_cut_unlocked()
+            else:
+                self._impair_mode = IMPAIR_OFF
+            self._discard_heap = bool(start_paused)
         dll_path, sys_path = _windivert_materialize_paths()
         if not dll_path or not sys_path:
             inst_dll, inst_sys = _windivert_install_paths()
@@ -777,17 +866,26 @@ class IcsWinDivertLagGate:
             clumsy_ics_downstream_ifidx()
         except Exception:
             pass
-        h, layer, desc = _open_best_windivert_handle(self._dll, vip, prefix)
-        if h < 0:
+        try:
+            from tools.clumsy_inline import clumsy_hotspot_session_active
+
+            hotspot_capture = clumsy_hotspot_session_active()
+        except Exception:
+            hotspot_capture = False
+        opened = _open_windivert_handles(
+            self._dll, vip, prefix, hotspot_capture=hotspot_capture
+        )
+        if not opened:
             last_err = _windivert_last_error_message()
             hint = 'Run ZubCut as Administrator.'
             if last_err:
                 raise OSError(f'WinDivertOpen failed: {last_err} {hint}')
             raise OSError(f'WinDivertOpen failed. {hint}')
-        self._handles = [h]
-        self._open_layers = [layer]
-        self._subnet_capture = desc in _BROAD_CAPTURE_DESCS
-        self._capture_desc = desc
+        self._handles = [h for h, _layer, _desc in opened]
+        self._open_layers = [layer for _h, layer, _desc in opened]
+        descs = [d for _h, _layer, d in opened]
+        self._subnet_capture = any(d in _BROAD_CAPTURE_DESCS for d in descs)
+        self._capture_desc = descs[0] if len(descs) == 1 else '+'.join(descs[:4])
         self._packets_seen = 0
         self._packets_matched = 0
         self._packets_held = 0
@@ -841,20 +939,19 @@ class IcsWinDivertLagGate:
     @staticmethod
     def _passes_byte_ratio(pass_pct: int, budget: float, pkt_size: int) -> Tuple[bool, float]:
         """
-        Tokenless byte budget (same model as MITM forwarder ``_passes_ratio``).
-        Returns (allowed, updated_budget).
+        Per-packet stochastic pass (matches MITM forwarder — avoids long starvation gaps).
+        Returns (allowed, updated_budget); budget is unused but kept for call-site compat.
         """
+        del budget, pkt_size
+        import random
+
         pct = max(0, min(100, int(pass_pct)))
         if pct <= 0:
-            return False, budget
+            return False, 0.0
         if pct >= 100:
-            return True, budget
-        size = max(1, int(pkt_size))
-        grant = (size * pct) / 100.0
-        budget += grant
-        if budget >= size:
-            return True, budget - float(size)
-        return False, budget
+            return True, 0.0
+        ok = random.randint(1, 100) <= pct
+        return ok, 0.0
 
     def clear_blocking_pause(self) -> None:
         """Leave kill/lag/dupe full-pause mode; discard held packets (no replay burst)."""
@@ -1089,6 +1186,7 @@ class IcsWinDivertLagGate:
         kernel32 = ctypes.windll.kernel32
         subnet_prefix = getattr(self, '_downstream_prefix', '192.168.137.')
         heap: list[Tuple[float, bytes, bytes, int]] = []
+        dropped_sigs: set[int] = set()
         from tools.mitm_compound_loss import CAP_OVERFLOW_LOSS_PCT, should_drop_compounded
 
         while not self._stop.is_set():
@@ -1146,6 +1244,7 @@ class IcsWinDivertLagGate:
                 }
 
             got_pkt = False
+            dropped_sigs.clear()
             for h in handles:
                 got = self._recv_one(dll, h, buf, addr, recv_len, addr_len)
                 if got is None:
@@ -1161,11 +1260,17 @@ class IcsWinDivertLagGate:
                 if _windivert_addr_impostor(addr_b):
                     continue
 
+                sig = _ipv4_packet_sig(pkt)
+                if sig and sig in dropped_sigs:
+                    continue
+
                 broad = bool(getattr(self, '_subnet_capture', False))
                 parsed = _parse_ipv4_src_dst(pkt)
                 if not parsed:
                     if impair_mode == IMPAIR_PAUSE and blocking:
                         self._packets_matched += 1
+                        if sig:
+                            dropped_sigs.add(sig)
                         continue
                     self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))
                     continue
@@ -1182,6 +1287,8 @@ class IcsWinDivertLagGate:
                         continue
                     self._packets_matched += 1
                     if impair_mode == IMPAIR_PAUSE and blocking:
+                        if sig:
+                            dropped_sigs.add(sig)
                         continue
                     is_from_victim = outbound is not False
                     is_to_victim = outbound is not True
@@ -1309,6 +1416,8 @@ class IcsWinDivertLagGate:
                 if impair_mode == IMPAIR_PAUSE and blocking and (
                     is_from_victim or is_to_victim
                 ):
+                    if sig:
+                        dropped_sigs.add(sig)
                     continue
 
                 self._send_immediate(h, dll, pkt, addr_b, ctypes.byref(send_len))

@@ -12,13 +12,18 @@ from tools.utils_gui import (
     repair_settings,
     migrate_settings_file,
     ensure_windows_elevated,
+    import_settings,
 )
 from tools.license_offline import load_and_validate_installed_license
-from tools.license_remote_signin import effective_signin_url
+from tools.license_remote_signin import effective_signin_url, license_transient_reason
 from tools.branding import load_shell_window_icon, qicon_is_empty
 from tools.qtools import msg_box, Buttons, MsgIcon
 
-from gui.main import ElmoCut
+from zubcut_platform import require_supported_platform
+
+require_supported_platform()
+
+from gui.main import ZubCutApp
 
 from assets import app_icon
 from constants import *
@@ -35,7 +40,7 @@ _UI_LOG_RESTORE_FG = getattr(
 def _load_window_icon():
     icon = load_shell_window_icon()
     if qicon_is_empty(icon):
-        return ElmoCut.processIcon(app_icon, crop_margins=True)
+        return ZubCutApp.processIcon(app_icon, crop_margins=True)
     return icon
 
 
@@ -169,11 +174,11 @@ def _start_license_runtime_validation(gui, icon) -> None:
     gui._license_runtime_last_deferred_reason = ''
 
     def _log_runtime_deferred(reason: str) -> None:
-        msg = str(reason or '').strip() or 'Unknown transient error.'
-        if msg == getattr(gui, '_license_runtime_last_deferred_reason', ''):
+        short = license_transient_reason(reason)
+        if short == getattr(gui, '_license_runtime_last_deferred_reason', ''):
             return
-        gui._license_runtime_last_deferred_reason = msg
-        gui.log(f'License check deferred: {msg}', UI_LOG_RESTORE_FG)
+        gui._license_runtime_last_deferred_reason = short
+        gui.log(f'License check deferred: {short}', UI_LOG_RESTORE_FG)
 
     def _on_session_validated(ok, reason: str) -> None:
         if ok is True:
@@ -308,13 +313,27 @@ if __name__ == "__main__":
             pass
     repair_settings()
     _validate_license_or_exit(icon)
-    GUI = ElmoCut(window_icon=icon)
+    GUI = ZubCutApp(window_icon=icon)
     _start_license_runtime_validation(GUI, icon)
     GUI.show()
     GUI._apply_scan_table_column_layout()
     GUI._apply_status_strip_elide()
     try:
         GUI._ensure_clean_network_on_startup()
+    except Exception:
+        pass
+
+    # Bind scanner/killer to repaired Settings adapter (not get_default_iface guess).
+    try:
+        from tools.utils import get_iface_by_name
+
+        s = import_settings()
+        saved_iface = str(s.get('iface') or '').strip()
+        if saved_iface:
+            picked = get_iface_by_name(saved_iface)
+            if picked and picked.name != 'NULL':
+                GUI.scanner.iface = picked
+                GUI.killer.iface = picked
     except Exception:
         pass
 

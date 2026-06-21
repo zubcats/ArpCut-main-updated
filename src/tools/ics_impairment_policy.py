@@ -67,6 +67,7 @@ def classify_device_impairment(
     - regular: home LAN / router path — ARP MITM + firewall + forwarder
     """
     from tools.clumsy_inline import (
+        clumsy_ics_arp_ip_for_mac,
         clumsy_ics_downstream_prefix,
         clumsy_ics_resolve_victim_ip,
         clumsy_mode_enabled,
@@ -87,10 +88,29 @@ def classify_device_impairment(
     if not clumsy_mode_enabled() or not sys.platform.startswith('win'):
         return _regular_plan(table_ip, table_ip)
 
+    from tools.clumsy_inline import clumsy_hotspot_session_active
+
     resolved = clumsy_ics_resolve_victim_ip(device, scanner) or table_ip
     prefix = clumsy_ics_downstream_prefix()
     topo = read_clumsy_topology()
+    # Mis-detected spare Ethernet while ICS gateway is still 192.168.137.1 (mobile hotspot).
+    if topo == 'ethernet':
+        try:
+            from tools.clumsy_ics import read_clumsy_ics_state
+
+            gw = str(read_clumsy_ics_state().get('downstream_ipv4') or '').strip()
+            if gw.startswith('192.168.137.'):
+                topo = 'hotspot'
+        except Exception:
+            pass
     on_downstream = victim_on_clumsy_ics_subnet(resolved)
+    # Hotspot session: console is on PC Wi‑Fi even when the scan table still shows home LAN IP.
+    if not on_downstream and clumsy_hotspot_session_active() and not device.get('admin'):
+        on_downstream = True
+        if not victim_on_clumsy_ics_subnet(resolved):
+            arp_ip = clumsy_ics_arp_ip_for_mac(scanner, str(device.get('mac') or ''))
+            if arp_ip:
+                resolved = arp_ip
     wd_ready = bool(clumsy_runtime_ready() and windivert_bundle_complete())
 
     if on_downstream:
@@ -109,6 +129,35 @@ def classify_device_impairment(
         )
 
     return _regular_plan(table_ip, resolved)
+
+
+def device_row_for_impairment(
+    device,
+    scanner: Optional['Scanner'] = None,
+    plan: Optional[DeviceImpairmentPlan] = None,
+) -> dict:
+    """
+    Device dict with ``ip`` set for impairment (resolved downstream or LAN).
+
+    Use everywhere instead of re-calling ``clumsy_ics_resolve_victim_ip`` in the GUI.
+    """
+    if not isinstance(device, dict):
+        return device if isinstance(device, dict) else {}
+    plan = plan or classify_device_impairment(device, scanner)
+    row = dict(device)
+    ip = (plan.resolved_ip or str(row.get('ip') or '')).strip()
+    if ip:
+        row['ip'] = ip
+    return row
+
+
+def should_restore_remembered_kill(
+    device,
+    scanner: Optional['Scanner'] = None,
+) -> bool:
+    """Remember-kill on rescan: ARP path only — never ``killer.kill`` for WinDivert victims."""
+    plan = classify_device_impairment(device, scanner)
+    return bool(plan.use_arp_mitm)
 
 
 def use_windivert_impairment(device, scanner: Optional['Scanner'] = None) -> bool:

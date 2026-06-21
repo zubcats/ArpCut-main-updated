@@ -124,13 +124,13 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertNotIn('Stop-Service icssvc', src.replace(' ', ''))
         self.assertNotIn('Disable-NetAdapterBinding', src)
 
-    def test_autodetect_checks_ethernet_console_before_hotspot(self) -> None:
+    def test_autodetect_prefers_hotspot_before_spare_ethernet(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
         self.assertIn('Test-HotspotPathActive', helpers)
         detect_idx = helpers.index('function Detect-ClumsyConsolePath')
         eth_idx = helpers.index('Find-EthernetConsoleAdapter', detect_idx)
         hotspot_check = helpers.index('Test-HotspotPathActive', detect_idx)
-        self.assertLess(eth_idx, hotspot_check)
+        self.assertLess(hotspot_check, eth_idx)
 
     def test_autodetect_tracks_uplink_kind(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
@@ -153,7 +153,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
     def test_ethernet_requires_connected_console_neighbor(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
         self.assertIn('Test-ConsoleOnEthernetAdapter', helpers)
-        self.assertIn('if ($ethUp.Count -eq 1)', helpers)
+        self.assertNotIn('if ($ethUp.Count -eq 1) { return $ethUp[0] }', helpers)
 
     def test_hotspot_operational_without_classic_ics(self) -> None:
         helpers = ics._PS_HOTSPOT_HELPERS
@@ -223,6 +223,17 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertEqual(once.count('Valid hotspot path for Clumsy mode'), 1)
         self.assertIn('console on PC hotspot', once)
 
+    def test_clumsy_hotspot_session_active_resolves_topology(self) -> None:
+        """Regression ZC-4VZ0ZQ: read_clumsy_topology must be imported in clumsy_inline."""
+        from unittest.mock import patch
+
+        with patch.object(inline, 'clumsy_mode_enabled', return_value=False):
+            self.assertFalse(inline.clumsy_hotspot_session_active())
+        with patch.object(inline, 'clumsy_mode_enabled', return_value=True), patch(
+            'tools.clumsy_ics.read_clumsy_topology', return_value='hotspot'
+        ):
+            self.assertTrue(inline.clumsy_hotspot_session_active())
+
     def test_clumsy_ics_subnet_and_gateway(self) -> None:
         path = ics.clumsy_ics_state_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -283,18 +294,21 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('WINDIVERT_LAYER_NETWORK_FORWARD', wd_src)
         self.assertIn('192.168.137.', wd_src)
         self.assertIn('WINDIVERT_LAYER_NETWORK', wd_src)
-        self.assertNotIn('apply_ics_victim_arp_block', ics_block)
-        open_src = wd_src[
-            wd_src.index('def _open_best_windivert_handle'): wd_src.index('def probe_windivert_for_victim')
-        ]
+        self.assertIn('stack_arp = bool(ip) and not for_lag and not for_dupe', ics_block)
+        self.assertIn('sync_scanner_iface_for_ics_downstream', ics_block)
+        self.assertIn('apply_ics_victim_arp_block', ics_block)
+        arp_src = inspect.getsource(inline.apply_ics_victim_arp_block)
+        self.assertIn('sync_scanner_iface_for_ics_downstream', arp_src)
+        self.assertNotIn('sync_iface_for_victim_ip', arp_src)
+        layers_src = inspect.getsource(wd_mod._layers_for_capture_desc)
         self.assertIn(
             '(WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)',
-            open_src.replace('\n', ' '),
+            layers_src.replace('\n', ' '),
         )
         self.assertIn('_ics_windivert_filter', wd_src)
         start_src = gate_src[gate_src.index('def start'): gate_src.index('def set_blocking')]
-        self.assertIn('_open_best_windivert_handle', start_src)
-        self.assertIn('self._handles = [h]', start_src)
+        self.assertIn('_open_windivert_handles', start_src)
+        self.assertIn('self._handles = [h for h', start_src)
         self.assertIn('_ics_windivert_filter', wd_src)
         killer_py = os.path.join(_SRC, 'networking', 'killer.py')
         with open(killer_py, encoding='utf-8') as f:
@@ -306,8 +320,12 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         path = os.path.join(_SRC, 'gui', 'main.py')
         with open(path, encoding='utf-8') as f:
             src = f.read()
-        self.assertIn('if not clumsy_mode_enabled():', src)
-        self.assertIn('self.scanner.flush_arp()', src)
+        # flush_arp must NOT be called from _ensure_network_context_for_victim:
+        # it wipes the local ARP cache the next Kill ON depends on for fast
+        # get_gateway_mac lookups (scapy.getmacbyip fallback = ~4 s timeout).
+        self.assertNotIn('self.scanner.flush_arp()', src)
+        # Clumsy ICS router context binding must still be guarded.
+        self.assertIn('clumsy_mode_enabled()', src)
         self.assertIn('apply_clumsy_ics_router_context', src)
 
     def test_read_clumsy_topology_from_state_file(self) -> None:

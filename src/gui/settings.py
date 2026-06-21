@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 from PyQt5.QtGui import QFont, QKeySequence
-from PyQt5.QtCore import Qt, QTimer, QEvent, QObject
+from PyQt5.QtCore import Qt, QTimer, QEvent, QObject, QThread, pyqtSignal
 import os
 import sys
 
@@ -26,7 +26,7 @@ from tools.qtools import MsgType, Buttons
 from tools.utils import (
     goto,
     get_ifaces,
-    get_default_iface,
+    get_ifaces_cached,
     get_iface_by_name,
     terminal,
     format_iface_settings_label,
@@ -102,6 +102,21 @@ def _settings_keybind_mono_font() -> QFont:
     return f
 
 
+class _UpdateBannerPollThread(QThread):
+    """Fetch update availability off the GUI thread (showEvent must not block on HEAD)."""
+
+    done = pyqtSignal(bool, str)
+
+    def run(self):
+        from tools.updater_core import get_update_status
+
+        try:
+            avail, label = get_update_status()
+        except Exception:
+            avail, label = False, ''
+        self.done.emit(bool(avail), str(label or ''))
+
+
 class _WheelSafeComboBox(QComboBox):
     """Ignore mouse wheel unless the user clicked the combo (avoids accidental index changes)."""
 
@@ -150,9 +165,9 @@ def _channel_kind_label(channel: str) -> str:
 
 
 class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
-    def __init__(self, elmocut, icon):
+    def __init__(self, app, icon):
         super().__init__()
-        self.elmocut = elmocut
+        self.app = app
 
         # Setup UI
         self.icon = icon
@@ -160,6 +175,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setupUi(self)
         self.setObjectName('zubcutAuxiliaryWindow')
         _apply_wheel_safe_combo(self.comboInterface)
+        self._fix_network_interface_combo()
         self._install_percent_keybind_row()
         self._install_clumsy_controls()
         if _normalized_update_channel_setting() in ('main', 'experimental'):
@@ -175,8 +191,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.loadInterfaces(use_cache=True)
         QTimer.singleShot(0, self._load_interfaces_background)
 
-        # Apply old settings on open
-        self.currentSettings()
+        # Apply saved values after first paint (constructor must not block on ipconfig).
+        QTimer.singleShot(0, self.currentSettings)
 
         self.sliderCount.valueChanged.connect(self.spinCount.setValue)
         self.spinCount.valueChanged.connect(self.sliderCount.setValue)
@@ -188,10 +204,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._update_channel = _normalized_update_channel_setting()
         self._update_published_label = ''
         self._update_available = False
+        self._update_banner_poll_thread = None
+        self._clumsy_widgets_sig = None
+        self._layout_size_locked = False
         self.btnUpdate.setText(self._update_button_text())
         self._sync_update_button_tooltip()
         # Defer first HEAD check so it does not run synchronously during main window construction.
-        QTimer.singleShot(0, self._deferred_initial_update_check)
+        QTimer.singleShot(0, self._schedule_update_banner_refresh)
         QTimer.singleShot(0, self._refresh_clumsy_settings_widgets)
         self.chkAutoupdate.setToolTip(
             'Automatic startup updates are not used. Use Install Latest Build below when you want to update.'
@@ -233,6 +252,24 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.chkClumsy.stateChanged.connect(self._on_clumsy_checkbox_changed)
         self.btnClumsyInstall.clicked.connect(self._on_clumsy_install_clicked)
 
+    def _fix_network_interface_combo(self) -> None:
+        """ui_settings.py gives the combo a 9px min height — unusable/looks empty."""
+        from PyQt5.QtWidgets import QSizePolicy, QVBoxLayout
+
+        combo = self.comboInterface
+        combo.setMinimumHeight(30)
+        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        inner = getattr(self, 'horizontalLayoutWidget_2', None)
+        gb = getattr(self, 'groupBox_4', None)
+        if inner is not None:
+            inner.setMinimumHeight(34)
+        if gb is not None and gb.layout() is None and inner is not None:
+            lay = QVBoxLayout(gb)
+            lay.setContentsMargins(10, 22, 10, 8)
+            lay.setSpacing(4)
+            lay.addWidget(inner)
+            gb.setMinimumHeight(max(78, gb.minimumHeight()))
+
     def _relayout_misc_group(self) -> None:
         """Misc. group was a fixed-size child widget in ui_settings; expand for Clumsy rows."""
         gb = self.groupBox_3
@@ -252,8 +289,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             inner.setMinimumHeight(200)
         gb.setMinimumHeight(inner.minimumHeight() + 32)
 
-    def _finalize_settings_layout(self) -> None:
+    def _finalize_settings_layout(self, *, force: bool = False) -> None:
         """Size the window after Clumsy rows are in the layout (ui file used a 71px-tall Misc. box)."""
+        if not force and getattr(self, '_layout_size_locked', False):
+            return
         self._relayout_misc_group()
         self.groupBox_keys.setMinimumHeight(140)
         min_w = 430
@@ -262,16 +301,31 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.setMaximumSize(16777215, min_h + 80)
         self.adjustSize()
         self.setFixedSize(max(min_w, self.width()), max(min_h, self.height()))
+        self._layout_size_locked = True
 
     def _refresh_clumsy_settings_widgets(self):
         if not sys.platform.startswith('win'):
+            sig = ('hidden',)
+            if sig == getattr(self, '_clumsy_widgets_sig', None):
+                return
+            self._clumsy_widgets_sig = sig
             self.chkClumsy.hide()
             self.btnClumsyInstall.hide()
             self.lblClumsyPath.hide()
+            self._layout_size_locked = False
             return
         bundle = clumsy_bundle_offered()
         driver_ok = windivert_driver_installed()
         incomplete = clumsy_bundle_incomplete()
+        try:
+            clumsy_on = bool(self.chkClumsy.isChecked())
+        except Exception:
+            clumsy_on = False
+        sig = (bundle, driver_ok, incomplete, clumsy_on)
+        if sig == getattr(self, '_clumsy_widgets_sig', None):
+            return
+        self._clumsy_widgets_sig = sig
+        self._layout_size_locked = False
         if bundle and driver_ok:
             self.btnClumsyInstall.hide()
             self.chkClumsy.show()
@@ -395,7 +449,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
             set_settings('clumsy_mode', new_v)
-        restart_zubcut(self.elmocut)
+        restart_zubcut(self.app)
 
     def _on_clumsy_install_clicked(self):
         url = (UPDATE_DOWNLOAD_URL_EXPERIMENTAL or '').strip()
@@ -425,7 +479,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if path is None:
                 return
             launch_installer(path)
-            self.elmocut.quit_all()
+            self.app.quit_all()
         except Exception as e:
             MsgType.ERROR(
                 None,
@@ -463,15 +517,18 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         super().showEvent(event)
         self.comboInterface.clearFocus()
         self.comboInterface.hidePopup()
-        self.refresh_update_banner()
-        el = getattr(self, 'elmocut', None)
-        if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
-            el._sync_settings_gear_update_hint()
+        if self._iface_combo_is_placeholder():
+            self._load_interfaces_foreground()
+        elif self.comboInterface.count() == 0:
+            self._load_interfaces_background()
         self._refresh_clumsy_settings_widgets()
         self._finalize_settings_layout()
+        self._schedule_update_banner_refresh()
+        el = getattr(self, 'app', None)
+        if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
+            QTimer.singleShot(0, el._sync_settings_gear_update_hint)
 
     def Apply(self, silent_apply=False):
-        repair_settings()
         nicknames = Nicknames()
 
         count         =  self.spinCount.value()
@@ -573,13 +630,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             }
         )
 
-        old_iface = self.elmocut.scanner.iface.name
+        old_iface = self.app.scanner.iface.name
         
-        self.elmocut.iface = get_iface_by_name(iface)
-        self.updateElmocutSettings()
+        self.app.iface = get_iface_by_name(iface)
+        self.apply_app_settings()
         # Fix horizontal headerfont reverts to normal after applying settings
         mono_font = 'Menlo' if __import__('sys').platform == 'darwin' else 'Consolas'
-        self.elmocut.tableScan.horizontalHeader().setFont(QFont(mono_font, 11))
+        self.app.tableScan.horizontalHeader().setFont(QFont(mono_font, 11))
 
         if not silent_apply:
             MsgType.INFO(
@@ -595,7 +652,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 f'{APP_DISPLAY_NAME} will restart to apply new interface.'
             )
 
-            restart_zubcut(self.elmocut)
+            restart_zubcut(self.app)
         
         self.close()
 
@@ -633,50 +690,62 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.currentSettings()
         self.Apply()
 
-    def updateElmocutSettings(self):
-        repair_settings()
+    def apply_app_settings(self):
+        """Push Settings values into the running main window."""
         s = _coerce_scan_counts(import_settings())
         self.currentSettings()
-        
-        self.elmocut.minimize = s['minimized']
-        self.elmocut.remember = False
-        self.elmocut.autoupdate = s['autoupdate']
-        self.elmocut.scanner.device_count = s['count']
-        self.elmocut.scanner.max_threads = s['threads']
-        
-        self.elmocut.scanner.iface = get_iface_by_name(s['iface'])
-        self.elmocut.killer.iface = get_iface_by_name(s['iface'])
-        
-        app = QApplication.instance()
-        if app is not None:
-            app.setStyleSheet(self.styleSheet())
-        self.elmocut._repolish_chrome_pushbuttons()
-        self.elmocut.setStyleSheet('')
-        self.elmocut.about_window.setStyleSheet('')
-        # Lag/Dupe must inherit QApplication styles only. A full app sheet copied onto QDialog
-        # breaks QDialog-scoped rules from zubcut_dark_stylesheet() (qdark blue panels return).
+        main = self.app
+
+        main.minimize = s['minimized']
+        main.remember = False
+        main.autoupdate = s['autoupdate']
+        main.scanner.device_count = s['count']
+        main.scanner.max_threads = s['threads']
+
+        main.scanner.iface = get_iface_by_name(s['iface'])
+        main.killer.iface = get_iface_by_name(s['iface'])
+        try:
+            main.scanner.refresh_local_topology()
+            main.killer.iface = main.scanner.iface
+            main.killer.router = getattr(main.scanner, 'router', None) or main.killer.router
+            main.scanner.add_me()
+            main.scanner.add_router()
+            main.showDevices()
+        except Exception:
+            pass
+
+        qt_app = QApplication.instance()
+        if qt_app is not None:
+            qt_app.setStyleSheet(self.styleSheet())
+        main._repolish_chrome_pushbuttons()
+        main.setStyleSheet('')
+        main.about_window.setStyleSheet('')
         for _dlg in (
-            getattr(self.elmocut, 'lag_switch_dialog', None),
-            getattr(self.elmocut, 'dupe_switch_dialog', None),
-            getattr(self.elmocut, 'advanced_lag_settings_dialog', None),
+            getattr(main, 'lag_switch_dialog', None),
+            getattr(main, 'dupe_switch_dialog', None),
+            getattr(main, 'advanced_lag_settings_dialog', None),
         ):
             if _dlg is not None:
                 _dlg.setStyleSheet('')
         _w = [
-            self.elmocut,
-            self.elmocut.about_window,
+            main,
+            main.about_window,
             self,
-            self.elmocut.device_window,
-            self.elmocut.traffic_window,
+            main.device_window,
+            main.traffic_window,
         ]
-        _w.extend(d for d in (
-            getattr(self.elmocut, 'lag_switch_dialog', None),
-            getattr(self.elmocut, 'dupe_switch_dialog', None),
-            getattr(self.elmocut, 'advanced_lag_settings_dialog', None),
-        ) if d is not None)
+        _w.extend(
+            d
+            for d in (
+                getattr(main, 'lag_switch_dialog', None),
+                getattr(main, 'dupe_switch_dialog', None),
+                getattr(main, 'advanced_lag_settings_dialog', None),
+            )
+            if d is not None
+        )
         sync_translucent_chrome(_w)
-        self.elmocut.refresh_keyboard_shortcuts_from_settings()
-        self.elmocut._sync_scan_table_column_settings()
+        main.refresh_keyboard_shortcuts_from_settings()
+        main._sync_scan_table_column_settings()
 
     def currentSettings(self):
         s = _coerce_scan_counts(import_settings())
@@ -691,13 +760,31 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.sliderThreads.setValue(s['threads'])
         
         if not s['iface']:
-            set_settings('iface', get_default_iface().name)
-            s = import_settings()
+            try:
+                ifaces = get_ifaces_cached()
+            except Exception:
+                ifaces = []
+            pick = None
+            for iface in ifaces:
+                lip = (getattr(iface, 'ip', None) or '').strip()
+                if lip and lip not in ('127.0.0.1', '0.0.0.0'):
+                    pick = iface
+                    break
+            if pick is None and ifaces:
+                pick = ifaces[0]
+            if pick is not None:
+                set_settings('iface', pick.name)
+                s = import_settings()
         
-        saved = s.get('iface') or ''
+        from tools.utils import resolve_settings_iface_name
+
+        saved = str(s.get('iface') or '').strip()
+        display = resolve_settings_iface_name(saved) or saved
         idx = self.comboInterface.findData(saved)
         if idx < 0:
-            idx = self.comboInterface.findText(saved, Qt.MatchFixedString)
+            idx = self.comboInterface.findData(display)
+        if idx < 0:
+            idx = self.comboInterface.findText(display, Qt.MatchFixedString)
         if idx >= 0:
             self.comboInterface.setCurrentIndex(idx)
 
@@ -739,11 +826,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def checkUpdate(self):
         begin_updater_debug_session('settings.checkUpdate')
         updater_log('checkUpdate: entered')
-        candidates = installer_download_candidates(force_refresh=True)
-        url = candidates[0] if candidates else (selected_update_url() or '')
+        # Do not force_refresh here — GitHub API on the GUI thread delayed the confirm
+        # dialog by seconds. Use cache/constants for instant popup; refresh in the
+        # download worker after the user confirms.
+        candidates = installer_download_candidates(force_refresh=False)
+        url = (candidates[0] if candidates else '') or (selected_update_url() or '')
         fallback_urls = candidates[1:] if len(candidates) > 1 else None
-        remote_info = remote_installer_info(force_refresh=True)
-        expected_size = int(remote_info.size) if remote_info and remote_info.size > 0 else 0
         if not url:
             MsgType.WARN(
                 self,
@@ -792,8 +880,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             path = download_update_with_progress_dialog(
                 self,
                 url,
-                expected_size=expected_size,
+                expected_size=0,
                 fallback_urls=fallback_urls,
+                refresh_metadata_first=True,
             )
             updater_log('checkUpdate: download returned path=%r', path)
             if path is None:
@@ -802,7 +891,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             launch_installer(path)
             quit_for_update = True
             updater_log('checkUpdate: quit_all')
-            self.elmocut.quit_all()
+            self.app.quit_all()
         except Exception as e:
             updater_log('checkUpdate: exception %s', e, exc_info=True)
             MsgType.ERROR(
@@ -830,31 +919,41 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _channel_label(self):
         return 'experimental' if self._update_channel == 'experimental' else APP_DISPLAY_NAME
 
-    def _deferred_initial_update_check(self):
-        try:
-            self._refresh_update_availability()
-            self.btnUpdate.setText(self._update_button_text())
-            self._sync_update_button_tooltip()
-            self._apply_update_button_style()
-            el = getattr(self, 'elmocut', None)
+    def _schedule_update_banner_refresh(self) -> None:
+        """Network update check off the GUI thread (never block Settings open)."""
+        main = getattr(self, 'app', None)
+        if main is not None and hasattr(main, '_poll_remote_update_status_if_active'):
+            try:
+                QTimer.singleShot(0, main._poll_remote_update_status_if_active)
+                return
+            except Exception:
+                pass
+        prev = getattr(self, '_update_banner_poll_thread', None)
+        if prev is not None:
+            try:
+                if prev.isRunning():
+                    return
+            except RuntimeError:
+                self._update_banner_poll_thread = None
+        poll = _UpdateBannerPollThread()
+        self._update_banner_poll_thread = poll
+
+        def _apply(avail: bool, label: str) -> None:
+            try:
+                self.apply_update_banner_state(avail, label)
+            except Exception:
+                pass
+            el = getattr(self, 'app', None)
             if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
                 el._sync_settings_gear_update_hint()
-        except Exception:
-            pass
 
-    def _refresh_update_availability(self):
-        """Fetch remote installer time; compare to embedded build time when CI set it."""
-        self._update_available, self._update_published_label = get_update_status()
+        poll.done.connect(_apply)
+        poll.finished.connect(poll.deleteLater)
+        poll.start()
 
     def refresh_update_banner(self):
-        """Re-fetch server state and refresh the update button (call after open or on a timer)."""
-        try:
-            self._refresh_update_availability()
-            self.btnUpdate.setText(self._update_button_text())
-            self._sync_update_button_tooltip()
-            self._apply_update_button_style()
-        except Exception:
-            pass
+        """Re-fetch server state and refresh the update button (background thread)."""
+        self._schedule_update_banner_refresh()
 
     def apply_update_banner_state(self, available, published_label):
         """Apply a fetch done elsewhere (e.g. background thread) without another HEAD request."""
@@ -894,16 +993,52 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             self.btnUpdate.setStyleSheet('')
     
-    def loadInterfaces(self, *, use_cache: bool = True):
-        from tools.utils import get_ifaces, get_ifaces_cached
+    def _iface_combo_is_placeholder(self) -> bool:
+        """True when the combo only shows the Npcap error stub (not a real adapter)."""
+        if self.comboInterface.count() != 1:
+            return False
+        try:
+            return not str(self.comboInterface.itemData(0) or '').strip()
+        except Exception:
+            return True
 
+    def _apply_combo_ifaces(self, ifaces, *, preserve_selection: bool = True) -> bool:
+        """Populate network-interface combo; return True when at least one adapter was added."""
+        saved = ''
+        if preserve_selection:
+            try:
+                saved = str(self.comboInterface.currentData() or '')
+            except Exception:
+                pass
         self.comboInterface.clear()
-        ifaces = get_ifaces_cached() if use_cache else get_ifaces()
+        if not ifaces:
+            self.comboInterface.addItem('(no adapters found — check Npcap)', '')
+            return False
         for iface in ifaces:
             self.comboInterface.addItem(
                 format_iface_settings_label(iface),
                 iface.name,
             )
+        if saved and ifaces:
+            idx = self.comboInterface.findData(saved)
+            if idx >= 0:
+                self.comboInterface.setCurrentIndex(idx)
+        return True
+
+    def loadInterfaces(self, *, use_cache: bool = True):
+        from tools.utils import get_ifaces, get_ifaces_cached
+
+        ifaces = get_ifaces_cached() if use_cache else get_ifaces()
+        self._apply_combo_ifaces(ifaces)
+
+    def _load_interfaces_foreground(self) -> None:
+        """Resync adapter list on the GUI thread (Scapy/Npcap is unreliable from QThread)."""
+        from tools.utils import get_ifaces, get_ifaces_cached
+
+        ifaces = list(get_ifaces_cached())
+        if not ifaces:
+            ifaces = list(get_ifaces())
+        self._apply_combo_ifaces(ifaces)
 
     def _load_interfaces_background(self) -> None:
         """Refresh adapter list off the GUI thread (ipconfig is slow)."""
@@ -916,7 +1051,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 from tools.utils import get_ifaces
 
                 try:
-                    self.finished_list.emit(get_ifaces())
+                    # Do not invalidate cache here — worker-thread Scapy often returns []
+                    # and would wipe a good list that loadInterfaces(use_cache=True) just showed.
+                    self.finished_list.emit(list(get_ifaces()))
                 except Exception:
                     self.finished_list.emit([])
 
@@ -925,21 +1062,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         def _apply(ifaces):
-            saved = ''
-            try:
-                saved = str(self.comboInterface.currentData() or '')
-            except Exception:
-                pass
-            self.comboInterface.clear()
-            for iface in ifaces:
-                self.comboInterface.addItem(
-                    format_iface_settings_label(iface),
-                    iface.name,
-                )
-            if saved:
-                idx = self.comboInterface.findData(saved)
-                if idx >= 0:
-                    self.comboInterface.setCurrentIndex(idx)
+            if not ifaces:
+                if not self._iface_combo_is_placeholder():
+                    return
+                QTimer.singleShot(0, self._load_interfaces_foreground)
+                return
+            self._apply_combo_ifaces(ifaces)
 
         loader = _IfaceLoader(self)
         loader.finished_list.connect(_apply)
