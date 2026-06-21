@@ -18,6 +18,7 @@ from tools.utils import (
     mac_address_is_usable,
     lookup_mac_from_arp_table,
     victim_endpoint_live_for_mitm,
+    npcap_iface_tokens,
 )
 from constants import *
 
@@ -432,20 +433,22 @@ class Killer:
 
         if not self.router.get('mac'):
             return False
-        iface_to_use = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
-        if not iface_to_use or iface_to_use == 'NULL':
+        tokens = npcap_iface_tokens(self.iface)
+        if not tokens:
             return False
+        self._get_socket()
         disable_ip_forwarding()
         fw = MitmForwarder(debug=debug)
         fw.start(
             victim=victim,
             router=self.router,
-            iface_name=iface_to_use,
+            iface_name=tokens[0],
             iface_mac=self.iface.mac,
             drop_from_victim=False,
             drop_to_victim=False,
             pass_from_victim_pct=pass_from_victim,
             pass_to_victim_pct=pass_to_victim,
+            iface_alts=tokens[1:],
         )
         self.forwarders[mac] = fw
         return bool(fw and getattr(fw, 'running', False))
@@ -484,15 +487,16 @@ class Killer:
             self.forwarders[victim['mac']].stop()
         if not self.router.get('mac'):
             return
-        iface_to_use = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
-        if not iface_to_use or iface_to_use == 'NULL':
+        tokens = npcap_iface_tokens(self.iface)
+        if not tokens:
             return
+        self._get_socket()
         disable_ip_forwarding()
         fw = MitmForwarder(debug=debug)
         fw.start(
             victim=victim,
             router=self.router,
-            iface_name=iface_to_use,
+            iface_name=tokens[0],
             iface_mac=self.iface.mac,
             drop_from_victim=False,
             drop_to_victim=False,
@@ -506,6 +510,7 @@ class Killer:
             loss_pct_to_victim=loss_pct_in,
             max_kbps_from_victim=max_kbps_out,
             max_kbps_to_victim=max_kbps_in,
+            iface_alts=tokens[1:],
         )
         self.forwarders[victim['mac']] = fw
 

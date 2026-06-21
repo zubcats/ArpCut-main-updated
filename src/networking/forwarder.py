@@ -79,6 +79,7 @@ class MitmForwarder:
         loss_pct_to_victim: int = 0,
         max_kbps_from_victim: float = 0.0,
         max_kbps_to_victim: float = 0.0,
+        iface_alts: list[str] | None = None,
     ):
         """
         Start capturing traffic for victim/router and rewrite MACs before sending.
@@ -86,7 +87,12 @@ class MitmForwarder:
         self.stop()
         self.victim = victim
         self.router = router
-        self.iface = iface_name
+        iface_candidates: list[str] = []
+        for raw in [iface_name, *(iface_alts or [])]:
+            s = str(raw or '').strip()
+            if s and s != 'NULL' and s not in iface_candidates:
+                iface_candidates.append(s)
+        self.iface = iface_candidates[0] if iface_candidates else iface_name
         self.my_mac = iface_mac
         self.drop_from_victim = drop_from_victim
         self.drop_to_victim = drop_to_victim
@@ -118,19 +124,23 @@ class MitmForwarder:
             self.running = False
             return
 
-        # Create persistent L2 socket
-        try:
-            self._socket = conf.L2socket(iface=self.iface)
-            if self._debug:
-                print(f"[forwarder] L2 socket created for {self.iface}")
-        except Exception as e:
-            if self._debug:
-                print(f"[forwarder] Failed to create L2 socket: {e}")
-            self._socket = None
+        # Create persistent L2 socket (try alternate Npcap tokens on Realtek/Wi‑Fi).
+        self._socket = None
+        for cand in iface_candidates:
+            try:
+                self._socket = conf.L2socket(iface=cand)
+                self.iface = cand
+                if self._debug:
+                    print(f"[forwarder] L2 socket created for {cand}")
+                break
+            except Exception as e:
+                if self._debug:
+                    print(f"[forwarder] Failed to create L2 socket on {cand}: {e}")
+                self._socket = None
 
         bpf = f"ip and host {self.victim['ip']}"
         if self._debug:
-            print(f"[forwarder] Starting on {self.iface}")
+            print(f"[forwarder] Starting on {self.iface} (candidates={iface_candidates})")
             print(f"[forwarder] victim={self.victim['ip']}/{self.victim['mac']}")
             print(f"[forwarder] router={self.router['ip']}/{self.router['mac']}")
             print(
@@ -154,21 +164,30 @@ class MitmForwarder:
                     self.max_kbps_to_victim,
                 )
             )
-        try:
-            self.sniffer = AsyncSniffer(
-                iface=self.iface,
-                filter=bpf,
-                prn=self._process_packet,
-                store=False
-            )
-            self.sniffer.start()
-            if self._debug:
-                print(f"[forwarder] Sniffer started successfully")
-        except Exception as e:
-            if self._debug:
-                print(f"[forwarder] Sniffer failed: {e}")
+        self.sniffer = None
+        sniffer_err = None
+        for cand in iface_candidates:
+            try:
+                self.sniffer = AsyncSniffer(
+                    iface=cand,
+                    filter=bpf,
+                    prn=self._process_packet,
+                    store=False,
+                )
+                self.sniffer.start()
+                self.iface = cand
+                if self._debug:
+                    print(f"[forwarder] Sniffer started successfully on {cand}")
+                break
+            except Exception as e:
+                sniffer_err = e
+                if self._debug:
+                    print(f"[forwarder] Sniffer failed on {cand}: {e}")
+                self.sniffer = None
+        if self.sniffer is None:
+            if self._debug and sniffer_err is not None:
+                print(f"[forwarder] Sniffer failed on all candidates: {sniffer_err}")
             self.running = False
-            self.sniffer = None
             if self._socket:
                 try:
                     self._socket.close()

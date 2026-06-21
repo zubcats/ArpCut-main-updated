@@ -926,6 +926,20 @@ def refresh_netface_live_ip(iface: NetFace) -> None:
         iface.ip = lip
 
 
+def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
+    """Ordered Npcap/Scapy bind tokens to try (GUID first, then friendly name)."""
+    out: list[str] = []
+    for raw in (
+        primary,
+        getattr(iface, 'guid', None) if iface is not None else None,
+        getattr(iface, 'name', None) if iface is not None else None,
+    ):
+        s = str(raw or '').strip()
+        if s and s != 'NULL' and s not in out:
+            out.append(s)
+    return out
+
+
 def resolve_iface_my_ip(iface) -> str:
     """Best IPv4 for scanner Me/router topology — DHCP LAN over APIPA."""
     refresh_netface_live_ip(iface)

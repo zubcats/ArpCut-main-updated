@@ -6505,16 +6505,26 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                             _mark('lan_killer_kill_done')
                             fw = self.killer.forwarders.get(mac)
                             if not (fw and getattr(fw, 'running', False)):
-                                self.log(
-                                    'Kill ON: traffic cut forwarder did not start — '
-                                    'check Npcap adapter in Settings.',
-                                    'red',
-                                )
+                                # Npcap capture failed but ARP poison is live — same
+                                # ARP+firewall stack Lag/Dupe use (forwarder is best-effort).
+                                self.killer.disable_percent_cut(mac)
                                 try:
-                                    self.killer.unkill(device)
+                                    iface_name = (
+                                        self.scanner.iface.name if self.scanner.iface else 'en0'
+                                    )
                                 except Exception:
-                                    pass
-                                kill_applied = False
+                                    iface_name = 'en0'
+                                _bg_block_ip(iface_name, device.get('ip'), 'both')
+                                _mark('lan_bg_block_ip_done')
+                                self._log_mitm_arm_status(device, action='Kill')
+                                self.log(
+                                    'Kill ON (ARP+firewall) for '
+                                    + str(device.get('ip') or '')
+                                    + ' — Npcap forwarder unavailable; check Wi‑Fi in Settings.',
+                                    UI_LOG_VICTIM_BLOCK_FG,
+                                )
+                                kill_applied = True
+                                self._schedule_mitm_traffic_probe(device, flow='Kill')
                             else:
                                 self._log_mitm_arm_status(device, action='Kill')
                                 try:

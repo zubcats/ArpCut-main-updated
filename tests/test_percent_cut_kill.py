@@ -56,6 +56,29 @@ class TestPercentCutKill(unittest.TestCase):
         self.assertGreater(passes, 150)
         self.assertLess(passes, 350)
 
+    def test_kill_falls_back_to_arp_firewall_when_forwarder_missing(self) -> None:
+        src = self._main_py()
+        block = src[src.index('Npcap capture failed but ARP poison is live'): src.index(
+            "self._schedule_mitm_traffic_probe(device, flow='Kill')",
+            src.index('Npcap capture failed but ARP poison is live'),
+        )]
+        self.assertIn('ARP+firewall', block)
+        self.assertIn('_bg_block_ip', block)
+        self.assertNotIn('self.killer.unkill(device)', block)
+
+    def test_forwarder_accepts_iface_alts(self) -> None:
+        from networking.forwarder import MitmForwarder
+        import inspect
+
+        sig = inspect.signature(MitmForwarder.start)
+        self.assertIn('iface_alts', sig.parameters)
+
+    def test_killer_uses_npcap_iface_tokens(self) -> None:
+        src = self._killer_py()
+        block = src[src.index('def apply_percent_cut'): src.index('def disable_percent_cut', src.index('def apply_percent_cut'))]
+        self.assertIn('npcap_iface_tokens', block)
+        self.assertIn('iface_alts=tokens[1:]', block)
+
 
 if __name__ == '__main__':
     unittest.main()
