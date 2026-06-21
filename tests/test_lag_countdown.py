@@ -95,6 +95,12 @@ class TestLagCountdown(unittest.TestCase):
         begin = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
         self.assertNotIn('_lag_do_phase_advance', begin)
 
+    def test_lag_block_rearm_retry_on_miss(self) -> None:
+        src = self._main_py()
+        block = src[src.index('def _lag_apply_block'): src.index('def _lag_resolved_victim')]
+        self.assertIn('_schedule_lag_block_rearm_retry', block)
+        self.assertIn('Lag block missed', block)
+
 
 if __name__ == '__main__':
     unittest.main()

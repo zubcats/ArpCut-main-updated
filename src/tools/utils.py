@@ -6,6 +6,7 @@ from socket import socket
 from threading import Thread
 from manuf import manuf
 import sys
+import time
 import webbrowser
 import re
 import ipaddress
@@ -337,49 +338,73 @@ def lookup_mac_from_arp_table(ip: str, iface_ip: str | None = None) -> str:
     return GLOBAL_MAC
 
 
-def ipv4_ping_reachable(ip: str, *, timeout_ms: int = 500) -> bool:
-    """True when a single ICMP echo to ``ip`` gets a reply (ignores stale ARP ghosts)."""
+def ipv4_ping_reachable(ip: str, *, timeout_ms: int = 500, attempts: int = 1) -> bool:
+    """True when an ICMP echo to ``ip`` gets a reply (ignores stale ARP ghosts)."""
     ip = str(ip or '').strip()
     if not ip or not _ipv4_valid(ip):
         return False
-    try:
-        if sys.platform.startswith('win'):
-            out = run_command(
-                ['ping', '-n', '1', '-w', str(max(100, int(timeout_ms))), ip],
-                shell=False,
-                timeout=max(2, int(timeout_ms / 1000) + 1),
-            )
-            text = str(out or '').lower()
-            return 'ttl=' in text and 'unreachable' not in text and 'timed out' not in text
-        out = run_command(
-            ['ping', '-c', '1', '-W', str(max(1, int(timeout_ms / 1000))), ip],
-            shell=False,
-            timeout=max(2, int(timeout_ms / 1000) + 1),
-        )
-        text = str(out or '').lower()
-        return 'ttl=' in text or 'time=' in text
-    except Exception:
-        return False
+    tries = max(1, int(attempts))
+    for n in range(tries):
+        try:
+            if sys.platform.startswith('win'):
+                out = run_command(
+                    ['ping', '-n', '1', '-w', str(max(100, int(timeout_ms))), ip],
+                    shell=False,
+                    timeout=max(2, int(timeout_ms / 1000) + 1),
+                )
+                text = str(out or '').lower()
+                if 'ttl=' in text and 'unreachable' not in text and 'timed out' not in text:
+                    return True
+            else:
+                out = run_command(
+                    ['ping', '-c', '1', '-W', str(max(1, int(timeout_ms / 1000))), ip],
+                    shell=False,
+                    timeout=max(2, int(timeout_ms / 1000) + 1),
+                )
+                text = str(out or '').lower()
+                if 'ttl=' in text or 'time=' in text:
+                    return True
+        except Exception:
+            pass
+        if n + 1 < tries:
+            time.sleep(0.12)
+    return False
 
 
 def victim_endpoint_live_for_mitm(
-    ip: str, expected_mac: str, iface_ip: str | None = None
+    ip: str, expected_mac: str, iface_ip: str | None = None, *, ping_attempts: int = 3
 ) -> tuple[bool, str]:
     """
     PS5 Ethernet vs Wi‑Fi rows use different MACs — do not MITM a ghost favorite IP.
-    Requires ping success so a stale ARP entry for an old .248 does not count as live.
+    Pings up to ``ping_attempts`` times; if ICMP is silent but ARP still maps this IP
+    to ``expected_mac`` (and the MAC has not moved to another IP), treat as live.
     """
     ip = str(ip or '').strip()
     expected_mac = good_mac(str(expected_mac or '').strip())
     if not ip or not _ipv4_valid(ip):
         return False, 'invalid victim IP'
-    if not ipv4_ping_reachable(ip):
-        live_ip = ''
-        if expected_mac:
-            try:
-                live_ip = str(lookup_ip_from_arp_table(expected_mac, iface_ip) or '').strip()
-            except Exception:
-                live_ip = ''
+
+    live_ip = ''
+    if expected_mac:
+        try:
+            live_ip = str(lookup_ip_from_arp_table(expected_mac, iface_ip) or '').strip()
+        except Exception:
+            live_ip = ''
+    if live_ip and live_ip != ip:
+        return (
+            False,
+            f'{ip} is offline — this device is now at {live_ip}. Rescan and use that row.',
+        )
+
+    if not ipv4_ping_reachable(ip, attempts=max(1, int(ping_attempts))):
+        arp_mac = lookup_mac_from_arp_table(ip, iface_ip)
+        if (
+            expected_mac
+            and mac_address_is_usable(arp_mac)
+            and arp_mac == expected_mac
+            and (not live_ip or live_ip == ip)
+        ):
+            return True, ''
         if live_ip and live_ip != ip:
             return (
                 False,
@@ -387,7 +412,8 @@ def victim_endpoint_live_for_mitm(
             )
         return (
             False,
-            f'{ip} is not reachable — rescan after switching the PS5 between Ethernet and Wi‑Fi.',
+            f'{ip} did not answer ping — wake the PS5, rescan, and pick the live row '
+            f'(Settings Wi‑Fi is OK if ipconfig matches Me).',
         )
     arp_mac = lookup_mac_from_arp_table(ip, iface_ip)
     if mac_address_is_usable(arp_mac) and expected_mac and arp_mac != expected_mac:

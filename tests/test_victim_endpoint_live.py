@@ -26,7 +26,7 @@ class TestVictimEndpointLive(unittest.TestCase):
                 "192.168.1.248", eth_mac, "192.168.1.56"
             )
         self.assertFalse(ok)
-        self.assertIn("not reachable", reason.lower())
+        self.assertIn('ping', reason.lower())
 
     def test_wifi_165_live_when_ping_ok(self) -> None:
         wifi_mac = "DC:E9:94:AB:E6:C4"
@@ -39,6 +39,19 @@ class TestVictimEndpointLive(unittest.TestCase):
                 "192.168.1.165", wifi_mac, "192.168.1.56"
             )
         self.assertTrue(ok)
+
+    def test_arp_fallback_when_ping_silent_but_mac_matches(self) -> None:
+        wifi_mac = "DC:E9:94:AB:E6:C4"
+        with (
+            mock.patch("tools.utils.ipv4_ping_reachable", return_value=False),
+            mock.patch("tools.utils.lookup_mac_from_arp_table", return_value=wifi_mac),
+            mock.patch("tools.utils.lookup_ip_from_arp_table", return_value="192.168.1.165"),
+        ):
+            ok, reason = victim_endpoint_live_for_mitm(
+                "192.168.1.165", wifi_mac, "192.168.1.56"
+            )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
 
     def test_moved_device_hint_when_mac_has_new_ip(self) -> None:
         eth_mac = "00:E4:21:44:ED:0C"

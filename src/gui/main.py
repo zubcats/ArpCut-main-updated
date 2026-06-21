@@ -3177,6 +3177,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         dev = dict(device)
         try:
             self._ensure_network_context_for_victim(snap)
+            self._refresh_victim_mac_from_system_arp(snap)
             mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(snap)
             if not mitm_ok:
                 self.lag_active = False
@@ -3252,6 +3253,30 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         QTimer.singleShot(0, _reassert)
         QTimer.singleShot(40, _reassert)
         QTimer.singleShot(110, _reassert)
+
+    def _schedule_lag_block_rearm_retry(self, device) -> None:
+        """Retry block once when ping/ARP race fails mid-cycle (allow phase just unkill'd)."""
+        if not self.lag_active or self._lag_in_allow_phase or not isinstance(device, dict):
+            return
+        mac = str(device.get('mac') or '').strip()
+        if not mac or self.lag_device_mac != mac:
+            return
+        gen = int(getattr(self, '_lag_reassert_gen', 0)) + 1
+        self._lag_reassert_gen = gen
+
+        def _retry():
+            if int(getattr(self, '_lag_reassert_gen', 0)) != gen:
+                return
+            if not self.lag_active or self._lag_in_allow_phase or self.lag_device_mac != mac:
+                return
+            dev = self._lag_resolved_victim() or device
+            if not dev:
+                return
+            if self._lag_apply_block(dev):
+                self._schedule_lag_start_reassert(mac)
+
+        QTimer.singleShot(120, _retry)
+        QTimer.singleShot(320, _retry)
 
     def _update_scan_count_status(self):
         """Update device/kill counts in lblright + tray without rebuilding the scan table."""
@@ -4344,7 +4369,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killer.disable_percent_cut(device['mac'])
         wait_after = 0.08 if for_lag else 2
         if device['mac'] not in self.killer.killed:
-            self.killer.kill(device, wait_after=wait_after)
+            self.killer.kill(device, wait_after=wait_after, traffic_cut=False)
         elif for_lag:
             # Mid-block safety only — start reasserts use _lag_reassert_poison so
             # we do not call kill() again (that bumps _op_seq and kills the worker).
@@ -4829,7 +4854,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Main-thread allow: must run immediately so a queued block job cannot skip release."""
         if not self.lag_active or not isinstance(device, dict):
             return
-        self._lag_bump_phase_seq()
         try:
             self._lag_ics_resume_allow_phase(device)
         except Exception:
@@ -5007,9 +5031,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._schedule_mitm_traffic_probe(device, flow='Lag')
         if not ok:
             self.log(
-                f'Lag block failed for {device.get("ip", "")} — rescan, pick Wi‑Fi in Settings if PC is on Wi‑Fi',
+                f'Lag block missed for {device.get("ip", "")} — retrying… '
+                f'(not a Settings problem if Me row IP matches ipconfig)',
                 'red',
             )
+            self._schedule_lag_block_rearm_retry(device)
         return ok
 
     def _lag_resolved_victim(self):
