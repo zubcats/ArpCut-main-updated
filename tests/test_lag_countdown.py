@@ -42,7 +42,7 @@ class TestLagCountdown(unittest.TestCase):
         self.assertIn('_arm_lag_phase_countdown', src)
         block = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
         self.assertIn('_arm_lag_phase_countdown', block)
-        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
+        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block(self, device):')]
         self.assertIn('_lag_schedule_phase', allow)
         self.assertIn('_lag_apply_allow_phase_sync', allow)
         self.assertIn('_arm_lag_phase_countdown', allow)
@@ -58,7 +58,7 @@ class TestLagCountdown(unittest.TestCase):
     def test_phase_flag_before_timing_sync_in_begin(self) -> None:
         src = self._main_py()
         block = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
-        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
+        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block(self, device):')]
         self.assertLess(
             block.index('_lag_in_allow_phase = False'),
             block.index('_sync_lag_timing_values_from_ui'),
@@ -97,7 +97,7 @@ class TestLagCountdown(unittest.TestCase):
 
     def test_lag_block_rearm_retry_on_miss(self) -> None:
         src = self._main_py()
-        block = src[src.index('def _lag_apply_block'): src.index('def _lag_resolved_victim')]
+        block = src[src.index('def _lag_apply_block(self, device):'): src.index('def _lag_resolved_victim')]
         self.assertIn('_schedule_lag_block_rearm_retry', block)
         self.assertIn('Lag block missed', block)
 

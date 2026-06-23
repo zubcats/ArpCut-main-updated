@@ -4355,6 +4355,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return False
         mac = str(device.get('mac') or '').strip()
         for_lag = bool(ics_block_kw.get('for_lag'))
+        warm_lag = for_lag and self._lag_lan_mitm_warm(device)
+        if warm_lag:
+            return self._lag_apply_block_warm(device)
         if for_lag and mac and getattr(self, '_lag_net_prepared_mac', None) == mac:
             pass
         else:
@@ -4812,16 +4815,63 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_phase_seq = int(getattr(self, '_lag_phase_seq', 0)) + 1
         return self._lag_phase_seq
 
+    def _lag_lan_mitm_warm(self, device) -> bool:
+        """True when Lag ON already armed ARP MITM for this victim (allow = unblock only)."""
+        if not self.lag_active or not isinstance(device, dict):
+            return False
+        mac = str(device.get('mac') or '').strip()
+        if not mac or mac != getattr(self, 'lag_device_mac', None):
+            return False
+        plan = self._impairment_plan_for(device)
+        if plan.use_windivert or not plan.use_arp_mitm:
+            return False
+        return (
+            mac in self.killer.killed
+            and getattr(self, '_lag_net_prepared_mac', None) == mac
+        )
+
+    def _lag_clear_block_only(self, device, direction: str | None = None) -> None:
+        """Allow phase on home LAN: drop firewall backstop, keep ARP worker warm."""
+        device = self._device_with_plan_ip(device)
+        ip = str(device.get('ip') or '').strip()
+        if ip:
+            _bg_unblock_ip(ip)
+        _ = direction or getattr(self, 'lag_direction', 'both')
+
+    def _lag_apply_block_warm(self, device) -> bool:
+        """Block phase while MITM is already armed — poison burst + firewall only."""
+        device = self._device_with_plan_ip(device)
+        mac = str(device.get('mac') or '').strip()
+        if not mac or mac not in self.killer.killed:
+            return False
+        direction = getattr(self, 'lag_direction', 'both')
+        try:
+            self.killer.reassert_poison(device)
+        except Exception:
+            pass
+        try:
+            iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
+        except Exception:
+            iface_name = 'en0'
+        _bg_block_ip(iface_name, device.get('ip'), direction)
+        self._sync_killed_devices()
+        self._refresh_table_row_for_mac(mac, device.get('ip'))
+        self._updateKillButtonState()
+        return True
+
     def _lag_ics_resume_allow_phase(self, device) -> None:
         """
         Allow window on hotspot: resume WinDivert pause in-place (fast lag cycles).
-        Never tear down the gate here — that breaks allow timing and feels like full Kill.
+        Home LAN: warm MITM — firewall off only, ARP worker keeps running.
         """
         if not isinstance(device, dict):
             return
         plan = self._impairment_plan_for(device)
         if not plan.is_ics_downstream:
-            self._clear_victim_block(device)
+            if self._lag_lan_mitm_warm(device):
+                self._lag_clear_block_only(device)
+            else:
+                self._clear_victim_block(device)
             return
         device = self._device_with_plan_ip(device)
         gate = getattr(self, '_ics_lag_gate', None)
@@ -5026,7 +5076,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._refresh_table_row_for_mac(mac, device.get('ip'))
                 return True
             return bool(self._apply_ics_client_block(device, self.lag_direction, for_lag=True))
-        ok = self._apply_victim_block(device, self.lag_direction, for_lag=True)
+        if self._lag_lan_mitm_warm(device):
+            ok = self._lag_apply_block_warm(device)
+        else:
+            ok = self._apply_victim_block(device, self.lag_direction, for_lag=True)
         if ok:
             self._schedule_mitm_traffic_probe(device, flow='Lag')
         if not ok:
@@ -5114,7 +5167,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_device_ip = None
         self._lag_net_prepared_mac = None
         self._lag_in_allow_phase = False
-        self._lag_device_snapshot = None
         self._lag_restoring_after_stop = False
         self._lag_restoring_mac = None
         self._ics_teardown_gate_if_idle(prev_mac)

@@ -36,7 +36,7 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
 
     def test_lag_apply_block_prefers_fast_windivert_pause(self) -> None:
         src = self._main_py()
-        block = src[src.index('def _lag_apply_block'): src.index('def _lag_resolved_victim')]
+        block = src[src.index('def _lag_apply_block(self, device):'): src.index('def _lag_resolved_victim')]
         self.assertIn('_lag_ics_set_paused(device, True)', block)
         self.assertIn('_apply_ics_client_block', block)
         self.assertIn('for_lag=True', block)
@@ -86,7 +86,7 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         )
         self.assertNotIn('_ics_hotspot_pause_release', resume)
         self.assertNotIn('_lag_ics_force_unpause', resume)
-        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block')]
+        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block(self, device):')]
         self.assertIn('_lag_ics_set_paused(device, False)', allow)
         self.assertIn('_lag_apply_allow_phase_sync', allow)
         self.assertIn('_sync_lag_timing_values_from_ui', allow)
@@ -102,6 +102,16 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
         self.assertNotIn('_lag_ics_force_unpause', tick)
         self.assertIn('_lag_do_phase_advance(force=True)', tick)
+
+    def test_lag_warm_mitm_skips_unkill_between_phases(self) -> None:
+        src = self._main_py()
+        self.assertIn('def _lag_lan_mitm_warm', src)
+        self.assertIn('def _lag_apply_block_warm', src)
+        allow = src[src.index('def _lag_ics_resume_allow_phase'): src.index('def _lag_apply_allow_phase_sync')]
+        self.assertIn('_lag_clear_block_only', allow)
+        block = src[src.index('def _lag_apply_block(self, device):'): src.index('def _lag_resolved_victim')]
+        self.assertIn('_lag_apply_block_warm', block)
+        self.assertIn('_lag_lan_mitm_warm', block)
 
     def test_release_windivert_unpauses_without_gate_match(self) -> None:
         src = self._main_py()
