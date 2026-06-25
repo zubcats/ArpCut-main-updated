@@ -426,6 +426,138 @@ def victim_endpoint_live_for_mitm(
     return True, ''
 
 
+def _arp_refresh_device_record(device: dict, iface_ip: str | None = None) -> None:
+    """Update device['mac'] from forward ARP for device['ip'] (ping once if needed)."""
+    if not isinstance(device, dict):
+        return
+    ip = str(device.get('ip') or '').strip()
+    if not ip:
+        return
+    mac = lookup_mac_from_arp_table(ip, iface_ip)
+    if not mac_address_is_usable(mac) and sys.platform.startswith('win'):
+        try:
+            run_command(
+                ['ping', '-n', '1', '-w', '400', ip],
+                shell=False,
+                timeout=2,
+            )
+        except Exception:
+            pass
+        mac = lookup_mac_from_arp_table(ip, iface_ip)
+    if mac_address_is_usable(mac):
+        device['mac'] = mac
+
+
+def _device_row_is_playstation(row: dict) -> bool:
+    if not isinstance(row, dict):
+        return False
+    dtype = str(row.get('type') or '')
+    vendor = str(row.get('vendor') or '').lower()
+    return (
+        'PlayStation' in dtype
+        or 'sony interactive' in vendor
+        or 'sony computer entertainment' in vendor
+    )
+
+
+def resolve_live_lan_victim(
+    device: dict,
+    devices: list[dict] | None = None,
+    iface_ip: str | None = None,
+) -> tuple[dict, str]:
+    """
+    When PS5 moves Wi‑Fi ↔ Ethernet it gets a new IP and MAC. The saved table row may
+    be stale; find a live endpoint (same nickname, reverse ARP, or refreshed forward ARP).
+    Returns (device, user_hint). hint is empty when the input row was already live.
+    """
+    if not isinstance(device, dict):
+        return device, ''
+    iface_ip = str(iface_ip or '').strip()
+    dev = dict(device)
+    rows = [d for d in (devices or []) if isinstance(d, dict) and not d.get('admin')]
+
+    def _live_ok(row: dict) -> bool:
+        _arp_refresh_device_record(row, iface_ip)
+        ok, _ = victim_endpoint_live_for_mitm(
+            row.get('ip'), row.get('mac'), iface_ip or None
+        )
+        return ok
+
+    _arp_refresh_device_record(dev, iface_ip)
+    if _live_ok(dev):
+        return dev, ''
+
+    mac = good_mac(str(dev.get('mac') or ''))
+    moved_ip = str(lookup_ip_from_arp_table(mac, iface_ip) or '').strip()
+    if moved_ip and _ipv4_valid(moved_ip) and moved_ip != str(dev.get('ip') or '').strip():
+        dev['ip'] = moved_ip
+        _arp_refresh_device_record(dev, iface_ip)
+        if _live_ok(dev):
+            return dev, f'PS5 is at {moved_ip} now (Ethernet/Wi‑Fi change).'
+
+    nick = str(dev.get('name') or '').strip()
+    if nick and nick != '-':
+        for row in rows:
+            if str(row.get('name') or '').strip() != nick:
+                continue
+            cand = dict(row)
+            if _live_ok(cand):
+                lip = str(cand.get('ip') or '')
+                return cand, f'Using live {nick} at {lip} (rescan row was stale).'
+
+        try:
+            from networking.nicknames import (
+                get_nickname_last_ip_map,
+                get_nicknames_dict,
+                parse_nickname_profile_key,
+                resolve_favorite_ip,
+            )
+
+            last_map = get_nickname_last_ip_map()
+            seen_macs: set[str] = set()
+            for key, nm in get_nicknames_dict().items():
+                if str(nm or '').strip() != nick:
+                    continue
+                prof_mac, _pfx = parse_nickname_profile_key(str(key))
+                if not prof_mac or prof_mac in seen_macs:
+                    continue
+                seen_macs.add(prof_mac)
+                fav_ip = resolve_favorite_ip(prof_mac, str(key), last_map, iface_ip)
+                if not fav_ip or not _ipv4_valid(fav_ip):
+                    continue
+                cand = {'ip': fav_ip, 'mac': prof_mac, 'name': nick}
+                for row in rows:
+                    if good_mac(str(row.get('mac') or '')) == prof_mac:
+                        cand.update(row)
+                        cand['name'] = nick
+                        break
+                if _live_ok(cand):
+                    return (
+                        cand,
+                        f'Using live {nick} at {fav_ip} (PS5 Ethernet/Wi‑Fi profile).',
+                    )
+        except Exception:
+            pass
+
+    if _device_row_is_playstation(dev):
+        live_ps: list[dict] = []
+        for row in rows:
+            if not _device_row_is_playstation(row):
+                continue
+            cand = dict(row)
+            if _live_ok(cand):
+                live_ps.append(cand)
+        if len(live_ps) == 1:
+            c = live_ps[0]
+            lip = str(c.get('ip') or '')
+            return c, f'Using live PlayStation at {lip} (previous row was offline).'
+
+    _ok, reason = victim_endpoint_live_for_mitm(
+        dev.get('ip'), dev.get('mac'), iface_ip or None
+    )
+    return dev, reason or 'Rescan and select the PS5 row matching its current connection.'
+
+
 def lookup_ip_from_arp_table(mac: str, iface_ip: str | None = None) -> str:
     """Reverse ARP lookup: IPv4 currently associated with ``mac`` in the OS cache."""
     mac = good_mac(mac)

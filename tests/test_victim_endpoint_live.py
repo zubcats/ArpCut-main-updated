@@ -21,6 +21,7 @@ class TestVictimEndpointLive(unittest.TestCase):
         with (
             mock.patch("tools.utils.ipv4_ping_reachable", return_value=False),
             mock.patch("tools.utils.lookup_ip_from_arp_table", return_value=""),
+            mock.patch("tools.utils.lookup_mac_from_arp_table", return_value=""),
         ):
             ok, reason = victim_endpoint_live_for_mitm(
                 "192.168.1.248", eth_mac, "192.168.1.56"
@@ -58,14 +59,110 @@ class TestVictimEndpointLive(unittest.TestCase):
         with (
             mock.patch("tools.utils.ipv4_ping_reachable", return_value=False),
             mock.patch(
-                "tools.utils.lookup_ip_from_arp_table", return_value="192.168.1.165"
+                "tools.utils.lookup_ip_from_arp_table", return_value="192.168.1.248"
             ),
         ):
             ok, reason = victim_endpoint_live_for_mitm(
-                "192.168.1.248", eth_mac, "192.168.1.56"
+                "192.168.1.165", eth_mac, "192.168.1.56"
             )
         self.assertFalse(ok)
-        self.assertIn("192.168.1.165", reason)
+        self.assertIn("192.168.1.248", reason)
+
+    def test_resolve_live_lan_follows_nickname_sibling(self) -> None:
+        from tools.utils import resolve_live_lan_victim
+
+        wifi_mac = "DC:E9:94:AB:E6:C4"
+        eth_mac = "00:E4:21:44:ED:0C"
+        stale = {
+            "ip": "192.168.1.165",
+            "mac": wifi_mac,
+            "name": "PS5 DUPE",
+        }
+        live_row = {
+            "ip": "192.168.1.248",
+            "mac": eth_mac,
+            "name": "PS5 DUPE",
+        }
+        devices = [stale, live_row]
+
+        def _live(ip, mac, _iface):
+            if ip == "192.168.1.248" and mac == eth_mac:
+                return True, ""
+            return False, "offline"
+
+        with (
+            mock.patch("tools.utils.victim_endpoint_live_for_mitm", side_effect=_live),
+            mock.patch("tools.utils._arp_refresh_device_record"),
+            mock.patch("tools.utils.lookup_ip_from_arp_table", return_value=""),
+        ):
+            resolved, hint = resolve_live_lan_victim(
+                stale, devices, "192.168.1.56"
+            )
+        self.assertEqual(resolved.get("ip"), "192.168.1.248")
+        self.assertEqual(resolved.get("mac"), eth_mac)
+        self.assertIn("PS5 DUPE", hint)
+
+    def test_resolve_live_lan_reverse_arp_ip_move(self) -> None:
+        from tools.utils import resolve_live_lan_victim
+
+        eth_mac = "00:E4:21:44:ED:0C"
+        stale = {"ip": "192.168.1.165", "mac": eth_mac, "name": "-"}
+        calls = {"n": 0}
+
+        def _live(ip, mac, _iface):
+            if ip == "192.168.1.248" and mac == eth_mac:
+                return True, ""
+            return False, "offline"
+
+        def _reverse(mac, _iface):
+            if mac == eth_mac:
+                return "192.168.1.248"
+            return ""
+
+        with (
+            mock.patch("tools.utils.victim_endpoint_live_for_mitm", side_effect=_live),
+            mock.patch("tools.utils._arp_refresh_device_record"),
+            mock.patch("tools.utils.lookup_ip_from_arp_table", side_effect=_reverse),
+        ):
+            resolved, hint = resolve_live_lan_victim(stale, [], "192.168.1.56")
+        self.assertEqual(resolved.get("ip"), "192.168.1.248")
+        self.assertIn("248", hint)
+
+    def test_resolve_live_lan_single_playstation_fallback(self) -> None:
+        from tools.utils import resolve_live_lan_victim
+
+        wifi_mac = "DC:E9:94:AB:E6:C4"
+        eth_mac = "00:E4:21:44:ED:0C"
+        stale = {
+            "ip": "192.168.1.165",
+            "mac": wifi_mac,
+            "name": "-",
+            "type": "Game console (PlayStation)",
+            "vendor": "Sony Interactive Entertainment Inc.",
+        }
+        eth_row = {
+            "ip": "192.168.1.248",
+            "mac": eth_mac,
+            "name": "-",
+            "type": "Game console (PlayStation)",
+            "vendor": "Sony Interactive Entertainment Inc.",
+        }
+
+        def _live(ip, mac, _iface):
+            if ip == "192.168.1.248" and mac == eth_mac:
+                return True, ""
+            return False, "offline"
+
+        with (
+            mock.patch("tools.utils.victim_endpoint_live_for_mitm", side_effect=_live),
+            mock.patch("tools.utils._arp_refresh_device_record"),
+            mock.patch("tools.utils.lookup_ip_from_arp_table", return_value=""),
+        ):
+            resolved, hint = resolve_live_lan_victim(
+                stale, [stale, eth_row], "192.168.1.56"
+            )
+        self.assertEqual(resolved.get("ip"), "192.168.1.248")
+        self.assertIn("PlayStation", hint)
 
     def test_phantom_favorite_skipped_when_ip_unpingable(self) -> None:
         eth_mac = "00:E4:21:44:ED:0C"

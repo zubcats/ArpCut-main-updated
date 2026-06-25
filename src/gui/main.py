@@ -3479,6 +3479,33 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         if not device or not device.get('ip'):
             return False
+        try:
+            from tools.utils import resolve_live_lan_victim
+
+            iface_ip = str(getattr(self.scanner.iface, 'ip', None) or '').strip()
+            resolved, hint = resolve_live_lan_victim(
+                device,
+                getattr(self.scanner, 'devices', None) or [],
+                iface_ip,
+            )
+            if isinstance(resolved, dict):
+                old_ip = str(device.get('ip') or '').strip()
+                old_mac = str(device.get('mac') or '').strip()
+                device.clear()
+                device.update(resolved)
+                new_ip = str(device.get('ip') or '').strip()
+                new_mac = str(device.get('mac') or '').strip()
+                if hint:
+                    self.log(hint, 'red' if 'Rescan' in hint else UI_LOG_VICTIM_BLOCK_FG)
+                elif new_ip != old_ip or new_mac != old_mac:
+                    self.log(
+                        f'Target updated to {new_ip} ({new_mac}) for MITM.',
+                        UI_LOG_VICTIM_BLOCK_FG,
+                    )
+                if new_mac and new_mac != old_mac:
+                    self._rekey_kill_bookkeeping(old_mac, device)
+        except Exception:
+            pass
         changed = False
         try:
             changed = bool(self.scanner.sync_iface_for_victim_ip(device['ip']))
@@ -5106,14 +5133,36 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not live and not snap:
             return None
         if not live:
-            return dict(snap) if snap else None
-        if not snap:
-            return dict(live)
-        merged = dict(live)
-        lip = (live.get('ip') or '').strip()
-        sip = (snap.get('ip') or '').strip()
-        if (not lip) and sip:
-            merged['ip'] = sip
+            merged = dict(snap) if snap else None
+        elif not snap:
+            merged = dict(live)
+        else:
+            merged = dict(live)
+            lip = (live.get('ip') or '').strip()
+            sip = (snap.get('ip') or '').strip()
+            if (not lip) and sip:
+                merged['ip'] = sip
+        if merged:
+            try:
+                from tools.utils import resolve_live_lan_victim
+
+                iface_ip = str(getattr(self.scanner.iface, 'ip', None) or '').strip()
+                resolved, hint = resolve_live_lan_victim(
+                    merged,
+                    getattr(self.scanner, 'devices', None) or [],
+                    iface_ip,
+                )
+                if isinstance(resolved, dict):
+                    merged = dict(resolved)
+                    new_mac = str(merged.get('mac') or '').strip()
+                    if new_mac and new_mac != mac and self.lag_active:
+                        self.lag_device_mac = new_mac
+                        self.lag_device_ip = merged.get('ip')
+                        self._lag_net_prepared_mac = None
+                    if hint and self.lag_active:
+                        self.log(hint, UI_LOG_VICTIM_BLOCK_FG)
+            except Exception:
+                pass
         return merged
 
     def stopLagSwitch(self, refresh_dialog=True):
