@@ -3178,6 +3178,13 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         try:
             self._ensure_network_context_for_victim(snap)
             self._refresh_victim_mac_from_system_arp(snap)
+            live_mac = str(snap.get('mac') or '').strip()
+            live_ip = str(snap.get('ip') or '').strip()
+            if live_mac:
+                mac = live_mac
+                self.lag_device_mac = live_mac
+            if live_ip:
+                self.lag_device_ip = live_ip
             mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(snap)
             if not mitm_ok:
                 self.lag_active = False
@@ -3340,6 +3347,33 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.killer.router['mac'] = mac
         except Exception:
             pass
+
+    def _migrate_killed_profile_for_device_change(
+        self, old_mac: str, old_ip: str, device: dict
+    ) -> None:
+        """Move Kill ON / pending state when resolve_live_lan_victim updates MAC or IP."""
+        if not isinstance(device, dict):
+            return
+        try:
+            from networking.nicknames import nickname_profile_key
+
+            old_pk = nickname_profile_key(old_mac, old_ip) if old_mac and old_ip else ''
+        except Exception:
+            old_pk = ''
+        if not old_pk:
+            old_pk = str(old_mac or '').strip()
+        new_pk = self._killed_profile_key(device)
+        if not old_pk or not new_pk or old_pk == new_pk:
+            return
+        was_on = bool(self.killed_devices.pop(old_pk, False))
+        pending = getattr(self, '_kill_pending_profiles', set())
+        was_pending = old_pk in pending
+        if was_on:
+            self.killed_devices[new_pk] = True
+        if was_pending:
+            pending.discard(old_pk)
+            pending.add(new_pk)
+            self._kill_pending_profiles = pending
 
     def _rekey_kill_bookkeeping(self, old_mac: str, device: dict) -> str:
         """Keep intent/snapshot keys aligned when ARP refresh updates the victim MAC."""
@@ -3504,6 +3538,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     )
                 if new_mac and new_mac != old_mac:
                     self._rekey_kill_bookkeeping(old_mac, device)
+                if new_ip != old_ip or new_mac != old_mac:
+                    self._migrate_killed_profile_for_device_change(
+                        old_mac, old_ip, device
+                    )
         except Exception:
             pass
         changed = False
@@ -6615,6 +6653,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     else:
                         _mark('lan_start')
                         self._ensure_network_context_for_victim(device)
+                        mac = str(device.get('mac') or mac).strip() or mac
                         _mark('lan_ensure_net_done')
                         self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
                         self.killer.disable_percent_cut(mac)
@@ -6941,12 +6980,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if self._killer_mac_key(mac_n):
                 return True
         killer_key = self._killer_mac_key(mac_n)
-        if not killer_key:
-            return False
-        fw = getattr(self.killer, 'forwarders', {}).get(killer_key)
-        if fw is None:
+        if killer_key:
+            # ARP poison in killer.killed is the primary cut; forwarder is optional.
             return True
-        return bool(getattr(fw, 'running', False))
+        return False
 
     def _reconcile_stale_kill_profile(self, device) -> bool:
         """Clear ghost Kill ON when the UI profile outlived the backend (e.g. after idle)."""

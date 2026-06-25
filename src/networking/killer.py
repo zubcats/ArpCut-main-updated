@@ -451,6 +451,8 @@ class Killer:
             iface_alts=tokens[1:],
         )
         self.forwarders[mac] = fw
+        if not (fw and getattr(fw, 'running', False)):
+            self.forwarders.pop(mac, None)
         return bool(fw and getattr(fw, 'running', False))
 
     def disable_percent_cut(self, mac):

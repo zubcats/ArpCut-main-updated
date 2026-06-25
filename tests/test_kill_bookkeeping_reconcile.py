@@ -23,12 +23,7 @@ def _explicit_kill_backend_live(app, mac: str) -> bool:
             return True
         if mac in getattr(app.killer, 'killed', {}):
             return True
-    if mac not in getattr(app.killer, 'killed', {}):
-        return False
-    fw = getattr(app.killer, 'forwarders', {}).get(mac)
-    if fw is None:
-        return True
-    return bool(getattr(fw, 'running', False))
+    return mac in getattr(app.killer, 'killed', {})
 
 
 def _sync_killed_devices(app) -> None:
@@ -86,5 +81,26 @@ class TestKillBookkeepingReconcile(unittest.TestCase):
         app.killed_devices[pk] = True
         killer.killed[mac] = {'mac': mac, 'ip': '192.168.1.165'}
         killer.forwarders[mac] = _FakeForwarder(running=True)
+        _sync_killed_devices(app)
+        self.assertTrue(app.killed_devices.get(pk))
+
+    def test_sync_keeps_arp_only_kill_without_forwarder(self) -> None:
+        killer = type('K', (), {'killed': {}, 'forwarders': {}})()
+        app = type(
+            'A',
+            (),
+            {
+                'killed_devices': {},
+                '_kill_pending_profiles': set(),
+                '_ics_kill_profile_macs': set(),
+                '_ics_lag_gate': None,
+                'killer': killer,
+            },
+        )()
+        mac = 'AA:BB:CC:DD:EE:FF'
+        pk = 'AA:BB:CC:DD:EE:FF|192.168.1'
+        app.killed_devices[pk] = True
+        killer.killed[mac] = {'mac': mac, 'ip': '192.168.1.165'}
+        killer.forwarders[mac] = _FakeForwarder(running=False)
         _sync_killed_devices(app)
         self.assertTrue(app.killed_devices.get(pk))
