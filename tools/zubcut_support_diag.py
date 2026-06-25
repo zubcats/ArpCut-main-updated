@@ -337,6 +337,20 @@ def collect_report(
         mitm_sec['gateway_ip'] = gw_ip
         mitm_sec['gateway_mac'] = gw_mac
         mitm_sec['gateway_ping'] = _ping_trials(gw_ip) if gw_ip else None
+        try:
+            from networking.killer import is_ip_forwarding_enabled
+
+            mitm_sec['ip_forwarding_enabled'] = is_ip_forwarding_enabled()
+            if mitm_sec['ip_forwarding_enabled']:
+                _add_issue(
+                    report,
+                    'critical',
+                    'ip_forwarding_on',
+                    'Windows IP forwarding is ON — the PC may route PS5 traffic instead of cutting it. '
+                    'Run ZubCut as Administrator or run tools/Repair-ZubCut-Home-Lan-Mitm.cmd.',
+                )
+        except Exception:
+            pass
 
         if not gw_ip or gw_ip in ('0.0.0.0', ''):
             _add_issue(report, 'critical', 'no_gateway', 'Router/gateway IP not detected.')
@@ -506,6 +520,10 @@ def collect_report(
         recs.append('Rescan devices; target the PS5 row whose IP pings reliably (not an old Ethernet IP).')
     if any(v.get('ping', {}).get('flaky') for v in victims if isinstance(v, dict)):
         recs.append('Lag Switch needs stable ping to PS5 — wake console, disable router client isolation if enabled.')
+    if report.get('sections', {}).get('mitm', {}).get('ip_forwarding_enabled'):
+        recs.append(
+            'Run tools/Repair-ZubCut-Home-Lan-Mitm.cmd as Administrator, then restart ZubCut elevated.'
+        )
     recs.append('Confirm the main table "Me" row IP matches ipconfig on the adapter you use for the router.')
     report['recommendations'] = recs
 
@@ -567,6 +585,10 @@ def format_text_report(report: dict[str, Any]) -> str:
     lines.append('--- Router / MITM ---')
     lines.append(f"  my IP: {mitm.get('my_ip')}")
     lines.append(f"  gateway: {mitm.get('gateway_ip')}  MAC: {mitm.get('gateway_mac')}")
+    if 'ip_forwarding_enabled' in mitm:
+        lines.append(
+            f"  IP forwarding: {'ON (blocks MITM cut)' if mitm.get('ip_forwarding_enabled') else 'off'}"
+        )
     gp = mitm.get('gateway_ping') or {}
     if gp:
         lines.append(f"  gateway ping: {gp.get('ok_count')}/{len(gp.get('trials') or [])} ok")

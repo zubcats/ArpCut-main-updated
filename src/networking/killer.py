@@ -23,6 +23,39 @@ from tools.utils import (
 from constants import *
 
 
+def is_ip_forwarding_enabled() -> bool:
+    """True when Windows kernel/global IPv4 forwarding is on (breaks MITM cut if forwarder absent)."""
+    if not sys.platform.startswith('win'):
+        return False
+    try:
+        import winreg
+
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters',
+            0,
+            winreg.KEY_READ,
+        )
+        val, _ = winreg.QueryValueEx(key, 'IPEnableRouter')
+        winreg.CloseKey(key)
+        if int(val or 0) != 0:
+            return True
+    except Exception:
+        pass
+    try:
+        out = run_command(
+            ['netsh', 'interface', 'ipv4', 'show', 'config'],
+            shell=False,
+            timeout=8,
+        )
+        text = str(out or '').lower()
+        if 'forwarding' in text and 'enabled' in text:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def enable_ip_forwarding():
     """Enable kernel IP forwarding (Windows: IPEnableRouter + netsh). No-op on other OSes."""
     if not sys.platform.startswith('win'):
@@ -263,6 +296,8 @@ class Killer:
         """
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         self._refresh_victim_mac_from_cache(victim)
+        if not ics_mode:
+            disable_ip_forwarding()
         mac = victim['mac']
         # Reassert path: even if already marked killed, refresh victim record and restart
         # ARP worker generation so ON state recovers from stale/desynced workers.
@@ -785,7 +820,7 @@ class Killer:
         fw = self.forwarders.pop(mac, None)
         if fw:
             fw.stop()
-        if not self.forwarders:
+        if not self.forwarders and not self.killed:
             enable_ip_forwarding()
 
     def _enforce_pf_block(self, victim_ip: str):

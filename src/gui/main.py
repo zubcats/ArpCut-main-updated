@@ -3459,6 +3459,18 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 f'{action} MITM armed on {iface}: victim {victim_mac} router {router_mac}',
                 UI_LOG_VICTIM_BLOCK_FG,
             )
+            if sys.platform.startswith('win'):
+                try:
+                    from networking.killer import is_ip_forwarding_enabled
+
+                    if is_ip_forwarding_enabled():
+                        self.log(
+                            f'{action}: Windows IP forwarding is still ON — traffic may bypass the cut. '
+                            'Run ZubCut as Administrator, then Kill OFF and ON again.',
+                            'red',
+                        )
+                except Exception:
+                    pass
         except Exception:
             pass
 
