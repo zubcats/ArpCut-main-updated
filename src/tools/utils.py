@@ -396,7 +396,9 @@ def victim_endpoint_live_for_mitm(
             f'{ip} is offline — this device is now at {live_ip}. Rescan and use that row.',
         )
 
-    if not ipv4_ping_reachable(ip, attempts=max(1, int(ping_attempts))):
+    ping_tries = max(1, int(ping_attempts))
+    ping_wait = 300 if ping_tries <= 1 else 500
+    if not ipv4_ping_reachable(ip, attempts=ping_tries, timeout_ms=ping_wait):
         arp_mac = lookup_mac_from_arp_table(ip, iface_ip)
         if (
             expected_mac

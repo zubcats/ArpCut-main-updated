@@ -1023,6 +1023,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._shutting_down = False
         self._lag_start_gen = 0
         self._dupe_start_gen = 0
+        self._pctcut_start_gen = 0
 
         # Threading
         self.scan_thread = ScanThread()
@@ -1693,6 +1694,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._shutting_down = True
         self._lag_start_gen = int(getattr(self, '_lag_start_gen', 0)) + 1
         self._dupe_start_gen = int(getattr(self, '_dupe_start_gen', 0)) + 1
+        self._pctcut_start_gen = int(getattr(self, '_pctcut_start_gen', 0)) + 1
         try:
             self._dupe_arm_timer.stop()
         except Exception:
@@ -3598,9 +3600,14 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._refresh_victim_mac_from_system_arp(device)
             self._refresh_router_mac_from_system_arp()
             router_mac = getattr(self.scanner, 'router_mac', '') or ''
-            if changed or not mac_address_is_usable(router_mac):
+            need_topo = changed or not mac_address_is_usable(router_mac)
+            if need_topo and not fast:
                 self.scanner.refresh_local_topology()
                 self._refresh_router_mac_from_system_arp()
+            elif need_topo and fast and not mac_address_is_usable(router_mac):
+                # Fast arm: one ping already ran in _refresh_router_mac_from_system_arp.
+                # Avoid refresh_local_topology → scapy getmacbyip (~4s) on the GUI thread.
+                pass
         except Exception:
             pass
         if clumsy_mode_enabled():
@@ -4463,10 +4470,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if for_lag and mac and getattr(self, '_lag_net_prepared_mac', None) == mac:
             pass
         else:
-            self._ensure_network_context_for_victim(device)
+            self._ensure_network_context_for_victim(device, fast=for_lag)
             if for_lag and mac:
                 self._lag_net_prepared_mac = mac
-        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device)
+        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(
+            device, ping_attempts=1 if for_lag else 3
+        )
         if not mitm_ok:
             if for_lag:
                 self.log(f'Lag MITM blocked: {mitm_reason}', 'red')
@@ -5880,60 +5889,84 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 app.processEvents(QEventLoop.ExcludeUserInputEvents)
         except Exception:
             pass
-        plan = self._impairment_plan_for(device)
-        if plan.is_ics_downstream:
-            if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
-                self.percent_cut_active = False
-                self.percent_cut_device_mac = None
-                self.percent_cut_device_ip = None
-                self.log(
-                    'Percent Cut on hotspot needs WinDivert: '
-                    + clumsy_windivert_unavailable_reason(device),
-                    'red',
-                )
-                self._refresh_flow_toggle_ui()
+
+        self._pctcut_start_gen = int(getattr(self, '_pctcut_start_gen', 0)) + 1
+        pct_gen = self._pctcut_start_gen
+        pct_device = dict(device)
+        pct_val = pct
+        pct_allow = allow_pct
+
+        def _pctcut_deferred_start():
+            if getattr(self, '_shutting_down', False):
                 return
-            if not self._ics_apply_percent_cut_windivert(device, pct):
-                self.percent_cut_active = False
-                self.percent_cut_device_mac = None
-                self.percent_cut_device_ip = None
-                self.log(
-                    'Percent Cut needs WinDivert (run as Administrator).',
-                    'red',
-                )
-                self._refresh_flow_toggle_ui()
+            if (
+                not self.percent_cut_active
+                or int(getattr(self, '_pctcut_start_gen', 0)) != pct_gen
+            ):
                 return
-            resolved_ip = self._ics_hotspot_victim_ip(device, pctcut=True)
-        else:
-            device = dict(device)
-            self._ensure_network_context_for_victim(device)
-            self._refresh_victim_mac_from_system_arp(device)
+            device = pct_device
+            pct = pct_val
+            allow_pct = pct_allow
             mac = str(device.get('mac') or '').strip()
-            self.percent_cut_device_mac = mac
-            if not self.killer.apply_percent_cut(device, pass_percent=allow_pct):
-                self.percent_cut_active = False
-                self.percent_cut_device_mac = None
-                self.percent_cut_device_ip = None
-                try:
-                    self._release_pctcut_victim_immediate(device)
-                except Exception:
-                    pass
-                self.log(
-                    'Percent Cut failed — router MAC or adapter missing (rescan, ping PS5)',
-                    'red',
-                )
-                self._refresh_flow_toggle_ui()
+            ip = str(device.get('ip') or '').strip()
+            plan = self._impairment_plan_for(device)
+            if plan.is_ics_downstream:
+                if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
+                    self.percent_cut_active = False
+                    self.percent_cut_device_mac = None
+                    self.percent_cut_device_ip = None
+                    self.log(
+                        'Percent Cut on hotspot needs WinDivert: '
+                        + clumsy_windivert_unavailable_reason(device),
+                        'red',
+                    )
+                    self._refresh_flow_toggle_ui()
+                    return
+                if not self._ics_apply_percent_cut_windivert(device, pct):
+                    self.percent_cut_active = False
+                    self.percent_cut_device_mac = None
+                    self.percent_cut_device_ip = None
+                    self.log(
+                        'Percent Cut needs WinDivert (run as Administrator).',
+                        'red',
+                    )
+                    self._refresh_flow_toggle_ui()
+                    return
+                resolved_ip = self._ics_hotspot_victim_ip(device, pctcut=True)
+            else:
+                device = dict(device)
+                self._ensure_network_context_for_victim(device, fast=True)
+                self._refresh_victim_mac_from_system_arp(device)
+                mac = str(device.get('mac') or '').strip()
+                self.percent_cut_device_mac = mac
+                if not self.killer.apply_percent_cut(device, pass_percent=allow_pct):
+                    self.percent_cut_active = False
+                    self.percent_cut_device_mac = None
+                    self.percent_cut_device_ip = None
+                    try:
+                        self._release_pctcut_victim_immediate(device)
+                    except Exception:
+                        pass
+                    self.log(
+                        'Percent Cut failed — router MAC or adapter missing (rescan, ping PS5)',
+                        'red',
+                    )
+                    self._refresh_flow_toggle_ui()
+                    return
+                self._log_mitm_arm_status(device, action='Percent Cut')
+                resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
+                    device.get('ip') or ''
+                ).strip()
+            if int(getattr(self, '_pctcut_start_gen', 0)) != pct_gen:
                 return
-            self._log_mitm_arm_status(device, action='Percent Cut')
-            resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
-                device.get('ip') or ''
-            ).strip()
-        self.percent_cut_device_ip = resolved_ip
-        self.log(
-            f'Percent Cut ON for {resolved_ip or ip}: {pct}% cut ({allow_pct}% pass)',
-            UI_LOG_VICTIM_BLOCK_FG,
-        )
-        self._refresh_flow_toggle_ui()
+            self.percent_cut_device_ip = resolved_ip
+            self.log(
+                f'Percent Cut ON for {resolved_ip or ip}: {pct}% cut ({allow_pct}% pass)',
+                UI_LOG_VICTIM_BLOCK_FG,
+            )
+            self._refresh_flow_toggle_ui()
+
+        QTimer.singleShot(0, _pctcut_deferred_start)
 
     def stopPercentCut(self, log=True):
         prev_mac = self.percent_cut_device_mac
@@ -6131,7 +6164,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._refresh_advanced_lag_mitm_if_visible()
                 return True
             try:
-                self._ensure_network_context_for_victim(device)
+                self._ensure_network_context_for_victim(device, fast=True)
                 self.killer.apply_link_shaping(
                     device,
                     delay_ms_out=du,
@@ -6363,7 +6396,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._refresh_advanced_lag_mitm_if_visible()
                 return
             try:
-                self._ensure_network_context_for_victim(device)
+                self._ensure_network_context_for_victim(device, fast=True)
                 self.killer.apply_link_shaping(
                     device,
                     delay_ms_out=du,
@@ -6711,13 +6744,13 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                             )
                     else:
                         _mark('lan_start')
-                        self._ensure_network_context_for_victim(device)
+                        self._ensure_network_context_for_victim(device, fast=True)
                         mac = str(device.get('mac') or mac).strip() or mac
                         _mark('lan_ensure_net_done')
                         self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
                         self.killer.disable_percent_cut(mac)
                         _mark('lan_disable_pctcut_done')
-                        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device)
+                        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device, ping_attempts=1)
                         if not mitm_ok:
                             self.log(
                                 f'Kill ON failed: {mitm_reason}',
