@@ -1020,6 +1020,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.autoupdate = True
 
         self.from_tray = False
+        self._shutting_down = False
+        self._lag_start_gen = 0
+        self._dupe_start_gen = 0
 
         # Threading
         self.scan_thread = ScanThread()
@@ -1685,8 +1688,19 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.settings_window.hide()
         self.about_window.hide()
 
+    def _cancel_deferred_flow_starts(self) -> None:
+        """Invalidate pending Lag/Dupe arm timers so exit does not re-enter Qt slots."""
+        self._shutting_down = True
+        self._lag_start_gen = int(getattr(self, '_lag_start_gen', 0)) + 1
+        self._dupe_start_gen = int(getattr(self, '_dupe_start_gen', 0)) + 1
+        try:
+            self._dupe_arm_timer.stop()
+        except Exception:
+            pass
+
     def _teardown_all_attacks(self, *, log: bool = False) -> dict:
         """Stop lag/kill/dupe/MITM and remove all ZubCut firewall blocks (exit + startup)."""
+        self._cancel_deferred_flow_starts()
         extra_ips: list = []
         for v in self.killer.killed.values():
             if isinstance(v, dict) and v.get('ip'):
@@ -3147,6 +3161,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         # Warm NIC + Npcap while cross-flow teardown runs (PS5 LAN path).
         def _lag_prep_net():
+            if getattr(self, '_shutting_down', False):
+                return
             try:
                 self._ensure_network_context_for_victim(snap)
                 self.killer._get_socket()
@@ -3158,70 +3174,78 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
-        if self.dupe_active:
-            self.stopDupe(refresh_dialog=True, log=False)
-            if self._dupe_pending_clear or getattr(self, '_dupe_clear_future', None):
-                self._flush_pending_dupe_clear_sync(max_wait_ms=400)
-            self._drop_dupe_restoring_banner()
-        was_mitm = bool(self.mitm_shaping_active)
-        self.stop_mitm_shaping(log=False)
-        # stop_mitm_shaping flips mitm_shaping_active = False immediately but its
-        # _teardown_worker runs killer.unkill() on a daemon thread. If we start
-        # the lag ARP poison before that worker finishes, the worker's unkill()
-        # races and silently kills our fresh kill() — UI shows LAGGING with no
-        # actual MITM traffic. Wait for the teardown to settle before proceeding.
-        if was_mitm:
-            self._await_mitm_teardown_thread()
-        if self.percent_cut_active:
-            self.stopPercentCut(log=False)
-        dev = dict(device)
-        try:
-            self._ensure_network_context_for_victim(snap)
-            self._refresh_victim_mac_from_system_arp(snap)
-            live_mac = str(snap.get('mac') or '').strip()
-            live_ip = str(snap.get('ip') or '').strip()
-            if live_mac:
-                mac = live_mac
-                self.lag_device_mac = live_mac
-            if live_ip:
-                self.lag_device_ip = live_ip
-            mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(snap)
-            if not mitm_ok:
+        self._lag_start_gen = int(getattr(self, '_lag_start_gen', 0)) + 1
+        lag_gen = self._lag_start_gen
+
+        def _lag_deferred_start():
+            if getattr(self, '_shutting_down', False):
+                return
+            if not self.lag_active or int(getattr(self, '_lag_start_gen', 0)) != lag_gen:
+                return
+            if self.dupe_active:
+                self.stopDupe(refresh_dialog=True, log=False)
+                if self._dupe_pending_clear or getattr(self, '_dupe_clear_future', None):
+                    self._flush_pending_dupe_clear_sync(max_wait_ms=400)
+                self._drop_dupe_restoring_banner()
+            was_mitm = bool(self.mitm_shaping_active)
+            if was_mitm:
+                self.stop_mitm_shaping(log=False)
+                self._await_mitm_teardown_thread()
+            elif getattr(self, '_mitm_teardown_thread', None) is not None:
+                t = getattr(self, '_mitm_teardown_thread', None)
+                if t is not None and t.is_alive():
+                    self._await_mitm_teardown_thread()
+            if self.percent_cut_active:
+                self.stopPercentCut(log=False)
+            work_mac = mac
+            work_dev = dict(device)
+            work_snap = dict(snap)
+            try:
+                self._ensure_network_context_for_victim(work_snap, fast=True)
+                self._refresh_victim_mac_from_system_arp(work_snap)
+                live_mac = str(work_snap.get('mac') or '').strip()
+                live_ip = str(work_snap.get('ip') or '').strip()
+                if live_mac:
+                    work_mac = live_mac
+                    self.lag_device_mac = live_mac
+                if live_ip:
+                    self.lag_device_ip = live_ip
+                mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(work_snap, ping_attempts=1)
+                if not mitm_ok:
+                    self.lag_active = False
+                    self.lag_device_mac = None
+                    self.lag_device_ip = None
+                    self._lag_device_snapshot = None
+                    self.btnLagSwitch.setText('Lag Switch')
+                    self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+                    self.log(f'Lag failed: {mitm_reason}', 'red')
+                    self._refresh_flow_toggle_ui()
+                    return
+                iface = self.scanner.iface
+                self.log(
+                    f'Lag via {iface.name} ({getattr(iface, "ip", "") or "?"}) → {work_snap.get("ip", "")}',
+                    'gray',
+                )
+            except Exception as exc:
                 self.lag_active = False
                 self.lag_device_mac = None
                 self.lag_device_ip = None
                 self._lag_device_snapshot = None
                 self.btnLagSwitch.setText('Lag Switch')
                 self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-                self.log(f'Lag failed: {mitm_reason}', 'red')
+                self.log(f'Lag failed: {exc}', 'red')
                 self._refresh_flow_toggle_ui()
                 return
-            iface = self.scanner.iface
-            self.log(
-                f'Lag via {iface.name} ({getattr(iface, "ip", "") or "?"}) → {snap.get("ip", "")}',
-                'gray',
-            )
-        except Exception as exc:
-            self.lag_active = False
-            self.lag_device_mac = None
-            self.lag_device_ip = None
-            self._lag_device_snapshot = None
-            self.btnLagSwitch.setText('Lag Switch')
-            self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-            self.log(f'Lag failed: {exc}', 'red')
-            self._refresh_flow_toggle_ui()
-            return
 
-        def _arm_lag_start():
-            if not self.lag_active or self.lag_device_mac != mac:
+            if not self.lag_active or self.lag_device_mac != work_mac:
                 return
-            cur = self._lag_resolved_victim() or dev
+            cur = self._lag_resolved_victim() or work_dev
             self._lag_phase_begin_block(cur)
-            self._schedule_lag_start_reassert(mac)
+            self._schedule_lag_start_reassert(work_mac)
             self._refresh_flow_toggle_ui()
             self._repaint_all_table_rows_for_hover()
 
-        _arm_lag_start()
+        QTimer.singleShot(0, _lag_deferred_start)
 
     def _lag_reassert_poison(self, device) -> None:
         """Poison burst only — never restart the ARP worker (see killer.reassert_poison)."""
@@ -3514,7 +3538,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
-    def _ensure_network_context_for_victim(self, device) -> bool:
+    def _ensure_network_context_for_victim(self, device, *, fast: bool = True) -> bool:
         """
         Bind scanner + killer to the NIC that routes to the victim (e.g. hotspot vs Ethernet).
         Runtime only — does not write ``iface`` to settings (so Clumsy/victim auto-pick
@@ -3533,6 +3557,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 device,
                 getattr(self.scanner, 'devices', None) or [],
                 iface_ip,
+                ping_attempts=1 if fast else 3,
             )
             if isinstance(resolved, dict):
                 old_ip = str(device.get('ip') or '').strip()
@@ -4744,7 +4769,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._repaint_all_table_rows_for_hover()
                 return
             self._arm_dupe_burst_wall_clock()
-            self._ensure_network_context_for_victim(dev)
+            self._ensure_network_context_for_victim(dev, fast=True)
             self._sync_dupe_device_identity(dev)
             self.killer.disable_percent_cut(dev['mac'])
             if dev['mac'] not in self.killer.killed:
@@ -5201,6 +5226,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     merged,
                     getattr(self.scanner, 'devices', None) or [],
                     iface_ip,
+                    ping_attempts=1,
                 )
                 if isinstance(resolved, dict):
                     merged = dict(resolved)
@@ -5292,27 +5318,16 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if self._toggle_start_blocked('dupe'):
             return
-        self.stopLagSwitch(refresh_dialog=True)
-        self.stopDupe(refresh_dialog=False, log=False)
-        self._flush_pending_dupe_clear_sync()
-        self._drop_dupe_restoring_banner()
-        # Same race window as startLagSwitch: a still-running MITM teardown can
-        # call killer.unkill() AFTER _apply_dupe_deferred calls killer.kill(),
-        # silently shutting down the dupe ARP worker. _toggle_start_blocked
-        # doesn't catch it because mitm_shaping_active was flipped to False
-        # synchronously, even though the daemon thread keeps running.
-        if self.mitm_shaping_active:
-            self.stop_mitm_shaping(log=False)
-        self._await_mitm_teardown_thread()
-        if self.percent_cut_active:
-            self.stopPercentCut(log=False)
+        if self.dupe_active:
+            self.stopDupe(refresh_dialog=False, log=False)
+            self._flush_pending_dupe_clear_sync(max_wait_ms=400)
+            self._drop_dupe_restoring_banner()
+        device = dict(device)
         self._dupe_arm_timer.stop()
         try:
             self._dupe_arm_timer.timeout.disconnect()
         except TypeError:
             pass
-        device = dict(device)
-        self._refresh_victim_mac_from_system_arp(device)
         self.dupe_device_mac = device['mac']
         self.dupe_device_ip = device.get('ip')
         self.dupe_direction = direction
@@ -5327,12 +5342,44 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             UI_LOG_VICTIM_BLOCK_FG,
             hold_ms=0,
         )
-        self._dupe_arm_device = dict(device)
-        self._dupe_arm_direction = direction
         self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
-        self._dupe_arm_timer.timeout.connect(self._apply_dupe_deferred, Qt.UniqueConnection)
-        self._dupe_arm_timer.start(0)
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        except Exception:
+            pass
+
+        self._dupe_start_gen = int(getattr(self, '_dupe_start_gen', 0)) + 1
+        dupe_gen = self._dupe_start_gen
+        arm_device = dict(device)
+        arm_direction = direction
+
+        def _dupe_deferred_start():
+            if getattr(self, '_shutting_down', False):
+                return
+            if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != dupe_gen:
+                return
+            if self.lag_active:
+                self.stopLagSwitch(refresh_dialog=True)
+            if self.mitm_shaping_active:
+                self.stop_mitm_shaping(log=False)
+                self._await_mitm_teardown_thread()
+            else:
+                t = getattr(self, '_mitm_teardown_thread', None)
+                if t is not None and t.is_alive():
+                    self._await_mitm_teardown_thread()
+            if self.percent_cut_active:
+                self.stopPercentCut(log=False)
+            if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != dupe_gen:
+                return
+            self._dupe_arm_device = dict(arm_device)
+            self._dupe_arm_direction = arm_direction
+            self._dupe_arm_timer.timeout.connect(self._apply_dupe_deferred, Qt.UniqueConnection)
+            self._dupe_arm_timer.start(0)
+
+        QTimer.singleShot(0, _dupe_deferred_start)
 
     def dupe_remaining_ms(self):
         if not self.dupe_active:

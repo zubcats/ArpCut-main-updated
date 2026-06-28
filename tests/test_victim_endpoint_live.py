@@ -85,7 +85,7 @@ class TestVictimEndpointLive(unittest.TestCase):
         }
         devices = [stale, live_row]
 
-        def _live(ip, mac, _iface):
+        def _live(ip, mac, _iface=None, **_kw):
             if ip == "192.168.1.248" and mac == eth_mac:
                 return True, ""
             return False, "offline"
@@ -109,7 +109,7 @@ class TestVictimEndpointLive(unittest.TestCase):
         stale = {"ip": "192.168.1.165", "mac": eth_mac, "name": "-"}
         calls = {"n": 0}
 
-        def _live(ip, mac, _iface):
+        def _live(ip, mac, _iface=None, **_kw):
             if ip == "192.168.1.248" and mac == eth_mac:
                 return True, ""
             return False, "offline"
@@ -148,7 +148,7 @@ class TestVictimEndpointLive(unittest.TestCase):
             "vendor": "Sony Interactive Entertainment Inc.",
         }
 
-        def _live(ip, mac, _iface):
+        def _live(ip, mac, _iface=None, **_kw):
             if ip == "192.168.1.248" and mac == eth_mac:
                 return True, ""
             return False, "offline"

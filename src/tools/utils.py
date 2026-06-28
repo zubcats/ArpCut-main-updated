@@ -464,6 +464,8 @@ def resolve_live_lan_victim(
     device: dict,
     devices: list[dict] | None = None,
     iface_ip: str | None = None,
+    *,
+    ping_attempts: int = 1,
 ) -> tuple[dict, str]:
     """
     When PS5 moves Wi‑Fi ↔ Ethernet it gets a new IP and MAC. The saved table row may
@@ -479,7 +481,10 @@ def resolve_live_lan_victim(
     def _live_ok(row: dict) -> bool:
         _arp_refresh_device_record(row, iface_ip)
         ok, _ = victim_endpoint_live_for_mitm(
-            row.get('ip'), row.get('mac'), iface_ip or None
+            row.get('ip'),
+            row.get('mac'),
+            iface_ip or None,
+            ping_attempts=max(1, int(ping_attempts)),
         )
         return ok
 
@@ -553,7 +558,7 @@ def resolve_live_lan_victim(
             return c, f'Using live PlayStation at {lip} (previous row was offline).'
 
     _ok, reason = victim_endpoint_live_for_mitm(
-        dev.get('ip'), dev.get('mac'), iface_ip or None
+        dev.get('ip'), dev.get('mac'), iface_ip or None, ping_attempts=3
     )
     return dev, reason or 'Rescan and select the PS5 row matching its current connection.'
 

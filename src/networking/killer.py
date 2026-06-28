@@ -238,7 +238,7 @@ class Killer:
             'admin': True,
         }
     
-    def mitm_prereqs_ok(self, victim) -> tuple[bool, str]:
+    def mitm_prereqs_ok(self, victim, *, ping_attempts: int = 1) -> tuple[bool, str]:
         """True when victim + router MACs are known enough to MITM on LAN."""
         if not isinstance(victim, dict):
             return False, 'no victim'
@@ -254,6 +254,7 @@ class Killer:
             victim.get('ip'),
             victim.get('mac'),
             getattr(self.iface, 'ip', None),
+            ping_attempts=max(1, int(ping_attempts)),
         )
         if not live_ok:
             return False, live_reason
