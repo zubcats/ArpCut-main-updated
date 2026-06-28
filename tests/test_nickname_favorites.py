@@ -92,6 +92,50 @@ class TestNicknameFavorites(unittest.TestCase):
         self.assertEqual(repaired.get(f'{ps5}|192.168.1'), '192.168.1.248')
         self.assertNotIn(f'{dupe}|192.168.1', repaired)
 
+    def test_repair_keeps_last_ip_when_arp_cache_empty(self) -> None:
+        ps5 = '00:E4:21:44:ED:0C'
+        dupe = 'DC:E9:94:AB:E6:C4'
+        nicknames = {
+            f'{ps5}|192.168.1': 'PS5',
+            f'{dupe}|192.168.1': 'PS5 DUPE',
+        }
+        last = {
+            f'{ps5}|192.168.1': '192.168.1.248',
+            f'{dupe}|192.168.1': '192.168.1.165',
+        }
+        with (
+            mock.patch('tools.utils.pick_best_live_iface', return_value=mock.Mock(ip='192.168.1.56')),
+            mock.patch('tools.utils._iface_live_ipv4', return_value='192.168.1.56'),
+            mock.patch('tools.utils.lookup_ip_from_arp_table', return_value=''),
+            mock.patch('tools.utils.lookup_mac_from_arp_table', return_value=''),
+        ):
+            repaired = repair_nickname_last_ips_from_arp(last, nicknames)
+        self.assertEqual(repaired.get(f'{ps5}|192.168.1'), '192.168.1.248')
+        self.assertEqual(repaired.get(f'{dupe}|192.168.1'), '192.168.1.165')
+
+    def test_inject_nicknamed_favorites_uses_saved_last_ip(self) -> None:
+        from networking.scanner import Scanner
+
+        ps5 = 'DC:E9:94:AB:E6:C4'
+        nick_db = {f'{ps5}|192.168.1': 'PS5 DUPE'}
+        last_map = {f'{ps5}|192.168.1': '192.168.1.165'}
+        scanner = Scanner()
+        scanner.devices = [
+            {'ip': '192.168.1.56', 'mac': 'aa:bb:cc:dd:ee:ff', 'type': 'Me', 'admin': True},
+            {'ip': '192.168.1.1', 'mac': '11:22:33:44:55:66', 'type': 'Router', 'admin': True},
+        ]
+        scanner.iface = mock.Mock(ip='192.168.1.56')
+        with (
+            mock.patch('networking.scanner.get_nicknames_dict', return_value=nick_db),
+            mock.patch('networking.scanner.get_nickname_last_ip_map', return_value=last_map),
+            mock.patch('tools.utils.lookup_ip_from_arp_table', return_value=''),
+            mock.patch('networking.scanner.get_vendor', return_value='Sony'),
+            mock.patch('networking.scanner.infer_network_device_type', return_value='Game console (PlayStation)'),
+        ):
+            scanner.inject_nicknamed_favorites()
+        ips = [str(d.get('ip')) for d in scanner.devices if not d.get('admin')]
+        self.assertIn('192.168.1.165', ips)
+
     def test_migrate_legacy_nickname_uses_profile_last_ip(self) -> None:
         mac = '00:E4:21:44:ED:0C'
         db = {mac: 'PS5'}

@@ -1463,7 +1463,9 @@ def repair_nickname_last_ips_from_arp(nickname_last_ip: dict, nicknames: dict) -
             owner = lookup_mac_from_arp_table(stored, iface_ip)
         except Exception:
             owner = ''
-        if not mac_address_is_usable(owner) or owner != mac:
+        # Only drop when forward ARP proves another device owns this IP. An empty
+        # cache at cold start is not evidence — wiping here hid nicknamed rows until scan.
+        if mac_address_is_usable(owner) and owner != mac:
             del last[str(key)]
     return last
 

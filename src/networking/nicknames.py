@@ -229,6 +229,7 @@ class Nicknames:
         legacy = good_mac(mac)
         if legacy in self.__db and is_legacy_nickname_key(legacy):
             del self.__db[legacy]
+        record_nickname_last_ip(mac, ip)
         self._persist()
 
     def reset_name(self, mac, ip=None):
