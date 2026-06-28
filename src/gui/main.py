@@ -3443,7 +3443,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 mac = lookup_mac_from_arp_table(ip, iface_ip)
             if mac_address_is_usable(mac):
                 old_mac = str(device.get('mac') or '').strip()
-                device['mac'] = mac
+                from tools.utils import good_mac
+
+                got = good_mac(mac)
+                if old_mac and got != good_mac(old_mac):
+                    return
+                device['mac'] = got
                 if old_mac and old_mac != mac and old_mac in self.killer.killed:
                     entry = dict(self.killer.killed.pop(old_mac))
                     entry['mac'] = mac

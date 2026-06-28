@@ -93,31 +93,17 @@ def resolve_favorite_ip(
 
 
 def stale_nickname_favorite_should_skip(mac: str, ip: str, iface_ip: str = '') -> bool:
-    """Skip injecting a remembered IP when ARP shows the device is elsewhere or absent."""
+    """Skip injecting a remembered IP when reverse ARP shows the MAC is elsewhere."""
     mac = good_mac(mac)
     ip = str(ip or '').strip()
     if not mac or not ip:
         return True
     try:
-        from tools.utils import (
-            lookup_ip_from_arp_table,
-            lookup_mac_from_arp_table,
-            mac_address_is_usable,
-        )
+        from tools.utils import lookup_ip_from_arp_table
 
         arp_ip = str(lookup_ip_from_arp_table(mac, iface_ip) or '').strip()
-        if arp_ip:
-            return arp_ip != ip
-        owner = lookup_mac_from_arp_table(ip, iface_ip)
-        if mac_address_is_usable(owner) and owner != mac:
+        if arp_ip and arp_ip != ip:
             return True
-        try:
-            from tools.utils import ipv4_ping_reachable
-
-            if not ipv4_ping_reachable(ip):
-                return True
-        except Exception:
-            pass
     except Exception:
         pass
     return False

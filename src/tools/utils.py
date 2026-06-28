@@ -435,6 +435,7 @@ def _arp_refresh_device_record(device: dict, iface_ip: str | None = None) -> Non
     ip = str(device.get('ip') or '').strip()
     if not ip:
         return
+    expected = good_mac(str(device.get('mac') or ''))
     mac = lookup_mac_from_arp_table(ip, iface_ip)
     if not mac_address_is_usable(mac) and sys.platform.startswith('win'):
         try:
@@ -447,7 +448,39 @@ def _arp_refresh_device_record(device: dict, iface_ip: str | None = None) -> Non
             pass
         mac = lookup_mac_from_arp_table(ip, iface_ip)
     if mac_address_is_usable(mac):
-        device['mac'] = mac
+        got = good_mac(mac)
+        # During MITM the OS ARP cache can briefly map an IP to the wrong MAC.
+        # Never replace the row the user picked with another device's MAC.
+        if expected and got != expected:
+            return
+        device['mac'] = got
+
+
+def _resolve_allowed_macs(device: dict) -> set[str]:
+    """MACs we may MITM when resolving Wi‑Fi ↔ Ethernet for the same console."""
+    macs: set[str] = set()
+    orig = good_mac(str(device.get('mac') or ''))
+    if orig:
+        macs.add(orig)
+    nick = str(device.get('name') or '').strip()
+    if nick and nick != '-':
+        try:
+            from networking.nicknames import get_nicknames_dict, parse_nickname_profile_key
+
+            for key, nm in get_nicknames_dict().items():
+                if str(nm or '').strip() != nick:
+                    continue
+                prof_mac, _pfx = parse_nickname_profile_key(str(key))
+                if prof_mac:
+                    macs.add(prof_mac)
+        except Exception:
+            pass
+    return macs
+
+
+def _resolve_mac_allowed(device: dict, allowed: set[str]) -> bool:
+    mac = good_mac(str(device.get('mac') or ''))
+    return bool(mac and mac in allowed)
 
 
 def _device_row_is_playstation(row: dict) -> bool:
@@ -479,6 +512,7 @@ def resolve_live_lan_victim(
     iface_ip = str(iface_ip or '').strip()
     dev = dict(device)
     rows = [d for d in (devices or []) if isinstance(d, dict) and not d.get('admin')]
+    allowed_macs = _resolve_allowed_macs(dev)
 
     def _live_ok(row: dict) -> bool:
         _arp_refresh_device_record(row, iface_ip)
@@ -508,6 +542,13 @@ def resolve_live_lan_victim(
             if str(row.get('name') or '').strip() != nick:
                 continue
             cand = dict(row)
+            if not _resolve_mac_allowed(cand, allowed_macs):
+                # Same nickname on two PlayStation rows = Wi‑Fi ↔ Ethernet handoff.
+                if not (
+                    _device_row_is_playstation(dev)
+                    and _device_row_is_playstation(cand)
+                ):
+                    continue
             if _live_ok(cand):
                 lip = str(cand.get('ip') or '')
                 return cand, f'Using live {nick} at {lip} (rescan row was stale).'
@@ -528,6 +569,8 @@ def resolve_live_lan_victim(
                 prof_mac, _pfx = parse_nickname_profile_key(str(key))
                 if not prof_mac or prof_mac in seen_macs:
                     continue
+                if prof_mac not in allowed_macs:
+                    continue
                 seen_macs.add(prof_mac)
                 fav_ip = resolve_favorite_ip(prof_mac, str(key), last_map, iface_ip)
                 if not fav_ip or not _ipv4_valid(fav_ip):
@@ -545,19 +588,6 @@ def resolve_live_lan_victim(
                     )
         except Exception:
             pass
-
-    if _device_row_is_playstation(dev):
-        live_ps: list[dict] = []
-        for row in rows:
-            if not _device_row_is_playstation(row):
-                continue
-            cand = dict(row)
-            if _live_ok(cand):
-                live_ps.append(cand)
-        if len(live_ps) == 1:
-            c = live_ps[0]
-            lip = str(c.get('ip') or '')
-            return c, f'Using live PlayStation at {lip} (previous row was offline).'
 
     _ok, reason = victim_endpoint_live_for_mitm(
         dev.get('ip'), dev.get('mac'), iface_ip or None, ping_attempts=3

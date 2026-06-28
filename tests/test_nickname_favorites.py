@@ -35,7 +35,18 @@ class TestNicknameFavorites(unittest.TestCase):
             ip = resolve_favorite_ip(mac, mac, last, '192.168.1.56')
         self.assertEqual(ip, '192.168.1.248')
 
-    def test_stale_dupe_skipped_when_ip_owned_by_other_mac(self) -> None:
+    def test_stale_favorite_skipped_when_mac_at_different_ip(self) -> None:
+        dupe_mac = 'DC:E9:94:AB:E6:C4'
+        with mock.patch(
+            'tools.utils.lookup_ip_from_arp_table', return_value='192.168.1.248'
+        ):
+            skip = stale_nickname_favorite_should_skip(
+                dupe_mac, '192.168.1.165', '192.168.1.56'
+            )
+        self.assertTrue(skip)
+
+    def test_stale_favorite_kept_when_forward_arp_mismatches(self) -> None:
+        """After Kill, forward ARP can lie; still show the nicknamed row at startup."""
         dupe_mac = 'DC:E9:94:AB:E6:C4'
         ps5_mac = '00:E4:21:44:ED:0C'
         with (
@@ -45,7 +56,7 @@ class TestNicknameFavorites(unittest.TestCase):
             skip = stale_nickname_favorite_should_skip(
                 dupe_mac, '192.168.1.165', '192.168.1.56'
             )
-        self.assertTrue(skip)
+        self.assertFalse(skip)
 
     def test_repair_drops_stale_last_ip_when_mac_not_in_arp(self) -> None:
         ps5 = '00:E4:21:44:ED:0C'
