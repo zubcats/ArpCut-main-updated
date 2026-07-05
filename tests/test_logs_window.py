@@ -20,14 +20,15 @@ class TestLogsWindowWiring(unittest.TestCase):
         block = src[src.index('def log(self, text, color'): src.index('def _append_log_history')]
         self.assertIn('_append_log_history', block)
 
-    def test_logs_button_and_context_menu(self) -> None:
+    def test_status_line_context_menu_opens_logs(self) -> None:
         path = os.path.join(_SRC, 'gui', 'main.py')
         with open(path, encoding='utf-8') as f:
             src = f.read()
-        self.assertIn("self.btnLogs = QPushButton('Logs'", src)
-        self.assertIn('self.btnLogs.clicked.connect(self.openLogs)', src)
+        self.assertNotIn("self.btnLogs = QPushButton('Logs'", src)
         self.assertIn('_on_status_log_context_menu', src)
         self.assertIn('Open Logs', src)
+        self.assertIn('log_color_to_hex', src)
+        self.assertIn('setAutoFillBackground(False)', src)
 
     def test_logs_window_module(self) -> None:
         path = os.path.join(_SRC, 'gui', 'logs_window.py')

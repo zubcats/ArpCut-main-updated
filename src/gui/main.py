@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem, QMessag
                             QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QGroupBox, \
                             QSizePolicy, QShortcut, QAbstractSpinBox, QAbstractItemView, QLineEdit, QSlider, \
                             QTextEdit, QPlainTextEdit, QWidget, QHeaderView, QFrame
-from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush, QFontMetrics
+from PyQt5.QtGui import QPixmap, QIcon, QFont, QKeySequence, QBrush, QFontMetrics, QColor, QPalette
 from PyQt5.QtCore import Qt, QObject, QTimer, QSize, QElapsedTimer, QThread, pyqtSignal, QEvent, pyqtSlot, QMetaObject, QEventLoop
 try:
     from PyQt5.QtWinExtras import QWinTaskbarButton
@@ -27,7 +27,7 @@ from gui.settings import Settings
 from gui.about import About
 from gui.device import Device
 from gui.advanced_lag_settings import AdvancedLagSettingsDialog
-from gui.logs_window import LogEntry, LogsWindow
+from gui.logs_window import LogEntry, LogsWindow, log_color_to_hex
 from .traffic import Traffic
 
 from networking.scanner import Scanner
@@ -858,30 +858,18 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.gridLayout.removeWidget(self.lblcenter)
         self.gridLayout.addWidget(self.lblcenter, 3, 3, 1, 4)
 
-        # Left status strip (lblleft): elide long lines to fit; full text in Logs window.
+        # Left status strip (lblleft): elide long lines to fit; full text in Logs window (right-click).
         self._status_strip_plain = None
         self._status_strip_color = 'white'
         self._log_history: list[LogEntry] = []
         self._log_history_max = 500
         self.lblleft.setWordWrap(False)
         self.lblleft.setMaximumHeight(self.lblleft.fontMetrics().height() + 6)
+        self.lblleft.setAutoFillBackground(False)
+        self.lblleft.setTextFormat(Qt.PlainText)
         self.lblleft.setContextMenuPolicy(Qt.CustomContextMenu)
         self.lblleft.customContextMenuRequested.connect(self._on_status_log_context_menu)
-        self.gridLayout.removeWidget(self.lblleft)
-        self._statusLogRow = QWidget(self.centralwidget)
-        self._statusLogRow.setObjectName('statusLogRow')
-        _status_log_layout = QHBoxLayout(self._statusLogRow)
-        _status_log_layout.setContentsMargins(0, 0, 0, 0)
-        _status_log_layout.setSpacing(6)
-        self.btnLogs = QPushButton('Logs', self._statusLogRow)
-        self.btnLogs.setObjectName('btnLogs')
-        self.btnLogs.setToolTip('Open log history (full messages). Right-click the status line too.')
-        self.btnLogs.setFixedWidth(56)
-        self.btnLogs.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.btnLogs.clicked.connect(self.openLogs)
-        _status_log_layout.addWidget(self.btnLogs)
-        _status_log_layout.addWidget(self.lblleft, 1)
-        self.gridLayout.addWidget(self._statusLogRow, 3, 1, 1, 2)
+        self.gridLayout.addWidget(self.lblleft, 3, 1, 1, 2)
 
         # Space was bound in the .ui to ARP scan; only fire when the main window is foreground.
         self.btnScanEasy.setShortcut(QKeySequence())
@@ -1465,12 +1453,17 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             max_chars = 48
             elided = text if len(text) <= max_chars else (text[: max_chars - 1] + '\u2026')
-        self.lblleft.setText(f"<font color='{color}'>{elided}</font>")
+        hex_color = log_color_to_hex(color)
+        pal = self.lblleft.palette()
+        pal.setColor(QPalette.WindowText, QColor(hex_color))
+        self.lblleft.setPalette(pal)
+        self.lblleft.setAutoFillBackground(False)
+        self.lblleft.setText(elided)
 
     def log(self, text, color='white'):
         """
         Print log info at left label (elided if long). Full text is kept in log history
-        and shown in the Logs window (button or right-click the status line).
+        and shown in the Logs window (right-click the status line).
         """
         plain = str(text or '')
         self._status_strip_plain = plain

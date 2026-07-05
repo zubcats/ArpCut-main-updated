@@ -20,9 +20,9 @@ class TestDupeStatusLogging(unittest.TestCase):
 
     def test_log_documents_single_status_strip(self) -> None:
         src = self._main_py()
-        log_doc = src[src.index('def log(self'): src.index('def openSettings', src.index('def log(self'))]
-        self.assertIn('no separate log window', log_doc.lower())
+        log_doc = src[src.index('def log(self'): src.index('def _append_log_history', src.index('def log(self'))]
         self.assertIn('lblleft', log_doc)
+        self.assertIn('right-click the status line', log_doc.lower())
 
     def test_dupe_uses_visible_inline_status(self) -> None:
         src = self._main_py()

@@ -39,7 +39,7 @@ class LogEntry:
     color: str
 
 
-def _color_to_hex(color: str) -> str:
+def log_color_to_hex(color: str) -> str:
     c = str(color or 'white').strip().lower()
     if c.startswith('#') and len(c) in (4, 7, 9):
         return c
@@ -50,6 +50,7 @@ def _color_to_hex(color: str) -> str:
         'grey': '#9a9a9a',
         'green': '#43b581',
         'yellow': '#f0c040',
+        'aqua': '#5ec4c4',
     }.get(c, c if c.startswith('#') else '#e8e8e8')
 
 
@@ -142,7 +143,7 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
             ts = entry.ts.strftime('%H:%M:%S')
             item = QListWidgetItem(f'{ts}  {preview}')
             item.setData(Qt.UserRole, idx)
-            item.setForeground(QColor(_color_to_hex(entry.color)))
+            item.setForeground(QColor(log_color_to_hex(entry.color)))
             self._list.addItem(item)
         self._list.blockSignals(False)
         if self._entries:
