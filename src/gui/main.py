@@ -27,6 +27,7 @@ from gui.settings import Settings
 from gui.about import About
 from gui.device import Device
 from gui.advanced_lag_settings import AdvancedLagSettingsDialog
+from gui.logs_window import LogEntry, LogsWindow
 from .traffic import Traffic
 
 from networking.scanner import Scanner
@@ -857,11 +858,30 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.gridLayout.removeWidget(self.lblcenter)
         self.gridLayout.addWidget(self.lblcenter, 3, 3, 1, 4)
 
-        # Left status strip (lblleft): elide long lines to fit; full text in tooltip.
+        # Left status strip (lblleft): elide long lines to fit; full text in Logs window.
         self._status_strip_plain = None
         self._status_strip_color = 'white'
+        self._log_history: list[LogEntry] = []
+        self._log_history_max = 500
         self.lblleft.setWordWrap(False)
         self.lblleft.setMaximumHeight(self.lblleft.fontMetrics().height() + 6)
+        self.lblleft.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.lblleft.customContextMenuRequested.connect(self._on_status_log_context_menu)
+        self.gridLayout.removeWidget(self.lblleft)
+        self._statusLogRow = QWidget(self.centralwidget)
+        self._statusLogRow.setObjectName('statusLogRow')
+        _status_log_layout = QHBoxLayout(self._statusLogRow)
+        _status_log_layout.setContentsMargins(0, 0, 0, 0)
+        _status_log_layout.setSpacing(6)
+        self.btnLogs = QPushButton('Logs', self._statusLogRow)
+        self.btnLogs.setObjectName('btnLogs')
+        self.btnLogs.setToolTip('Open log history (full messages). Right-click the status line too.')
+        self.btnLogs.setFixedWidth(56)
+        self.btnLogs.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btnLogs.clicked.connect(self.openLogs)
+        _status_log_layout.addWidget(self.btnLogs)
+        _status_log_layout.addWidget(self.lblleft, 1)
+        self.gridLayout.addWidget(self._statusLogRow, 3, 1, 1, 2)
 
         # Space was bound in the .ui to ARP scan; only fire when the main window is foreground.
         self.btnScanEasy.setShortcut(QKeySequence())
@@ -1040,6 +1060,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.about_window = About(self, self.shell_icon)
         self.device_window = Device(self, self.shell_icon)
         self.traffic_window = Traffic(self, self.shell_icon)
+        self.logs_window = LogsWindow(self, self.shell_icon)
 
         # Connect buttons with icons and tooltips
         self.buttons = [
@@ -1360,6 +1381,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.about_window,
             self.device_window,
             self.traffic_window,
+            self.logs_window,
         ]
         if self.advanced_lag_settings_dialog is not None:
             _chrome_windows.append(self.advanced_lag_settings_dialog)
@@ -1447,16 +1469,80 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def log(self, text, color='white'):
         """
-        Print log info at left label (elided if long; hover shows full text).
-
-        There is no separate log window — only ``lblleft`` plus flow-specific labels
-        (e.g. ``lblDupeCountdownMain``). Messages are replaced by the next ``log()``.
+        Print log info at left label (elided if long). Full text is kept in log history
+        and shown in the Logs window (button or right-click the status line).
         """
-        self._status_strip_plain = text
+        plain = str(text or '')
+        self._status_strip_plain = plain
         self._status_strip_color = color
-        self.lblleft.setToolTip(text)
+        tip = plain if plain else 'Right-click for log history'
+        self.lblleft.setToolTip(tip)
+        if plain:
+            self._append_log_history(plain, color)
         self._apply_status_strip_elide()
         QTimer.singleShot(0, self._apply_status_strip_elide)
+
+    def _append_log_history(self, text: str, color: str) -> None:
+        from datetime import datetime
+
+        entry = LogEntry(ts=datetime.now(), text=text, color=str(color or 'white'))
+        self._log_history.append(entry)
+        overflow = len(self._log_history) - int(getattr(self, '_log_history_max', 500))
+        if overflow > 0:
+            del self._log_history[:overflow]
+        self._notify_logs_window()
+
+    def log_entries(self):
+        """Return a copy of status log history (newest at end)."""
+        return list(getattr(self, '_log_history', []) or [])
+
+    def clear_log_history(self) -> None:
+        self._log_history = []
+        self._notify_logs_window()
+
+    def _notify_logs_window(self) -> None:
+        w = getattr(self, 'logs_window', None)
+        if w is None or not w.isVisible():
+            return
+        try:
+            w.sync_entries(self.log_entries())
+        except Exception:
+            pass
+
+    def openLogs(self):
+        """Open the advanced log viewer, or focus it if already open."""
+        w = self.logs_window
+        w.sync_entries(self.log_entries())
+        if w.isVisible() and not w.isMinimized():
+            w.raise_()
+            w.activateWindow()
+            return
+        if w.isMinimized():
+            w.showNormal()
+        else:
+            w.show()
+            w.setWindowState(Qt.WindowNoState)
+        w.raise_()
+        w.activateWindow()
+
+    def _on_status_log_context_menu(self, pos):
+        menu = QMenu(self)
+        act_open = QAction('Open Logs…', self)
+        act_open.triggered.connect(self.openLogs)
+        menu.addAction(act_open)
+        plain = str(getattr(self, '_status_strip_plain', None) or '').strip()
+        if plain:
+            act_copy = QAction('Copy message', self)
+
+            def _copy_current():
+                try:
+                    copy(plain)
+                except Exception:
+                    QApplication.clipboard().setText(plain)
+
+            act_copy.triggered.connect(_copy_current)
+            menu.addAction(act_copy)
+        menu.exec_(self.lblleft.mapToGlobal(pos))
 
     def _show_dupe_status(self, text, color=UI_LOG_VICTIM_BLOCK_FG, *, hold_ms=8000):
         """Dupe feedback on the inline label under Dupe controls + left status strip."""
@@ -1536,7 +1622,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         w.show()
         w.raise_()
         w.activateWindow()
-    
+
     def openTraffic(self):
         if not self.tableScan.selectedItems():
             self.log('No device selected', 'red')
@@ -1688,6 +1774,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.hide()
         self.settings_window.hide()
         self.about_window.hide()
+        self.logs_window.hide()
 
     def _cancel_deferred_flow_starts(self) -> None:
         """Invalidate pending Lag/Dupe arm timers so exit does not re-enter Qt slots."""
@@ -1794,6 +1881,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._teardown_all_attacks(log=True)
         self.settings_window.close()
         self.about_window.close()
+        self.logs_window.close()
         hide_all_system_tray_icons()
         self.from_tray = True
         self.close()
@@ -1898,6 +1986,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._teardown_all_attacks(log=False)
         self.settings_window.close()
         self.about_window.close()
+        self.logs_window.close()
 
         self.hide()
         hide_all_system_tray_icons()
@@ -2836,6 +2925,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             getattr(self, 'about_window', None),
             getattr(self, 'device_window', None),
             getattr(self, 'traffic_window', None),
+            getattr(self, 'logs_window', None),
         ]
         aw = QApplication.activeWindow()
         if any(w is not None and aw is w for w in app_windows):
