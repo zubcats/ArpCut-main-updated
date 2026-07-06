@@ -13,7 +13,7 @@ APP_USER_DATA_DIR = 'ZubCut'
 UPDATE_CHANNEL = 'experimental'
 
 # GitHub releases/API (update slug when the repository is renamed on GitHub).
-GITHUB_REPO_SLUG = 'zubcats/ZubCut'
+GITHUB_REPO_SLUG = 'zubcats/ArpCut-main-updated'
 GITHUB_RELEASES_BASE = f'https://github.com/{GITHUB_REPO_SLUG}/releases'
 
 # Direct download URL for the latest installer package per channel (.exe).

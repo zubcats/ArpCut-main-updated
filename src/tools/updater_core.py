@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -55,6 +56,25 @@ class RemoteInstallerInfo:
 
 
 _remote_cache: tuple[float, RemoteInstallerInfo | None] | None = None
+_ssl_context: ssl.SSLContext | None = None
+
+
+def _urllib_ssl_context() -> ssl.SSLContext:
+    """CA bundle for frozen Windows builds (PyInstaller often lacks system trust store)."""
+    global _ssl_context
+    if _ssl_context is not None:
+        return _ssl_context
+    try:
+        import certifi
+
+        _ssl_context = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        _ssl_context = ssl.create_default_context()
+    return _ssl_context
+
+
+def _urllib_urlopen(req: urllib.request.Request, *, timeout: float):
+    return urllib.request.urlopen(req, timeout=timeout, context=_urllib_ssl_context())
 
 
 def invalidate_remote_installer_cache() -> None:
@@ -148,7 +168,7 @@ def _github_repo() -> str:
         parts = urlparse(url).path.strip('/').split('/')
         if len(parts) >= 2:
             return f'{parts[0]}/{parts[1]}'
-    return 'zubcats/ZubCut'
+    return 'zubcats/ArpCut-main-updated'
 
 
 def _release_tag_for_channel(channel: str) -> str:
@@ -174,7 +194,7 @@ def _api_release_json(channel: str) -> dict:
             'User-Agent': f'{APP_BUNDLE_NAME}-update-check',
         },
     )
-    with urllib.request.urlopen(req, timeout=12) as resp:
+    with _urllib_urlopen(req, timeout=12) as resp:
         return json.loads(resp.read().decode('utf-8'))
 
 
@@ -203,7 +223,7 @@ def _fetch_build_info_for_release(channel: str) -> dict:
                 'User-Agent': f'{APP_BUNDLE_NAME}-update-check',
             },
         )
-        with urllib.request.urlopen(req, timeout=12) as resp:
+        with _urllib_urlopen(req, timeout=12) as resp:
             data = json.loads(resp.read().decode('utf-8'))
         return data if isinstance(data, dict) else {}
     return {}
@@ -396,6 +416,16 @@ def format_updater_error_message(exc: BaseException) -> str:
                 f'Then retry Install Latest Build, or download manually:\n{release_page_url()}',
             ]
         )
+    elif 'certificate verify failed' in low or 'certIFICATE_VERIFY_FAILED' in base:
+        lines.extend(
+            [
+                '',
+                'Windows could not verify GitHub\'s HTTPS certificate.',
+                '• Open https://github.com in your browser — if that also fails, check PC date/time and antivirus HTTPS scanning',
+                '• Download the installer manually in your browser:',
+                f'  {release_page_url()}',
+            ]
+        )
     elif is_retryable_network_error(exc):
         lines.extend(
             [
@@ -421,7 +451,7 @@ def _fetch_remote_head_dt(url: str) -> datetime | None:
             'User-Agent': f'{APP_BUNDLE_NAME}-update-check',
         },
     )
-    with urllib.request.urlopen(req, timeout=12) as resp:
+    with _urllib_urlopen(req, timeout=12) as resp:
         last_modified = (resp.headers.get('Last-Modified') or '').strip()
     if not last_modified:
         return None
@@ -725,7 +755,7 @@ def _download_installer_once(
     try:
         from tools.updater_debug import updater_log
 
-        resp_cm = urllib.request.urlopen(req, timeout=300)
+        resp_cm = _urllib_urlopen(req, timeout=300)
     except Exception as e:
         try:
             from tools.updater_debug import updater_log

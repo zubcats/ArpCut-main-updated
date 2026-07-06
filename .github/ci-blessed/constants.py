@@ -14,7 +14,7 @@ APP_USER_DATA_DIR = 'ZubCut'
 # CI overwrites UPDATE_CHANNEL and APP_BUILD_TIME_ISO per branch; match your branch when developing.
 UPDATE_CHANNEL = 'experimental'
 
-GITHUB_REPO_SLUG = 'zubcats/ZubCut'
+GITHUB_REPO_SLUG = 'zubcats/ArpCut-main-updated'
 GITHUB_RELEASES_BASE = f'https://github.com/{GITHUB_REPO_SLUG}/releases'
 
 # Single-line: tools/ci_apply_build_constants.py replaces these via ^NAME\s*=.*$

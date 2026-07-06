@@ -224,6 +224,22 @@ class UpdaterCoreTest(unittest.TestCase):
         self.assertIn('Mobile hotspot', msg)
         self.assertIn('github.com', msg)
 
+    def test_urllib_ssl_context_uses_certifi_when_available(self):
+        import tools.updater_core as uc
+
+        uc._ssl_context = None
+        ctx = uc._urllib_ssl_context()
+        self.assertIsNotNone(ctx)
+        try:
+            import certifi
+
+            self.assertTrue(os.path.isfile(certifi.where()))
+        except ImportError:
+            pass
+
+    def test_github_repo_slug_matches_constants(self):
+        self.assertEqual(GITHUB_REPO_SLUG, 'zubcats/ArpCut-main-updated')
+
 
 if __name__ == '__main__':
     unittest.main()
