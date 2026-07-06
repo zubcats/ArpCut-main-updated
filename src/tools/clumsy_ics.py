@@ -889,7 +889,7 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
         proc = None
         last_exc: Exception | None = None
         # Avoid flashing a visible PowerShell console when toggling ICS from the GUI.
-        from tools.utils import _windows_subprocess_no_window_kwargs
+        from tools.utils import _windows_subprocess_no_window_kwargs, subprocess_text_kwargs
 
         ps_kw = _windows_subprocess_no_window_kwargs()
         for cmd in cmd_candidates:
@@ -897,7 +897,7 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
                 proc = subprocess.run(
                     cmd,
                     capture_output=True,
-                    text=True,
+                    **subprocess_text_kwargs(),
                     **ps_kw,
                 )
                 break
@@ -942,7 +942,7 @@ def purge_clumsy_stale_attack_blocks(extra_ips=None, *, for_clumsy_enable: bool 
         import re
         import subprocess
 
-        from tools.utils import _windows_subprocess_no_window_kwargs
+        from tools.utils import _windows_subprocess_no_window_kwargs, subprocess_text_kwargs
 
         out = subprocess.check_output(
             ['arp', '-a'],
@@ -1586,14 +1586,14 @@ def _wlan_autoconfig_needs_heal() -> bool:
     if os.name != 'nt':
         return False
     try:
-        from tools.utils import _windows_subprocess_no_window_kwargs
+        from tools.utils import _windows_subprocess_no_window_kwargs, subprocess_text_kwargs
 
         sc_kw = _windows_subprocess_no_window_kwargs()
         q = subprocess.run(
             ['sc', 'query', 'WlanSvc'],
             capture_output=True,
-            text=True,
             timeout=8,
+            **subprocess_text_kwargs(),
             **sc_kw,
         )
         out = ((q.stdout or '') + (q.stderr or '')).upper()
@@ -1602,8 +1602,8 @@ def _wlan_autoconfig_needs_heal() -> bool:
         c = subprocess.run(
             ['sc', 'qc', 'WlanSvc'],
             capture_output=True,
-            text=True,
             timeout=8,
+            **subprocess_text_kwargs(),
             **sc_kw,
         )
         cfg = ((c.stdout or '') + (c.stderr or '')).upper()

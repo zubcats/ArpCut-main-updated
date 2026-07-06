@@ -30,8 +30,9 @@ def _exec(cmd):
 
         return run_command(cmd, shell=True)
     from subprocess import run
+    from tools.utils import subprocess_text_kwargs
 
-    return run(cmd, shell=True, stdout=PIPE, stderr=PIPE, text=True)
+    return run(cmd, shell=True, stdout=PIPE, stderr=PIPE, **subprocess_text_kwargs())
 
 
 def _set_err(msg: str):

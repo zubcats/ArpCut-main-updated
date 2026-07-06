@@ -45,6 +45,10 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('_ensure_clumsy_ics_enabled_impl', src)
         self.assertIn('except Exception', src)
 
+    def test_run_powershell_uses_safe_subprocess_text_decode(self) -> None:
+        src = inspect.getsource(ics._run_powershell)
+        self.assertIn('subprocess_text_kwargs', src)
+
     def test_enable_script_autodetects_console_path(self) -> None:
         src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
         helpers = ics._PS_HOTSPOT_HELPERS

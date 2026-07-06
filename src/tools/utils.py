@@ -31,6 +31,18 @@ def _windows_subprocess_no_window_kwargs():
     return kw
 
 
+def subprocess_text_kwargs(**extra):
+    """
+    Safe kwargs for subprocess text mode on Windows.
+
+    Without ``errors='replace'``, localized netsh/PowerShell output can raise
+    UnicodeDecodeError inside subprocess reader threads (ZC-CNV5TQ).
+    """
+    kw = {'text': True, 'errors': 'replace'}
+    kw.update(extra)
+    return kw
+
+
 def run_command(command, *, shell=True, timeout=None, check=False):
     """
     Run a subprocess without flashing cmd.exe / PowerShell on Windows.
@@ -41,7 +53,7 @@ def run_command(command, *, shell=True, timeout=None, check=False):
     kwargs = {
         'stdout': subprocess.PIPE,
         'stderr': subprocess.PIPE,
-        'text': True,
+        **subprocess_text_kwargs(),
         'check': check,
     }
     if timeout is not None:

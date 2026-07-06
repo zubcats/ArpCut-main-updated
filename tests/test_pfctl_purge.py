@@ -44,3 +44,9 @@ class PfctlPurgeTests(unittest.TestCase):
         self.assertFalse(pfctl._zubcut_rule_is_attack('ZubCut-DHCP-In'))
         self.assertFalse(pfctl._zubcut_rule_is_attack('ZubCut-ICS-DHCP-Subnet-In'))
         self.assertFalse(pfctl._zubcut_rule_is_attack('ZubCut-Hotspot-Subnet-In'))
+
+    def test_subprocess_text_decode_never_raises_on_bad_bytes(self) -> None:
+        from tools.utils import subprocess_text_kwargs
+
+        self.assertEqual(subprocess_text_kwargs()['errors'], 'replace')
+        self.assertTrue(subprocess_text_kwargs()['text'])
