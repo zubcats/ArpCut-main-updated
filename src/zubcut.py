@@ -347,12 +347,21 @@ if __name__ == "__main__":
         pass
 
     # Initialize scanner and ensure interface is valid
-    GUI.scanner.init()
+        GUI.scanner.init()
     try:
         from networking.killer import enable_ip_forwarding
 
         enable_ip_forwarding()
         GUI.scanner.refresh_local_topology()
+    except Exception:
+        pass
+    try:
+        from tools.utils import reconcile_scanner_with_settings_iface
+
+        hint = reconcile_scanner_with_settings_iface(GUI.scanner, GUI.killer)
+        if hint:
+            GUI.scanner.add_me()
+            GUI.scanner.add_router()
     except Exception:
         pass
     if GUI.scanner.iface.name == 'NULL':

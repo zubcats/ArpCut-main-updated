@@ -1506,6 +1506,73 @@ def repair_nickname_last_ips_from_arp(nickname_last_ip: dict, nicknames: dict) -
     return last
 
 
+def reconcile_scanner_with_settings_iface(scanner, killer=None) -> str:
+    """
+    Align scanner Me/Router with the adapter saved in Settings.
+
+    When only one Npcap binding exists, pin settings to it (stale ghost NPF names
+    make Settings label IP disagree with the Me row). Returns a short user hint
+    when something was corrected (empty if unchanged).
+    """
+    try:
+        from tools.utils_gui import get_settings, set_settings
+    except Exception:
+        return ''
+
+    ifaces = list(get_ifaces_cached())
+    if not ifaces:
+        ifaces = list(get_ifaces())
+
+    saved = str(get_settings('iface') or '').strip()
+    if len(ifaces) == 1:
+        only = ifaces[0]
+        refresh_netface_live_ip(only)
+        if only.name and only.name != 'NULL' and saved != only.name:
+            set_settings('iface', only.name)
+            saved = only.name
+
+    picked = get_iface_by_name(saved) if saved else None
+    if picked is None or picked.name == 'NULL':
+        picked = pick_best_live_iface()
+    if picked is None or picked.name == 'NULL':
+        return ''
+
+    me_before = str(getattr(scanner, 'my_ip', None) or '').strip()
+    old_name = str(getattr(getattr(scanner, 'iface', None), 'name', None) or '').strip()
+
+    scanner.iface = picked
+    refresh_netface_live_ip(picked)
+    if killer is not None:
+        killer.iface = picked
+        try:
+            killer.router = getattr(scanner, 'router', None) or killer.router
+        except Exception:
+            pass
+
+    try:
+        scanner.refresh_local_topology()
+        scanner.add_me()
+        scanner.add_router()
+    except Exception:
+        pass
+
+    me_after = str(getattr(scanner, 'my_ip', None) or '').strip()
+    label_ip = _iface_live_ipv4(picked) or str(getattr(picked, 'ip', None) or '').strip()
+    hints: list[str] = []
+    if saved and picked.name and saved != picked.name:
+        set_settings('iface', picked.name)
+        hints.append('saved network adapter name was updated')
+    if old_name and old_name != picked.name:
+        hints.append(f'using adapter for Me row ({me_after or label_ip or picked.name})')
+    elif me_before and me_after and me_before != me_after:
+        hints.append(f'Me row updated to {me_after}')
+    if me_after and label_ip and me_after != label_ip:
+        hints.append(
+            f'Me is {me_after} but adapter shows {label_ip} — reconnect Wi‑Fi and Arp Scan'
+        )
+    return '; '.join(hints)
+
+
 def resolve_settings_iface_name(saved: str) -> str:
     """
     Map stored Settings iface name to a live adapter.

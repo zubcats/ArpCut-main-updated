@@ -3648,6 +3648,20 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
+    def _reconcile_network_adapter(self, *, log: bool = True) -> None:
+        """Keep Me/Router rows aligned with the Settings network adapter."""
+        try:
+            from tools.utils import reconcile_scanner_with_settings_iface
+
+            hint = reconcile_scanner_with_settings_iface(self.scanner, self.killer)
+            if not hint:
+                return
+            self.showDevices()
+            if log:
+                self.log(f'Network adapter synced: {hint}', UI_LOG_RESTORE_FG)
+        except Exception:
+            pass
+
     def _ensure_network_context_for_victim(self, device, *, fast: bool = True) -> bool:
         """
         Bind scanner + killer to the NIC that routes to the victim (e.g. hotspot vs Ethernet).
@@ -7011,6 +7025,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                             )
                     else:
                         _mark('lan_start')
+                        self._reconcile_network_adapter(log=True)
                         self._ensure_network_context_for_victim(device, fast=False)
                         mac = str(device.get('mac') or mac).strip() or mac
                         _mark('lan_ensure_net_done')

@@ -515,6 +515,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        try:
+            if getattr(self, 'app', None) is not None:
+                self.app._reconcile_network_adapter(log=False)
+        except Exception:
+            pass
+        self._load_interfaces_foreground()
         self.comboInterface.clearFocus()
         self.comboInterface.hidePopup()
         if self._iface_combo_is_placeholder():
