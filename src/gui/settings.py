@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QVBoxLayout,
     QSizePolicy,
+    QProgressDialog,
 )
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer, QEvent, QObject, QThread, pyqtSignal
@@ -62,7 +63,6 @@ from tools.clumsy_inline import (
     windivert_driver_installed,
 )
 from tools.clumsy_ics import (
-    ensure_clumsy_ics_enabled,
     format_clumsy_ics_error,
     mark_clumsy_settings_restart_pending,
     read_clumsy_topology,
@@ -115,6 +115,30 @@ class _UpdateBannerPollThread(QThread):
         except Exception:
             avail, label = False, ''
         self.done.emit(bool(avail), str(label or ''))
+
+
+class _ClumsyIcsPrepThread(QThread):
+    """Run Clumsy ICS PowerShell off the Settings GUI thread (can take 30–60s)."""
+
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self, enable: bool):
+        super().__init__()
+        self._enable = bool(enable)
+
+    def run(self):
+        try:
+            if self._enable:
+                from tools.clumsy_ics import ensure_clumsy_ics_enabled
+
+                ok, detail = ensure_clumsy_ics_enabled()
+            else:
+                from tools.clumsy_ics import repair_clumsy_network_sharing
+
+                ok, detail = repair_clumsy_network_sharing()
+            self.finished.emit(bool(ok), str(detail or ''))
+        except Exception as e:
+            self.finished.emit(False, str(e))
 
 
 class _WheelSafeComboBox(QComboBox):
@@ -370,7 +394,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._clumsy_toggle_guard = False
             return
         try:
-            self._apply_clumsy_mode_toggle(new_v, old_v)
+            self._begin_clumsy_mode_toggle(new_v, old_v)
         except Exception as exc:
             self._clumsy_toggle_guard = True
             self.chkClumsy.setChecked(old_v)
@@ -390,12 +414,49 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 Buttons.OK,
             )
 
-    def _apply_clumsy_mode_toggle(self, new_v: bool, old_v: bool) -> None:
+    def _begin_clumsy_mode_toggle(self, new_v: bool, old_v: bool) -> None:
+        self._pending_clumsy_new = bool(new_v)
+        self._pending_clumsy_old = bool(old_v)
+        label = 'Preparing Clumsy mode…' if new_v else 'Restoring network sharing…'
+        dlg = QProgressDialog(label, None, 0, 0, self)
+        dlg.setWindowTitle('Clumsy Mode')
+        dlg.setWindowModality(Qt.ApplicationModal)
+        dlg.setCancelButton(None)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        dlg.show()
+        self._clumsy_prep_dialog = dlg
+        self.chkClumsy.setEnabled(False)
+        th = _ClumsyIcsPrepThread(new_v)
+        self._clumsy_prep_thread = th
+        th.finished.connect(self._on_clumsy_ics_prep_finished)
+        th.start()
+
+    def _on_clumsy_ics_prep_finished(self, prep_ok: bool, prep_detail: str) -> None:
+        dlg = getattr(self, '_clumsy_prep_dialog', None)
+        if dlg is not None:
+            dlg.close()
+            self._clumsy_prep_dialog = None
+        self.chkClumsy.setEnabled(True)
+        th = getattr(self, '_clumsy_prep_thread', None)
+        if th is not None:
+            th.wait(200)
+            self._clumsy_prep_thread = None
+        new_v = bool(getattr(self, '_pending_clumsy_new', False))
+        old_v = bool(getattr(self, '_pending_clumsy_old', False))
+        self._apply_clumsy_mode_toggle_after_prep(new_v, old_v, bool(prep_ok), str(prep_detail or ''))
+
+    def _apply_clumsy_mode_toggle_after_prep(
+        self,
+        new_v: bool,
+        old_v: bool,
+        prep_ok: bool,
+        prep_detail: str,
+    ) -> None:
         if new_v:
-            ok, detail = ensure_clumsy_ics_enabled()
-            if not ok:
+            if not prep_ok:
                 detail = format_clumsy_ics_error(
-                    detail or 'Unknown error.',
+                    prep_detail or 'Unknown error.',
                     topology=read_clumsy_topology(),
                 )
                 MsgType.WARN(
@@ -419,7 +480,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 cur = ''
             set_settings('iface_before_clumsy', cur)
         else:
-            ok, detail = repair_clumsy_network_sharing()
+            ok = prep_ok
+            detail = prep_detail
             if not ok:
                 if (
                     MsgType.WARN(

@@ -17,6 +17,14 @@ def _is_valid_ip(ip: str) -> bool:
     return all(0 <= int(p) <= 255 for p in parts)
 
 
+def _stdout_lines(res) -> list[str]:
+    """Safe splitlines for subprocess results (stdout may be None on some Windows builds)."""
+    raw = getattr(res, 'stdout', None)
+    if raw is None:
+        return []
+    return str(raw).splitlines()
+
+
 def _exec(cmd):
     if sys.platform.startswith('win'):
         from tools.utils import run_command
@@ -194,7 +202,7 @@ def list_rules():
         _set_err(res.stderr or res.stdout or 'pfctl list failed')
         return []
     _set_err('')
-    return res.stdout.splitlines()
+    return _stdout_lines(res)
 
 
 def block_dst(iface: str, victim_ip: str, dst_ip: str, port: int | None = None, proto: str | None = None):
@@ -225,7 +233,7 @@ def unblock_dst(dst_ip: str, port: int | None = None):
             list_cmd = 'netsh advfirewall firewall show rule name=all dir=out'
             res = _exec(list_cmd)
             if res.returncode == 0:
-                lines = res.stdout.splitlines()
+                lines = _stdout_lines(res)
                 rule_name = None
                 for line in lines:
                     if 'zubcut' in line.lower() and dst_ip.replace('.', '_') in line:
@@ -383,7 +391,7 @@ def _collect_zubcut_attack_rule_names() -> set[str]:
         if res.returncode != 0:
             return set()
         names: set[str] = set()
-        for line in (res.stdout or '').splitlines():
+        for line in _stdout_lines(res):
             m = re.match(r'^\s*Rule Name:\s+(.+)$', line.strip())
             if m and _zubcut_rule_is_attack(m.group(1)):
                 names.add(m.group(1).strip())
@@ -417,7 +425,7 @@ def windows_purge_all_zubcut_ip_block_rules() -> int:
     if res.returncode != 0:
         return 0
     names: set[str] = set()
-    for line in (res.stdout or '').splitlines():
+    for line in _stdout_lines(res):
         m = re.match(r'^\s*Rule Name:\s+(zubcut_ip_.+)$', line.strip(), re.IGNORECASE)
         if m:
             names.add(m.group(1).strip())
@@ -625,7 +633,7 @@ def list_blocked_ips() -> list:
                 r'zubcut_ip_([0-9]{1,3}(?:_[0-9]{1,3}){3})_(in|out)(?:_(udp|tcp|icmp))?',
                 re.IGNORECASE,
             )
-            for line in res.stdout.splitlines():
+            for line in _stdout_lines(res):
                 line = line.strip()
                 if 'zubcut_ip_' in line.lower():
                     m = regex.search(line)
@@ -734,7 +742,7 @@ def list_blocked_ports() -> list:
         res = _exec('netsh advfirewall firewall show rule name=all')
         if res.returncode == 0:
             regex = re.compile(r'zubcut_port_([0-9]+)_([a-z]+)_(in|out)', re.IGNORECASE)
-            for line in res.stdout.splitlines():
+            for line in _stdout_lines(res):
                 line = line.strip()
                 if 'zubcut_port_' in line.lower():
                     m = regex.search(line)
@@ -765,7 +773,7 @@ def clear_all_port_blocks() -> bool:
         # Delete all zubcut_port rules
         res = _exec('netsh advfirewall firewall show rule name=all')
         if res.returncode == 0:
-            for line in res.stdout.splitlines():
+            for line in _stdout_lines(res):
                 if 'zubcut_port' in line.lower() and 'Rule Name:' in line:
                     rule_name = line.split('Rule Name:')[1].strip()
                     _exec(f'netsh advfirewall firewall delete rule name="{rule_name}"')

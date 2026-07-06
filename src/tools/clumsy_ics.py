@@ -51,6 +51,9 @@ def _parse_marker_json(text: str) -> Dict[str, Any]:
     lines (marker only, then JSON), which would otherwise make json.loads fail
     and treat a successful ICS script as failure.
     """
+    if text is None:
+        return {}
+    text = str(text)
     if not text:
         return {}
     lines = [ln.lstrip('\ufeff') for ln in text.splitlines()]

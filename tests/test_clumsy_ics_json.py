@@ -23,6 +23,10 @@ def test_parse_marker_last_wins():
     assert data.get('ok') is True
 
 
+def test_parse_marker_none_safe():
+    assert _parse_marker_json(None) == {}
+
+
 def test_parse_marker_bom_ignored():
     text = '\ufeffZUBCUT_JSON:{"ok": true}\n'
     data = _parse_marker_json(text)

@@ -24,6 +24,19 @@ class PfctlPurgeTests(unittest.TestCase):
             return
         self.assertEqual(pfctl.windows_purge_all_zubcut_ip_block_rules(), 0)
 
+    def test_stdout_lines_handles_none_stdout(self) -> None:
+        from types import SimpleNamespace
+
+        self.assertEqual(pfctl._stdout_lines(SimpleNamespace(stdout=None)), [])
+
+    def test_list_blocked_ips_survives_none_stdout(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        fake = SimpleNamespace(returncode=0, stdout=None, stderr='')
+        with patch.object(pfctl, '_exec', return_value=fake):
+            self.assertEqual(pfctl.list_blocked_ips(), [])
+
     def test_attack_rule_detection(self) -> None:
         self.assertTrue(pfctl._zubcut_rule_is_attack('zubcut_ip_192_168_1_1_in'))
         self.assertTrue(pfctl._zubcut_rule_is_attack('zubcut_port_443_tcp_in'))
