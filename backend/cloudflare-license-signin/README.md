@@ -29,9 +29,6 @@ You need a **free Cloudflare account** and **Node.js** installed (so the `npx` c
 7. Set a **private password** only you and License Manager will know (type it when prompted; nothing prints on screen):  
    `npx wrangler secret put ADMIN_SECRET`  
    Use a long random string (you can generate one in a password manager). **This is not** the customer’s password — it’s the **key between your License Manager and Cloudflare**.
-8. Publish the **public verify key** so ZubCut can fetch it if a build is missing the baked key:  
-   `npx wrangler secret put LICENSE_PUBLIC_KEY_B64`  
-   Paste the same **Public Verify Key** string from License Manager (base64 Ed25519 public key).
 
 ### B. Connect License Manager to that server
 
@@ -79,13 +76,11 @@ Cloudflare free tier has [limits](https://developers.cloudflare.com/workers/plat
 
 ## Deploying worker updates
 
-The worker source lives in this repo for reference, but **deploy is separate from ZubCut builds** — pushing app code does not (and should not) redeploy Cloudflare automatically.
-
-After pulling changes under `backend/cloudflare-license-signin/`, deploy manually from that folder:
+After pulling changes under `backend/cloudflare-license-signin/`, redeploy manually from that folder when you choose to update the worker (separate from ZubCut app releases):
 
 ```bash
 cd backend/cloudflare-license-signin
 npx wrangler deploy
 ```
 
-Requires `npx wrangler login` or `CLOUDFLARE_API_TOKEN` in your shell. Customers only need a new ZubCut installer when **client** code changes; worker-only fixes apply as soon as you run `wrangler deploy`.
+Requires `npx wrangler login` or `CLOUDFLARE_API_TOKEN` in your shell.

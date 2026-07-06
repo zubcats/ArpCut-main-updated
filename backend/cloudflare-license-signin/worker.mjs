@@ -97,28 +97,6 @@ function pathnameKey(requestUrl) {
   }
 }
 
-/** Resolve PBKDF2 salt/hash from KV bundle root or embedded license payload. */
-function resolveRecordCredentials(record) {
-  const license = record?.license;
-  const payload = license?.payload;
-  const salt =
-    record?.password_salt ||
-    payload?.password_salt ||
-    '';
-  const hex =
-    record?.password_hash_hex ||
-    record?.password_hash ||
-    payload?.password_hash ||
-    payload?.password_hash_hex ||
-    '';
-  const iter = Number(
-    record?.password_iters ||
-      payload?.password_iters ||
-      SIGNIN_PBKDF2_ITERS_DEFAULT,
-  );
-  return { salt, hex, iter, license };
-}
-
 export default {
   async fetch(request, env) {
     try {
@@ -139,13 +117,6 @@ export default {
       if (request.method === 'GET') {
         if (path === '/admin/upsert' || path.startsWith('/admin/')) {
           return jsonResponse({ ok: false, error: 'Use POST.' }, 405);
-        }
-        if (path === '/public-key') {
-          const key = String(env.LICENSE_PUBLIC_KEY_B64 || '').trim();
-          if (!key) {
-            return jsonResponse({ ok: false, error: 'Public verify key not configured on server.' }, 503);
-          }
-          return jsonResponse({ ok: true, public_key_b64: key });
         }
         return jsonResponse({ ok: true, service: 'zubcut-license-signin' });
       }
@@ -192,7 +163,7 @@ export default {
           return jsonResponse({ ok: false, error: 'Missing account_key or bundle.' }, 400);
         }
         const salt = bundle?.password_salt;
-        const hex = bundle?.password_hash_hex || bundle?.password_hash;
+        const hex = bundle?.password_hash_hex;
         const license = bundle?.license;
         if (!salt || !hex || !license || typeof license !== 'object') {
           return jsonResponse({ ok: false, error: 'Invalid bundle shape.' }, 400);
@@ -309,23 +280,13 @@ export default {
         return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
       }
 
-      const { salt, hex: expectedHex, iter, license } = resolveRecordCredentials(record);
+      const salt = record?.password_salt;
+      const expectedHex = record?.password_hash_hex;
+      const iter = Number(record?.password_iters || record?.license?.payload?.password_iters || SIGNIN_PBKDF2_ITERS_DEFAULT);
+      const license = record?.license;
 
-      if (!license || typeof license !== 'object') {
-        return jsonResponse(
-          { ok: false, error: 'Account record on server is missing a license. Ask admin to re-push your account.' },
-          500,
-        );
-      }
-      if (!salt || !expectedHex) {
-        return jsonResponse(
-          {
-            ok: false,
-            error:
-              'Account record on server is missing password data. Ask admin to re-push your account from License Manager.',
-          },
-          500,
-        );
+      if (!salt || !expectedHex || !license || typeof license !== 'object') {
+        return jsonResponse({ ok: false, error: 'Invalid credentials.' }, 401);
       }
 
       let derived;

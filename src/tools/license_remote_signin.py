@@ -126,8 +126,8 @@ def signin_failure_hint(reason: str) -> str:
     if 'signature invalid' in low:
         return (
             'The server accepted your password but this ZubCut build cannot verify the license signature. '
-            'Reinstall the latest build from GitHub, or ask admin to confirm LICENSE_PUBLIC_KEY_B64 in CI '
-            'matches License Manager → Public Verify Key.'
+            'Reinstall the latest build from GitHub, or confirm the build was made with the correct '
+            'LICENSE_PUBLIC_KEY_B64.'
         )
     if 'missing sign-in server url' in low or 'sign-in url is not configured' in low:
         return (
@@ -166,7 +166,7 @@ def effective_signin_url() -> str:
 
 
 def fetch_remote_verify_key_b64(url: str, *, timeout_sec: float = 12.0) -> str:
-    """GET /public-key from the license worker (Ed25519 verify key is public)."""
+    """Optional: GET /public-key if the deployed worker supports it (not required)."""
     base = normalize_signin_base_url(url)
     if not base:
         return ''
@@ -181,25 +181,22 @@ def fetch_remote_verify_key_b64(url: str, *, timeout_sec: float = 12.0) -> str:
         return ''
     if not isinstance(body, dict) or not body.get('ok'):
         return ''
-    return str(body.get('public_key_b64') or '').strip()
+    key = str(body.get('public_key_b64') or '').strip()
+    # Ignore health-check JSON from workers without /public-key.
+    if not key or len(key) < 40:
+        return ''
+    return key
 
 
 def ensure_signin_verify_key(signin_url: str | None = None) -> tuple[bool, str]:
-    """Return True when a verify key is available (local, disk, or fetched from server)."""
+    """Return True when a verify key is available locally (no server fetch)."""
     try:
         from tools.license_offline import _effective_public_key_b64
     except Exception:
         return False, 'License module unavailable'
     if _effective_public_key_b64():
         return True, ''
-    url = str(signin_url or effective_signin_url() or '').strip()
-    if not url:
-        return False, 'Missing sign-in server URL'
-    remote = fetch_remote_verify_key_b64(url)
-    if not remote:
-        return False, 'Could not fetch public verify key from license server (/public-key).'
-    os.environ['ZUBCUT_LICENSE_PUBLIC_KEY_B64'] = remote
-    return True, ''
+    return False, 'Missing license verify key in this build'
 
 
 def fetch_license_document_via_signin(
@@ -275,14 +272,14 @@ def probe_signin_configuration(*, timeout_sec: float = 12.0) -> tuple[bool, str]
         write_signin_diagnostic(step='probe', error=str(e))
         return False, '\n'.join(lines + [f'FAIL: {license_transient_reason(str(e))}'])
     ok_key, key_err = ensure_signin_verify_key(url)
-    lines.append(f'verify_key_after_fetch={"ok" if _effective_public_key_b64() else "missing"}')
-    if not ok_key and not _effective_public_key_b64():
+    lines.append(f'verify_key={"ok" if _effective_public_key_b64() else "missing"}')
+    if not ok_key:
         write_signin_diagnostic(step='probe', error=key_err or 'missing verify key')
         return False, '\n'.join(
             lines
             + [
-                f'FAIL: {key_err or "license verify key missing"}',
-                'Admin: npx wrangler secret put LICENSE_PUBLIC_KEY_B64 (in backend/cloudflare-license-signin) then npx wrangler deploy',
+                f'FAIL: {key_err or "license verify key missing in this build"}',
+                'Reinstall from the official GitHub release.',
             ]
         )
     write_signin_diagnostic(step='probe', error='')

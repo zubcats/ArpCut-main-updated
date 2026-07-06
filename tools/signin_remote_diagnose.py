@@ -25,7 +25,9 @@ def main() -> int:
     if pk_url:
         print(f'public_key_url={pk_url}')
         pk = fetch_remote_verify_key_b64(url)
-        print(f'public_key_fetch={"ok len=" + str(len(pk)) if pk else "FAILED (deploy worker + set LICENSE_PUBLIC_KEY_B64 secret)"}')
+        print(
+            f'public_key_fetch={"ok len=" + str(len(pk)) if pk else "not available (optional)"}'
+        )
     ok, report = probe_signin_configuration()
     print(report)
     return 0 if ok else 1

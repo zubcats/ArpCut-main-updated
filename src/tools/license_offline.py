@@ -84,11 +84,12 @@ def _license_disk_verify_key() -> str:
 
 
 def _effective_public_key_b64() -> str:
+    """Build/env verify key first; per-machine disk cache only as fallback."""
     return str(
         os.environ.get('ZUBCUT_LICENSE_PUBLIC_KEY_B64')
         or os.environ.get('ZUBCUT_PAID_PUBLIC_KEY_B64')
-        or _license_disk_verify_key()
         or LICENSE_PUBLIC_KEY_B64
+        or _license_disk_verify_key()
         or ''
     ).strip()
 

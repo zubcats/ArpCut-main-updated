@@ -158,18 +158,49 @@ class TestLicenseRemoteSignin(unittest.TestCase):
 
     def test_signin_failure_hint_signature(self) -> None:
         hint = signin_failure_hint('License signature invalid.')
-        self.assertIn('Public Verify Key', hint)
+        self.assertIn('LICENSE_PUBLIC_KEY_B64', hint)
 
     def test_signin_failure_hint_invalid_credentials(self) -> None:
         hint = signin_failure_hint('Invalid credentials.')
         self.assertIn('Push selected to cloud', hint)
 
+    def test_ensure_signin_verify_key_local_only(self) -> None:
+        from tools import license_remote_signin as lrs
+
+        os.environ['ZUBCUT_LICENSE_PUBLIC_KEY_B64'] = 'YWJjZGVm'
+        try:
+            ok, err = lrs.ensure_signin_verify_key()
+            self.assertTrue(ok, err)
+        finally:
+            os.environ.pop('ZUBCUT_LICENSE_PUBLIC_KEY_B64', None)
+
+    def test_effective_key_prefers_constants_over_disk(self) -> None:
+        from tools import license_offline as lo
+        import tempfile
+
+        old = lo.LICENSE_PUBLIC_KEY_B64
+        old_path = lo.LICENSE_FILE_PATH
+        try:
+            lo.LICENSE_PUBLIC_KEY_B64 = 'built-in-key'
+            tmp = tempfile.mkdtemp()
+            lic = os.path.join(tmp, 'zubcut-license.json')
+            lo.LICENSE_FILE_PATH = lic
+            with open(lic, 'w', encoding='utf-8') as fh:
+                import json
+                json.dump({'verify_key_b64': 'stale-disk-key', 'payload': {}}, fh)
+            self.assertEqual(lo._effective_public_key_b64(), 'built-in-key')
+        finally:
+            lo.LICENSE_PUBLIC_KEY_B64 = old
+            lo.LICENSE_FILE_PATH = old_path
+
     def test_fetch_remote_verify_key(self) -> None:
         from tools import license_remote_signin as lrs
 
+        sample_key = 'A' * 43 + '='
+
         class _Resp:
             def json(self):
-                return {'ok': True, 'public_key_b64': 'YWJjZGVm'}
+                return {'ok': True, 'public_key_b64': sample_key}
 
         def _fake_get(url, **kwargs):
             return _Resp()
@@ -179,7 +210,7 @@ class TestLicenseRemoteSignin(unittest.TestCase):
             lrs.requests.get = _fake_get
             self.assertEqual(
                 lrs.fetch_remote_verify_key_b64('https://example.test/signin'),
-                'YWJjZGVm',
+                sample_key,
             )
         finally:
             lrs.requests.get = orig
