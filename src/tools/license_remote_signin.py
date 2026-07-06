@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -40,13 +42,119 @@ def license_transient_reason(reason: str) -> str:
     return s
 
 
+def normalize_signin_base_url(url: str) -> str:
+    """Strip trailing /validate so sign-in POST hits the root handler, not session validate."""
+    base = str(url or '').strip()
+    if not base:
+        return ''
+    try:
+        parts = urlsplit(base)
+        p = (parts.path or '/').rstrip('/')
+        if p.lower().endswith('/validate'):
+            p = p[: -len('/validate')].rstrip('/')
+        path = '' if not p or p == '/' else p
+        return urlunsplit((parts.scheme, parts.netloc, path, '', ''))
+    except Exception:
+        trimmed = base.rstrip('/')
+        if trimmed.lower().endswith('/validate'):
+            trimmed = trimmed[: -len('/validate')].rstrip('/')
+        return trimmed
+
+
+def _verify_key_hint() -> str:
+    try:
+        from tools.license_offline import _effective_public_key_b64
+
+        key = _effective_public_key_b64()
+        if not key:
+            return 'verify_key=missing'
+        return f'verify_key_len={len(key)} verify_key_tail={key[-8:]}'
+    except Exception as e:
+        return f'verify_key_error={e!r}'
+
+
+def _build_stamp_line() -> str:
+    try:
+        from constants import APP_BUILD_COMMIT, APP_BUILD_TIME_ISO, UPDATE_CHANNEL
+
+        commit = str(APP_BUILD_COMMIT or '').strip()[:12]
+        built = str(APP_BUILD_TIME_ISO or '').strip()
+        channel = str(UPDATE_CHANNEL or '').strip()
+        parts = [p for p in (channel, built, commit) if p]
+        return ' · '.join(parts) if parts else 'unknown build'
+    except Exception:
+        return 'unknown build'
+
+
+def write_signin_diagnostic(
+    *,
+    step: str,
+    account: str = '',
+    error: str = '',
+    extra: dict[str, Any] | None = None,
+) -> str:
+    """Append a sign-in attempt record to %TEMP%\\ZubCut-signin-last.log for support."""
+    path = os.path.join(tempfile.gettempdir(), 'ZubCut-signin-last.log')
+    stamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    lines = [
+        f'[{stamp}] step={step}',
+        f'build={_build_stamp_line()}',
+        f'account={account or "(none)"}',
+        f'error={error or "(none)"}',
+        _verify_key_hint(),
+    ]
+    url = effective_signin_url()
+    if url:
+        lines.append(f'signin_url={normalize_signin_base_url(url)}')
+    else:
+        lines.append('signin_url=missing')
+    if extra:
+        for k, v in extra.items():
+            lines.append(f'{k}={v}')
+    lines.append('')
+    try:
+        with open(path, 'a', encoding='utf-8') as fh:
+            fh.write('\n'.join(lines))
+    except OSError:
+        pass
+    return path
+
+
+def signin_failure_hint(reason: str) -> str:
+    """Short remediation line appended to user-facing sign-in errors."""
+    low = str(reason or '').casefold()
+    if 'signature invalid' in low:
+        return (
+            'The server accepted your password but this ZubCut build cannot verify the license signature. '
+            'Reinstall the latest build from GitHub, or ask admin to confirm LICENSE_PUBLIC_KEY_B64 in CI '
+            'matches License Manager → Public Verify Key.'
+        )
+    if 'missing sign-in server url' in low or 'sign-in url is not configured' in low:
+        return (
+            'Set Windows environment variable ZUBCUT_LICENSE_SIGNIN_URL to '
+            'https://zubcut-license-signin.zubcats.workers.dev then restart ZubCut.'
+        )
+    if 'verify key' in low and 'missing' in low:
+        return 'Reinstall the official ZubCut build from GitHub (experimental-latest or stable-latest).'
+    if 'invalid credentials' in low:
+        return (
+            'Double-check account name (lowercase) and password. If correct, ask admin to use '
+            'License Manager → Push selected to cloud for your account.'
+        )
+    if 're-push your account' in low:
+        return 'Admin: open License Manager, select the account, click Push selected to cloud.'
+    if 'expired' in low:
+        return 'Ask your administrator to renew your subscription in License Manager.'
+    return ''
+
+
 def effective_signin_url() -> str:
     """HTTPS license server URL (empty if not configured)."""
     try:
         from constants import LICENSE_SIGNIN_URL
     except Exception:
         LICENSE_SIGNIN_URL = ''
-    return (
+    raw = (
         str(
             os.environ.get('ZUBCUT_LICENSE_SIGNIN_URL')
             or os.environ.get('ZUBCUT_PAID_SIGNIN_URL')
@@ -54,6 +162,7 @@ def effective_signin_url() -> str:
             or ''
         ).strip()
     )
+    return normalize_signin_base_url(raw)
 
 
 def fetch_license_document_via_signin(
@@ -102,6 +211,40 @@ def fetch_license_document_via_signin(
         return None, 'Sign-in server did not return a license.'
 
     return lic, ''
+
+
+def probe_signin_configuration(*, timeout_sec: float = 12.0) -> tuple[bool, str]:
+    """Lightweight support probe (no password). Writes ZubCut-signin-last.log on failure paths."""
+    lines: list[str] = []
+    url = effective_signin_url()
+    lines.append(f'signin_url={url or "(missing)"}')
+    lines.append(_verify_key_hint())
+    lines.append(f'build={_build_stamp_line()}')
+    if not url:
+        write_signin_diagnostic(step='probe', error='missing sign-in URL')
+        return False, '\n'.join(lines + ['FAIL: sign-in URL not configured'])
+    try:
+        from tools.license_offline import _effective_public_key_b64
+
+        if not _effective_public_key_b64():
+            write_signin_diagnostic(step='probe', error='missing verify key')
+            return False, '\n'.join(lines + ['FAIL: license verify key missing in this build'])
+    except Exception as e:
+        lines.append(f'verify_key_check_error={e!r}')
+    try:
+        r = requests.get(url, timeout=timeout_sec)
+        lines.append(f'GET_http={r.status_code}')
+        try:
+            body = r.json()
+            if isinstance(body, dict):
+                lines.append(f'GET_service={body.get("service", body.get("ok", ""))}')
+        except Exception:
+            lines.append('GET_body=non-json')
+    except requests.RequestException as e:
+        write_signin_diagnostic(step='probe', error=str(e))
+        return False, '\n'.join(lines + [f'FAIL: {license_transient_reason(str(e))}'])
+    write_signin_diagnostic(step='probe', error='')
+    return True, '\n'.join(lines + ['OK: sign-in server reachable; verify key present'])
 
 
 def _signin_validate_url(base_url: str) -> str:

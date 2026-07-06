@@ -25,6 +25,29 @@ def _run_license_crypto_self_test_and_exit() -> None:
 if __name__ == '__main__' and '--verify-license-crypto' in argv:
     _run_license_crypto_self_test_and_exit()
 
+
+def _run_license_signin_probe_and_exit() -> None:
+    """Support: test sign-in URL + verify key without launching the GUI."""
+    import tempfile
+
+    from tools.license_remote_signin import probe_signin_configuration
+
+    ok, report = probe_signin_configuration()
+    out = _os.path.join(tempfile.gettempdir(), 'ZubCut-signin-probe.txt')
+    try:
+        with open(out, 'w', encoding='utf-8') as fh:
+            fh.write(report)
+            fh.write('\n')
+    except OSError:
+        pass
+    print(report)
+    print(f'Wrote {out}')
+    _sys.exit(0 if ok else 1)
+
+
+if __name__ == '__main__' and '--license-signin-probe' in argv:
+    _run_license_signin_probe_and_exit()
+
 from PyQt5.QtWidgets import QApplication, QStyleFactory
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 

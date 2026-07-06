@@ -73,3 +73,13 @@ Same as **section C**: public verify key + Worker URL in the build. Customers us
 ## Limits
 
 Cloudflare free tier has [limits](https://developers.cloudflare.com/workers/platform/limits/) on Workers and KV; suitable for modest user counts. Add rate limiting or WAF rules if you see abuse.
+
+## Deploying worker updates
+
+After pulling changes under `backend/cloudflare-license-signin/`, redeploy from that folder:
+
+```bash
+npx wrangler deploy
+```
+
+Requires `CLOUDFLARE_API_TOKEN` or `npx wrangler login`. Customers only need a new ZubCut build when client code changes; worker-only fixes apply as soon as you deploy.

@@ -17,7 +17,12 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from tools.license_offline import resolve_license_account, validate_license_document
-from tools.license_remote_signin import fetch_license_document_via_signin, license_transient_reason
+from tools.license_remote_signin import (
+    fetch_license_document_via_signin,
+    license_transient_reason,
+    normalize_signin_base_url,
+    signin_failure_hint,
+)
 
 
 class TestLicenseRemoteSignin(unittest.TestCase):
@@ -140,6 +145,24 @@ class TestLicenseRemoteSignin(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(captured['json']['account'], 'myaccount')
         self.assertEqual(captured['json']['license_id'], '')
+
+    def test_normalize_signin_base_url_strips_validate_suffix(self) -> None:
+        self.assertEqual(
+            normalize_signin_base_url('https://example.test/validate'),
+            'https://example.test',
+        )
+        self.assertEqual(
+            normalize_signin_base_url('https://example.test/signin/validate'),
+            'https://example.test/signin',
+        )
+
+    def test_signin_failure_hint_signature(self) -> None:
+        hint = signin_failure_hint('License signature invalid.')
+        self.assertIn('Public Verify Key', hint)
+
+    def test_signin_failure_hint_invalid_credentials(self) -> None:
+        hint = signin_failure_hint('Invalid credentials.')
+        self.assertIn('Push selected to cloud', hint)
 
 
 if __name__ == '__main__':

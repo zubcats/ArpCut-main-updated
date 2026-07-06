@@ -18,9 +18,29 @@ from tools.license_offline import (
     load_and_validate_installed_license,
     validate_license_document,
 )
-from tools.license_remote_signin import effective_signin_url, fetch_license_document_via_signin
+from tools.license_remote_signin import (
+    effective_signin_url,
+    fetch_license_document_via_signin,
+    signin_failure_hint,
+    write_signin_diagnostic,
+)
 
 _LAST_SIGNIN_ERROR = ''
+
+
+def _format_signin_error(reason: str) -> str:
+    reason = str(reason or '').strip()
+    hint = signin_failure_hint(reason)
+    if hint:
+        return f'{reason}\n\n{hint}'
+    return reason
+
+
+def _show_signin_failure(parent, title: str, reason: str, *, account: str = '', step: str = '') -> None:
+    log_path = write_signin_diagnostic(step=step or 'signin', account=account, error=reason)
+    text = _format_signin_error(reason)
+    text = f'{text}\n\nDetails saved to:\n{log_path}'
+    QMessageBox.warning(parent, title, text)
 
 
 def _set_last_signin_error(reason: str) -> None:
@@ -116,12 +136,13 @@ class LicenseSignInDialog(QDialog):
         data, err = fetch_license_document_via_signin(self._signin_url, account, password)
         if data is None:
             _set_last_signin_error(err)
-            QMessageBox.warning(self, 'Sign in failed', err)
+            _show_signin_failure(self, 'Sign in failed', err, account=account, step='server')
             return
         payload = data.get('payload')
         if not isinstance(payload, dict):
-            _set_last_signin_error('Invalid license data from server')
-            QMessageBox.warning(self, 'Sign in', 'Invalid license data from server.')
+            err = 'Invalid license data from server'
+            _set_last_signin_error(err)
+            _show_signin_failure(self, 'Sign in', err, account=account, step='payload')
             return
         # Password was already verified by the HTTPS sign-in server (KV bundle).
         # Do not re-check payload.password_hash here — bundle root salt/hash can
@@ -129,13 +150,16 @@ class LicenseSignInDialog(QDialog):
         res = validate_license_document(data)
         if not res.ok:
             _set_last_signin_error(res.reason)
-            QMessageBox.warning(self, 'Sign in failed', res.reason)
+            _show_signin_failure(self, 'Sign in failed', res.reason, account=account, step='verify')
             return
         try:
             install_license_document(data, signin_account=account)
         except Exception as e:
-            _set_last_signin_error(f'Could not save license: {e}')
-            QMessageBox.critical(self, 'Sign in', f'Could not save license:\n{e}')
+            err = f'Could not save license: {e}'
+            _set_last_signin_error(err)
+            write_signin_diagnostic(step='save', account=account, error=err)
+            QMessageBox.critical(self, 'Sign in', err)
             return
+        write_signin_diagnostic(step='ok', account=account, error='')
         _set_last_signin_error('')
         self.accept()
