@@ -27,6 +27,24 @@ from tools.tray_cleanup import hide_all_system_tray_icons
 
 _ALPHABET = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ'  # skip I, O
 
+
+def safe_daemon_target(fn, /, *args, **kwargs):
+    """Wrap a background-thread callable so uncaught errors are logged, not fatal."""
+
+    def _run() -> None:
+        try:
+            fn(*args, **kwargs)
+        except Exception:
+            try:
+                sys.stderr.write(
+                    f'{APP_BUNDLE_NAME}: suppressed background-thread error in {getattr(fn, "__name__", fn)!r}:\n'
+                )
+                sys.stderr.write(traceback.format_exc())
+            except Exception:
+                pass
+
+    return _run
+
 _prev_sys_excepthook = None
 _prev_threading_excepthook = None
 _installed = False

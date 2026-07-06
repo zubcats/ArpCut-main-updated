@@ -41,10 +41,24 @@ def run_license_signin(parent, window_icon) -> bool:
             parent,
             APP_DISPLAY_NAME,
             'This build has no online sign-in server configured.\n\n'
-            'Set LICENSE_SIGNIN_URL in the app build, or the environment variable\n'
-            'ZUBCUT_LICENSE_SIGNIN_URL, to your license server HTTPS URL.',
+            'Install the latest official ZubCut build from GitHub, or set the environment variable\n'
+            'ZUBCUT_LICENSE_SIGNIN_URL to your license server HTTPS URL.',
         )
         return False
+    try:
+        from tools.license_offline import _effective_public_key_b64
+
+        if not _effective_public_key_b64():
+            _set_last_signin_error('Missing license verify key in this build')
+            QMessageBox.critical(
+                parent,
+                APP_DISPLAY_NAME,
+                'This build is missing the license verification key.\n\n'
+                'Reinstall from the official GitHub release (experimental-latest or stable-latest).',
+            )
+            return False
+    except Exception:
+        pass
     dlg = LicenseSignInDialog(parent, window_icon)
     if dlg.exec_() != QDialog.Accepted:
         if not get_last_signin_error():
@@ -97,7 +111,7 @@ class LicenseSignInDialog(QDialog):
         root.addLayout(btn_row)
 
     def _try_sign_in(self) -> None:
-        account = self.edtAccount.text().strip()
+        account = self.edtAccount.text().strip().lower()
         password = self.edtPassword.text()
         data, err = fetch_license_document_via_signin(self._signin_url, account, password)
         if data is None:
@@ -109,8 +123,8 @@ class LicenseSignInDialog(QDialog):
             _set_last_signin_error('Invalid license data from server')
             QMessageBox.warning(self, 'Sign in', 'Invalid license data from server.')
             return
-        lic_user = str(payload.get('user_name') or '').strip()
-        if lic_user and account.casefold() != lic_user.casefold():
+        lic_user = str(payload.get('user_name') or '').strip().lower()
+        if lic_user and account != lic_user:
             _set_last_signin_error('Account mismatch')
             QMessageBox.warning(
                 self,
@@ -118,7 +132,10 @@ class LicenseSignInDialog(QDialog):
                 f'That name does not match this license (expected: {lic_user!r}).',
             )
             return
-        res = validate_license_document(data, sign_in_password=password)
+        # Password was already verified by the HTTPS sign-in server (KV bundle).
+        # Do not re-check payload.password_hash here — bundle root salt/hash can
+        # differ from embedded payload fields and would reject valid logins.
+        res = validate_license_document(data)
         if not res.ok:
             _set_last_signin_error(res.reason)
             QMessageBox.warning(self, 'Sign in failed', res.reason)

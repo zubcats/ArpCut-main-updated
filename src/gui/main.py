@@ -100,6 +100,7 @@ from tools.utils import (
     get_default_iface,
 )
 from tools.tray_cleanup import hide_all_system_tray_icons
+from tools.crash_feedback import safe_daemon_target
 from tools.pfctl import _is_valid_ip, block_ip, unblock_ip
 
 
@@ -135,7 +136,7 @@ def _bg_unblock_ip(ip: str | None) -> None:
         return
     try:
         threading.Thread(
-            target=lambda: _dupe_net_run_unblock(ip_s),
+            target=safe_daemon_target(_dupe_net_run_unblock, ip_s),
             name='zubcut-unblockip-bg',
             daemon=True,
         ).start()
@@ -164,7 +165,7 @@ def _bg_block_ip(iface: str | None, ip: str | None, direction: str = 'both') -> 
     direction_s = str(direction or 'both').strip() or 'both'
     try:
         threading.Thread(
-            target=lambda: _dupe_net_run_block(iface_s, ip_s, direction_s),
+            target=safe_daemon_target(_dupe_net_run_block, iface_s, ip_s, direction_s),
             name='zubcut-blockip-bg',
             daemon=True,
         ).start()
@@ -908,7 +909,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         try:
             threading.Thread(
-                target=_prewarm_kill_socket,
+                target=safe_daemon_target(_prewarm_kill_socket),
                 name='zubcut-prewarm-l2',
                 daemon=True,
             ).start()
@@ -2719,7 +2720,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.processDevices()
         try:
             threading.Thread(
-                target=lambda: self.killer._get_socket(),
+                target=safe_daemon_target(self.killer._get_socket),
                 name='zubcut-postscan-prewarm',
                 daemon=True,
             ).start()
@@ -3640,7 +3641,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
 
         try:
-            threading.Thread(target=_probe, name='zubcut-mitm-probe', daemon=True).start()
+            threading.Thread(
+                target=safe_daemon_target(_probe), name='zubcut-mitm-probe', daemon=True
+            ).start()
         except Exception:
             pass
 
@@ -6910,7 +6913,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 except Exception:
                     pass
 
-        t = threading.Thread(target=_teardown_worker, daemon=True, name='mitm-stop-teardown')
+        t = threading.Thread(
+            target=safe_daemon_target(_teardown_worker),
+            daemon=True,
+            name='mitm-stop-teardown',
+        )
         self._mitm_teardown_thread = t
         t.start()
 

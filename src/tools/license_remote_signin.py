@@ -70,7 +70,7 @@ def fetch_license_document_via_signin(
     base = str(url or '').strip()
     if not base:
         return None, 'Sign-in URL is not configured.'
-    account = str(account or '').strip()
+    account = str(account or '').strip().lower()
     if not account:
         return None, 'Enter your account name.'
     if not str(password or ''):
@@ -140,7 +140,7 @@ def validate_active_license_session(
     vurl = _signin_validate_url(url)
     if not vurl:
         return None, 'Sign-in URL is not configured.'
-    acct = str(account or '').strip()
+    acct = str(account or '').strip().lower()
     lid = str(license_id or '').strip()
     if not acct or not lid:
         return False, 'Saved license is missing account identity.'

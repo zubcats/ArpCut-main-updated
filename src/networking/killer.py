@@ -21,6 +21,7 @@ from tools.utils import (
     npcap_iface_tokens,
 )
 from constants import *
+from tools.crash_feedback import safe_daemon_target
 
 
 def is_ip_forwarding_enabled() -> bool:
@@ -448,7 +449,11 @@ class Killer:
                 pass
 
         try:
-            threading.Thread(target=_work, name='zubcut-poison-burst', daemon=True).start()
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-poison-burst',
+                daemon=True,
+            ).start()
         except Exception:
             pass
 

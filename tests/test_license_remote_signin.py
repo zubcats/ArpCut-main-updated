@@ -1,21 +1,102 @@
-from tools.license_remote_signin import license_transient_reason
+from __future__ import annotations
+
+import os
+import sys
+import unittest
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SRC = os.path.join(_ROOT, 'src')
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+
+import base64
+import hashlib
+from datetime import datetime, timedelta, timezone
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from tools.license_offline import validate_license_document
+from tools.license_remote_signin import fetch_license_document_via_signin, license_transient_reason
 
 
-def test_license_transient_reason_dns():
-    raw = (
-        'Could not reach license server (HTTPSConnectionPool(host='
-        "'zubcut-license-signin.zubcats.workers.dev', port=443): "
-        'Max retries exceeded with url: /validate (Caused by NameResolutionError('
-        '"HTTPSConnection(host=\'zubcut-license-signin.zubcats.workers.dev\', port=443): '
-        "Failed to resolve 'zubcut-license-signin.zubcats.workers.dev' "
-        '([Errno 11001] getaddrinfo failed)"))).'
-    )
-    assert license_transient_reason(raw) == (
-        'Offline — cannot resolve license server (check internet/DNS). Will retry.'
-    )
+class TestLicenseRemoteSignin(unittest.TestCase):
+    def test_license_transient_reason_dns(self) -> None:
+        raw = (
+            'Could not reach license server (HTTPSConnectionPool(host='
+            "'zubcut-license-signin.zubcats.workers.dev', port=443): "
+            'Max retries exceeded with url: /validate (Caused by NameResolutionError('
+            '"HTTPSConnection(host=\'zubcut-license-signin.zubcats.workers.dev\', port=443): '
+            "Failed to resolve 'zubcut-license-signin.zubcats.workers.dev' "
+            '([Errno 11001] getaddrinfo failed)"))).'
+        )
+        self.assertEqual(
+            license_transient_reason(raw),
+            'Offline — cannot resolve license server (check internet/DNS). Will retry.',
+        )
+
+    def test_license_transient_reason_timeout(self) -> None:
+        self.assertEqual(
+            license_transient_reason('Connection timed out after 12s'),
+            'License server timed out. Will retry.',
+        )
+
+    def test_fetch_signin_lowercases_account(self) -> None:
+        from tools import license_remote_signin as lrs
+
+        captured: dict = {}
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {'ok': False, 'error': 'Invalid credentials.'}
+
+        def _fake_post(url, json=None, **kwargs):
+            captured['json'] = dict(json or {})
+            return _Resp()
+
+        orig_post = lrs.requests.post
+        try:
+            lrs.requests.post = _fake_post
+            data, _err = fetch_license_document_via_signin(
+                'https://example.test/signin', 'MyAccount', 'secret'
+            )
+        finally:
+            lrs.requests.post = orig_post
+        self.assertIsNone(data)
+        self.assertEqual(captured['json']['account'], 'myaccount')
+
+    def test_remote_signin_does_not_require_payload_password_hash_match(self) -> None:
+        """After server auth, signature/expiry check must not re-verify payload password_hash."""
+        sk = Ed25519PrivateKey.generate()
+        pub = sk.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        os.environ['ZUBCUT_LICENSE_PUBLIC_KEY_B64'] = base64.b64encode(pub).decode('ascii')
+        expires = (datetime.now(timezone.utc) + timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        salt = base64.b64encode(b'server-kv-salt').decode('ascii')
+        payload = {
+            'status': 'active',
+            'expires_at': expires,
+            'user_name': 'demo',
+            'password_salt': salt,
+            'password_hash': hashlib.pbkdf2_hmac(
+                'sha256', b'wrong-local-check', base64.b64decode(salt), 100_000
+            ).hex(),
+        }
+        msg = __import__('json').dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        doc = {
+            'payload': payload,
+            'signature': base64.b64encode(sk.sign(msg)).decode('ascii'),
+        }
+        with_password = validate_license_document(doc, sign_in_password='correct-server-password')
+        self.assertFalse(with_password.ok)
+        self.assertEqual(with_password.reason, 'Wrong password')
+        without_password = validate_license_document(doc)
+        self.assertTrue(without_password.ok, without_password.reason)
 
 
-def test_license_transient_reason_timeout():
-    assert license_transient_reason('Connection timed out after 12s') == (
-        'License server timed out. Will retry.'
-    )
+if __name__ == '__main__':
+    unittest.main()

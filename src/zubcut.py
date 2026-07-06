@@ -178,7 +178,7 @@ def _start_license_runtime_validation(gui, icon) -> None:
         if short == getattr(gui, '_license_runtime_last_deferred_reason', ''):
             return
         gui._license_runtime_last_deferred_reason = short
-        gui.log(f'License check deferred: {short}', UI_LOG_RESTORE_FG)
+        gui.log(f'License check deferred: {short}', _UI_LOG_RESTORE_FG)
 
     def _on_session_validated(ok, reason: str) -> None:
         if ok is True:
