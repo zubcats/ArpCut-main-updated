@@ -57,15 +57,21 @@ class _LicenseRuntimeSessionThread(QThread):
         self._timeout = timeout_sec
 
     def run(self) -> None:
-        from tools.license_remote_signin import validate_active_license_session
+        try:
+            from tools.license_remote_signin import validate_active_license_session
 
-        ok, reason = validate_active_license_session(
-            self._url,
-            self._account,
-            self._license_id,
-            timeout_sec=self._timeout,
-        )
-        self.done.emit(ok, reason)
+            ok, reason = validate_active_license_session(
+                self._url,
+                self._account,
+                self._license_id,
+                timeout_sec=self._timeout,
+            )
+            self.done.emit(ok, reason)
+        except Exception as e:
+            try:
+                self.done.emit(None, str(e))
+            except Exception:
+                pass
 
 
 def _license_gated_build() -> bool:

@@ -1,48 +1,29 @@
 {
-  "timestamp": "2025-11-29T01:18:43.630876",
-  "platform": "darwin",
-  "python": "3.13.2 (main, Feb  4 2025, 14:51:09) [Clang 16.0.0 (clang-1600.0.26.6)]",
+  "timestamp": "2026-07-06T12:45:59.013650",
+  "platform": "linux",
+  "python": "3.12.3 (main, Mar 23 2026, 19:04:32) [GCC 13.3.0]",
   "tests": {
     "admin": false,
-    "imports": "pass",
-    "interface": {
-      "name": "en0",
-      "guid": "en0",
-      "ip": "192.168.178.25",
-      "mac": "f4:d4:88:73:55:3f"
-    },
-    "gateway_ip": "192.168.178.1",
-    "gateway_mac": "D4:24:DD:53:6F:5C",
-    "scanner": {
-      "my_ip": "192.168.178.25",
-      "router_ip": "192.168.178.1",
-      "router_mac": "D4:24:DD:53:6F:5C",
-      "iface_name": "en0",
-      "iface_guid": "en0"
-    },
-    "killer": {
-      "iface_name": "en0",
-      "iface_guid": "en0",
-      "iface_mac": "f4:d4:88:73:55:3f",
-      "router": {
-        "ip": "192.168.1.1",
-        "mac": "FF:FF:FF:FF:FF:FF",
-        "vendor": "NONE",
-        "type": "Router",
-        "name": "-",
-        "admin": true
-      }
-    },
-    "conf_iface": "en0",
-    "arp_construction": "pass",
+    "imports": "fail: No module named 'scapy'",
+    "interface": "fail: name 'get_default_iface' is not defined",
+    "gateway": "fail: name 'get_default_iface' is not defined",
+    "scanner": "fail: name 'Scanner' is not defined",
+    "killer": "fail: name 'Killer' is not defined",
+    "arp_construction": "fail: name 'get_default_iface' is not defined",
     "sendp": "skipped",
     "sniffer": "skipped",
     "firewall": "skipped",
-    "forwarder_config": "pass",
-    "one_way_kill_logic": "pass",
+    "forwarder_config": "fail: name 'MitmForwarder' is not defined",
+    "one_way_kill_logic": "fail: name 'Killer' is not defined",
     "arp_scan": "skipped"
   },
   "critical_issues": [
-    "Not running as admin/root"
+    "Not running as admin/root",
+    "Import failed: No module named 'scapy'",
+    "Interface detection failed: name 'get_default_iface' is not defined",
+    "Gateway detection failed: name 'get_default_iface' is not defined",
+    "Scanner init failed: name 'Scanner' is not defined",
+    "Killer init failed: name 'Killer' is not defined",
+    "ARP construction failed: name 'get_default_iface' is not defined"
   ]
 }

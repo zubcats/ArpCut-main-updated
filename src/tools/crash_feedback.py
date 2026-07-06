@@ -36,10 +36,21 @@ def safe_daemon_target(fn, /, *args, **kwargs):
             fn(*args, **kwargs)
         except Exception:
             try:
+                body = traceback.format_exc()
+                name = getattr(fn, '__name__', repr(fn))
                 sys.stderr.write(
-                    f'{APP_BUNDLE_NAME}: suppressed background-thread error in {getattr(fn, "__name__", fn)!r}:\n'
+                    f'{APP_BUNDLE_NAME}: suppressed background-thread error in {name!r}:\n'
                 )
-                sys.stderr.write(traceback.format_exc())
+                sys.stderr.write(body)
+                try:
+                    path = os.path.join(tempfile.gettempdir(), f'{APP_BUNDLE_NAME}-bg-errors.log')
+                    with open(path, 'a', encoding='utf-8', errors='replace') as fp:
+                        fp.write(
+                            f'\n--- {datetime.now(timezone.utc).isoformat()} thread={name!r} ---\n'
+                        )
+                        fp.write(body)
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -193,10 +204,11 @@ def _our_threading_excepthook(args) -> None:
         path = _write_report(ref, body)
     except Exception:
         path = '(could not write log file)'
-    _native_message_box(
-        f'{APP_BUNDLE_NAME} error (background thread)',
-        f'Code: {ref}\n\nDetails file:\n{path}',
-    )
+    try:
+        sys.stderr.write(f'{APP_BUNDLE_NAME}: background thread error {ref} (see {path})\n')
+        sys.stderr.write(body)
+    except Exception:
+        pass
     if _prev_threading_excepthook is not None:
         _prev_threading_excepthook(args)
 

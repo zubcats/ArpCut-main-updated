@@ -1,28 +1,22 @@
 {
-  "timestamp": "2025-11-28T06:43:15.207976",
-  "platform": "darwin",
-  "python": "3.13.2 (main, Feb  4 2025, 14:51:09) [Clang 16.0.0 (clang-1600.0.26.6)]",
+  "timestamp": "2026-07-06T12:45:59.184190",
+  "platform": "linux",
+  "python": "3.12.3 (main, Mar 23 2026, 19:04:32) [GCC 13.3.0]",
   "tests": {
-    "imports_utils": "pass",
-    "imports_networking": "pass",
+    "imports_utils": "fail: No module named 'scapy'",
+    "imports_networking": "fail: No module named 'scapy'",
     "imports_firewall": "pass",
-    "imports_scapy": "pass",
-    "iface_count": 25,
-    "default_iface": {
-      "name": "en0",
-      "guid": "en0",
-      "ip": "192.168.178.25",
-      "mac": "f4:d4:88:73:55:3f"
-    },
-    "my_ip": "192.168.178.25",
-    "gateway_ip": "192.168.178.1",
-    "gateway_mac": "D4:24:DD:53:6F:5C",
-    "route_count": 20,
-    "scapy_iface_count": 25,
-    "terminal_ipconfig": 195,
-    "terminal_arp": 838,
-    "terminal_netsh": 34,
-    "firewall": "not accessible",
-    "arp_cache": 11
+    "imports_scapy": "fail: No module named 'scapy'",
+    "iface_detection": "fail: name 'get_ifaces' is not defined",
+    "default_iface": "fail: name 'get_default_iface' is not defined",
+    "my_ip": "fail: name 'get_default_iface' is not defined",
+    "gateway_ip": "fail: name 'get_default_iface' is not defined",
+    "route_table": "fail: name 'conf' is not defined",
+    "scapy_ifaces": "fail: name 'get_if_list' is not defined",
+    "terminal_ipconfig": "fail: name 'terminal' is not defined",
+    "terminal_arp": "fail: name 'terminal' is not defined",
+    "terminal_netsh": "fail: name 'terminal' is not defined",
+    "firewall": "accessible",
+    "arp_cache": "fail: name 'get_default_iface' is not defined"
   }
 }

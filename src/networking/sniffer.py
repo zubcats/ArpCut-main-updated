@@ -1,5 +1,7 @@
 from collections import defaultdict
-from threading import Thread, Event
+from threading import Thread
+
+from tools.crash_feedback import safe_daemon_target, Event
 from time import time
 import sys
 
@@ -86,7 +88,7 @@ class TrafficSniffer:
         self._iface = iface
         self._callback = on_update
         self._stop.clear()
-        self._thread = Thread(target=self._run, daemon=True)
+        self._thread = Thread(target=safe_daemon_target(self._run), daemon=True)
         self._thread.start()
 
     def stop(self):

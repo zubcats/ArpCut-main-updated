@@ -157,8 +157,10 @@ def threaded(fn):
     """
     Thread wrapper function (decorator)
     """
+    from tools.crash_feedback import safe_daemon_target
+
     def run(*k, **kw):
-        t = Thread(target=fn, args=k, kwargs=kw)
+        t = Thread(target=safe_daemon_target(fn, *k, **kw), daemon=True)
         t.start()
         return t
     return run

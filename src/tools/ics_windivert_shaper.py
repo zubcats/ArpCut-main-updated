@@ -22,6 +22,8 @@ import time
 from ctypes import wintypes
 from typing import Optional, Tuple
 
+from tools.crash_feedback import safe_daemon_target
+
 try:
     import winreg
 except ImportError:
@@ -890,7 +892,7 @@ class IcsWinDivertLagGate:
         self._packets_matched = 0
         self._packets_held = 0
         self._thread = threading.Thread(
-            target=self._run_loop,
+            target=safe_daemon_target(self._run_loop),
             name='ics_windivert_lag_gate',
             daemon=True,
         )

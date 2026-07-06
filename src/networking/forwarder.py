@@ -5,6 +5,8 @@ import time
 
 from scapy.all import IP, Ether, AsyncSniffer, conf
 
+from tools.crash_feedback import safe_daemon_target
+
 # MITM user-space shaping limits (experimental).
 _MAX_DELAY_MS = 800
 _MAX_DELAY_QUEUE_PACKETS = 500
@@ -202,7 +204,9 @@ class MitmForwarder:
         )
         if need_delay:
             self._delay_event.clear()
-            self._delay_thread = threading.Thread(target=self._delay_worker, daemon=True)
+            self._delay_thread = threading.Thread(
+                target=safe_daemon_target(self._delay_worker), daemon=True
+            )
             self._delay_thread.start()
 
     def stop(self):
