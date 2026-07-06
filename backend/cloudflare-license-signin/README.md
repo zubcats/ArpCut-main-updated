@@ -79,10 +79,13 @@ Cloudflare free tier has [limits](https://developers.cloudflare.com/workers/plat
 
 ## Deploying worker updates
 
-After pulling changes under `backend/cloudflare-license-signin/`, redeploy from that folder:
+The worker source lives in this repo for reference, but **deploy is separate from ZubCut builds** — pushing app code does not (and should not) redeploy Cloudflare automatically.
+
+After pulling changes under `backend/cloudflare-license-signin/`, deploy manually from that folder:
 
 ```bash
+cd backend/cloudflare-license-signin
 npx wrangler deploy
 ```
 
-Requires `CLOUDFLARE_API_TOKEN` or `npx wrangler login`. Customers only need a new ZubCut build when client code changes; worker-only fixes apply as soon as you deploy.
+Requires `npx wrangler login` or `CLOUDFLARE_API_TOKEN` in your shell. Customers only need a new ZubCut installer when **client** code changes; worker-only fixes apply as soon as you run `wrangler deploy`.
