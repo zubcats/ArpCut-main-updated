@@ -1775,7 +1775,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _cancel_deferred_flow_starts(self) -> None:
         """Invalidate pending Lag/Dupe arm timers so exit does not re-enter Qt slots."""
-        self._shutting_down = True
         self._lag_start_gen = int(getattr(self, '_lag_start_gen', 0)) + 1
         self._dupe_start_gen = int(getattr(self, '_dupe_start_gen', 0)) + 1
         self._pctcut_start_gen = int(getattr(self, '_pctcut_start_gen', 0)) + 1
@@ -1875,6 +1874,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Unkill any killed device on exit from tray icon
         """
+        self._shutting_down = True
         self._teardown_all_attacks(log=True)
         self.settings_window.close()
         self.about_window.close()
@@ -1980,6 +1980,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         # Close button path: tear down all attacks then exit.
+        self._shutting_down = True
         self._teardown_all_attacks(log=False)
         self.settings_window.close()
         self.about_window.close()
@@ -5606,21 +5607,20 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             UI_LOG_VICTIM_BLOCK_FG,
             hold_ms=0,
         )
-        self._arm_dupe_burst_wall_clock()
         self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
-        try:
-            app = QApplication.instance()
-            if app is not None:
-                app.processEvents(QEventLoop.ExcludeUserInputEvents)
-        except Exception:
-            pass
 
         self._dupe_start_gen = int(getattr(self, '_dupe_start_gen', 0)) + 1
         dupe_gen = self._dupe_start_gen
         self._dupe_arm_device = dict(device)
         self._dupe_arm_direction = direction
         self._schedule_dupe_arm_command(device, direction, dupe_gen)
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        except Exception:
+            pass
 
         def _dupe_arm_watchdog():
             if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != dupe_gen:
@@ -5632,11 +5632,14 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._dupe_armed_ok = True
                 self._start_dupe_timers_after_network_ready()
                 return
+            live = self._get_device_by_mac(mac, getattr(self, 'dupe_device_ip', None)) or device
+            self._run_dupe_arm_command(live, direction, dupe_gen)
+            if getattr(self, '_dupe_armed_ok', False):
+                return
             self.log(
                 'Dupe arm did not start — retrying MITM (same path as Kill)…',
                 'red',
             )
-            live = self._get_device_by_mac(mac, getattr(self, 'dupe_device_ip', None)) or device
             self._schedule_dupe_arm_command(live, direction, dupe_gen)
 
         QTimer.singleShot(400, _dupe_arm_watchdog)

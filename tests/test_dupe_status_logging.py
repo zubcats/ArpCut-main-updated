@@ -49,6 +49,15 @@ class TestDupeStatusLogging(unittest.TestCase):
         self.assertIn('UI_LOG_VICTIM_BLOCK_FG', mitm)
         self.assertNotIn("'gray'", mitm)
 
+    def test_startup_teardown_does_not_set_shutting_down(self) -> None:
+        src = self._main_py()
+        cancel = src[src.index('def _cancel_deferred_flow_starts'): src.index('def _teardown_all_attacks', src.index('def _cancel_deferred_flow_starts'))]
+        self.assertNotIn('_shutting_down = True', cancel)
+        self.assertIn('def quit_all', src)
+        quit_body = src[src.index('def quit_all'): src.index('def showEvent', src.index('def quit_all'))]
+        self.assertIn('_shutting_down = True', quit_body)
+        self.assertNotIn('_arm_dupe_burst_wall_clock()', src[src.index('def startDupe'): src.index('def dupe_remaining_ms', src.index('def startDupe'))])
+
 
 if __name__ == '__main__':
     unittest.main()
