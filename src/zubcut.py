@@ -370,7 +370,7 @@ if __name__ == "__main__":
         pass
 
     # Initialize scanner and ensure interface is valid
-        GUI.scanner.init()
+    GUI.scanner.init()
     try:
         from networking.killer import enable_ip_forwarding
 

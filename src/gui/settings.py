@@ -369,6 +369,28 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.chkClumsy.setChecked(old_v)
             self._clumsy_toggle_guard = False
             return
+        try:
+            self._apply_clumsy_mode_toggle(new_v, old_v)
+        except Exception as exc:
+            self._clumsy_toggle_guard = True
+            self.chkClumsy.setChecked(old_v)
+            self._clumsy_toggle_guard = False
+            try:
+                set_settings('clumsy_mode', old_v)
+            except Exception:
+                pass
+            MsgType.ERROR(
+                self,
+                'Clumsy Mode',
+                'ZubCut hit an error while changing Clumsy mode.\n\n'
+                f'{exc}\n\n'
+                'Turn Mobile Hotspot ON in Windows Settings first, wait for it to start, '
+                'then try again. If this keeps happening, send the newest '
+                f'%TEMP%\\{APP_BUNDLE_NAME}-crash-ZC-*.log file.',
+                Buttons.OK,
+            )
+
+    def _apply_clumsy_mode_toggle(self, new_v: bool, old_v: bool) -> None:
         if new_v:
             ok, detail = ensure_clumsy_ics_enabled()
             if not ok:
