@@ -2,12 +2,18 @@
 #
 # Push to `main` (stable production) → rolling tag `stable-latest`, artifact ZubCut-Setup.exe.
 # Push to `experimental` → tester build: tag `experimental-latest`, ZubCut-Setup-experimental.exe.
+# Push / PR on `cursor/**` → build + upload artifact only (no rolling release publish).
 # Manual `workflow_dispatch` is still available when you want a build without a push.
 
 name: Build Windows installer only
 
 on:
   push:
+    branches:
+      - main
+      - experimental
+      - 'cursor/**'
+  pull_request:
     branches:
       - main
       - experimental
@@ -161,7 +167,7 @@ jobs:
           path: output/ZubCut-Setup-experimental.exe
 
       - name: Publish rolling stable release
-        if: ${{ github.event.inputs.release_channel == 'main' || github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && github.ref_name == 'main') }}
+        if: ${{ contains(fromJSON('["main"]'), github.ref_name) && github.event_name != 'pull_request' && (github.event.inputs.release_channel == 'main' || github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.event_name == 'push' || github.event.inputs.release_channel == 'auto' || github.event.inputs.release_channel == ''))) }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: stable-latest
@@ -175,7 +181,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish rolling experimental release
-        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
+        if: ${{ contains(fromJSON('["experimental"]'), github.ref_name) && github.event_name != 'pull_request' && (github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.event.inputs.release_channel != 'stable' && (github.event_name == 'push' || github.event.inputs.release_channel == 'auto' || github.event.inputs.release_channel == ''))) }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: experimental-latest
