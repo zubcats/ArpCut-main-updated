@@ -377,19 +377,19 @@ def is_retryable_network_error(exc: BaseException) -> bool:
 
 def format_updater_error_message(exc: BaseException) -> str:
     """User-facing updater failure text (network / Clumsy hotspot hints)."""
-    base = str(exc).strip() or repr(exc)
+    from tools.user_errors import scrub_user_error_text
+
+    base = scrub_user_error_text(str(exc).strip() or repr(exc))
     lines = [base]
     if isinstance(exc, urllib.error.HTTPError) and int(getattr(exc, 'code', 0) or 0) == 404:
-        manual = (selected_update_url() or '').strip() or release_page_url()
         lines.extend(
             [
                 '',
-                'The download link was stale (GitHub replaced the installer on this release).',
+                'The download link was stale.',
                 'Click Install Latest Build again to fetch a fresh link.',
-                f'Manual download: {manual}',
             ]
         )
-        return '\n'.join(lines)
+        return scrub_user_error_text('\n'.join(lines))
     reason = _network_error_reason(exc)
     winerr = getattr(reason, 'winerror', None) if reason else None
     low = base.lower()
@@ -411,19 +411,18 @@ def format_updater_error_message(exc: BaseException) -> str:
                 '• Windows Settings → Wi‑Fi → your adapter → Sharing → allow internet sharing',
                 '• If Wi‑Fi is broken after an old build: tools\\Restore-Wlan-AutoConfig.cmd (admin)',
                 '• Windows Settings → Mobile hotspot OFF, wait 10 seconds, ON again',
-                '• Open https://github.com in a browser to confirm internet works',
+                '• Open any website in your browser to confirm internet works',
                 '',
-                f'Then retry Install Latest Build, or download manually:\n{release_page_url()}',
+                'Then retry Install Latest Build in Settings.',
             ]
         )
     elif 'certificate verify failed' in low or 'certIFICATE_VERIFY_FAILED' in base:
         lines.extend(
             [
                 '',
-                'Windows could not verify GitHub\'s HTTPS certificate.',
-                '• Open https://github.com in your browser — if that also fails, check PC date/time and antivirus HTTPS scanning',
-                '• Download the installer manually in your browser:',
-                f'  {release_page_url()}',
+                'Windows could not verify the update server HTTPS certificate.',
+                '• Check PC date/time and antivirus HTTPS scanning',
+                '• Retry Install Latest Build in Settings',
             ]
         )
     elif is_retryable_network_error(exc):
@@ -431,10 +430,10 @@ def format_updater_error_message(exc: BaseException) -> str:
             [
                 '',
                 'Check your internet connection and try again.',
-                f'Manual download: {release_page_url()}',
+                'Use Settings → Install Latest Build when your connection is working.',
             ]
         )
-    return '\n'.join(lines)
+    return scrub_user_error_text('\n'.join(lines))
 
 
 def _fetch_remote_head_dt(url: str) -> datetime | None:
@@ -596,7 +595,7 @@ def _validate_installer_exe(tmp_path, *, expected_size: int = 0):
     if expected_size > 0 and sz != expected_size:
         raise RuntimeError(
             f'Downloaded installer size mismatch (got {sz} bytes, expected {expected_size}). '
-            'Try again in a minute or download from GitHub Releases.'
+            'Try again in a minute or use Install Latest Build in Settings.'
         )
 
 

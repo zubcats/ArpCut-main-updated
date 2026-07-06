@@ -29,11 +29,13 @@ _LAST_SIGNIN_ERROR = ''
 
 
 def _format_signin_error(reason: str) -> str:
+    from tools.user_errors import scrub_user_error_text
+
     reason = str(reason or '').strip()
     hint = signin_failure_hint(reason)
     if hint:
-        return f'{reason}\n\n{hint}'
-    return reason
+        return scrub_user_error_text(f'{reason}\n\n{hint}')
+    return scrub_user_error_text(reason)
 
 
 def _show_signin_failure(parent, title: str, reason: str, *, account: str = '', step: str = '') -> None:
@@ -61,7 +63,7 @@ def run_license_signin(parent, window_icon) -> bool:
             parent,
             APP_DISPLAY_NAME,
             'This build has no online sign-in server configured.\n\n'
-            'Install the latest official ZubCut build from GitHub, or set the environment variable\n'
+            'Install the latest official ZubCut build, or set the environment variable\n'
             'ZUBCUT_LICENSE_SIGNIN_URL to your license server HTTPS URL.',
         )
         return False
@@ -74,7 +76,7 @@ def run_license_signin(parent, window_icon) -> bool:
                 parent,
                 APP_DISPLAY_NAME,
                 'This build is missing the license verification key.\n\n'
-                'Reinstall from the official GitHub release (experimental-latest or stable-latest).',
+                'Reinstall the latest official ZubCut build.',
             )
             return False
     except Exception:

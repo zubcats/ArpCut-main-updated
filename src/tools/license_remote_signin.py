@@ -126,7 +126,7 @@ def signin_failure_hint(reason: str) -> str:
     if 'signature invalid' in low:
         return (
             'The server accepted your password but this ZubCut build cannot verify the license signature. '
-            'Reinstall the latest build from GitHub, or confirm the build was made with the correct '
+            'Reinstall the latest official ZubCut build, or confirm the build was made with the correct '
             'LICENSE_PUBLIC_KEY_B64.'
         )
     if 'missing sign-in server url' in low or 'sign-in url is not configured' in low:
@@ -135,7 +135,7 @@ def signin_failure_hint(reason: str) -> str:
             'https://zubcut-license-signin.zubcats.workers.dev then restart ZubCut.'
         )
     if 'verify key' in low and 'missing' in low:
-        return 'Reinstall the official ZubCut build from GitHub (experimental-latest or stable-latest).'
+        return 'Reinstall the latest official ZubCut build.'
     if 'invalid credentials' in low:
         return (
             'Double-check account name (lowercase) and password. If correct, ask admin to use '
@@ -279,7 +279,7 @@ def probe_signin_configuration(*, timeout_sec: float = 12.0) -> tuple[bool, str]
             lines
             + [
                 f'FAIL: {key_err or "license verify key missing in this build"}',
-                'Reinstall from the official GitHub release.',
+                'Reinstall the latest official ZubCut build.',
             ]
         )
     write_signin_diagnostic(step='probe', error='')

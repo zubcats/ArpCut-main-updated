@@ -127,7 +127,7 @@ class _InstallerDownloadThread(QThread):
                 self.progress.emit(-1, None)
                 url, fallbacks, expected_size = refresh_installer_download_plan()
                 if not url:
-                    self.failed.emit('Could not resolve installer download URL from GitHub.')
+                    self.failed.emit('Could not resolve installer download URL.')
                     return
             updater_log('download thread: urllib start url=%s', url)
             path = download_installer(
@@ -141,10 +141,14 @@ class _InstallerDownloadThread(QThread):
             self.succeeded.emit(path)
         except RuntimeError as e:
             updater_log('download thread: RuntimeError %s', e)
-            self.failed.emit(str(e))
+            from tools.user_errors import scrub_user_error_text
+
+            self.failed.emit(scrub_user_error_text(str(e)))
         except Exception as e:
             updater_log('download thread: Exception %s', e, exc_info=True)
-            self.failed.emit(str(e))
+            from tools.user_errors import scrub_user_error_text
+
+            self.failed.emit(scrub_user_error_text(str(e)))
 
 
 def download_update_with_progress_dialog(
@@ -191,7 +195,7 @@ def download_update_with_progress_dialog(
 
     def on_prog(received, total):
         if received == -1:
-            lbl.setText('Fetching latest installer link from GitHub…')
+            lbl.setText('Fetching latest installer link…')
             bar.setRange(0, 0)
             return
         if not show_progress:

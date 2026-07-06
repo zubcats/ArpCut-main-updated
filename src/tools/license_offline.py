@@ -241,7 +241,7 @@ def validate_license_document(
     if not key_b64:
         return LicenseValidationResult(
             False,
-            'This build has no license verify key. Install the official ZubCut build from GitHub.',
+            'This build has no license verify key. Install the latest official ZubCut build.',
         )
     crypto_err = _crypto_import_error()
     if crypto_err:

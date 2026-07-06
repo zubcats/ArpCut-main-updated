@@ -222,7 +222,7 @@ class UpdaterCoreTest(unittest.TestCase):
         err = OSError(None, 'host unreachable', None, 10065)
         msg = uc.format_updater_error_message(err)
         self.assertIn('Mobile hotspot', msg)
-        self.assertIn('github.com', msg)
+        self.assertNotIn('github', msg.lower())
 
     def test_urllib_ssl_context_uses_certifi_when_available(self):
         import tools.updater_core as uc
