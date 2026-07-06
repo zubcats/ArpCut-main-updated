@@ -1,7 +1,7 @@
 from collections import defaultdict
-from threading import Thread
+from threading import Event, Thread
 
-from tools.crash_feedback import safe_daemon_target, Event
+from tools.crash_feedback import safe_daemon_target
 from time import time
 import sys
 
