@@ -33,9 +33,8 @@ class TestDupeStatusLogging(unittest.TestCase):
         stop = src[src.index('def stopDupe'): src.index('def _updateDupeButtonState', src.index('def stopDupe'))]
         self.assertIn('_log_dupe_restore_result', stop)
         apply_def = src[src.index('def _apply_dupe_deferred'): src.index('def _slot_finish_dupe_block', src.index('def _apply_dupe_deferred'))]
-        self.assertIn("_log_mitm_arm_status(dev, action='Dupe')", apply_def)
-        self.assertIn('_apply_victim_block(dev, direction, for_dupe=True)', apply_def)
-        self.assertIn('_arm_dupe_burst_wall_clock()', apply_def)
+        self.assertIn('_arm_dupe_mitm_like_kill(dev, direction)', apply_def)
+        self.assertIn('traffic_cut=True', src[src.index('def _arm_dupe_mitm_like_kill'): src.index('def _abort_dupe_stuck_without_arm', src.index('def _arm_dupe_mitm_like_kill'))])
         self.assertIn('_clear_explicit_kill_for_dupe', src)
         self.assertIn('from_button: bool = False', src)
         self.assertIn('_shortcut_global_dupe(from_button=True)', src)

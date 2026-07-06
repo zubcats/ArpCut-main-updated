@@ -3023,10 +3023,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _shortcut_global_dupe(self, *, from_button: bool = False):
         """Dupe toggle while app is foreground, regardless of active sub-window."""
-        if not from_button and not self._app_window_is_foreground():
-            return
-        if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
-            return
+        if not from_button:
+            if not self._app_window_is_foreground():
+                return
+            if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
+                return
         if self.dupe_active and self.dupe_device_mac:
             dupe_edge = 'stop'
             if self._ignore_duplicate_toggle_edge('dupe', self.dupe_device_mac, dupe_edge):
@@ -4847,51 +4848,92 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         self._set_killed_profile(dev, False)
         victim = self._victim_record_for_mac(mac) or dev
+        plan = self._impairment_plan_for(dev)
+        ics_mode = bool(plan.is_ics_downstream)
         try:
             _bg_unblock_ip(victim.get('ip'))
-            self.killer.unkill(victim, ics_mode=True)
+            self.killer.unkill(victim, ics_mode=ics_mode)
         except Exception:
             pass
         self._sync_killed_devices()
         self._updateKillButtonState()
+
+    def _arm_dupe_mitm_like_kill(self, device, direction: str) -> bool:
+        """LAN/hotspot Dupe burst — same traffic cut stack as explicit Kill ON."""
+        device = self._device_with_plan_ip(dict(device))
+        if self._uses_windivert(device):
+            ok = bool(self._apply_ics_client_block(device, direction, for_dupe=True))
+            if not ok:
+                reason = clumsy_windivert_unavailable_reason(device)
+                self.log(
+                    f'Dupe on hotspot needs WinDivert (run ZubCut as Administrator). {reason}',
+                    'red',
+                )
+            return ok
+        plan = self._impairment_plan_for(device)
+        if not plan.use_arp_mitm:
+            return False
+        self._ensure_network_context_for_victim(device, fast=True)
+        self._sync_dupe_device_identity(device)
+        mac = str(device.get('mac') or '').strip()
+        self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
+        self.killer.disable_percent_cut(mac)
+        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device, ping_attempts=1)
+        if not mitm_ok:
+            self.log(f'Dupe MITM blocked: {mitm_reason}', 'red')
+            return False
+        if mac in self.killer.killed:
+            self.killer.reassert_poison(device)
+            try:
+                self.killer._apply_traffic_cut_sync(device)
+            except Exception:
+                pass
+        else:
+            self.killer.kill(device, wait_after=0.08, traffic_cut=True)
+        mac = self._rekey_kill_bookkeeping(mac, device)
+        fw = self.killer.forwarders.get(mac)
+        if not (fw and getattr(fw, 'running', False)):
+            self.killer.disable_percent_cut(mac)
+            try:
+                iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
+            except Exception:
+                iface_name = 'en0'
+            _bg_block_ip(iface_name, device.get('ip'), direction)
+        self._log_mitm_arm_status(device, action='Dupe')
+        self._schedule_mitm_traffic_probe(device, flow='Dupe')
+        self._sync_killed_devices()
+        self._refresh_table_row_for_mac(mac, device.get('ip'))
+        self._updateKillButtonState()
+        return True
+
+    def _abort_dupe_stuck_without_arm(self) -> None:
+        """DUPE UI latched but deferred apply never received a victim snapshot."""
+        self.dupe_active = False
+        self.dupe_device_mac = None
+        self.dupe_device_ip = None
+        self._abort_dupe_apply_failed()
+        self.btnDupe.setText('Dupe')
+        self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        self.log('Dupe failed to arm — try again', 'red')
+        self._refresh_flow_toggle_ui()
+        self._repaint_all_table_rows_for_hover()
 
     def _apply_dupe_deferred(self):
         """Arm MITM on main thread; stopDupe scheduled for remaining time after block."""
         dev = self._dupe_arm_device
         self._dupe_arm_device = None
         if not dev or not self.dupe_active:
+            if self.dupe_active and not dev:
+                self._abort_dupe_stuck_without_arm()
             return
-        dev = self._device_with_plan_ip(dict(dev))
         direction = getattr(self, '_dupe_arm_direction', 'both')
         try:
-            if self._uses_windivert(dev):
-                if self._apply_ics_client_block(dev, direction, for_dupe=True):
-                    self._sync_dupe_device_identity(dev)
-                    self._arm_dupe_burst_wall_clock()
-                    self._start_dupe_timers_after_network_ready()
-                    return
-                self.dupe_active = False
-                self.dupe_device_mac = None
-                self.dupe_device_ip = None
-                self._dupe_finish_from_countdown_pending = False
-                self._abort_dupe_apply_failed()
-                self.btnDupe.setText('Dupe')
-                self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-                self._ics_emergency_release(dev, heal=False)
-                reason = clumsy_windivert_unavailable_reason(dev)
-                self.log(
-                    f'Dupe on hotspot needs WinDivert (run ZubCut as Administrator). {reason}',
-                    'red',
-                )
-                self._refresh_flow_toggle_ui()
-                self._repaint_all_table_rows_for_hover()
-                return
-            if not self._apply_victim_block(dev, direction, for_dupe=True):
+            if not self._arm_dupe_mitm_like_kill(dev, direction):
                 raise RuntimeError(
                     'Dupe block failed — rescan, pick Wi‑Fi in Settings if PC is on Wi‑Fi'
                 )
+            dev = self._device_with_plan_ip(dict(dev))
             self._sync_dupe_device_identity(dev)
-            self._log_mitm_arm_status(dev, action='Dupe')
             self._arm_dupe_burst_wall_clock()
             self._start_dupe_timers_after_network_ready()
         except Exception as exc:
@@ -5455,6 +5497,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         dupe_gen = self._dupe_start_gen
         arm_device = dict(device)
         arm_direction = direction
+        self._dupe_arm_device = dict(arm_device)
+        self._dupe_arm_direction = arm_direction
 
         def _dupe_deferred_start():
             if getattr(self, '_shutting_down', False):
@@ -5465,11 +5509,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.stopLagSwitch(refresh_dialog=True)
             if self.mitm_shaping_active:
                 self.stop_mitm_shaping(log=False)
-                self._await_mitm_teardown_thread()
-            else:
-                t = getattr(self, '_mitm_teardown_thread', None)
-                if t is not None and t.is_alive():
-                    self._await_mitm_teardown_thread()
             if self.percent_cut_active:
                 self.stopPercentCut(log=False)
             self._clear_explicit_kill_for_dupe(arm_device)
@@ -5477,8 +5516,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             self._dupe_arm_device = dict(arm_device)
             self._dupe_arm_direction = arm_direction
-            self._dupe_arm_timer.timeout.connect(self._apply_dupe_deferred, Qt.UniqueConnection)
-            self._dupe_arm_timer.start(0)
+            QTimer.singleShot(0, self._apply_dupe_deferred)
 
         QTimer.singleShot(0, _dupe_deferred_start)
 

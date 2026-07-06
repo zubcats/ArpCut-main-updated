@@ -73,7 +73,7 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         self.assertNotIn('_drain_dupe_block_if_needed', stop)
         apply_def = src[src.index('def _apply_dupe_deferred'): src.index('def _slot_finish_dupe_block', src.index('def _apply_dupe_deferred'))]
         self.assertIn('_sync_dupe_device_identity', apply_def)
-        self.assertIn('_apply_victim_block(dev, direction, for_dupe=True)', apply_def)
+        self.assertIn('_arm_dupe_mitm_like_kill(dev, direction)', apply_def)
         deferred = src[src.index('def _do_deferred_dupe_clear'): src.index('def _arm_dupe_burst_wall_clock', src.index('def _do_deferred_dupe_clear'))]
         self.assertNotIn('_clear_victim_block', deferred)
         self.assertNotIn('killer.unkill', deferred)
