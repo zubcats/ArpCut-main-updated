@@ -3210,20 +3210,19 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.spinPercentCutMain.setStyleSheet(percent_style)
 
     def startLagSwitch(self, device):
+        device = self._resolve_flow_start_device(dict(device))
         if not _is_valid_ip(device.get('ip') or ''):
             self.log('Target has no IP yet — cannot start lag.', 'red')
             return
         if self._toggle_start_blocked('lag', device):
             return
-        mac = device['mac']
-        resolved_ip = self._ics_hotspot_victim_ip(device, lag=True) or clumsy_ics_resolve_victim_ip(
-            device, self.scanner
-        )
+        mac = str(device.get('mac') or '').strip()
+        if not mac:
+            self.log('Target has no MAC yet — rescan after PS5 Wi‑Fi/Ethernet change.', 'red')
+            return
         self.lag_device_mac = mac
-        self.lag_device_ip = resolved_ip or device.get('ip')
+        self.lag_device_ip = device.get('ip')
         snap = dict(device)
-        if resolved_ip:
-            snap['ip'] = resolved_ip
         self._lag_device_snapshot = snap
         self._lag_net_prepared_mac = None
         self.lag_active = True
@@ -3244,21 +3243,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             app = QApplication.instance()
             if app is not None:
                 app.processEvents(QEventLoop.ExcludeUserInputEvents)
-        except Exception:
-            pass
-
-        # Warm NIC + Npcap while cross-flow teardown runs (PS5 LAN path).
-        def _lag_prep_net():
-            if getattr(self, '_shutting_down', False):
-                return
-            try:
-                self._ensure_network_context_for_victim(snap)
-                self.killer._get_socket()
-            except Exception:
-                pass
-
-        try:
-            threading.Thread(target=_lag_prep_net, name='zubcut-lag-prep', daemon=True).start()
         except Exception:
             pass
 
@@ -3342,6 +3326,13 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
 
             if not self.lag_active or self.lag_device_mac != work_mac:
+                if self.lag_active and work_mac and self.lag_device_mac != work_mac:
+                    self.log(
+                        'Lag aborted: target identity changed after Wi‑Fi/Ethernet handoff — '
+                        'rescan and select the live PS5 row.',
+                        'red',
+                    )
+                    self.stopLagSwitch(refresh_dialog=True, log=False)
                 return
             cur = self._lag_resolved_victim() or work_dev
             self._lag_phase_begin_block(cur)
@@ -3545,11 +3536,15 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 mac = lookup_mac_from_arp_table(ip, iface_ip)
             if mac_address_is_usable(mac):
                 old_mac = str(device.get('mac') or '').strip()
-                from tools.utils import good_mac
+                from tools.utils import _resolve_allowed_macs, good_mac
 
                 got = good_mac(mac)
                 if old_mac and got != good_mac(old_mac):
-                    return
+                    # PS5 Ethernet ↔ Wi‑Fi uses different MACs; allow handoff when
+                    # nickname-linked or the row IP's ARP MAC is authoritative.
+                    allowed = _resolve_allowed_macs(device)
+                    if got not in allowed:
+                        return
                 device['mac'] = got
                 if old_mac and old_mac != mac and old_mac in self.killer.killed:
                     entry = dict(self.killer.killed.pop(old_mac))
@@ -3750,6 +3745,15 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 UI_LOG_RESTORE_FG,
             )
         return True
+
+    def _resolve_flow_start_device(self, device: dict) -> dict:
+        """Resolve Wi‑Fi ↔ Ethernet handoff before pinning lag/dupe flow identity."""
+        dev = self._device_with_plan_ip(dict(device))
+        try:
+            self._ensure_network_context_for_victim(dev, fast=True)
+        except Exception:
+            pass
+        return dev
 
     def _clear_stale_ics_mitm(self, device) -> None:
         """Drop ARP MITM left on a hotspot client from an older build or non-ICS path."""
@@ -4882,7 +4886,20 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _arm_victim_mitm_like_kill(self, device, direction: str, *, flow: str = 'Kill') -> bool:
         """LAN/hotspot MITM arm — same traffic-cut stack as explicit Kill ON."""
         device = self._device_with_plan_ip(dict(device))
-        if self._uses_windivert(device):
+        plan = self._impairment_plan_for(device)
+        use_windivert = bool(plan.use_windivert)
+        if use_windivert:
+            from tools.clumsy_inline import victim_on_clumsy_ics_subnet
+
+            ip = str(device.get('ip') or plan.resolved_ip or '').strip()
+            if not (ip and victim_on_clumsy_ics_subnet(ip)):
+                use_windivert = False
+                self.log(
+                    f'{flow}: {ip or "?"} is on home LAN — using ARP MITM '
+                    '(PS5 left hotspot / using router Wi‑Fi).',
+                    UI_LOG_RESTORE_FG,
+                )
+        if use_windivert:
             ok = bool(
                 self._apply_ics_client_block(
                     device, direction, for_dupe=(flow == 'Dupe'), for_lag=(flow == 'Lag')
@@ -5506,11 +5523,15 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
 
     def startDupe(self, device, duration_ms, direction):
-        device = self._device_with_plan_ip(dict(device))
+        device = self._resolve_flow_start_device(dict(device))
         if not _is_valid_ip(device.get('ip') or ''):
             self.log('Target has no IP yet — cannot start dupe.', 'red')
             return
         if self._toggle_start_blocked('dupe', device):
+            return
+        mac = str(device.get('mac') or '').strip()
+        if not mac:
+            self.log('Target has no MAC yet — rescan after PS5 Wi‑Fi/Ethernet change.', 'red')
             return
         if self.dupe_active:
             self.stopDupe(refresh_dialog=False, log=False)
@@ -5521,7 +5542,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._dupe_arm_timer.timeout.disconnect()
         except TypeError:
             pass
-        self.dupe_device_mac = device['mac']
+        self.dupe_device_mac = mac
         self.dupe_device_ip = device.get('ip')
         self.dupe_direction = direction
         self.dupe_duration_ms = duration_ms

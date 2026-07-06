@@ -104,13 +104,14 @@ def classify_device_impairment(
         except Exception:
             pass
     on_downstream = victim_on_clumsy_ics_subnet(resolved)
-    # Hotspot session: console is on PC Wi‑Fi even when the scan table still shows home LAN IP.
+    # Hotspot session: console may be on PC hotspot while the scan table still shows home LAN IP.
+    # Only treat as downstream when the IP is on the ICS subnet or ARP finds an ICS address
+    # for this MAC — not when the PS5 has moved to router Wi‑Fi (Ethernet/Wi‑Fi handoff).
     if not on_downstream and clumsy_hotspot_session_active() and not device.get('admin'):
-        on_downstream = True
-        if not victim_on_clumsy_ics_subnet(resolved):
-            arp_ip = clumsy_ics_arp_ip_for_mac(scanner, str(device.get('mac') or ''))
-            if arp_ip:
-                resolved = arp_ip
+        arp_ip = clumsy_ics_arp_ip_for_mac(scanner, str(device.get('mac') or ''))
+        if arp_ip and victim_on_clumsy_ics_subnet(arp_ip):
+            on_downstream = True
+            resolved = arp_ip
     wd_ready = bool(clumsy_runtime_ready() and windivert_bundle_complete())
 
     if on_downstream:
