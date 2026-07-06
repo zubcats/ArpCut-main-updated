@@ -165,6 +165,43 @@ def effective_signin_url() -> str:
     return normalize_signin_base_url(raw)
 
 
+def fetch_remote_verify_key_b64(url: str, *, timeout_sec: float = 12.0) -> str:
+    """GET /public-key from the license worker (Ed25519 verify key is public)."""
+    base = normalize_signin_base_url(url)
+    if not base:
+        return ''
+    purl = f'{base.rstrip("/")}/public-key'
+    try:
+        r = requests.get(purl, timeout=timeout_sec)
+    except requests.RequestException:
+        return ''
+    try:
+        body = r.json()
+    except Exception:
+        return ''
+    if not isinstance(body, dict) or not body.get('ok'):
+        return ''
+    return str(body.get('public_key_b64') or '').strip()
+
+
+def ensure_signin_verify_key(signin_url: str | None = None) -> tuple[bool, str]:
+    """Return True when a verify key is available (local, disk, or fetched from server)."""
+    try:
+        from tools.license_offline import _effective_public_key_b64
+    except Exception:
+        return False, 'License module unavailable'
+    if _effective_public_key_b64():
+        return True, ''
+    url = str(signin_url or effective_signin_url() or '').strip()
+    if not url:
+        return False, 'Missing sign-in server URL'
+    remote = fetch_remote_verify_key_b64(url)
+    if not remote:
+        return False, 'Could not fetch public verify key from license server (/public-key).'
+    os.environ['ZUBCUT_LICENSE_PUBLIC_KEY_B64'] = remote
+    return True, ''
+
+
 def fetch_license_document_via_signin(
     url: str,
     account: str,
@@ -215,6 +252,8 @@ def fetch_license_document_via_signin(
 
 def probe_signin_configuration(*, timeout_sec: float = 12.0) -> tuple[bool, str]:
     """Lightweight support probe (no password). Writes ZubCut-signin-last.log on failure paths."""
+    from tools.license_offline import _effective_public_key_b64
+
     lines: list[str] = []
     url = effective_signin_url()
     lines.append(f'signin_url={url or "(missing)"}')
@@ -223,14 +262,6 @@ def probe_signin_configuration(*, timeout_sec: float = 12.0) -> tuple[bool, str]
     if not url:
         write_signin_diagnostic(step='probe', error='missing sign-in URL')
         return False, '\n'.join(lines + ['FAIL: sign-in URL not configured'])
-    try:
-        from tools.license_offline import _effective_public_key_b64
-
-        if not _effective_public_key_b64():
-            write_signin_diagnostic(step='probe', error='missing verify key')
-            return False, '\n'.join(lines + ['FAIL: license verify key missing in this build'])
-    except Exception as e:
-        lines.append(f'verify_key_check_error={e!r}')
     try:
         r = requests.get(url, timeout=timeout_sec)
         lines.append(f'GET_http={r.status_code}')
@@ -243,6 +274,17 @@ def probe_signin_configuration(*, timeout_sec: float = 12.0) -> tuple[bool, str]
     except requests.RequestException as e:
         write_signin_diagnostic(step='probe', error=str(e))
         return False, '\n'.join(lines + [f'FAIL: {license_transient_reason(str(e))}'])
+    ok_key, key_err = ensure_signin_verify_key(url)
+    lines.append(f'verify_key_after_fetch={"ok" if _effective_public_key_b64() else "missing"}')
+    if not ok_key and not _effective_public_key_b64():
+        write_signin_diagnostic(step='probe', error=key_err or 'missing verify key')
+        return False, '\n'.join(
+            lines
+            + [
+                f'FAIL: {key_err or "license verify key missing"}',
+                'Admin: npx wrangler secret put LICENSE_PUBLIC_KEY_B64 (in backend/cloudflare-license-signin) then npx wrangler deploy',
+            ]
+        )
     write_signin_diagnostic(step='probe', error='')
     return True, '\n'.join(lines + ['OK: sign-in server reachable; verify key present'])
 

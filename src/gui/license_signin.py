@@ -1,6 +1,8 @@
 """Online sign-in with account name and password (HTTPS license server)."""
 from __future__ import annotations
 
+import os
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog,
@@ -20,7 +22,9 @@ from tools.license_offline import (
 )
 from tools.license_remote_signin import (
     effective_signin_url,
+    ensure_signin_verify_key,
     fetch_license_document_via_signin,
+    fetch_remote_verify_key_b64,
     signin_failure_hint,
     write_signin_diagnostic,
 )
@@ -68,13 +72,16 @@ def run_license_signin(parent, window_icon) -> bool:
     try:
         from tools.license_offline import _effective_public_key_b64
 
-        if not _effective_public_key_b64():
-            _set_last_signin_error('Missing license verify key in this build')
+        ok_key, key_err = ensure_signin_verify_key()
+        if not ok_key and not _effective_public_key_b64():
+            _set_last_signin_error(key_err or 'Missing license verify key in this build')
             QMessageBox.critical(
                 parent,
                 APP_DISPLAY_NAME,
-                'This build is missing the license verification key.\n\n'
-                'Reinstall from the official GitHub release (experimental-latest or stable-latest).',
+                'This build could not load the license verification key.\n\n'
+                f'{key_err or "Reinstall from the official GitHub release."}\n\n'
+                'If you are the admin: set Worker secret LICENSE_PUBLIC_KEY_B64 '
+                '(same as License Manager → Public Verify Key) and redeploy the worker.',
             )
             return False
     except Exception:
@@ -148,12 +155,21 @@ class LicenseSignInDialog(QDialog):
         # Do not re-check payload.password_hash here — bundle root salt/hash can
         # differ from embedded payload fields and would reject valid logins.
         res = validate_license_document(data)
+        if not res.ok and 'signature invalid' in str(res.reason or '').casefold():
+            remote_key = fetch_remote_verify_key_b64(self._signin_url)
+            if remote_key:
+                os.environ['ZUBCUT_LICENSE_PUBLIC_KEY_B64'] = remote_key
+                res = validate_license_document(data)
         if not res.ok:
             _set_last_signin_error(res.reason)
             _show_signin_failure(self, 'Sign in failed', res.reason, account=account, step='verify')
             return
         try:
-            install_license_document(data, signin_account=account)
+            install_license_document(
+                data,
+                signin_account=account,
+                verify_key_b64=os.environ.get('ZUBCUT_LICENSE_PUBLIC_KEY_B64', ''),
+            )
         except Exception as e:
             err = f'Could not save license: {e}'
             _set_last_signin_error(err)

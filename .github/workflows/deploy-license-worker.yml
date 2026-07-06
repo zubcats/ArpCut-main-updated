@@ -1,0 +1,33 @@
+# Deploy Cloudflare license sign-in worker when backend/worker changes.
+name: Deploy license worker
+
+on:
+  push:
+    branches:
+      - main
+      - experimental
+    paths:
+      - 'backend/cloudflare-license-signin/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Deploy worker
+        working-directory: backend/cloudflare-license-signin
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "SKIP: CLOUDFLARE_API_TOKEN not set — deploy worker manually with npx wrangler deploy"
+            exit 0
+          fi
+          npx --yes wrangler deploy

@@ -85,10 +85,9 @@ def main() -> None:
             flags=re.M,
         )
     elif channel in ("main", "experimental") and lic_pubkey and not signin_url:
-        raise SystemExit(
-            "Missing LICENSE_SIGNIN_URL: add repository secret LICENSE_SIGNIN_URL with your "
-            "Worker HTTPS URL (same as License Manager 'Cloud sign-in sync'). "
-            "Required for main and experimental builds when LICENSE_PUBLIC_KEY_B64 is set."
+        print(
+            "NOTE: LICENSE_SIGNIN_URL secret not set; using default from constants.py",
+            file=sys.stderr,
         )
 
     build_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

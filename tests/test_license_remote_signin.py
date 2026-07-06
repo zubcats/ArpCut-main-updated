@@ -164,6 +164,26 @@ class TestLicenseRemoteSignin(unittest.TestCase):
         hint = signin_failure_hint('Invalid credentials.')
         self.assertIn('Push selected to cloud', hint)
 
+    def test_fetch_remote_verify_key(self) -> None:
+        from tools import license_remote_signin as lrs
+
+        class _Resp:
+            def json(self):
+                return {'ok': True, 'public_key_b64': 'YWJjZGVm'}
+
+        def _fake_get(url, **kwargs):
+            return _Resp()
+
+        orig = lrs.requests.get
+        try:
+            lrs.requests.get = _fake_get
+            self.assertEqual(
+                lrs.fetch_remote_verify_key_b64('https://example.test/signin'),
+                'YWJjZGVm',
+            )
+        finally:
+            lrs.requests.get = orig
+
 
 if __name__ == '__main__':
     unittest.main()

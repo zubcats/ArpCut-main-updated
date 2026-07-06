@@ -29,6 +29,9 @@ You need a **free Cloudflare account** and **Node.js** installed (so the `npx` c
 7. Set a **private password** only you and License Manager will know (type it when prompted; nothing prints on screen):  
    `npx wrangler secret put ADMIN_SECRET`  
    Use a long random string (you can generate one in a password manager). **This is not** the customer’s password — it’s the **key between your License Manager and Cloudflare**.
+8. Publish the **public verify key** so ZubCut can fetch it if a build is missing the baked key:  
+   `npx wrangler secret put LICENSE_PUBLIC_KEY_B64`  
+   Paste the same **Public Verify Key** string from License Manager (base64 Ed25519 public key).
 
 ### B. Connect License Manager to that server
 

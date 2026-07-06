@@ -52,7 +52,7 @@ LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'zubcut-license.json')
 # CI injects from secret LICENSE_PUBLIC_KEY_B64 (Ed25519 verify key, base64).
 LICENSE_PUBLIC_KEY_B64 = ''
 # License sign-in HTTPS URL. Override at runtime with ZUBCUT_LICENSE_SIGNIN_URL.
-LICENSE_SIGNIN_URL = ''
+LICENSE_SIGNIN_URL = 'https://zubcut-license-signin.zubcats.workers.dev'
 
 # Extra legacy settings to migrate if zubcut.json is missing (Windows)
 LEGACY_SETTINGS_CANDIDATES = []

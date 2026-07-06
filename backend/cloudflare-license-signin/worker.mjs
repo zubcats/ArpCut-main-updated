@@ -140,6 +140,13 @@ export default {
         if (path === '/admin/upsert' || path.startsWith('/admin/')) {
           return jsonResponse({ ok: false, error: 'Use POST.' }, 405);
         }
+        if (path === '/public-key') {
+          const key = String(env.LICENSE_PUBLIC_KEY_B64 || '').trim();
+          if (!key) {
+            return jsonResponse({ ok: false, error: 'Public verify key not configured on server.' }, 503);
+          }
+          return jsonResponse({ ok: true, public_key_b64: key });
+        }
         return jsonResponse({ ok: true, service: 'zubcut-license-signin' });
       }
 

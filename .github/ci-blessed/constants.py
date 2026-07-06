@@ -47,7 +47,7 @@ else:
 SETTINGS_PATH = path.join(DOCUMENTS_PATH, 'zubcut.json')
 LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'zubcut-license.json')
 LICENSE_PUBLIC_KEY_B64 = ''
-LICENSE_SIGNIN_URL = ''
+LICENSE_SIGNIN_URL = 'https://zubcut-license-signin.zubcats.workers.dev'
 
 # Extra legacy settings to migrate if zubcut.json is missing (Windows)
 LEGACY_SETTINGS_CANDIDATES = []

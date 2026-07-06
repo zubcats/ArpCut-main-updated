@@ -69,10 +69,25 @@ def _canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
 
 
+def _license_disk_verify_key() -> str:
+    for path in _license_read_paths():
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            data = json.load(open(path, 'r', encoding='utf-8'))
+        except Exception:
+            continue
+        key = str(data.get('verify_key_b64') or '').strip()
+        if key:
+            return key
+    return ''
+
+
 def _effective_public_key_b64() -> str:
     return str(
         os.environ.get('ZUBCUT_LICENSE_PUBLIC_KEY_B64')
         or os.environ.get('ZUBCUT_PAID_PUBLIC_KEY_B64')
+        or _license_disk_verify_key()
         or LICENSE_PUBLIC_KEY_B64
         or ''
     ).strip()
@@ -257,12 +272,25 @@ def validate_license_document(
     return LicenseValidationResult(True, 'License valid', payload=payload)
 
 
-def install_license_document(data: dict[str, Any], *, signin_account: str | None = None) -> None:
+def install_license_document(
+    data: dict[str, Any],
+    *,
+    signin_account: str | None = None,
+    verify_key_b64: str | None = None,
+) -> None:
     """Write validated license JSON to the installed license path."""
     out = dict(data)
     acct = str(signin_account or out.get('signin_account') or '').strip().lower()
     if acct:
         out['signin_account'] = acct
+    key = str(
+        verify_key_b64
+        or out.get('verify_key_b64')
+        or _effective_public_key_b64()
+        or ''
+    ).strip()
+    if key:
+        out['verify_key_b64'] = key
     os.makedirs(os.path.dirname(LICENSE_FILE_PATH) or '.', exist_ok=True)
     with open(LICENSE_FILE_PATH, 'w', encoding='utf-8') as fh:
         json.dump(out, fh, indent=2)
