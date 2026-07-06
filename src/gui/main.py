@@ -1031,6 +1031,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._shutting_down = False
         self._lag_start_gen = 0
         self._dupe_start_gen = 0
+        self._dupe_armed_ok = False
         self._pctcut_start_gen = 0
 
         # Threading
@@ -1539,15 +1540,16 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         menu.exec_(self.lblleft.mapToGlobal(pos))
 
     def _show_dupe_status(self, text, color=UI_LOG_VICTIM_BLOCK_FG, *, hold_ms=8000):
-        """Dupe feedback on the inline label under Dupe controls + left status strip."""
+        """Dupe feedback on the status strip; countdown label stays for the timer."""
         plain = str(text or '').strip()
         if not plain:
             return
         self.log(plain, color)
-        self.lblDupeCountdownMain.setVisible(True)
-        self._set_countdown_label(self.lblDupeCountdownMain, plain)
-        if hold_ms > 0 and not self.dupe_active:
-            QTimer.singleShot(hold_ms, self._clear_dupe_status_label_if_idle)
+        if not self.dupe_active:
+            self.lblDupeCountdownMain.setVisible(True)
+            self._set_countdown_label(self.lblDupeCountdownMain, plain)
+            if hold_ms > 0:
+                QTimer.singleShot(hold_ms, self._clear_dupe_status_label_if_idle)
 
     def _clear_dupe_status_label_if_idle(self):
         if self.dupe_active:
@@ -4976,23 +4978,56 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
 
-    def _apply_dupe_deferred(self):
-        """Arm MITM on main thread; stopDupe scheduled for remaining time after block."""
-        dev = self._dupe_arm_device
-        self._dupe_arm_device = None
-        if not dev or not self.dupe_active:
-            if self.dupe_active and not dev:
-                self._abort_dupe_stuck_without_arm()
+    def _schedule_dupe_arm_command(self, device, direction: str, arm_gen: int) -> None:
+        """Paint optimistic Dupe UI first; arm MITM on the next event-loop tick (Kill parity)."""
+        dev = dict(device)
+        QTimer.singleShot(
+            0,
+            lambda d=dev, dirn=str(direction), g=int(arm_gen): self._run_dupe_arm_command(
+                d, dirn, g
+            ),
+        )
+
+    def _run_dupe_arm_command(self, device, direction: str, arm_gen: int) -> None:
+        """Arm Dupe MITM on the GUI thread — same stack as explicit Kill ON."""
+        if getattr(self, '_shutting_down', False):
             return
-        direction = getattr(self, '_dupe_arm_direction', 'both')
+        if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != arm_gen:
+            return
+        mac_pin = str(getattr(self, 'dupe_device_mac', None) or '').strip()
+        live = self._get_device_by_mac(mac_pin, getattr(self, 'dupe_device_ip', None))
+        dev = dict(live) if isinstance(live, dict) else dict(device)
         try:
-            if not self._arm_dupe_mitm_like_kill(dev, direction):
+            dev = self._resolve_flow_start_device(dev)
+        except Exception:
+            dev = dict(device)
+        if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != arm_gen:
+            return
+        self.log(
+            f'Dupe arming MITM → {dev.get("ip", "")} ({dev.get("mac", "")})…',
+            UI_LOG_VICTIM_BLOCK_FG,
+        )
+        if self.lag_active:
+            self.stopLagSwitch(refresh_dialog=True)
+        if self.mitm_shaping_active:
+            self.stop_mitm_shaping(log=False)
+        if self.percent_cut_active:
+            self.stopPercentCut(log=False)
+        self._clear_explicit_kill_for_flow(dev)
+        if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != arm_gen:
+            return
+        # Dupe burst is a full cut like Kill — always use both for firewall backstop.
+        block_dir = 'both'
+        try:
+            if not self._arm_victim_mitm_like_kill(dev, block_dir, flow='Dupe'):
                 raise RuntimeError(
                     'Dupe block failed — rescan, pick Wi‑Fi in Settings if PC is on Wi‑Fi'
                 )
+            self._dupe_armed_ok = True
             dev = self._device_with_plan_ip(dict(dev))
             self._sync_dupe_device_identity(dev)
-            self._arm_dupe_burst_wall_clock()
+            self.dupe_device_mac = str(dev.get('mac') or self.dupe_device_mac or '').strip() or None
+            self.dupe_device_ip = dev.get('ip') or self.dupe_device_ip
             self._start_dupe_timers_after_network_ready()
         except Exception as exc:
             self.dupe_active = False
@@ -5015,6 +5050,17 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log(f'Dupe failed to start: {exc}', 'red')
             self._refresh_flow_toggle_ui()
             self._repaint_all_table_rows_for_hover()
+
+    def _apply_dupe_deferred(self):
+        """Legacy entry — routed to _run_dupe_arm_command."""
+        dev = getattr(self, '_dupe_arm_device', None)
+        direction = getattr(self, '_dupe_arm_direction', 'both')
+        gen = int(getattr(self, '_dupe_start_gen', 0))
+        if not isinstance(dev, dict):
+            if self.dupe_active:
+                self._abort_dupe_stuck_without_arm()
+            return
+        self._run_dupe_arm_command(dev, direction, gen)
 
     @pyqtSlot()
     def _slot_finish_dupe_block(self):
@@ -5547,6 +5593,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_direction = direction
         self.dupe_duration_ms = duration_ms
         self._dupe_end_mono = None
+        self._dupe_armed_ok = False
         self.dupe_active = True
         self.btnDupe.setText('■ DUPE')
         self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
@@ -5556,6 +5603,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             UI_LOG_VICTIM_BLOCK_FG,
             hold_ms=0,
         )
+        self._arm_dupe_burst_wall_clock()
         self._refresh_flow_toggle_ui()
         self._repaint_all_table_rows_for_hover()
         try:
@@ -5567,30 +5615,28 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self._dupe_start_gen = int(getattr(self, '_dupe_start_gen', 0)) + 1
         dupe_gen = self._dupe_start_gen
-        arm_device = dict(device)
-        arm_direction = direction
-        self._dupe_arm_device = dict(arm_device)
-        self._dupe_arm_direction = arm_direction
+        self._dupe_arm_device = dict(device)
+        self._dupe_arm_direction = direction
+        self._schedule_dupe_arm_command(device, direction, dupe_gen)
 
-        def _dupe_deferred_start():
-            if getattr(self, '_shutting_down', False):
-                return
+        def _dupe_arm_watchdog():
             if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != dupe_gen:
                 return
-            if self.lag_active:
-                self.stopLagSwitch(refresh_dialog=True)
-            if self.mitm_shaping_active:
-                self.stop_mitm_shaping(log=False)
-            if self.percent_cut_active:
-                self.stopPercentCut(log=False)
-            self._clear_explicit_kill_for_flow(arm_device)
-            if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != dupe_gen:
+            if getattr(self, '_dupe_armed_ok', False):
                 return
-            self._dupe_arm_device = dict(arm_device)
-            self._dupe_arm_direction = arm_direction
-            QTimer.singleShot(0, self._apply_dupe_deferred)
+            mac = str(getattr(self, 'dupe_device_mac', None) or '').strip()
+            if mac and mac in getattr(self.killer, 'killed', {}):
+                self._dupe_armed_ok = True
+                self._start_dupe_timers_after_network_ready()
+                return
+            self.log(
+                'Dupe arm did not start — retrying MITM (same path as Kill)…',
+                'red',
+            )
+            live = self._get_device_by_mac(mac, getattr(self, 'dupe_device_ip', None)) or device
+            self._schedule_dupe_arm_command(live, direction, dupe_gen)
 
-        QTimer.singleShot(0, _dupe_deferred_start)
+        QTimer.singleShot(400, _dupe_arm_watchdog)
 
     def dupe_remaining_ms(self):
         if not self.dupe_active:
@@ -5653,6 +5699,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_timer.stop()
         self._dupe_end_mono = None
         self._dupe_finish_from_countdown_pending = False
+        self._dupe_armed_ok = False
         if not was_active:
             self.lblDupeCountdownMain.setVisible(False)
             self.lblDupeCountdownMain.setText('')

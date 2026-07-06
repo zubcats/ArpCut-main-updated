@@ -32,8 +32,10 @@ class TestDupeStatusLogging(unittest.TestCase):
         self.assertIn('_show_dupe_status', start)
         stop = src[src.index('def stopDupe'): src.index('def _updateDupeButtonState', src.index('def stopDupe'))]
         self.assertIn('_log_dupe_restore_result', stop)
-        apply_def = src[src.index('def _apply_dupe_deferred'): src.index('def _slot_finish_dupe_block', src.index('def _apply_dupe_deferred'))]
-        self.assertIn('_arm_dupe_mitm_like_kill(dev, direction)', apply_def)
+        self.assertIn('def _schedule_dupe_arm_command', src)
+        self.assertIn('def _run_dupe_arm_command', src)
+        self.assertIn('_schedule_dupe_arm_command(device, direction, dupe_gen)', src)
+        self.assertIn('Dupe arming MITM', src)
         self.assertIn('def _arm_victim_mitm_like_kill', src)
         self.assertIn('traffic_cut=True', src[src.index('def _arm_victim_mitm_like_kill'): src.index('def _arm_dupe_mitm_like_kill', src.index('def _arm_victim_mitm_like_kill'))])
         self.assertIn('_clear_explicit_kill_for_flow', src)
