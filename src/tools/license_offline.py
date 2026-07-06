@@ -83,6 +83,23 @@ class LicenseValidationResult:
     ok: bool
     reason: str
     payload: dict[str, Any] | None = None
+    signin_account: str = ''
+
+
+def resolve_license_account(data: dict[str, Any] | None) -> str:
+    """KV/sign-in account key: saved at sign-in, else payload user_name or account."""
+    if not isinstance(data, dict):
+        return ''
+    top = str(data.get('signin_account') or '').strip().lower()
+    if top:
+        return top
+    payload = data.get('payload')
+    if isinstance(payload, dict):
+        for key in ('user_name', 'account'):
+            v = str(payload.get(key) or '').strip().lower()
+            if v:
+                return v
+    return ''
 
 
 def _build_stamp_for_errors() -> str:
@@ -240,11 +257,15 @@ def validate_license_document(
     return LicenseValidationResult(True, 'License valid', payload=payload)
 
 
-def install_license_document(data: dict[str, Any]) -> None:
+def install_license_document(data: dict[str, Any], *, signin_account: str | None = None) -> None:
     """Write validated license JSON to the installed license path."""
+    out = dict(data)
+    acct = str(signin_account or out.get('signin_account') or '').strip().lower()
+    if acct:
+        out['signin_account'] = acct
     os.makedirs(os.path.dirname(LICENSE_FILE_PATH) or '.', exist_ok=True)
     with open(LICENSE_FILE_PATH, 'w', encoding='utf-8') as fh:
-        json.dump(data, fh, indent=2)
+        json.dump(out, fh, indent=2)
 
 
 def load_and_validate_installed_license(path: str | None = None) -> LicenseValidationResult:
@@ -264,4 +285,6 @@ def load_and_validate_installed_license(path: str | None = None) -> LicenseValid
     except Exception:
         return LicenseValidationResult(False, 'License file unreadable')
 
-    return validate_license_document(data)
+    acct = resolve_license_account(data)
+    res = validate_license_document(data)
+    return LicenseValidationResult(res.ok, res.reason, res.payload, signin_account=acct)

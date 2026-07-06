@@ -228,7 +228,7 @@ def _start_license_runtime_validation(gui, icon) -> None:
             _force_lockout_and_exit(res.reason)
             return
         payload = res.payload or {}
-        account = str(payload.get('user_name') or '').strip()
+        account = str(res.signin_account or '').strip()
         license_id = str(payload.get('license_id') or '').strip()
         url = effective_signin_url()
         th = _LicenseRuntimeSessionThread(url, account, license_id, timeout_sec=12.0)

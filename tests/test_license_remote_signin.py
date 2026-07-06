@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from tools.license_offline import validate_license_document
+from tools.license_offline import resolve_license_account, validate_license_document
 from tools.license_remote_signin import fetch_license_document_via_signin, license_transient_reason
 
 
@@ -96,6 +96,50 @@ class TestLicenseRemoteSignin(unittest.TestCase):
         self.assertEqual(with_password.reason, 'Wrong password')
         without_password = validate_license_document(doc)
         self.assertTrue(without_password.ok, without_password.reason)
+
+    def test_resolve_license_account_prefers_signin_account(self) -> None:
+        data = {
+            'signin_account': 'KvKey',
+            'payload': {'user_name': 'other', 'account': 'legacy'},
+        }
+        self.assertEqual(resolve_license_account(data), 'kvkey')
+
+    def test_resolve_license_account_falls_back_to_payload_fields(self) -> None:
+        self.assertEqual(
+            resolve_license_account({'payload': {'account': 'LegacyUser'}}),
+            'legacyuser',
+        )
+        self.assertEqual(
+            resolve_license_account({'payload': {'user_name': 'Display'}}),
+            'display',
+        )
+
+    def test_validate_session_allows_missing_license_id(self) -> None:
+        from tools import license_remote_signin as lrs
+
+        captured: dict = {}
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {'ok': True}
+
+        def _fake_post(url, json=None, **kwargs):
+            captured['json'] = dict(json or {})
+            return _Resp()
+
+        orig_post = lrs.requests.post
+        try:
+            lrs.requests.post = _fake_post
+            ok, reason = lrs.validate_active_license_session(
+                'https://example.test/signin', 'myaccount', ''
+            )
+        finally:
+            lrs.requests.post = orig_post
+        self.assertTrue(ok)
+        self.assertEqual(captured['json']['account'], 'myaccount')
+        self.assertEqual(captured['json']['license_id'], '')
 
 
 if __name__ == '__main__':

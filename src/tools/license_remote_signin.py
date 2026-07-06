@@ -142,7 +142,7 @@ def validate_active_license_session(
         return None, 'Sign-in URL is not configured.'
     acct = str(account or '').strip().lower()
     lid = str(license_id or '').strip()
-    if not acct or not lid:
+    if not acct:
         return False, 'Saved license is missing account identity.'
     try:
         r = requests.post(

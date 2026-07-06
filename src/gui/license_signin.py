@@ -123,15 +123,6 @@ class LicenseSignInDialog(QDialog):
             _set_last_signin_error('Invalid license data from server')
             QMessageBox.warning(self, 'Sign in', 'Invalid license data from server.')
             return
-        lic_user = str(payload.get('user_name') or '').strip().lower()
-        if lic_user and account != lic_user:
-            _set_last_signin_error('Account mismatch')
-            QMessageBox.warning(
-                self,
-                'Account mismatch',
-                f'That name does not match this license (expected: {lic_user!r}).',
-            )
-            return
         # Password was already verified by the HTTPS sign-in server (KV bundle).
         # Do not re-check payload.password_hash here — bundle root salt/hash can
         # differ from embedded payload fields and would reject valid logins.
@@ -141,7 +132,7 @@ class LicenseSignInDialog(QDialog):
             QMessageBox.warning(self, 'Sign in failed', res.reason)
             return
         try:
-            install_license_document(data)
+            install_license_document(data, signin_account=account)
         except Exception as e:
             _set_last_signin_error(f'Could not save license: {e}')
             QMessageBox.critical(self, 'Sign in', f'Could not save license:\n{e}')
