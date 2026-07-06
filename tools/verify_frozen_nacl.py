@@ -7,10 +7,35 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _APP_NAME = 'ZubCut'
 _REPORT = os.path.join(tempfile.gettempdir(), 'zubcut-license-crypto-verify.txt')
+
+
+def _read_report() -> str:
+    if not os.path.isfile(_REPORT):
+        return ''
+    try:
+        return open(_REPORT, encoding='utf-8').read().strip()
+    except OSError:
+        return ''
+
+
+def _report_ok(report: str) -> bool:
+    lines = [ln.strip() for ln in report.splitlines() if ln.strip()]
+    return bool(lines) and lines[-1] == 'OK'
+
+
+def _windows_subprocess_kwargs() -> dict:
+    if os.name != 'nt':
+        return {}
+    kw: dict = {}
+    no_window = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    if no_window:
+        kw['creationflags'] = no_window
+    return kw
 
 
 def main() -> int:
@@ -25,27 +50,65 @@ def main() -> int:
     except OSError:
         pass
 
-    r = subprocess.run(
-        [exe, '--verify-license-crypto'],
-        cwd=os.path.dirname(exe),
-        capture_output=True,
+    cmd = [exe, '--verify-license-crypto']
+    cwd = os.path.dirname(exe)
+    deadline = time.monotonic() + 45.0
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=120,
+        **_windows_subprocess_kwargs(),
     )
     report = ''
-    if os.path.isfile(_REPORT):
-        try:
-            report = open(_REPORT, encoding='utf-8').read().strip()
-        except OSError:
-            pass
-    if not report:
-        report = (r.stdout or '').strip() or (r.stderr or '').strip()
+    returncode = None
+    while time.monotonic() < deadline:
+        report = _read_report()
+        if report and _report_ok(report):
+            returncode = 0
+            break
+        if proc.poll() is not None:
+            returncode = proc.returncode
+            break
+        time.sleep(0.25)
 
-    print(report or f'(no report, exit {r.returncode})')
-    if r.returncode != 0:
+    if returncode is None:
+        report = _read_report()
+        if report and _report_ok(report):
+            returncode = 0
+        else:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            print(
+                'ERROR: frozen ZubCut.exe crypto self-test timed out after 45s '
+                f'(cmd={cmd!r})',
+                file=sys.stderr,
+            )
+            if report:
+                print(report)
+            return 1
+
+    stdout, stderr = '', ''
+    try:
+        stdout, stderr = proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+    if not report:
+        report = (stdout or '').strip() or (stderr or '').strip()
+
+    print(report or f'(no report, exit {returncode})')
+    if returncode != 0:
         print('ERROR: frozen ZubCut.exe crypto self-test failed', file=sys.stderr)
         return 1
-    if 'OK' not in report.splitlines()[-1:]:
+    if not _report_ok(report):
         print('ERROR: crypto self-test did not report OK', file=sys.stderr)
         return 1
     print('Frozen exe license crypto self-test passed.')

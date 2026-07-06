@@ -1,6 +1,30 @@
 from sys import argv, exit
 import sys as _sys, os as _os
-_sys.path.append(_os.path.dirname(__file__))
+
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+
+
+def _run_license_crypto_self_test_and_exit() -> None:
+    """CI / support: verify Ed25519 in frozen builds without loading PyQt or Scapy."""
+    import tempfile
+
+    from tools.license_offline import license_crypto_self_test
+
+    ok, report = license_crypto_self_test()
+    out = _os.path.join(tempfile.gettempdir(), 'zubcut-license-crypto-verify.txt')
+    try:
+        with open(out, 'w', encoding='utf-8') as fh:
+            fh.write(report)
+            fh.write('\n')
+    except OSError:
+        pass
+    print(report)
+    _sys.exit(0 if ok else 1)
+
+
+if __name__ == '__main__' and '--verify-license-crypto' in argv:
+    _run_license_crypto_self_test_and_exit()
+
 from PyQt5.QtWidgets import QApplication, QStyleFactory
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 
@@ -228,28 +252,7 @@ def _start_license_runtime_validation(gui, icon) -> None:
 
 # import debug.test
 
-def _run_license_crypto_self_test_and_exit() -> None:
-    """Write result for CI / support; works with --windowed builds (no console)."""
-    import tempfile
-
-    from tools.license_offline import license_crypto_self_test
-
-    ok, report = license_crypto_self_test()
-    out = _os.path.join(tempfile.gettempdir(), 'zubcut-license-crypto-verify.txt')
-    try:
-        with open(out, 'w', encoding='utf-8') as fh:
-            fh.write(report)
-            fh.write('\n')
-    except OSError:
-        pass
-    print(report)
-    exit(0 if ok else 1)
-
-
 if __name__ == "__main__":
-    if '--verify-license-crypto' in argv:
-        _run_license_crypto_self_test_and_exit()
-
     if _sys.platform == 'win32' and not ensure_windows_elevated():
         exit(1)
 
