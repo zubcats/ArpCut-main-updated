@@ -304,23 +304,38 @@ def get_gateway_mac(iface_ip, router_ip):
     return GLOBAL_MAC
 
 
-def _lan_neighbor_mac_via_arp_probe(ip: str, iface_guid: str | None = None) -> str:
+def _lan_neighbor_mac_via_arp_probe(
+    ip: str,
+    iface_guid: str | None = None,
+    *,
+    iface=None,
+) -> str:
     """Layer-2 ARP who-has when ICMP is silent (PS5 often blocks ping but answers ARP)."""
     ip = str(ip or '').strip()
     if not ip or not _ipv4_valid(ip):
         return ''
+    tokens: list[str] = []
+    try:
+        tokens = npcap_iface_tokens(iface, iface_guid)
+    except Exception:
+        tokens = []
+    if not tokens and iface_guid:
+        tokens = [str(iface_guid)]
+    if not tokens:
+        tokens = ['']
     try:
         from scapy.all import arping
 
-        kwargs: dict = {'timeout': 2, 'verbose': 0}
-        if iface_guid:
-            kwargs['iface'] = str(iface_guid)
-        ans = arping(f'{ip}/32', **kwargs)
-        rows = ans[0] if ans else []
-        for _sent, rcv in rows:
-            mac = good_mac(str(getattr(rcv, 'src', '') or ''))
-            if mac_address_is_usable(mac):
-                return mac
+        for token in tokens:
+            kwargs: dict = {'timeout': 2, 'verbose': 0, 'retry': 1}
+            if token:
+                kwargs['iface'] = token
+            ans = arping(f'{ip}/32', **kwargs)
+            rows = ans[0] if ans else []
+            for _sent, rcv in rows:
+                mac = good_mac(str(getattr(rcv, 'src', '') or ''))
+                if mac_address_is_usable(mac):
+                    return mac
     except Exception:
         pass
     return ''

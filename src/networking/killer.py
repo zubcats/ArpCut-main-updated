@@ -240,14 +240,40 @@ class Killer:
             'admin': True,
         }
     
+    def _refresh_router_mac_for_mitm(self) -> None:
+        """Best-effort gateway MAC for MITM when ARP cache is cold after Kill OFF."""
+        router_ip = str((self.router or {}).get('ip') or '').strip()
+        if not router_ip:
+            return
+        iface_ip = str(getattr(self.iface, 'ip', None) or '').strip()
+        mac = lookup_mac_from_arp_table(router_ip, iface_ip)
+        if not mac_address_is_usable(mac) and sys.platform.startswith('win'):
+            try:
+                run_command(
+                    ['ping', '-n', '1', '-w', '800', router_ip],
+                    shell=False,
+                    timeout=2,
+                )
+            except Exception:
+                pass
+            mac = lookup_mac_from_arp_table(router_ip, iface_ip)
+        if not mac_address_is_usable(mac):
+            try:
+                guid = getattr(self.iface, 'guid', None) or self.iface.name
+                mac = get_gateway_mac(iface_ip, router_ip)
+            except Exception:
+                mac = GLOBAL_MAC
+        if mac_address_is_usable(mac) and isinstance(self.router, dict):
+            self.router['mac'] = mac
+
     def mitm_prereqs_ok(self, victim, *, ping_attempts: int = 1) -> tuple[bool, str]:
         """True when victim + router MACs are known enough to MITM on LAN."""
         if not isinstance(victim, dict):
             return False, 'no victim'
         if self.iface.name == 'NULL':
             return False, 'no network adapter'
-        if not mac_address_is_usable(victim.get('mac')):
-            return False, 'victim MAC unknown (ping PS5, rescan)'
+        if not mac_address_is_usable((self.router or {}).get('mac')):
+            self._refresh_router_mac_for_mitm()
         if not mac_address_is_usable((self.router or {}).get('mac')):
             return False, 'router MAC unknown (ping gateway, check Npcap)'
         if not mac_address_is_usable(getattr(self.iface, 'mac', None)):
@@ -261,10 +287,14 @@ class Killer:
         except Exception:
             iface_guid = ''
         victim_ip = str(victim.get('ip') or '').strip()
-        if victim_ip and iface_guid:
-            probed = _lan_neighbor_mac_via_arp_probe(victim_ip, iface_guid)
+        if victim_ip:
+            probed = _lan_neighbor_mac_via_arp_probe(
+                victim_ip, iface_guid, iface=self.iface
+            )
             if mac_address_is_usable(probed):
                 victim['mac'] = probed
+        if not mac_address_is_usable(victim.get('mac')):
+            return False, 'victim MAC unknown (ping PS5, rescan)'
         live_ok, live_reason = victim_endpoint_live_for_mitm(
             victim.get('ip'),
             victim.get('mac'),

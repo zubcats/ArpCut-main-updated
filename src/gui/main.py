@@ -3543,7 +3543,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 from tools.utils import _resolve_allowed_macs, good_mac
 
                 got = good_mac(mac)
-                if old_mac and got != good_mac(old_mac):
+                if not mac_address_is_usable(old_mac):
+                    device['mac'] = got
+                elif got != good_mac(old_mac):
                     # PS5 Ethernet ↔ Wi‑Fi uses different MACs; allow handoff when
                     # nickname-linked or the row IP's ARP MAC is authoritative.
                     allowed = _resolve_allowed_macs(device)
@@ -7034,6 +7036,20 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         _mark('lan_disable_pctcut_done')
                         self._refresh_victim_mac_from_system_arp(device)
                         mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device, ping_attempts=3)
+                        if not mitm_ok:
+                            # One more pass after full topology refresh (cold ARP / wrong NIC).
+                            try:
+                                self.scanner.refresh_local_topology()
+                                self._refresh_router_mac_from_system_arp()
+                                self._refresh_victim_mac_from_system_arp(device)
+                                self.killer.router = (
+                                    getattr(self.scanner, 'router', None) or self.killer.router
+                                )
+                                mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(
+                                    device, ping_attempts=3
+                                )
+                            except Exception:
+                                pass
                         if not mitm_ok:
                             self.log(
                                 f'Kill ON failed: {mitm_reason}',
