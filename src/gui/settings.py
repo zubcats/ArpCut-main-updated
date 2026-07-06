@@ -396,6 +396,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         try:
             self._begin_clumsy_mode_toggle(new_v, old_v)
         except Exception as exc:
+            from tools.user_errors import format_build_version_hint
+
             self._clumsy_toggle_guard = True
             self.chkClumsy.setChecked(old_v)
             self._clumsy_toggle_guard = False
@@ -410,7 +412,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 f'{exc}\n\n'
                 'Turn Mobile Hotspot ON in Windows Settings first, wait for it to start, '
                 'then try again. If this keeps happening, send the newest '
-                f'%TEMP%\\{APP_BUNDLE_NAME}-crash-ZC-*.log file.',
+                f'%TEMP%\\{APP_BUNDLE_NAME}-crash-ZC-*.log file.'
+                f'{format_build_version_hint()}',
                 Buttons.OK,
             )
 
@@ -433,6 +436,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         th.start()
 
     def _on_clumsy_ics_prep_finished(self, prep_ok: bool, prep_detail: str) -> None:
+        from tools.user_errors import format_build_version_hint
+
         dlg = getattr(self, '_clumsy_prep_dialog', None)
         if dlg is not None:
             dlg.close()
@@ -444,7 +449,29 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._clumsy_prep_thread = None
         new_v = bool(getattr(self, '_pending_clumsy_new', False))
         old_v = bool(getattr(self, '_pending_clumsy_old', False))
-        self._apply_clumsy_mode_toggle_after_prep(new_v, old_v, bool(prep_ok), str(prep_detail or ''))
+        try:
+            self._apply_clumsy_mode_toggle_after_prep(
+                new_v, old_v, bool(prep_ok), str(prep_detail or '')
+            )
+        except Exception as exc:
+            self._clumsy_toggle_guard = True
+            self.chkClumsy.setChecked(old_v)
+            self._clumsy_toggle_guard = False
+            try:
+                set_settings('clumsy_mode', old_v)
+            except Exception:
+                pass
+            MsgType.ERROR(
+                self,
+                'Clumsy Mode',
+                'ZubCut hit an error while changing Clumsy mode.\n\n'
+                f'{exc}\n\n'
+                'Turn Mobile Hotspot ON in Windows Settings first, wait for it to start, '
+                'then try again. If this keeps happening, send the newest '
+                f'%TEMP%\\{APP_BUNDLE_NAME}-crash-ZC-*.log file.'
+                f'{format_build_version_hint()}',
+                Buttons.OK,
+            )
 
     def _apply_clumsy_mode_toggle_after_prep(
         self,
@@ -459,10 +486,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     prep_detail or 'Unknown error.',
                     topology=read_clumsy_topology(),
                 )
+                from tools.user_errors import format_build_version_hint
+
                 MsgType.WARN(
                     self,
                     'Clumsy Mode',
-                    'Could not enable Clumsy mode.\n\n' + detail,
+                    'Could not enable Clumsy mode.\n\n' + detail + format_build_version_hint(),
                     Buttons.OK,
                 )
                 self._clumsy_toggle_guard = True

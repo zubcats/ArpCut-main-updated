@@ -23,8 +23,30 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertIn('firewall_rules_removed', result)
 
-    def test_enable_script_autodetects_console_path(self) -> None:
+    def test_purge_for_clumsy_enable_skips_full_teardown(self) -> None:
+        from unittest.mock import patch
+
+        with patch.object(ics, 'sys') as mock_sys:
+            mock_sys.platform = 'win32'
+            with patch('tools.pfctl.teardown_all_zubcut_network_attacks') as teardown:
+                with patch('tools.pfctl.unblock_ip') as unblock_ip:
+                    with patch('tools.pfctl.unblock_all_for') as unblock_all:
+                        ics.purge_clumsy_stale_attack_blocks(for_clumsy_enable=True)
+        teardown.assert_not_called()
+        unblock_ip.assert_not_called()
+        unblock_all.assert_not_called()
+
+    def test_ensure_clumsy_ics_enabled_uses_light_purge(self) -> None:
+        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
+        self.assertIn('purge_clumsy_stale_attack_blocks(for_clumsy_enable=True)', src)
+
+    def test_ensure_clumsy_ics_enabled_catches_unexpected_errors(self) -> None:
         src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        self.assertIn('_ensure_clumsy_ics_enabled_impl', src)
+        self.assertIn('except Exception', src)
+
+    def test_enable_script_autodetects_console_path(self) -> None:
+        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
         helpers = ics._PS_HOTSPOT_HELPERS
         self.assertIn('Detect-ClumsyConsolePath', helpers)
         self.assertIn('Find-EthernetConsoleAdapter', helpers)
@@ -32,7 +54,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('Detect-ClumsyConsolePath', src)
         self.assertIn('Enable-MobileHotspotNatPath', src)
         self.assertNotIn('Prepare-ClumsyHotspotConsole', src)
-        self.assertIn('purge_clumsy_stale_attack_blocks', inspect.getsource(ics.ensure_clumsy_ics_enabled))
+        self.assertIn('purge_clumsy_stale_attack_blocks', inspect.getsource(ics._ensure_clumsy_ics_enabled_impl))
         self.assertIn('netsh wlan stop hostednetwork', src)
 
     def test_repair_does_not_demote_wlansvc_to_manual(self) -> None:
@@ -105,7 +127,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertNotIn('foreach ($k in $connMap.Keys)', core)
 
     def test_enable_script_does_not_set_ics_services_manual(self) -> None:
-        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
         self.assertNotIn('Set-Service -Name $svc -StartupType Manual', src)
 
     def test_repair_ps1_script_does_not_demote_wlansvc(self) -> None:
@@ -137,13 +159,13 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('Get-UplinkKindLabel', helpers)
         self.assertIn('UplinkKind', helpers)
         self.assertIn('LikelyEthernetNic $_', helpers)
-        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
         self.assertIn('uplink_kind', src)
         self.assertIn('Disconnect-WifiClientWhenEthernetUplink', helpers)
         self.assertNotIn('Prepare-ClumsyHotspotConsole', src)
 
     def test_enable_fails_fast_without_auto_hotspot_prep(self) -> None:
-        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
         detect_block = src.split('$detect = Detect-ClumsyConsolePath', 1)[1].split('$ZubcutTopology', 1)[0]
         self.assertNotIn('Prepare-ClumsyHotspotConsole', detect_block)
         helpers = ics._PS_HOTSPOT_HELPERS
@@ -161,7 +183,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('function Test-ClumsyHotspotPathReady', helpers)
         self.assertIn('function Enable-MobileHotspotNatPath', helpers)
         self.assertIn('function Set-HotspotDhcpRegistry', helpers)
-        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
         self.assertIn('Enable-MobileHotspotNatPath', src)
         self.assertIn('$natAlready', src)
         self.assertIn('ZubCut enabled Mobile Hotspot NAT', src)
@@ -171,7 +193,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('return $true', helpers_block)
 
     def test_hotspot_enable_skips_disrupt_when_already_ok(self) -> None:
-        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
         helpers = ics._PS_HOTSPOT_HELPERS
         self.assertIn('Test-HotspotConsoleReady', helpers)
         hotspot_idx = src.index("if ($ZubcutTopology -eq 'hotspot')")
@@ -186,7 +208,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertNotIn('Ensure-MainWifiSharingForClumsy', hotspot_block)
 
     def test_ethernet_enable_skips_ics_when_already_active(self) -> None:
-        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
         eth_idx = src.index("} else {", src.index("if ($ZubcutTopology -eq 'hotspot')"))
         eth_block = src[eth_idx:]
         self.assertIn('ICS already active', eth_block)
@@ -201,7 +223,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('Test-IcsActiveForPair', core)
 
     def test_enable_failure_rolls_back_and_settings_stay_off(self) -> None:
-        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
         self.assertIn('_retry_main_wifi_sharing_for_hotspot', src)
         settings = os.path.join(_ROOT, 'src', 'gui', 'settings.py')
         with open(settings, encoding='utf-8') as f:
@@ -210,7 +232,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertNotIn('Enable Clumsy mode anyway?', st)
 
     def test_hotspot_enable_internet_sharing_without_dhcp_only_exit(self) -> None:
-        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
         self.assertIn('Apply-HotspotIcsCore', src)
         self.assertIn('Clumsy mode ready', src)
         self.assertNotIn("Write-ClumsyState $up $down $snapshot 'PC Mobile Hotspot ready (DHCP active).'", src)

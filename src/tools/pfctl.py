@@ -19,10 +19,9 @@ def _is_valid_ip(ip: str) -> bool:
 
 def _stdout_lines(res) -> list[str]:
     """Safe splitlines for subprocess results (stdout may be None on some Windows builds)."""
-    raw = getattr(res, 'stdout', None)
-    if raw is None:
-        return []
-    return str(raw).splitlines()
+    from tools.user_errors import safe_text_lines
+
+    return safe_text_lines(getattr(res, 'stdout', None))
 
 
 def _exec(cmd):

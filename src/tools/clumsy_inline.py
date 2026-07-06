@@ -177,7 +177,9 @@ def clumsy_ics_downstream_ifidx() -> int:
             if name:
                 listing = terminal('netsh interface ipv4 show interfaces') or ''
                 name_low = name.lower()
-                for line in listing.splitlines():
+                from tools.user_errors import safe_text_lines
+
+                for line in safe_text_lines(listing):
                     if name_low not in line.lower():
                         continue
                     parts = line.split()
@@ -340,7 +342,9 @@ def clumsy_ics_resolve_victim_ip(device, scanner: Optional['Scanner'] = None) ->
             if not cache or cache in seen:
                 continue
             seen.add(cache)
-            for line in cache.splitlines():
+            from tools.user_errors import safe_text_lines
+
+            for line in safe_text_lines(cache):
                 if prefix not in line or mac_needle not in line.lower().replace('-', ':'):
                     continue
                 for part in line.split():

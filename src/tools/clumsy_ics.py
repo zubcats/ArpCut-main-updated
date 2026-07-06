@@ -51,12 +51,14 @@ def _parse_marker_json(text: str) -> Dict[str, Any]:
     lines (marker only, then JSON), which would otherwise make json.loads fail
     and treat a successful ICS script as failure.
     """
+    from tools.user_errors import safe_text_lines
+
     if text is None:
         return {}
     text = str(text)
     if not text:
         return {}
-    lines = [ln.lstrip('\ufeff') for ln in text.splitlines()]
+    lines = [ln.lstrip('\ufeff') for ln in safe_text_lines(text)]
     for i in range(len(lines) - 1, -1, -1):
         line = lines[i]
         if not line.startswith(_MARKER):
@@ -906,7 +908,7 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
             payload = {'ok': False, 'error': out}
             return False, payload, out
 
-        out = (proc.stdout or '') + '\n' + (proc.stderr or '')
+        out = str((proc.stdout or '') + '\n' + (proc.stderr or ''))
         payload = _parse_marker_json(out)
         ok = bool(proc.returncode == 0 and payload.get('ok') is True)
         if not payload:
@@ -919,10 +921,13 @@ def _run_powershell(script_body: str) -> Tuple[bool, Dict[str, Any], str]:
             pass
 
 
-def purge_clumsy_stale_attack_blocks(extra_ips=None) -> dict:
+def purge_clumsy_stale_attack_blocks(extra_ips=None, *, for_clumsy_enable: bool = False) -> dict:
     """
     Remove leftover Kill/Dupe/Lag firewall blocks and WinDivert gate (like Clumsy with no filters).
     Call before enabling Clumsy mode so the console can reach the internet.
+
+    When ``for_clumsy_enable`` is True, skip full netsh rule enumeration (slow and can return
+    stdout=None on some PCs); only unblock known hotspot client IPs from ARP.
     """
     summary: dict = {'firewall_rules_removed': 0, 'unblocked_ips': []}
     if not sys.platform.startswith('win'):
@@ -953,9 +958,19 @@ def purge_clumsy_stale_attack_blocks(extra_ips=None) -> dict:
     except Exception:
         pass
     try:
-        from tools.pfctl import teardown_all_zubcut_network_attacks
+        if for_clumsy_enable:
+            from tools.pfctl import unblock_all_for, unblock_ip
 
-        summary = teardown_all_zubcut_network_attacks(extra_ips=sorted(ips))
+            for ip in sorted(ips):
+                try:
+                    unblock_ip(ip)
+                    unblock_all_for(ip)
+                except Exception:
+                    pass
+        else:
+            from tools.pfctl import teardown_all_zubcut_network_attacks
+
+            summary = teardown_all_zubcut_network_attacks(extra_ips=sorted(ips))
     except Exception:
         pass
     try:
@@ -1030,13 +1045,20 @@ exit 1
                 'Enable Clumsy mode in Settings (Administrator), or use Ethernet (PS5 → LAN port) in Settings.'
             )
         )
-    msg = str(payload.get('error') or '').strip() or raw.strip() or 'Hotspot preparation failed.'
+    msg = str(payload.get('error') or '').strip() or str(raw or '').strip() or 'Hotspot preparation failed.'
     return False, msg
 
 
 def ensure_clumsy_ics_enabled(topology: str | None = None) -> Tuple[bool, str]:
     """Enable ICS for Clumsy. Console path (hotspot vs ethernet) is auto-detected in PowerShell."""
     _ = topology  # legacy callers may pass manual topology; detection is automatic
+    try:
+        return _ensure_clumsy_ics_enabled_impl()
+    except Exception as e:
+        return False, str(e) or 'Clumsy mode preparation failed.'
+
+
+def _ensure_clumsy_ics_enabled_impl() -> Tuple[bool, str]:
     if os.name != 'nt':
         return True, 'Non-Windows platform; skipping ICS automation.'
     if not _windows_is_admin():
@@ -1045,7 +1067,7 @@ def ensure_clumsy_ics_enabled(topology: str | None = None) -> Tuple[bool, str]:
             'ZubCut must run as Administrator to enable Internet Connection Sharing. '
             'Close ZubCut, right-click the shortcut, choose Run as administrator, then try again.',
         )
-    purge_clumsy_stale_attack_blocks()
+    purge_clumsy_stale_attack_blocks(for_clumsy_enable=True)
     os.makedirs(DOCUMENTS_PATH, exist_ok=True)
     state_path = _STATE_PATH.replace('\\', '\\\\')
     script = _compose_ps_script(
@@ -1363,7 +1385,7 @@ catch {{
     ok, payload, raw = _run_powershell(script)
     if ok:
         return True, str(payload.get('message') or 'ICS sharing enabled.')
-    msg = str(payload.get('error') or '').strip() or raw.strip() or 'ICS enable failed.'
+    msg = str(payload.get('error') or '').strip() or str(raw or '').strip() or 'ICS enable failed.'
     _retry_main_wifi_sharing_for_hotspot()
     return False, msg
 
@@ -1555,7 +1577,7 @@ catch {{
     ok, payload, raw = _run_powershell(script)
     if ok:
         return True, str(payload.get('message') or 'Network sharing repair completed.')
-    msg = str(payload.get('error') or '').strip() or raw.strip() or 'Repair failed.'
+    msg = str(payload.get('error') or '').strip() or str(raw or '').strip() or 'Repair failed.'
     return False, msg
 
 
