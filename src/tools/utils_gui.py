@@ -316,7 +316,11 @@ def _chrome_status_strip_and_tabs_qss() -> str:
     else:
         mute, hi, hover = '#8b909a', '#e8eaed', '#aeb4bf'
     return f"""
-QLabel#lblleft, QLabel#lblcenter, QLabel#lblright {{
+QLabel#lblleft {{
+    background: transparent;
+    border: none;
+}}
+QLabel#lblcenter, QLabel#lblright {{
     background: transparent;
     border: none;
     color: {mute};

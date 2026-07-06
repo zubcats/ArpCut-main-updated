@@ -551,7 +551,7 @@ class LagSwitchDialog(FramelessResizableMixin, QDialog):
         if device['admin']:
             main.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
-        if main._toggle_start_blocked('lag'):
+        if main._toggle_start_blocked('lag', device):
             return
         lag_ms, normal_ms, direction = self.values()
         main.applyLagSwitchSettings(lag_ms, normal_ms, direction)
@@ -1101,7 +1101,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'Lag Switch — start/stop intermittent blocking for selected device. '
             'Timing/direction controls are always visible below. Shortcut: M.'
         )
-        self.btnLagSwitch.pressed.connect(lambda: self._shortcut_global_lag())
+        self.btnLagSwitch.pressed.connect(lambda: self._shortcut_global_lag(from_button=True))
         lag_font = QFont(self.btnLagSwitch.font())
         lag_font.setPointSize(13)
         lag_font.setBold(True)
@@ -1454,9 +1454,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             max_chars = 48
             elided = text if len(text) <= max_chars else (text[: max_chars - 1] + '\u2026')
         hex_color = log_color_to_hex(color)
-        pal = self.lblleft.palette()
-        pal.setColor(QPalette.WindowText, QColor(hex_color))
-        self.lblleft.setPalette(pal)
+        # Global QSS sets QLabel#lblleft color — palette alone is ignored; use inline color.
+        self.lblleft.setStyleSheet(
+            f'QLabel#lblleft {{ color: {hex_color}; background: transparent; border: none; }}'
+        )
         self.lblleft.setAutoFillBackground(False)
         self.lblleft.setText(elided)
 
@@ -2993,12 +2994,13 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # enforces connected(), selection, and admin the same for mouse and keyboard.
         self.toggleKill('shortcut_key')
 
-    def _shortcut_global_lag(self):
+    def _shortcut_global_lag(self, *, from_button: bool = False):
         """Lag toggle while app is foreground, regardless of active sub-window."""
-        if not self._app_window_is_foreground():
-            return
-        if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
-            return
+        if not from_button:
+            if not self._app_window_is_foreground():
+                return
+            if _focus_widget_absorbs_letter_key(QApplication.focusWidget()):
+                return
         if self.lag_active and self.lag_device_mac:
             lag_edge = 'stop'
             if self._ignore_duplicate_toggle_edge('lag', self.lag_device_mac, lag_edge):
@@ -3012,7 +3014,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if device['admin']:
             self.log('Cannot lag admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
-        if self._toggle_start_blocked('lag'):
+        if self._toggle_start_blocked('lag', device):
             return
         lag_edge = 'start'
         if self._ignore_duplicate_toggle_edge('lag', device['mac'], lag_edge):
@@ -3211,7 +3213,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not _is_valid_ip(device.get('ip') or ''):
             self.log('Target has no IP yet — cannot start lag.', 'red')
             return
-        if self._toggle_start_blocked('lag'):
+        if self._toggle_start_blocked('lag', device):
             return
         mac = device['mac']
         resolved_ip = self._ics_hotspot_victim_ip(device, lag=True) or clumsy_ics_resolve_victim_ip(
@@ -3296,22 +3298,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self.lag_device_mac = live_mac
                 if live_ip:
                     self.lag_device_ip = live_ip
-                mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(work_snap, ping_attempts=1)
-                if not mitm_ok:
-                    self.lag_active = False
-                    self.lag_device_mac = None
-                    self.lag_device_ip = None
-                    self._lag_device_snapshot = None
-                    self.btnLagSwitch.setText('Lag Switch')
-                    self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-                    self.log(f'Lag failed: {mitm_reason}', 'red')
-                    self._refresh_flow_toggle_ui()
-                    return
-                iface = self.scanner.iface
-                self.log(
-                    f'Lag via {iface.name} ({getattr(iface, "ip", "") or "?"}) → {work_snap.get("ip", "")}',
-                    'gray',
-                )
             except Exception as exc:
                 self.lag_active = False
                 self.lag_device_mac = None
@@ -3322,6 +3308,38 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.log(f'Lag failed: {exc}', 'red')
                 self._refresh_flow_toggle_ui()
                 return
+            self._clear_explicit_kill_for_flow(work_snap)
+            mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(work_snap, ping_attempts=1)
+            if not mitm_ok:
+                self.lag_active = False
+                self.lag_device_mac = None
+                self.lag_device_ip = None
+                self._lag_device_snapshot = None
+                self.btnLagSwitch.setText('Lag Switch')
+                self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+                self.log(f'Lag failed: {mitm_reason}', 'red')
+                self._refresh_flow_toggle_ui()
+                return
+            if not self._arm_victim_mitm_like_kill(work_snap, self.lag_direction, flow='Lag'):
+                self.lag_active = False
+                self.lag_device_mac = None
+                self.lag_device_ip = None
+                self._lag_device_snapshot = None
+                self._lag_net_prepared_mac = None
+                self.btnLagSwitch.setText('Lag Switch')
+                self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+                self.log('Lag failed: could not arm MITM — rescan target', 'red')
+                self._refresh_flow_toggle_ui()
+                return
+            self._lag_net_prepared_mac = work_mac
+            try:
+                iface = self.scanner.iface
+                self.log(
+                    f'Lag via {iface.name} ({getattr(iface, "ip", "") or "?"}) → {work_snap.get("ip", "")}',
+                    'gray',
+                )
+            except Exception:
+                pass
 
             if not self.lag_active or self.lag_device_mac != work_mac:
                 return
@@ -4576,7 +4594,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killer.disable_percent_cut(device['mac'])
         wait_after = 0.08 if fast_arm else 2
         if device['mac'] not in self.killer.killed:
-            self.killer.kill(device, wait_after=wait_after, traffic_cut=False)
+            self.killer.kill(device, wait_after=wait_after, traffic_cut=fast_arm)
         elif for_lag or for_dupe:
             # Mid-burst safety — reassert without bumping _op_seq (stale killed[] entry).
             self.killer.reassert_poison(device)
@@ -4836,8 +4854,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lblDupeCountdownMain.setVisible(False)
         self.lblDupeCountdownMain.setText('')
 
-    def _clear_explicit_kill_for_dupe(self, device) -> None:
-        """Drop Kill ON for this victim so Dupe can arm MITM (Kill and Dupe share ARP stack)."""
+    def _clear_explicit_kill_for_flow(self, device) -> None:
+        """Drop Kill ON for this victim so Lag/Dupe can arm MITM (shared ARP stack)."""
         if not isinstance(device, dict):
             return
         dev = self._device_with_plan_ip(dict(device))
@@ -4858,15 +4876,22 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._sync_killed_devices()
         self._updateKillButtonState()
 
-    def _arm_dupe_mitm_like_kill(self, device, direction: str) -> bool:
-        """LAN/hotspot Dupe burst — same traffic cut stack as explicit Kill ON."""
+    def _clear_explicit_kill_for_dupe(self, device) -> None:
+        self._clear_explicit_kill_for_flow(device)
+
+    def _arm_victim_mitm_like_kill(self, device, direction: str, *, flow: str = 'Kill') -> bool:
+        """LAN/hotspot MITM arm — same traffic-cut stack as explicit Kill ON."""
         device = self._device_with_plan_ip(dict(device))
         if self._uses_windivert(device):
-            ok = bool(self._apply_ics_client_block(device, direction, for_dupe=True))
+            ok = bool(
+                self._apply_ics_client_block(
+                    device, direction, for_dupe=(flow == 'Dupe'), for_lag=(flow == 'Lag')
+                )
+            )
             if not ok:
                 reason = clumsy_windivert_unavailable_reason(device)
                 self.log(
-                    f'Dupe on hotspot needs WinDivert (run ZubCut as Administrator). {reason}',
+                    f'{flow} on hotspot needs WinDivert (run ZubCut as Administrator). {reason}',
                     'red',
                 )
             return ok
@@ -4874,13 +4899,14 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not plan.use_arp_mitm:
             return False
         self._ensure_network_context_for_victim(device, fast=True)
-        self._sync_dupe_device_identity(device)
+        if flow == 'Dupe':
+            self._sync_dupe_device_identity(device)
         mac = str(device.get('mac') or '').strip()
         self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
         self.killer.disable_percent_cut(mac)
         mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device, ping_attempts=1)
         if not mitm_ok:
-            self.log(f'Dupe MITM blocked: {mitm_reason}', 'red')
+            self.log(f'{flow} MITM blocked: {mitm_reason}', 'red')
             return False
         if mac in self.killer.killed:
             self.killer.reassert_poison(device)
@@ -4899,12 +4925,27 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 iface_name = 'en0'
             _bg_block_ip(iface_name, device.get('ip'), direction)
-        self._log_mitm_arm_status(device, action='Dupe')
-        self._schedule_mitm_traffic_probe(device, flow='Dupe')
+            self.log(
+                f'{flow} ON (ARP+firewall) for {device.get("ip", "")} — '
+                'Npcap forwarder unavailable; check Wi‑Fi in Settings.',
+                UI_LOG_VICTIM_BLOCK_FG,
+            )
+        else:
+            try:
+                iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
+            except Exception:
+                iface_name = 'en0'
+            _bg_block_ip(iface_name, device.get('ip'), direction)
+            self.log(f'{flow} ON for {device.get("ip", "")}', UI_LOG_VICTIM_BLOCK_FG)
+        self._log_mitm_arm_status(device, action=flow)
+        self._schedule_mitm_traffic_probe(device, flow=flow)
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(mac, device.get('ip'))
         self._updateKillButtonState()
         return True
+
+    def _arm_dupe_mitm_like_kill(self, device, direction: str) -> bool:
+        return self._arm_victim_mitm_like_kill(device, direction, flow='Dupe')
 
     def _abort_dupe_stuck_without_arm(self) -> None:
         """DUPE UI latched but deferred apply never received a victim snapshot."""
@@ -5075,12 +5116,18 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         )
 
     def _lag_clear_block_only(self, device, direction: str | None = None) -> None:
-        """Allow phase on home LAN: drop firewall backstop, keep ARP worker warm."""
+        """Allow phase on home LAN: drop firewall backstop; resume forwarder pass-through."""
         device = self._device_with_plan_ip(device)
         ip = str(device.get('ip') or '').strip()
         if ip:
             _bg_unblock_ip(ip)
         _ = direction or getattr(self, 'lag_direction', 'both')
+        mac = str(device.get('mac') or '').strip()
+        if mac and mac in getattr(self.killer, 'killed', {}):
+            try:
+                self.killer.apply_percent_cut(device, pass_percent=100)
+            except Exception:
+                pass
 
     def _lag_apply_block_warm(self, device) -> bool:
         """Block phase while MITM is already armed — poison burst + firewall only."""
@@ -5091,6 +5138,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         direction = getattr(self, 'lag_direction', 'both')
         try:
             self.killer.reassert_poison(device)
+        except Exception:
+            pass
+        try:
+            self.killer._apply_traffic_cut_sync(device)
         except Exception:
             pass
         try:
@@ -5511,7 +5562,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.stop_mitm_shaping(log=False)
             if self.percent_cut_active:
                 self.stopPercentCut(log=False)
-            self._clear_explicit_kill_for_dupe(arm_device)
+            self._clear_explicit_kill_for_flow(arm_device)
             if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != dupe_gen:
                 return
             self._dupe_arm_device = dict(arm_device)
@@ -5791,12 +5842,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         active_kind = self._active_toggle_kind()
         if active_kind and active_kind != requested_kind:
             if (
-                requested_kind == 'dupe'
+                requested_kind in ('dupe', 'lag')
                 and active_kind == 'kill'
                 and device
                 and self._killed_profile_on(device)
             ):
-                # Deferred dupe arm clears Kill on this victim (same stack as Lag).
+                # Deferred lag/dupe arm clears Kill on this victim (shared ARP stack).
                 return False
             self.log(
                 f'{self._toggle_kind_label(active_kind)} is active. Turn it off first.',

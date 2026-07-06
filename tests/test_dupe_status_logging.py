@@ -34,10 +34,14 @@ class TestDupeStatusLogging(unittest.TestCase):
         self.assertIn('_log_dupe_restore_result', stop)
         apply_def = src[src.index('def _apply_dupe_deferred'): src.index('def _slot_finish_dupe_block', src.index('def _apply_dupe_deferred'))]
         self.assertIn('_arm_dupe_mitm_like_kill(dev, direction)', apply_def)
-        self.assertIn('traffic_cut=True', src[src.index('def _arm_dupe_mitm_like_kill'): src.index('def _abort_dupe_stuck_without_arm', src.index('def _arm_dupe_mitm_like_kill'))])
-        self.assertIn('_clear_explicit_kill_for_dupe', src)
+        self.assertIn('def _arm_victim_mitm_like_kill', src)
+        self.assertIn('traffic_cut=True', src[src.index('def _arm_victim_mitm_like_kill'): src.index('def _arm_dupe_mitm_like_kill', src.index('def _arm_victim_mitm_like_kill'))])
+        self.assertIn('_clear_explicit_kill_for_flow', src)
         self.assertIn('from_button: bool = False', src)
         self.assertIn('_shortcut_global_dupe(from_button=True)', src)
+        self.assertIn('_shortcut_global_lag(from_button=True)', src)
+        lag_def = src[src.index('def _lag_deferred_start'): src.index('def _lag_reassert_poison', src.index('def startLagSwitch'))]
+        self.assertIn('_arm_victim_mitm_like_kill(work_snap, self.lag_direction, flow=\'Lag\')', lag_def)
         mitm = src[src.index('def _log_mitm_arm_status'): src.index('def _ensure_network_context_for_victim', src.index('def _log_mitm_arm_status'))]
         self.assertIn('UI_LOG_VICTIM_BLOCK_FG', mitm)
         self.assertNotIn("'gray'", mitm)

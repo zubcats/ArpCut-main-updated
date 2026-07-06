@@ -28,7 +28,16 @@ class TestLogsWindowWiring(unittest.TestCase):
         self.assertIn('_on_status_log_context_menu', src)
         self.assertIn('Open Logs', src)
         self.assertIn('log_color_to_hex', src)
-        self.assertIn('setAutoFillBackground(False)', src)
+        self.assertIn('setStyleSheet', src[src.index('def _apply_status_strip_elide'): src.index('def log(self')])
+
+    def test_log_color_semantic_palette(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'logs_window.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('UI_LOG_VICTIM_BLOCK_FG', src)
+        self.assertIn('UI_LOG_RESTORE_FG', src)
+        self.assertIn("'ui_log_victim_block_fg'", src)
+        self.assertIn("'ui_log_restore_fg'", src)
 
     def test_logs_window_module(self) -> None:
         path = os.path.join(_SRC, 'gui', 'logs_window.py')

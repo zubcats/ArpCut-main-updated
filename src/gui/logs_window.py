@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from constants import APP_DISPLAY_NAME
+from constants import APP_DISPLAY_NAME, UI_LOG_RESTORE_FG, UI_LOG_VICTIM_BLOCK_FG
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
 from tools.utils_gui import register_window_surface_effects
 
@@ -40,9 +40,10 @@ class LogEntry:
 
 
 def log_color_to_hex(color: str) -> str:
-    c = str(color or 'white').strip().lower()
-    if c.startswith('#') and len(c) in (4, 7, 9):
-        return c
+    c = str(color or 'white').strip()
+    lowered = c.lower()
+    if lowered.startswith('#') and len(lowered) in (4, 7, 9):
+        return lowered
     return {
         'white': '#e8e8e8',
         'red': '#e06060',
@@ -51,7 +52,9 @@ def log_color_to_hex(color: str) -> str:
         'green': '#43b581',
         'yellow': '#f0c040',
         'aqua': '#5ec4c4',
-    }.get(c, c if c.startswith('#') else '#e8e8e8')
+        'ui_log_victim_block_fg': UI_LOG_VICTIM_BLOCK_FG.lower(),
+        'ui_log_restore_fg': UI_LOG_RESTORE_FG.lower(),
+    }.get(lowered, lowered if lowered.startswith('#') else '#e8e8e8')
 
 
 class LogsWindow(FramelessResizableMixin, QMainWindow):
