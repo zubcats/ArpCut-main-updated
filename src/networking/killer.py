@@ -18,6 +18,7 @@ from tools.utils import (
     mac_address_is_usable,
     lookup_mac_from_arp_table,
     victim_endpoint_live_for_mitm,
+    _lan_neighbor_mac_via_arp_probe,
     npcap_iface_tokens,
 )
 from constants import *
@@ -251,11 +252,25 @@ class Killer:
             return False, 'router MAC unknown (ping gateway, check Npcap)'
         if not mac_address_is_usable(getattr(self.iface, 'mac', None)):
             return False, 'PC adapter MAC unknown'
+        self._refresh_victim_mac_from_cache(victim)
+        iface_guid = ''
+        try:
+            iface_guid = str(
+                getattr(self.iface, 'guid', None) or getattr(self.iface, 'name', None) or ''
+            ).strip()
+        except Exception:
+            iface_guid = ''
+        victim_ip = str(victim.get('ip') or '').strip()
+        if victim_ip and iface_guid:
+            probed = _lan_neighbor_mac_via_arp_probe(victim_ip, iface_guid)
+            if mac_address_is_usable(probed):
+                victim['mac'] = probed
         live_ok, live_reason = victim_endpoint_live_for_mitm(
             victim.get('ip'),
             victim.get('mac'),
             getattr(self.iface, 'ip', None),
             ping_attempts=max(1, int(ping_attempts)),
+            arp_probe_iface=iface_guid or None,
         )
         if not live_ok:
             return False, live_reason

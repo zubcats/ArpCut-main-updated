@@ -4950,7 +4950,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             _bg_block_ip(iface_name, device.get('ip'), direction)
             self.log(
                 f'{flow} ON (ARP+firewall) for {device.get("ip", "")} — '
-                'Npcap forwarder unavailable; check Wi‑Fi in Settings.',
+                'Npcap forwarder unavailable; ARP+firewall still active.',
                 UI_LOG_VICTIM_BLOCK_FG,
             )
         else:
@@ -7011,18 +7011,27 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                             )
                     else:
                         _mark('lan_start')
-                        self._ensure_network_context_for_victim(device, fast=True)
+                        self._ensure_network_context_for_victim(device, fast=False)
                         mac = str(device.get('mac') or mac).strip() or mac
                         _mark('lan_ensure_net_done')
                         self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
                         self.killer.disable_percent_cut(mac)
                         _mark('lan_disable_pctcut_done')
-                        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device, ping_attempts=1)
+                        self._refresh_victim_mac_from_system_arp(device)
+                        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device, ping_attempts=3)
                         if not mitm_ok:
                             self.log(
                                 f'Kill ON failed: {mitm_reason}',
                                 'red',
                             )
+                            lip = str(device.get('ip') or '').strip()
+                            lmac = str(device.get('mac') or '').strip()
+                            if lip or lmac:
+                                self.log(
+                                    f'Kill target checked: {lip or "?"} ({lmac or "no MAC"}) — '
+                                    'if that is not your PS5 right now, rescan and select the live row.',
+                                    UI_LOG_RESTORE_FG,
+                                )
                             kill_applied = False
                         else:
                             self.killer.kill(device, wait_after=0.08)
@@ -7045,7 +7054,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                                 self.log(
                                     'Kill ON (ARP+firewall) for '
                                     + str(device.get('ip') or '')
-                                    + ' — Npcap forwarder unavailable; check Wi‑Fi in Settings.',
+                                    + ' — Npcap forwarder unavailable; ARP+firewall still active.',
                                     UI_LOG_VICTIM_BLOCK_FG,
                                 )
                                 kill_applied = True

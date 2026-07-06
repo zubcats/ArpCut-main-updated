@@ -54,6 +54,45 @@ class TestVictimEndpointLive(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(reason, "")
 
+    def test_scapy_arp_probe_when_ping_and_cache_empty(self) -> None:
+        wifi_mac = "DC:E9:94:AB:E6:C4"
+        with (
+            mock.patch("tools.utils.ipv4_ping_reachable", return_value=False),
+            mock.patch("tools.utils.lookup_mac_from_arp_table", return_value=""),
+            mock.patch(
+                "tools.utils._lan_neighbor_mac_via_arp_probe", return_value=wifi_mac
+            ),
+            mock.patch("tools.utils.lookup_ip_from_arp_table", return_value="192.168.1.165"),
+        ):
+            ok, reason = victim_endpoint_live_for_mitm(
+                "192.168.1.165",
+                wifi_mac,
+                "192.168.1.56",
+                arp_probe_iface="iface-guid",
+            )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+
+    def test_arp_probe_accepts_stale_scan_mac(self) -> None:
+        wifi_mac = "DC:E9:94:AB:E6:C4"
+        stale_mac = "00:E4:21:44:ED:0C"
+        with (
+            mock.patch("tools.utils.ipv4_ping_reachable", return_value=False),
+            mock.patch("tools.utils.lookup_mac_from_arp_table", return_value=""),
+            mock.patch(
+                "tools.utils._lan_neighbor_mac_via_arp_probe", return_value=wifi_mac
+            ),
+            mock.patch("tools.utils.lookup_ip_from_arp_table", return_value=""),
+        ):
+            ok, reason = victim_endpoint_live_for_mitm(
+                "192.168.1.165",
+                stale_mac,
+                "192.168.1.56",
+                arp_probe_iface="iface-guid",
+            )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+
     def test_moved_device_hint_when_mac_has_new_ip(self) -> None:
         eth_mac = "00:E4:21:44:ED:0C"
         with (

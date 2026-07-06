@@ -304,6 +304,28 @@ def get_gateway_mac(iface_ip, router_ip):
     return GLOBAL_MAC
 
 
+def _lan_neighbor_mac_via_arp_probe(ip: str, iface_guid: str | None = None) -> str:
+    """Layer-2 ARP who-has when ICMP is silent (PS5 often blocks ping but answers ARP)."""
+    ip = str(ip or '').strip()
+    if not ip or not _ipv4_valid(ip):
+        return ''
+    try:
+        from scapy.all import arping
+
+        kwargs: dict = {'timeout': 2, 'verbose': 0}
+        if iface_guid:
+            kwargs['iface'] = str(iface_guid)
+        ans = arping(f'{ip}/32', **kwargs)
+        rows = ans[0] if ans else []
+        for _sent, rcv in rows:
+            mac = good_mac(str(getattr(rcv, 'src', '') or ''))
+            if mac_address_is_usable(mac):
+                return mac
+    except Exception:
+        pass
+    return ''
+
+
 def lookup_mac_from_arp_table(ip: str, iface_ip: str | None = None) -> str:
     """
     Read the Windows/macOS ARP cache for ``ip`` without Scapy (fast, no 4s timeout).
@@ -374,7 +396,12 @@ def ipv4_ping_reachable(ip: str, *, timeout_ms: int = 500, attempts: int = 1) ->
 
 
 def victim_endpoint_live_for_mitm(
-    ip: str, expected_mac: str, iface_ip: str | None = None, *, ping_attempts: int = 3
+    ip: str,
+    expected_mac: str,
+    iface_ip: str | None = None,
+    *,
+    ping_attempts: int = 3,
+    arp_probe_iface: str | None = None,
 ) -> tuple[bool, str]:
     """
     PS5 Ethernet vs Wi‑Fi rows use different MACs — do not MITM a ghost favorite IP.
@@ -399,16 +426,23 @@ def victim_endpoint_live_for_mitm(
         )
 
     ping_tries = max(1, int(ping_attempts))
-    ping_wait = 300 if ping_tries <= 1 else 500
+    ping_wait = 500 if ping_tries <= 1 else 600
     if not ipv4_ping_reachable(ip, attempts=ping_tries, timeout_ms=ping_wait):
         arp_mac = lookup_mac_from_arp_table(ip, iface_ip)
-        if (
-            expected_mac
-            and mac_address_is_usable(arp_mac)
-            and arp_mac == expected_mac
-            and (not live_ip or live_ip == ip)
-        ):
-            return True, ''
+        from_probe = False
+        if not mac_address_is_usable(arp_mac) and arp_probe_iface:
+            probed = _lan_neighbor_mac_via_arp_probe(ip, arp_probe_iface)
+            if mac_address_is_usable(probed):
+                arp_mac = probed
+                from_probe = True
+        if mac_address_is_usable(arp_mac):
+            if live_ip and live_ip != ip:
+                return (
+                    False,
+                    f'{ip} is offline — this device is now at {live_ip}. Rescan and use that row.',
+                )
+            if from_probe or not expected_mac or arp_mac == expected_mac:
+                return True, ''
         if live_ip and live_ip != ip:
             return (
                 False,
@@ -416,8 +450,8 @@ def victim_endpoint_live_for_mitm(
             )
         return (
             False,
-            f'{ip} did not answer ping — wake the PS5, rescan, and pick the live row '
-            f'(Settings Wi‑Fi is OK if ipconfig matches Me).',
+            f'{ip} did not answer ping — wake the PS5 (not Rest Mode), run Arp Scan, '
+            f'and select the PlayStation row for that IP.',
         )
     arp_mac = lookup_mac_from_arp_table(ip, iface_ip)
     if mac_address_is_usable(arp_mac) and expected_mac and arp_mac != expected_mac:
