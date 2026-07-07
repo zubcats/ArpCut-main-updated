@@ -2515,11 +2515,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
 
         if self._uses_windivert(device):
+            device = self._prepare_victim_for_impairment(device, fast=True)
             if not self._apply_victim_block(device, 'both'):
                 return
             self._set_killed_profile(device, True)
         else:
-            self._ensure_network_context_for_victim(device)
+            self._prepare_victim_for_impairment(device, fast=False)
             self.killer.kill(device)
             try:
                 iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
@@ -2597,9 +2598,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if d.get('admin'):
                 continue
             if self._uses_windivert(d):
-                self._apply_victim_block(d, 'both')
-                self._set_killed_profile(d, True)
+                prepared = self._prepare_victim_for_impairment(d, fast=True)
+                self._apply_victim_block(prepared, 'both')
+                self._set_killed_profile(prepared, True)
             else:
+                self._prepare_victim_for_impairment(d, fast=False)
                 self.killer.kill(d)
                 try:
                     iface = self.scanner.iface.name if self.scanner.iface else 'en0'
@@ -3280,8 +3283,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             work_dev = dict(device)
             work_snap = dict(snap)
             try:
-                self._ensure_network_context_for_victim(work_snap, fast=True)
-                self._refresh_victim_mac_from_system_arp(work_snap)
+                work_snap = self._prepare_victim_for_impairment(work_snap, fast=True)
+                plan = self._impairment_plan_for(work_snap)
+                if not plan.use_windivert:
+                    self._refresh_victim_mac_from_system_arp(work_snap)
                 live_mac = str(work_snap.get('mac') or '').strip()
                 live_ip = str(work_snap.get('ip') or '').strip()
                 if live_mac:
@@ -3300,17 +3305,19 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._refresh_flow_toggle_ui()
                 return
             self._clear_explicit_kill_for_flow(work_snap)
-            mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(work_snap, ping_attempts=1)
-            if not mitm_ok:
-                self.lag_active = False
-                self.lag_device_mac = None
-                self.lag_device_ip = None
-                self._lag_device_snapshot = None
-                self.btnLagSwitch.setText('Lag Switch')
-                self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-                self.log(f'Lag failed: {mitm_reason}', 'red')
-                self._refresh_flow_toggle_ui()
-                return
+            plan = self._impairment_plan_for(work_snap)
+            if not plan.use_windivert:
+                mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(work_snap, ping_attempts=1)
+                if not mitm_ok:
+                    self.lag_active = False
+                    self.lag_device_mac = None
+                    self.lag_device_ip = None
+                    self._lag_device_snapshot = None
+                    self.btnLagSwitch.setText('Lag Switch')
+                    self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+                    self.log(f'Lag failed: {mitm_reason}', 'red')
+                    self._refresh_flow_toggle_ui()
+                    return
             if not self._arm_victim_mitm_like_kill(work_snap, self.lag_direction, flow='Lag'):
                 self.lag_active = False
                 self.lag_device_mac = None
@@ -3760,6 +3767,22 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
         return dev
 
+    def _prepare_victim_for_impairment(self, device, *, fast: bool = True) -> dict:
+        """
+        Unified prep before Kill/Lag/Dupe/Cut/Advanced: hotspot binds the ICS
+        downstream NIC and resolves the live client IP; home LAN resolves the victim
+        on the correct adapter.
+        """
+        dev = dict(device) if isinstance(device, dict) else {}
+        if not dev.get('ip'):
+            return dev
+        plan = self._impairment_plan_for(dev)
+        if clumsy_mode_enabled() and plan.is_ics_downstream:
+            prepared = self._prepare_ics_victim_context(dev)
+            return prepared if isinstance(prepared, dict) and prepared else dev
+        self._ensure_network_context_for_victim(dev, fast=fast)
+        return dev
+
     def _reconcile_network_adapter(self, *, log: bool = True) -> None:
         """Keep Me/Router rows aligned with the Settings network adapter."""
         try:
@@ -3788,7 +3811,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         plan = self._impairment_plan_for(device)
         if clumsy_mode_enabled() and plan.is_ics_downstream:
             try:
-                prepared = self._prepare_ics_victim_context(device)
+                prepared = self._prepare_victim_for_impairment(device, fast=fast)
                 if isinstance(prepared, dict) and prepared:
                     old_ip = str(device.get('ip') or '').strip()
                     device.clear()
@@ -4020,7 +4043,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _ics_apply_percent_cut_windivert(self, device, cut_pct: int) -> bool:
         """Hotspot / ethernet-console partial cut via WinDivert (byte budget, not pause / Kill)."""
-        device = self._device_with_plan_ip(self._ics_device_with_resolved_ip(device))
+        device = self._prepare_victim_for_impairment(
+            self._device_with_plan_ip(self._ics_device_with_resolved_ip(device)),
+            fast=True,
+        )
         ip = self._ics_hotspot_victim_ip(device, pctcut=True)
         if not ip:
             return False
@@ -4055,7 +4081,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         cd_mbps: float,
     ) -> bool:
         """ICS downstream Advanced Lag via WinDivert (not pause / Kill / MITM forwarder)."""
-        device = self._device_with_plan_ip(self._ics_device_with_resolved_ip(device))
+        device = self._prepare_victim_for_impairment(
+            self._device_with_plan_ip(self._ics_device_with_resolved_ip(device)),
+            fast=True,
+        )
         ip = self._ics_hotspot_victim_ip(device, mitmshape=True)
         if not ip:
             return False
@@ -4313,7 +4342,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if gate.packets_seen > 0 or gate.packets_matched > 0:
             return False
         try:
-            prepared = self._prepare_ics_victim_context(device)
+            prepared = self._prepare_victim_for_impairment(device, fast=True)
             new_ip = str(prepared.get('ip') or ip).strip()
             if not new_ip:
                 return False
@@ -4378,6 +4407,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return False
         if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
             return False
+        if isinstance(device, dict):
+            device = self._prepare_victim_for_impairment(device, fast=True)
+            plan = self._impairment_plan_for(device)
         ip = self._ics_hotspot_victim_ip(
             device,
             lag=getattr(self, 'lag_active', False),
@@ -4452,7 +4484,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         plan = self._impairment_plan_for(device)
         if not plan.is_ics_downstream:
             return False
-        device = self._prepare_ics_victim_context(self._ics_device_with_resolved_ip(device))
+        device = self._prepare_victim_for_impairment(self._ics_device_with_resolved_ip(device), fast=True)
         ip = self._ics_hotspot_victim_ip(
             device,
             lag=for_lag,
@@ -5079,7 +5111,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if use_windivert:
             from tools.clumsy_inline import victim_on_clumsy_ics_subnet
 
-            device = self._prepare_ics_victim_context(device)
+            device = self._prepare_victim_for_impairment(device, fast=True)
             plan = self._impairment_plan_for(device)
             ip = str(device.get('ip') or plan.resolved_ip or '').strip()
             if not (ip and victim_on_clumsy_ics_subnet(ip)):
@@ -5206,11 +5238,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         block_dir = 'both'
         try:
-            plan = self._impairment_plan_for(dev)
-            if plan.is_ics_downstream:
-                dev = self._prepare_ics_victim_context(dev)
-            else:
-                self._ensure_network_context_for_victim(dev, fast=True)
+            dev = self._prepare_victim_for_impairment(dev, fast=True)
             if not self._arm_victim_mitm_like_kill(dev, block_dir, flow='Dupe'):
                 raise RuntimeError(
                     'Dupe block failed — rescan, pick Wi‑Fi in Settings if PC is on Wi‑Fi'
@@ -5667,24 +5695,33 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 merged['ip'] = sip
         if merged:
             try:
-                from tools.utils import resolve_live_lan_victim
+                plan = self._impairment_plan_for(merged)
+                if clumsy_mode_enabled() and plan.is_ics_downstream:
+                    prepared = self._prepare_victim_for_impairment(merged, fast=True)
+                    if isinstance(prepared, dict) and prepared:
+                        merged = dict(prepared)
+                        new_ip = str(merged.get('ip') or '').strip()
+                        if new_ip and self.lag_active:
+                            self.lag_device_ip = new_ip
+                else:
+                    from tools.utils import resolve_live_lan_victim
 
-                iface_ip = str(getattr(self.scanner.iface, 'ip', None) or '').strip()
-                resolved, hint = resolve_live_lan_victim(
-                    merged,
-                    getattr(self.scanner, 'devices', None) or [],
-                    iface_ip,
-                    ping_attempts=1,
-                )
-                if isinstance(resolved, dict):
-                    merged = dict(resolved)
-                    new_mac = str(merged.get('mac') or '').strip()
-                    if new_mac and new_mac != mac and self.lag_active:
-                        self.lag_device_mac = new_mac
-                        self.lag_device_ip = merged.get('ip')
-                        self._lag_net_prepared_mac = None
-                    if hint and self.lag_active:
-                        self.log(hint, UI_LOG_VICTIM_BLOCK_FG)
+                    iface_ip = str(getattr(self.scanner.iface, 'ip', None) or '').strip()
+                    resolved, hint = resolve_live_lan_victim(
+                        merged,
+                        getattr(self.scanner, 'devices', None) or [],
+                        iface_ip,
+                        ping_attempts=1,
+                    )
+                    if isinstance(resolved, dict):
+                        merged = dict(resolved)
+                        new_mac = str(merged.get('mac') or '').strip()
+                        if new_mac and new_mac != mac and self.lag_active:
+                            self.lag_device_mac = new_mac
+                            self.lag_device_ip = merged.get('ip')
+                            self._lag_net_prepared_mac = None
+                        if hint and self.lag_active:
+                            self.log(hint, UI_LOG_VICTIM_BLOCK_FG)
             except Exception:
                 pass
         return merged
@@ -6053,11 +6090,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if dev:
                 try:
                     if self._uses_windivert(dev):
+                        dev = self._prepare_victim_for_impairment(dict(dev), fast=True)
                         self._ics_apply_percent_cut_windivert(dev, pct)
                     else:
                         allow_pct = max(0, 100 - pct)
-                        dev = dict(dev)
-                        self._ensure_network_context_for_victim(dev)
+                        dev = self._prepare_victim_for_impairment(dict(dev), fast=True)
                         self._refresh_victim_mac_from_system_arp(dev)
                         self.percent_cut_device_mac = dev.get('mac')
                         if not self.killer.apply_percent_cut(dev, pass_percent=allow_pct):
@@ -6388,6 +6425,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     )
                     self._refresh_flow_toggle_ui()
                     return
+                device = self._prepare_victim_for_impairment(dict(device), fast=True)
                 if not self._ics_apply_percent_cut_windivert(device, pct):
                     self.percent_cut_active = False
                     self.percent_cut_device_mac = None
@@ -6400,8 +6438,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     return
                 resolved_ip = self._ics_hotspot_victim_ip(device, pctcut=True)
             else:
-                device = dict(device)
-                self._ensure_network_context_for_victim(device, fast=True)
+                device = self._prepare_victim_for_impairment(dict(device), fast=True)
                 self._refresh_victim_mac_from_system_arp(device)
                 mac = str(device.get('mac') or '').strip()
                 self.percent_cut_device_mac = mac
@@ -7200,7 +7237,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         self.log('Target has no IP yet — enable sharing and rescan.', 'red')
                     elif self._uses_windivert(device):
                         _mark('windivert_start')
-                        device = self._prepare_ics_victim_context(device)
+                        device = self._prepare_victim_for_impairment(device, fast=True)
                         kill_applied = bool(self._apply_victim_block(device, 'both'))
                         _mark('windivert_done')
                         if kill_applied:
