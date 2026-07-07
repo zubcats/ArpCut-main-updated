@@ -3726,6 +3726,40 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if mac:
             getattr(self, '_mitm_probe_retried_macs', set()).discard(str(mac).strip())
 
+    def _prepare_ics_victim_context(self, device) -> dict:
+        """
+        Bind the ICS downstream NIC (Mobile Hotspot / console Ethernet) and resolve
+        the live 192.168.137.x (or ICS) IP before WinDivert or ICS-ARP impairment.
+        """
+        dev = self._device_with_plan_ip(dict(device) if isinstance(device, dict) else {})
+        if not isinstance(dev, dict):
+            return {}
+        from tools.clumsy_inline import (
+            apply_clumsy_ics_router_context,
+            clumsy_ics_resolve_victim_ip,
+            sync_scanner_iface_for_ics_downstream,
+        )
+
+        try:
+            sync_scanner_iface_for_ics_downstream(self.scanner)
+        except Exception:
+            pass
+        plan = self._impairment_plan_for(dev)
+        rip = (
+            clumsy_ics_resolve_victim_ip(dev, self.scanner)
+            or plan.resolved_ip
+            or str(dev.get('ip') or '').strip()
+        )
+        if rip:
+            dev['ip'] = rip
+        try:
+            apply_clumsy_ics_router_context(self.scanner, self.killer, dev.get('ip'))
+        except Exception:
+            pass
+        self.killer.iface = self.scanner.iface
+        self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
+        return dev
+
     def _reconcile_network_adapter(self, *, log: bool = True) -> None:
         """Keep Me/Router rows aligned with the Settings network adapter."""
         try:
@@ -3751,6 +3785,23 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         if not device or not device.get('ip'):
             return False
+        plan = self._impairment_plan_for(device)
+        if clumsy_mode_enabled() and plan.is_ics_downstream:
+            try:
+                prepared = self._prepare_ics_victim_context(device)
+                if isinstance(prepared, dict) and prepared:
+                    old_ip = str(device.get('ip') or '').strip()
+                    device.clear()
+                    device.update(prepared)
+                    new_ip = str(device.get('ip') or '').strip()
+                    if new_ip and new_ip != old_ip:
+                        self.log(
+                            f'Hotspot target resolved to {new_ip} for impairment.',
+                            UI_LOG_VICTIM_BLOCK_FG,
+                        )
+            except Exception:
+                pass
+            return True
         try:
             from tools.utils import resolve_live_lan_victim
 
@@ -4229,6 +4280,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             layers = gate.active_layers or ()
             seen = gate.packets_seen
             arp_active = bool(mac and mac in self.killer.killed)
+            if seen == 0 and isinstance(dev, dict) and self._retry_ics_windivert_capture(dev, ip):
+                return
             if seen == 0 and not arp_active:
                 self.log(
                     f'WinDivert sees no traffic for {ip} (layers {layers}). '
@@ -4242,6 +4295,48 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 )
 
         QTimer.singleShot(4000, _check)
+
+    def _retry_ics_windivert_capture(self, device, ip: str) -> bool:
+        """Re-resolve hotspot IP + reopen WinDivert when the gate sees zero packets."""
+        ip = str(ip or '').strip()
+        if not ip or not isinstance(device, dict):
+            return False
+        retried = getattr(self, '_ics_wd_retry_ips', None)
+        if retried is None:
+            retried = set()
+            self._ics_wd_retry_ips = retried
+        if ip in retried:
+            return False
+        gate = getattr(self, '_ics_lag_gate', None)
+        if gate is None or not gate.is_running():
+            return False
+        if gate.packets_seen > 0 or gate.packets_matched > 0:
+            return False
+        try:
+            prepared = self._prepare_ics_victim_context(device)
+            new_ip = str(prepared.get('ip') or ip).strip()
+            if not new_ip:
+                return False
+            retried.add(ip)
+            if new_ip != ip:
+                retried.add(new_ip)
+            self._stop_ics_lag_gate(join_timeout=0.35)
+            if self._ensure_ics_lag_gate(prepared, 'both', start_paused=True):
+                g = self._ics_lag_gate
+                if g is not None:
+                    if hasattr(g, 'pause_connection'):
+                        g.pause_connection()
+                    else:
+                        g.set_blocking(True, mode='pause')
+            self.log(
+                f'Hotspot Kill: WinDivert saw no traffic for {ip} — retried on '
+                f'{new_ip} ({getattr(self.scanner.iface, "name", "?") or "?"})',
+                UI_LOG_VICTIM_BLOCK_FG,
+            )
+            self._schedule_ics_windivert_traffic_check(new_ip)
+            return True
+        except Exception:
+            return False
 
     def _flow_stable_victim_ip(
         self,
@@ -4357,7 +4452,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         plan = self._impairment_plan_for(device)
         if not plan.is_ics_downstream:
             return False
-        device = self._device_with_plan_ip(self._ics_device_with_resolved_ip(device))
+        device = self._prepare_ics_victim_context(self._ics_device_with_resolved_ip(device))
         ip = self._ics_hotspot_victim_ip(
             device,
             lag=for_lag,
@@ -4984,14 +5079,19 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if use_windivert:
             from tools.clumsy_inline import victim_on_clumsy_ics_subnet
 
+            device = self._prepare_ics_victim_context(device)
+            plan = self._impairment_plan_for(device)
             ip = str(device.get('ip') or plan.resolved_ip or '').strip()
             if not (ip and victim_on_clumsy_ics_subnet(ip)):
-                use_windivert = False
-                self.log(
-                    f'{flow}: {ip or "?"} is on home LAN — using ARP MITM '
-                    '(PS5 left hotspot / using router Wi‑Fi).',
-                    UI_LOG_RESTORE_FG,
-                )
+                if plan.is_ics_downstream and ip:
+                    pass
+                else:
+                    use_windivert = False
+                    self.log(
+                        f'{flow}: {ip or "?"} is on home LAN — using ARP MITM '
+                        '(PS5 left hotspot / using router Wi‑Fi).',
+                        UI_LOG_RESTORE_FG,
+                    )
         if use_windivert:
             ok = bool(
                 self._apply_ics_client_block(
@@ -5106,7 +5206,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         block_dir = 'both'
         try:
-            self._ensure_network_context_for_victim(dev, fast=True)
+            plan = self._impairment_plan_for(dev)
+            if plan.is_ics_downstream:
+                dev = self._prepare_ics_victim_context(dev)
+            else:
+                self._ensure_network_context_for_victim(dev, fast=True)
             if not self._arm_victim_mitm_like_kill(dev, block_dir, flow='Dupe'):
                 raise RuntimeError(
                     'Dupe block failed — rescan, pick Wi‑Fi in Settings if PC is on Wi‑Fi'
@@ -7096,6 +7200,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         self.log('Target has no IP yet — enable sharing and rescan.', 'red')
                     elif self._uses_windivert(device):
                         _mark('windivert_start')
+                        device = self._prepare_ics_victim_context(device)
                         kill_applied = bool(self._apply_victim_block(device, 'both'))
                         _mark('windivert_done')
                         if kill_applied:
