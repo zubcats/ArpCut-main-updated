@@ -36,7 +36,10 @@ class TestDupeStatusLogging(unittest.TestCase):
         self.assertIn('def _run_dupe_arm_command', src)
         self.assertIn('_schedule_dupe_arm_command(device, direction, dupe_gen)', src)
         self.assertIn('Arming…', src)
-        self.assertIn('def _retry_mitm_on_arp_iface', src)
+        self.assertIn('plan.is_ics_downstream', src)
+        self.assertIn('Hotspot target resolved', src)
+        self.assertIn('def _prepare_ics_victim_context', src)
+        self.assertIn('def _retry_ics_windivert_capture', src)
         self.assertNotIn(
             'killer.killed',
             src[src.index('def _dupe_arm_watchdog'): src.index('QTimer.singleShot(400, _dupe_arm_watchdog)', src.index('def _dupe_arm_watchdog'))],
