@@ -65,7 +65,9 @@ class TestDupeStatusLogging(unittest.TestCase):
         self.assertIn('def quit_all', src)
         quit_body = src[src.index('def quit_all'): src.index('def showEvent', src.index('def quit_all'))]
         self.assertIn('_shutting_down = True', quit_body)
-        self.assertNotIn('_arm_dupe_burst_wall_clock()', src[src.index('def startDupe'): src.index('def dupe_remaining_ms', src.index('def startDupe'))])
+        self.assertNotIn('_arm_dupe_burst_wall_clock()', src[src.index('def _run_dupe_arm_command'): src.index('def _apply_dupe_deferred')])
+        start = src[src.index('def startDupe'): src.index('def dupe_remaining_ms', src.index('def startDupe'))]
+        self.assertIn('_arm_dupe_burst_wall_clock()', start)
 
 
 if __name__ == '__main__':

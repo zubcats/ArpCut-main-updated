@@ -82,6 +82,7 @@ class TestLagCountdown(unittest.TestCase):
             'Tick must call into a phase-advance helper at rem <= 0',
         )
         self.assertIn('rem <= 0', tick)
+        self.assertIn('_lag_request_phase_advance', tick)
         self.assertNotIn('_lag_phase_end_timer_fired()', tick)
 
     def test_phase_advance_deferred_not_recursive(self) -> None:
