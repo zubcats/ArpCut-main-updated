@@ -35,6 +35,12 @@ class TestDupeStatusLogging(unittest.TestCase):
         self.assertIn('def _schedule_dupe_arm_command', src)
         self.assertIn('def _run_dupe_arm_command', src)
         self.assertIn('_schedule_dupe_arm_command(device, direction, dupe_gen)', src)
+        self.assertIn('Arming…', src)
+        self.assertIn('def _retry_mitm_on_arp_iface', src)
+        self.assertNotIn(
+            'killer.killed',
+            src[src.index('def _dupe_arm_watchdog'): src.index('QTimer.singleShot(400, _dupe_arm_watchdog)', src.index('def _dupe_arm_watchdog'))],
+        )
         self.assertIn('Dupe arming MITM', src)
         self.assertIn('def _arm_victim_mitm_like_kill', src)
         self.assertIn('traffic_cut=True', src[src.index('def _arm_victim_mitm_like_kill'): src.index('def _arm_dupe_mitm_like_kill', src.index('def _arm_victim_mitm_like_kill'))])

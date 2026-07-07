@@ -55,7 +55,9 @@ def format_countdown_ms(left_ms):
         return f'Time left: {m}:{s:02d}'
     if left_ms >= 1000:
         return f'Time left: {(left_ms + 999) // 1000} s'
-    return f'Time left: {left_ms / 1000.0:.1f} s'
+    if left_ms <= 0:
+        return 'Time left: 0 s'
+    return 'Time left: <1 s'
 
 
 from tools.frameless_chrome import (
@@ -1006,6 +1008,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_dlg_refresh_mono = 0.0
         self._dupe_net_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='dupe_net')
         self._dupe_end_mono = None  # wall deadline for countdown (set when block_ip finishes)
+        self._mitm_probe_retried_macs: set[str] = set()
         self._idle_mitm_reconcile_timer = QTimer(self)
         self._idle_mitm_reconcile_timer.setInterval(20000)
         self._idle_mitm_reconcile_timer.timeout.connect(
@@ -3633,13 +3636,17 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             if seen != 0:
                 return
-            msg = mitm_path_warning(iface, ip)
 
-            def _log_warning() -> None:
+            def _on_main() -> None:
+                if mac not in getattr(self.killer, 'killed', {}):
+                    return
+                if self._retry_mitm_on_arp_iface(device, mac, ip, flow):
+                    return
+                msg = mitm_path_warning(iface, ip)
                 self.log(f'{flow}: {msg}', 'red')
 
             try:
-                QTimer.singleShot(0, _log_warning)
+                QTimer.singleShot(0, _on_main)
             except Exception:
                 pass
 
@@ -3649,6 +3656,75 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             ).start()
         except Exception:
             pass
+
+    def _retry_mitm_on_arp_iface(self, device, mac: str, ip: str, flow: str) -> bool:
+        """
+        When MITM is armed but no packets arrive, rebind to the NIC whose ARP cache
+        lists the victim (common when Settings points at Ethernet but PS5 is on Wi‑Fi).
+        """
+        if not isinstance(device, dict) or not mac or not ip:
+            return False
+        if mac in getattr(self, '_mitm_probe_retried_macs', set()):
+            return False
+        if mac not in getattr(self.killer, 'killed', {}):
+            return False
+        try:
+            from tools.utils import (
+                _iface_live_ipv4,
+                _parse_windows_arp_by_interface,
+                get_ifaces_cached,
+            )
+
+            by_iface = _parse_windows_arp_by_interface()
+            if not by_iface:
+                return False
+            current_guid = str(getattr(getattr(self.scanner, 'iface', None), 'guid', '') or '')
+            target = None
+            for iface in get_ifaces_cached():
+                lip = _iface_live_ipv4(iface)
+                if not lip or ip not in by_iface.get(lip, set()):
+                    continue
+                if str(iface.guid) == current_guid:
+                    return False
+                target = iface
+                break
+            if target is None:
+                return False
+            self.scanner.iface = target
+            try:
+                from tools.utils import refresh_netface_live_ip
+
+                refresh_netface_live_ip(self.scanner.iface)
+            except Exception:
+                pass
+            self._ensure_network_context_for_victim(device, fast=False)
+            self.killer.iface = self.scanner.iface
+            self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
+            self.killer.reassert_poison(device)
+            try:
+                self.killer._apply_traffic_cut_sync(device)
+            except Exception:
+                pass
+            try:
+                iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
+            except Exception:
+                iface_name = 'en0'
+            _bg_block_ip(iface_name, ip, 'both')
+            label = getattr(self.scanner.iface, 'name', None) or '?'
+            self._mitm_probe_retried_macs.add(mac)
+            self.log(
+                f'{flow}: no traffic on prior adapter — retried MITM via {label} '
+                f'({getattr(self.scanner.iface, "ip", "") or "?"})',
+                UI_LOG_VICTIM_BLOCK_FG,
+            )
+            self._schedule_mitm_traffic_probe(device, flow=flow)
+            return True
+        except Exception:
+            return False
+
+    def _clear_mitm_probe_retry(self, mac: str | None) -> None:
+        if mac:
+            getattr(self, '_mitm_probe_retried_macs', set()).discard(str(mac).strip())
 
     def _reconcile_network_adapter(self, *, log: bool = True) -> None:
         """Keep Me/Router rows aligned with the Settings network adapter."""
@@ -3769,13 +3845,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return True
 
     def _resolve_flow_start_device(self, device: dict) -> dict:
-        """Resolve Wi‑Fi ↔ Ethernet handoff before pinning lag/dupe flow identity."""
-        dev = self._device_with_plan_ip(dict(device))
-        try:
-            self._ensure_network_context_for_victim(dev, fast=True)
-        except Exception:
-            pass
-        return dev
+        """Resolve plan IP before pinning lag/dupe flow identity (network bind happens at arm)."""
+        return self._device_with_plan_ip(dict(device))
 
     def _clear_stale_ics_mitm(self, device) -> None:
         """Drop ARP MITM left on a hotspot client from an older build or non-ICS path."""
@@ -5017,10 +5088,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         mac_pin = str(getattr(self, 'dupe_device_mac', None) or '').strip()
         live = self._get_device_by_mac(mac_pin, getattr(self, 'dupe_device_ip', None))
         dev = dict(live) if isinstance(live, dict) else dict(device)
-        try:
-            dev = self._resolve_flow_start_device(dev)
-        except Exception:
-            dev = dict(device)
+        dev = self._device_with_plan_ip(dev)
         if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != arm_gen:
             return
         self.log(
@@ -5036,9 +5104,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._clear_explicit_kill_for_flow(dev)
         if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != arm_gen:
             return
-        # Dupe burst is a full cut like Kill — always use both for firewall backstop.
         block_dir = 'both'
         try:
+            self._ensure_network_context_for_victim(dev, fast=True)
             if not self._arm_victim_mitm_like_kill(dev, block_dir, flow='Dupe'):
                 raise RuntimeError(
                     'Dupe block failed — rescan, pick Wi‑Fi in Settings if PC is on Wi‑Fi'
@@ -5617,6 +5685,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_active = True
         self.btnDupe.setText('■ DUPE')
         self.btnDupe.setStyleSheet(self.BUTTON_ACTIVE_STYLE)
+        self.lblDupeCountdownMain.setVisible(True)
+        self._set_countdown_label(self.lblDupeCountdownMain, 'Arming…')
+        self._dupe_countdown_timer.start()
         dir_text = {'both': 'all', 'in': 'incoming', 'out': 'outgoing'}[direction]
         self._show_dupe_status(
             f'Dupe ON {duration_ms}ms ({dir_text}) → {device.get("ip")} — Dupe/P to stop early',
@@ -5643,12 +5714,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 return
             if getattr(self, '_dupe_armed_ok', False):
                 return
-            mac = str(getattr(self, 'dupe_device_mac', None) or '').strip()
-            if mac and mac in getattr(self.killer, 'killed', {}):
-                self._dupe_armed_ok = True
-                self._start_dupe_timers_after_network_ready()
-                return
-            live = self._get_device_by_mac(mac, getattr(self, 'dupe_device_ip', None)) or device
+            live = self._get_device_by_mac(
+                str(getattr(self, 'dupe_device_mac', None) or '').strip(),
+                getattr(self, 'dupe_device_ip', None),
+            ) or device
             self._run_dupe_arm_command(live, direction, dupe_gen)
             if getattr(self, '_dupe_armed_ok', False):
                 return
@@ -5665,7 +5734,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return None
         end = getattr(self, '_dupe_end_mono', None)
         if end is None:
-            return int(self.dupe_duration_ms)
+            return None
         return max(0, int((end - time.monotonic()) * 1000))
 
     def _tick_dupe_countdown(self):
@@ -5674,15 +5743,24 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.lblDupeCountdownMain.setVisible(False)
             self.lblDupeCountdownMain.setText('')
             return
+        end = getattr(self, '_dupe_end_mono', None)
+        if end is None:
+            self.lblDupeCountdownMain.setVisible(True)
+            self._set_countdown_label(self.lblDupeCountdownMain, 'Arming…')
+            dlg = getattr(self, 'dupe_switch_dialog', None)
+            if dlg is not None and dlg.isVisible():
+                try:
+                    dlg.set_dupe_countdown(None)
+                except Exception:
+                    pass
+            return
         rem = self.dupe_remaining_ms()
-        # Finish as soon as elapsed time says so; avoids showing "0.0 s" until the
-        # coarse single-shot dupe_timer fires (can lag tens–100+ ms behind).
         if rem is not None and rem <= 0:
             self.lblDupeCountdownMain.setVisible(True)
             self._set_countdown_label(self.lblDupeCountdownMain, 'Time left: 0 s')
             if not getattr(self, '_dupe_finish_from_countdown_pending', False):
                 self._dupe_finish_from_countdown_pending = True
-                QTimer.singleShot(0, partial(self._dupe_finish_from_countdown))
+                self._dupe_finish_from_countdown('Dupe finished')
             return
         if rem is None or rem <= 0:
             self.lblDupeCountdownMain.setVisible(False)
@@ -5698,11 +5776,16 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
 
     def _dupe_timer_fired(self):
-        QTimer.singleShot(0, partial(self._dupe_finish_from_countdown, 'Dupe finished'))
+        if not getattr(self, '_dupe_finish_from_countdown_pending', False):
+            self._dupe_finish_from_countdown_pending = True
+            self._dupe_finish_from_countdown('Dupe finished')
 
     def _dupe_finish_from_countdown(self, log_message='Dupe finished'):
-        self._dupe_countdown_timer.stop()
-        self.stopDupe(True, True, log_message)
+        try:
+            self._dupe_countdown_timer.stop()
+            self.stopDupe(True, True, log_message)
+        finally:
+            self._dupe_finish_from_countdown_pending = False
 
     def stopDupe(self, refresh_dialog=True, log=True, log_message='Dupe stopped'):
         arm_snap = None

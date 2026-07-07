@@ -1337,7 +1337,9 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     # switching to Wi‑Fi (stale 192.168.1.x on the cached object), so Lag/Kill sent no traffic.
     hit = _route_iface(resync=False)
     if hit is not None:
-        # Same /24: prefer Settings/fallback when route picked a different NIC.
+        # Same /24: prefer Settings/fallback only when the victim is on that NIC's ARP
+        # segment. Blindly preferring fallback broke Kill on dual-homed PCs (Ethernet +
+        # Wi‑Fi on 192.168.1.x) when the PS5 was only reachable via Wi‑Fi.
         try:
             if fallback is not None:
                 live_fb = _iface_live_ipv4(fallback)
@@ -1349,7 +1351,9 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
                     and v_oct[:3] == f_oct[:3]
                     and str(hit.guid) != str(fallback.guid)
                 ):
-                    return fallback
+                    by_iface = _parse_windows_arp_by_interface()
+                    if live_fb and victim_ip in by_iface.get(live_fb, set()):
+                        return fallback
         except Exception:
             pass
         return hit

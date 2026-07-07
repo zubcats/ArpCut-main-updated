@@ -23,6 +23,8 @@ class TestLagCountdown(unittest.TestCase):
     def test_format_countdown_subminute(self) -> None:
         self.assertEqual(format_countdown_ms(9000), 'Time left: 9 s')
         self.assertEqual(format_countdown_ms(2500), 'Time left: 3 s')
+        self.assertEqual(format_countdown_ms(500), 'Time left: <1 s')
+        self.assertEqual(format_countdown_ms(0), 'Time left: 0 s')
 
     def test_format_countdown_minutes(self) -> None:
         self.assertEqual(format_countdown_ms(125000), 'Time left: 2:05')
