@@ -830,6 +830,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             main.scanner.add_me()
             main.scanner.add_router()
             main.showDevices()
+            if hasattr(main, '_schedule_npcap_prewarm'):
+                main._schedule_npcap_prewarm('settings')
         except Exception:
             pass
 

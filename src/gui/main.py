@@ -900,20 +900,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.killer = Killer()
         # Pre-warm the Npcap L2 socket on a background thread so the first Kill ON
         # doesn't wait ~0.5–2 s on conf.L2socket() opening Npcap. Pure no-op on Linux.
-        def _prewarm_kill_socket():
-            try:
-                self.killer._get_socket()
-            except Exception:
-                pass
-
-        try:
-            threading.Thread(
-                target=safe_daemon_target(_prewarm_kill_socket),
-                name='zubcut-prewarm-l2',
-                daemon=True,
-            ).start()
-        except Exception:
-            pass
+        self._schedule_npcap_prewarm('startup')
         self.killed_devices = {}  # profile key (mac|subnet) -> explicit Kill toggle state
         # Immediate visual latch: keep Kill row highlighted between toggle-on click
         # and backend apply completion, even if sync paths briefly clear killed_devices.
@@ -2090,6 +2077,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._reconcile_idle_mitm_state(quiet=True)
         if not_enabled:
             self._schedule_impairment_stack_warm('select')
+            self._schedule_npcap_prewarm('select')
 
         self.btnKill.setEnabled(not_enabled)
         self.btnLagSwitch.setEnabled(not_enabled)
@@ -2768,7 +2756,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.processDevices()
         try:
             threading.Thread(
-                target=safe_daemon_target(self.killer._get_socket),
+                target=safe_daemon_target(lambda: self._schedule_npcap_prewarm('post_scan')),
                 name='zubcut-postscan-prewarm',
                 daemon=True,
             ).start()
@@ -2862,6 +2850,17 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if callable(refresh_router):
                 refresh_router()
             self._lan_impairment_warmed_at = time.monotonic()
+            self._schedule_npcap_prewarm('lan_warm')
+        except Exception:
+            pass
+
+    def _schedule_npcap_prewarm(self, reason: str = 'startup') -> None:
+        """Background Npcap L2 open — keeps ARP poison synchronous on first Kill/Lag."""
+        _ = reason
+        if getattr(self, '_shutting_down', False):
+            return
+        try:
+            self.killer.prewarm_l2_socket()
         except Exception:
             pass
 
@@ -3436,6 +3435,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
                 self.killer.iface = self.scanner.iface
                 self.killer.disable_percent_cut(mac)
+                if not self.killer.l2_socket_ready():
+                    self.killer.prewarm_l2_socket(join_ms=120)
                 if mac in self.killer.killed:
                     self.killer.reassert_poison(dev)
                     self.killer._apply_traffic_cut_sync(dev)

