@@ -4321,6 +4321,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not isinstance(device, dict):
             return
         device = self._device_with_plan_ip(dict(device))
+        try:
+            self._ensure_network_context_for_victim(device, fast=True)
+        except Exception:
+            pass
         target_mac = str(device.get('mac') or '').strip()
         ips = self._victim_teardown_ips(device)
         victims: list[dict] = []
@@ -7977,27 +7981,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     # (killer.unkill default refresh_router=True picks the LAN
                     # gateway via route fallback — see killer.py:123-126).
                     self._ics_emergency_release(victim, heal=True)
-                    is_ics_now = self._is_ics_downstream(victim)
-                    if is_ics_now:
-                        try:
-                            self._release_victim_arp_mitm_stack(victim)
-                        except Exception:
-                            pass
-                    if not is_ics_now:
-                        _bg_unblock_ip(victim.get('ip'))
-                        try:
-                            self.killer.unkill(victim)
-                        except Exception:
-                            pass
-                        try:
-                            self.killer.reinforce_restore(victim)
-                        except Exception:
-                            pass
-                        if actual_on:
-                            try:
-                                self.killer.reinforce_restore(victim)
-                            except Exception:
-                                pass
+                    try:
+                        self._release_victim_arp_mitm_stack(victim)
+                    except Exception:
+                        pass
                     self.log('Kill OFF for ' + str(victim.get('ip', '')), UI_LOG_RESTORE_FG)
                     # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
                     self._schedule_kill_off_reinforce(mac, my_seq, 25)

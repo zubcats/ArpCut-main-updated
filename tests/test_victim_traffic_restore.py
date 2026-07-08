@@ -46,12 +46,12 @@ class TestVictimTrafficRestore(unittest.TestCase):
         stop = src[src.index('def stopLagSwitch'): src.index('def startDupe', src.index('def stopLagSwitch'))]
         self.assertIn('_release_victim_arp_mitm_stack(device)', stop)
 
-    def test_kill_off_ics_releases_arp_stack(self) -> None:
+    def test_kill_off_uses_full_arp_stack_release(self) -> None:
         src = self._main_py()
         kill = src[src.index('def _run_kill_command'): src.index('def _schedule_kill_off_reinforce')]
         off = kill[kill.index('else:'):]
-        self.assertIn('if is_ics_now:', off)
         self.assertIn('_release_victim_arp_mitm_stack(victim)', off)
+        self.assertIn('_ensure_network_context_for_victim(device, fast=True)', src[src.index('def _release_victim_arp_mitm_stack'): src.index('def _ics_gate_allow_traffic')])
 
 
 if __name__ == '__main__':
