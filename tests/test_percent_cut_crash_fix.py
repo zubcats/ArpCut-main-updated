@@ -37,6 +37,14 @@ class TestPercentCutCrashFix(unittest.TestCase):
         self.assertIn('except Exception as exc:', deferred)
         self.assertIn('Percent Cut failed to start', deferred)
 
+    def test_deferred_arm_binds_mac_before_lag_dupe_checks(self) -> None:
+        src = self._main_py()
+        toggle = src[src.index('def togglePercentCut'): src.index('def stopPercentCut')]
+        deferred = toggle[toggle.index('def _pctcut_deferred_start'): toggle.index('QTimer.singleShot(0, _pctcut_deferred_start)')]
+        mac_bind = deferred.index("mac = str(pct_device.get('mac')")
+        lag_check = deferred.index('self.lag_device_mac == mac')
+        self.assertLess(mac_bind, lag_check)
+
     def test_toggle_validates_mac_and_ip_after_resolve(self) -> None:
         src = self._main_py()
         toggle = src[src.index('def togglePercentCut'): src.index('def stopPercentCut')]

@@ -7061,6 +7061,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             ):
                 return
             try:
+                mac = str(pct_device.get('mac') or '').strip()
+                ip = str(pct_device.get('ip') or '').strip()
                 if had_prior_pct_other_mac:
                     self.stopPercentCut(log=False)
                 if self.mitm_shaping_active:
