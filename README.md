@@ -71,7 +71,7 @@ On a normal **home LAN** (no hotspot), ZubCut uses **ARP MITM** and Windows fire
 - In-app updater (stable vs experimental channel)  
 - Optional account sign-in on licensed builds (Settings / Cloudflare worker)  
 
-Licensed distribution uses the separate **ZubCut License Manager** app (`license-manager/`) for accounts, cloud sync, and crash reports. See [`license-manager/README.md`](license-manager/README.md).
+Licensed distribution uses the separate **ZubCut Control Panel** admin app for accounts, cloud sync, and crash reports. Build from `src/zubcut_control_panel.py` or install from the `control-panel-latest` release.
 
 Architecture for contributors: [`docs/ZUBCUT_PRODUCT.md`](docs/ZUBCUT_PRODUCT.md)
 

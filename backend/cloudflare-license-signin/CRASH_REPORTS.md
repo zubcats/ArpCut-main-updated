@@ -1,6 +1,6 @@
-# Crash reports API (License Manager integration)
+# Crash reports API (Control Panel integration)
 
-ZubCut stores crash reports on the **same Cloudflare Worker + KV** as license sign-in. After deploying an updated `worker.mjs`, use these endpoints from **License Manager** (or the `tools/crash_reports_admin.py` CLI on your PC).
+ZubCut stores crash reports on the **same Cloudflare Worker + KV** as license sign-in. After deploying an updated `worker.mjs`, use these endpoints from **ZubCut Control Panel** (or the `tools/crash_reports_admin.py` CLI on your PC).
 
 ## User flow (ZubCut app)
 
@@ -33,11 +33,11 @@ ZubCut stores crash reports on the **same Cloudflare Worker + KV** as license si
 
 `log` is accepted as an alias for `body`. `licenseKey` / `account` are aliases for `account_hint`.
 
-**Account linking:** ZubCut sends `account_hint` (sign-in account from `zubcut-license.json`) and `license_id` when the user is signed in. Unsigned sessions appear as empty / “not signed in” in License Manager.
+**Account linking:** ZubCut sends `account_hint` (sign-in account from `zubcut-license.json`) and `license_id` when the user is signed in. Unsigned sessions appear as empty / “not signed in” in Control Panel.
 
 Response: `{ "ok": true, "ref": "ZC-ABC123", "message": "Crash report received." }`
 
-## Admin endpoints (License Manager / developer CLI)
+## Admin endpoints (Control Panel / developer CLI)
 
 All require JSON `secret` matching Worker `ADMIN_SECRET` (same as license upsert).
 
@@ -109,16 +109,18 @@ python tools/crash_reports_admin.py get ZC-ABC123 --out crash.log
 python tools/crash_reports_admin.py delete ZC-ABC123
 ```
 
-## License Manager UI (this repo)
+## Control Panel UI (this repo)
 
-Run the PyQt admin app from `license-manager/`:
+Run the PyQt admin app:
 
-- **Accounts** tab — create / renew / revoke / activate / delete; push to cloud
-- **Cloud sign-in sync** tab — Worker URL, admin secret, test connection
-- **Crash reports** tab — list, view full body, export, delete, filter by account, optional 60s auto-refresh
+```bash
+python src/zubcut_control_panel.py
+```
+
+- **Accounts** tab — create / renew / revoke / activate / delete; cloud sign-in sync; push to cloud
+- **Crash reports** tab — list, view full body, export, delete, filter by account, optional auto-refresh
 - **Accounts** tab — **View crash reports** jumps to crashes filtered for that account
-
-See [`license-manager/README.md`](../../license-manager/README.md).
+- **Install latest build** — downloads from the `control-panel-latest` release
 
 ## API reference (integrators)
 

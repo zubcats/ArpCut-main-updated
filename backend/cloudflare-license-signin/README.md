@@ -3,7 +3,7 @@
 ## The idea in plain English
 
 - You get a **normal HTTPS web address** from Cloudflare (your “license server”). Nothing runs on your home PC 24/7.
-- **License Manager** sends each customer’s login data to that address when you create or change accounts.
+- **ZubCut Control Panel** sends each customer’s login data to that address when you create or change accounts.
 - **ZubCut** uses the **same address** so customers can type **account + password** and receive their license.
 
 You need a **free Cloudflare account** and **Node.js** installed (so the `npx` commands work).
@@ -26,53 +26,53 @@ You need a **free Cloudflare account** and **Node.js** installed (so the `npx` c
 6. Upload the code to Cloudflare:  
    `npx wrangler deploy`  
    When it finishes, note the **https://…workers.dev** URL it prints — that is your **Worker URL**. Save it somewhere.
-7. Set a **private password** only you and License Manager will know (type it when prompted; nothing prints on screen):  
+7. Set a **private password** only you and Control Panel will know (type it when prompted; nothing prints on screen):  
    `npx wrangler secret put ADMIN_SECRET`  
-   Use a long random string (you can generate one in a password manager). **This is not** the customer’s password — it’s the **key between your License Manager and Cloudflare**.
+   Use a long random string (you can generate one in a password manager). **This is not** the customer’s password — it’s the **key between your Control Panel and Cloudflare**.
 
-### B. Connect License Manager to that server
+### B. Connect Control Panel to that server
 
-1. Open **ZubCut License Manager** on your PC.
+1. Open **ZubCut Control Panel** on your PC.
 2. In **Cloud sign-in sync**, paste your **Worker URL** (the `https://…workers.dev` link from step A6).
 3. Paste the **same** string you used for `ADMIN_SECRET` into **Admin secret**.
 4. Turn on **push to cloud automatically**, click **Save cloud settings**, then **Test connection**. If the test fails, double-check the URL and secret.
 
 ### C. Put the same info into the ZubCut app build
 
-1. In **License Manager**, copy the line at the top: **Public Verify Key**.
+1. In **Control Panel**, copy the line at the top: **Public Verify Key**.
 2. In your ZubCut source, set **`LICENSE_PUBLIC_KEY_B64`** to that key (in `src/constants.py` or however you ship builds).
-3. Set **`LICENSE_SIGNIN_URL`** to the **same Worker URL** you pasted in License Manager (or tell customers to set Windows env **`ZUBCUT_LICENSE_SIGNIN_URL`** to that URL; **`ZUBCUT_PAID_SIGNIN_URL`** is still read as a legacy alias).
+3. Set **`LICENSE_SIGNIN_URL`** to the **same Worker URL** you pasted in Control Panel (or tell customers to set Windows env **`ZUBCUT_LICENSE_SIGNIN_URL`** to that URL; **`ZUBCUT_PAID_SIGNIN_URL`** is still read as a legacy alias).
 
-After that, customers only need the **account name + password** you create in License Manager.
+After that, customers only need the **account name + password** you create in Control Panel.
 
 ---
 
 ## What happens day to day
 
-- **Create / renew / revoke / activate / delete** in License Manager updates the cloud (if auto-sync is on and B is set up).
+- **Create / renew / revoke / activate / delete** in Control Panel updates the cloud (if auto-sync is on and B is set up).
 - The Worker checks **expiry** and **active/revoked** when someone signs in, so dead accounts don’t get a license.
 
-## License Manager (extra buttons)
+## Control Panel (extra buttons)
 
 - After **section B** is set up, **Create Account** / **Renew** / **Revoke** / **Activate** / **Delete** keep the cloud in sync when auto-push is on.
 - **Push selected to cloud** — use if one account didn’t update on the server.
-- **Export KV file (manual)** — only if you use Wrangler by hand instead of License Manager.
+- **Export KV file (manual)** — only if you use Wrangler by hand instead of Control Panel.
 
 ## ZubCut (customer app)
 
 Same as **section C**: public verify key + Worker URL in the build. Customers use **Settings → “Sign in or change license…”**, or see a sign-in prompt at **first launch** if they don’t have a license file yet.
 
-## Admin API (used by License Manager)
+## Admin API (used by Control Panel)
 
 - `POST /admin/upsert`  
   Body: `{ "secret": "<ADMIN_SECRET>", "account_key": "<lowercase user name>", "bundle": { ... } }`  
   Bundle fields: `password_salt`, `password_hash_hex`, `license` (signed payload + signature).
 - `POST /admin/delete`  
-  Body: `{ "secret": "<ADMIN_SECRET>", "account_key": "<lowercase user name>" }` — removes that KV key (used when you delete an account in License Manager).
+  Body: `{ "secret": "<ADMIN_SECRET>", "account_key": "<lowercase user name>" }` — removes that KV key (used when you delete an account in Control Panel).
 
 ## Crash reports
 
-ZubCut can POST crash logs to `POST /crash`; License Manager (or `tools/crash_reports_admin.py`) lists them with the same **Admin secret**. See **[CRASH_REPORTS.md](./CRASH_REPORTS.md)** for full API details.
+ZubCut can POST crash logs to `POST /crash`; Control Panel (or `tools/crash_reports_admin.py`) lists them with the same **Admin secret**. See **[CRASH_REPORTS.md](./CRASH_REPORTS.md)** for full API details.
 
 ## Limits
 

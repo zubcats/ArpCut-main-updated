@@ -4,7 +4,7 @@
  * Users: POST / with { account, password } — password verified with PBKDF2 (matches Python license_admin).
  * Server rejects expired or non-active licenses before returning the signed document.
  *
- * Crash reports (ZubCut): POST /crash from the app; License Manager lists via POST /admin/crashes/list.
+ * Crash reports (ZubCut): POST /crash from the app; Control Panel lists via POST /admin/crashes/list.
  * Stored under KV keys crash:<ref> with a rolling index at __crash_index__.
  */
 
@@ -215,7 +215,7 @@ export default {
         return jsonResponse({ ok: false, error: 'Invalid JSON.' }, 400);
       }
 
-      // --- Admin: push bundle from License Manager ---
+      // --- Admin: push bundle from Control Panel ---
       if (path === '/admin/upsert') {
         const expected = env.ADMIN_SECRET;
         const okSecret = await adminSecretOk(String(body?.secret ?? ''), expected);
