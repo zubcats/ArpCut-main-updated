@@ -45,6 +45,15 @@ HIDDEN_IMPORTS = [
 
 COLLECT_ALL = ['qdarkstyle', 'nacl', 'cffi']
 COLLECT_PYQT5 = ['Windows', 'Darwin']
+# Main ZubCut stack — must not be pulled into the admin Control Panel bundle.
+EXCLUDE_MODULES = [
+    'tools.utils',
+    'tools.utils_gui',
+    'manuf',
+    'scapy',
+    'gui.main',
+    'networking',
+]
 
 
 def build() -> int:
@@ -71,6 +80,8 @@ def build() -> int:
         cmd.extend(['--add-data', 'exe/zubcut_icon.png;.'])
     for imp in HIDDEN_IMPORTS:
         cmd.extend(['--hidden-import', imp])
+    for mod in EXCLUDE_MODULES:
+        cmd.extend(['--exclude-module', mod])
     for pkg in COLLECT_ALL:
         cmd.extend(['--collect-all', pkg])
     cmd.extend(['--collect-data', 'certifi'])

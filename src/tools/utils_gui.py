@@ -14,7 +14,9 @@ from PyQt5.QtCore import Qt, QObject, QEvent, QRectF
 from PyQt5.QtGui import QPainterPath, QRegion
 from PyQt5.QtWidgets import QApplication
 
-from tools.utils import terminal
+from tools.frameless_chrome import register_window_surface_effects, sync_translucent_chrome
+
+# Lazy: tools.utils pulls manuf/scapy/networking — only import inside functions that need it.
 import constants as _zcut_constants
 from constants import *
 
