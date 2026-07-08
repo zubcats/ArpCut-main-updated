@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -255,7 +255,7 @@ class ControlPanelWindow(FramelessResizableMixin, QMainWindow):
         # Solid client like main ZubCut window — translucent frameless + mask can look like a second window on Windows.
         self._zubcut_use_translucent_surface = False
         register_window_surface_effects(self)
-        self.refresh_rows()
+        QTimer.singleShot(0, self.refresh_rows)
 
     def _build_ui(self):
         root = QWidget(self)

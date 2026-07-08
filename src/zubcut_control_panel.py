@@ -121,6 +121,8 @@ if __name__ == '__main__':
         win = ControlPanelWindow(icon)
         _cp_boot('after ControlPanelWindow(); calling show()')
         win.show()
+        win.raise_()
+        win.activateWindow()
         raise SystemExit(app.exec_())
     except Exception:
         _fatal(CONTROL_PANEL_DISPLAY_NAME, traceback.format_exc())

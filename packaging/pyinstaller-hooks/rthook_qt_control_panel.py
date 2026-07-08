@@ -83,5 +83,18 @@ if getattr(sys, 'frozen', False):
             'QT_QPA_PLATFORM_PLUGIN_PATH=' + repr(os.environ.get('QT_QPA_PLATFORM_PLUGIN_PATH')),
         ]
     )
+    if not _found and sys.platform.startswith('win'):
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                'ZubCut Control Panel could not find the Qt Windows platform plugin (qwindows.dll).\n\n'
+                'Try reinstalling from the latest control-panel-latest release.',
+                'ZubCut Control Panel',
+                0x10,
+            )
+        except Exception:
+            pass
 else:
     _write_control_panel_boot_chunk(['(non-frozen: skipped Qt path override)'])
