@@ -53,6 +53,8 @@ LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'zubcut-license.json')
 LICENSE_PUBLIC_KEY_B64 = ''
 # License sign-in HTTPS URL. Override at runtime with ZUBCUT_LICENSE_SIGNIN_URL.
 LICENSE_SIGNIN_URL = 'https://zubcut-license-signin.zubcats.workers.dev'
+# Crash report HTTPS URL (POST /crash). Defaults to LICENSE_SIGNIN_URL; override with ZUBCUT_CRASH_REPORT_URL.
+CRASH_REPORT_URL = LICENSE_SIGNIN_URL
 
 # Extra legacy settings to migrate if zubcut.json is missing (Windows)
 LEGACY_SETTINGS_CANDIDATES = []
@@ -176,6 +178,8 @@ SETTINGS_KEYS = [
     'mitm_adv_timer_schema_v2',
     # Diagnostics: prints per-step Kill ON/OFF timings to the log box when True.
     'debug_kill_timing',
+    # When True, uncaught errors are uploaded automatically (user can still send manually on failure).
+    'crash_report_auto_send',
 ]
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
@@ -250,6 +254,7 @@ SETTINGS_VALS = [
     1000,
     True,
     -1,
+    False,
     False,
     False,
 ]

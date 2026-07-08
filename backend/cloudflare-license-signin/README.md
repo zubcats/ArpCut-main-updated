@@ -70,6 +70,10 @@ Same as **section C**: public verify key + Worker URL in the build. Customers us
 - `POST /admin/delete`  
   Body: `{ "secret": "<ADMIN_SECRET>", "account_key": "<lowercase user name>" }` — removes that KV key (used when you delete an account in License Manager).
 
+## Crash reports
+
+ZubCut can POST crash logs to `POST /crash`; License Manager (or `tools/crash_reports_admin.py`) lists them with the same **Admin secret**. See **[CRASH_REPORTS.md](./CRASH_REPORTS.md)** for full API details.
+
 ## Limits
 
 Cloudflare free tier has [limits](https://developers.cloudflare.com/workers/platform/limits/) on Workers and KV; suitable for modest user counts. Add rate limiting or WAF rules if you see abuse.

@@ -116,7 +116,75 @@ def _native_message_box(title: str, text: str) -> None:
             pass
 
 
-def _show_main_thread_dialog(ref: str, path: str) -> None:
+def _read_log_text(path: str) -> str:
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as fp:
+            return fp.read()
+    except Exception:
+        return ''
+
+
+def _attempt_remote_send(
+    ref: str,
+    path: str,
+    *,
+    exc_type: str = '',
+    exc_message: str = '',
+    save_pending_on_fail: bool = True,
+) -> tuple[bool, str]:
+    try:
+        from tools.crash_remote_report import (
+            save_pending_crash,
+            submit_crash_report,
+        )
+
+        log_text = _read_log_text(path)
+        if not log_text:
+            return False, 'Could not read the crash log.'
+        ok, msg = submit_crash_report(
+            ref,
+            log_text,
+            exc_type=exc_type,
+            exc_message=exc_message,
+        )
+        if ok:
+            return True, msg or 'Report sent.'
+        if save_pending_on_fail and path and os.path.isfile(path):
+            save_pending_crash(ref, path)
+        return False, msg or 'Could not send report.'
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _show_main_thread_dialog(
+    ref: str,
+    path: str,
+    *,
+    exc_type: str = '',
+    exc_message: str = '',
+    log_body: str = '',
+) -> None:
+    sent_note = ''
+    try:
+        from tools.crash_remote_report import crash_auto_send_enabled
+
+        if crash_auto_send_enabled():
+            ok, msg = _attempt_remote_send(
+                ref,
+                path,
+                exc_type=exc_type,
+                exc_message=exc_message,
+            )
+            if ok:
+                sent_note = '\n\nCrash report was sent automatically.'
+            else:
+                sent_note = (
+                    '\n\nAutomatic send failed (will retry next launch if you choose Send report):\n'
+                    f'{msg}'
+                )
+    except Exception:
+        pass
+
     try:
         from PyQt5.QtCore import Qt
         from PyQt5.QtWidgets import QApplication, QMessageBox
@@ -127,15 +195,39 @@ def _show_main_thread_dialog(ref: str, path: str) -> None:
         msg = (
             'The app hit an unexpected error.\n\n'
             f'Error code (include this in your report):\n{ref}\n\n'
-            f'Technical details were saved to:\n{path}\n\n'
-            'The app will close when you click OK.'
+            f'Technical details were saved to:\n{path}'
+            f'{sent_note}\n\n'
+            'Click Send report to share this crash with support, or Close to exit.'
         )
         box = QMessageBox()
         box.setIcon(QMessageBox.Critical)
         box.setWindowTitle(f'{APP_BUNDLE_NAME} — unexpected error')
         box.setText(msg)
         box.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+        btn_send = box.addButton('Send report', QMessageBox.AcceptRole)
+        box.addButton('Close', QMessageBox.RejectRole)
+        box.setDefaultButton(btn_send)
         box.exec_()
+        if box.clickedButton() is btn_send:
+            ok, send_msg = _attempt_remote_send(
+                ref,
+                path,
+                exc_type=exc_type,
+                exc_message=exc_message,
+            )
+            follow = QMessageBox()
+            follow.setIcon(QMessageBox.Information if ok else QMessageBox.Warning)
+            follow.setWindowTitle(f'{APP_BUNDLE_NAME} — crash report')
+            follow.setText(
+                'Thank you — your crash report was sent.'
+                if ok
+                else (
+                    'Could not send the crash report now.\n\n'
+                    f'{send_msg}\n\n'
+                    'The app will retry on next launch, or you can email the log file above.'
+                )
+            )
+            follow.exec_()
     except Exception:
         _native_message_box(
             f'{APP_BUNDLE_NAME} error',
@@ -159,12 +251,20 @@ def _our_sys_excepthook(exc_type, exc, tb) -> None:
 
     ref = _make_crash_ref()
     body = ''.join(traceback.format_exception(exc_type, exc, tb))
+    exc_name = getattr(exc_type, '__name__', str(exc_type))
+    exc_msg = str(exc)[:500] if exc is not None else ''
     try:
         path = _write_report(ref, body)
     except Exception:
         path = '(could not write log file)'
     try:
-        _show_main_thread_dialog(ref, path)
+        _show_main_thread_dialog(
+            ref,
+            path,
+            exc_type=exc_name,
+            exc_message=exc_msg,
+            log_body=body,
+        )
     except Exception:
         pass
     if _prev_sys_excepthook is not None:
@@ -211,6 +311,20 @@ def _our_threading_excepthook(args) -> None:
         pass
     if _prev_threading_excepthook is not None:
         _prev_threading_excepthook(args)
+
+
+def schedule_pending_crash_upload() -> None:
+    """Retry a queued crash report from a prior session (daemon thread)."""
+
+    def _run() -> None:
+        try:
+            from tools.crash_remote_report import try_send_pending_crash
+
+            try_send_pending_crash()
+        except Exception:
+            pass
+
+    threading.Thread(target=safe_daemon_target(_run), daemon=True).start()
 
 
 def install_crash_feedback() -> None:

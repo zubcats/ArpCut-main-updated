@@ -1,0 +1,127 @@
+# Crash reports API (License Manager integration)
+
+ZubCut stores crash reports on the **same Cloudflare Worker + KV** as license sign-in. After deploying an updated `worker.mjs`, use these endpoints from **License Manager** (or the `tools/crash_reports_admin.py` CLI on your PC).
+
+## User flow (ZubCut app)
+
+1. On an uncaught error, ZubCut assigns a short code (`ZC-XXXXXX`) and saves `%TEMP%\ZubCut-crash-ZC-XXXXXX.log`.
+2. A dialog offers **Send report** (manual, default) or **Close**.
+3. Optional setting `crash_report_auto_send` (default **off**) uploads automatically; failed uploads are retried on next launch.
+4. Native hard crashes (access violations) cannot run Python afterward — only OS-level dumps apply.
+
+## App endpoint
+
+`POST /crash` — no admin secret; public ingest (rate-limit at Cloudflare if needed).
+
+```json
+{
+  "ref": "ZC-ABC123",
+  "body": "full traceback text…",
+  "time_utc": "2026-07-08T16:00:00+00:00",
+  "platform": "Windows-10-…",
+  "frozen": true,
+  "build_commit": "35a1e27",
+  "build_channel": "experimental",
+  "build_time": "2026-07-08T12:00:00Z",
+  "app_version": "1.2.3",
+  "account_hint": "customer_username",
+  "exc_type": "RuntimeError",
+  "exc_message": "Percent Cut failed to start"
+}
+```
+
+`log` is accepted as an alias for `body`. `licenseKey` / `account` are aliases for `account_hint`.
+
+Response: `{ "ok": true, "ref": "ZC-ABC123", "message": "Crash report received." }`
+
+## Admin endpoints (License Manager / developer CLI)
+
+All require JSON `secret` matching Worker `ADMIN_SECRET` (same as license upsert).
+
+### List recent crashes
+
+`POST /admin/crashes/list`
+
+```json
+{ "secret": "<ADMIN_SECRET>", "limit": 100 }
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "total": 12,
+  "crashes": [
+    {
+      "ref": "ZC-ABC123",
+      "time_utc": "…",
+      "received_at": "…",
+      "platform": "…",
+      "build_commit": "…",
+      "build_channel": "experimental",
+      "app_version": "…",
+      "account_hint": "user",
+      "exc_type": "RuntimeError",
+      "exc_message": "…"
+    }
+  ]
+}
+```
+
+### Get full report
+
+`POST /admin/crash/get`
+
+```json
+{ "secret": "<ADMIN_SECRET>", "ref": "ZC-ABC123" }
+```
+
+Returns `{ "ok": true, "report": { …, "body": "…" } }`.
+
+### Delete report
+
+`POST /admin/crash/delete`
+
+```json
+{ "secret": "<ADMIN_SECRET>", "ref": "ZC-ABC123" }
+```
+
+## KV layout
+
+| Key | Value |
+|-----|--------|
+| `crash:ZC-XXXXXX` | Full JSON report (~48 KB body max) |
+| `__crash_index__` | JSON array of summaries (newest first, max 500) |
+
+## Developer CLI (this repo)
+
+```bash
+export ZUBCUT_LICENSE_SIGNIN_URL=https://zubcut-license-signin.zubcats.workers.dev
+export ZUBCUT_ADMIN_SECRET='your-admin-secret'
+
+python tools/crash_reports_admin.py list
+python tools/crash_reports_admin.py get ZC-ABC123
+python tools/crash_reports_admin.py get ZC-ABC123 --out crash.log
+python tools/crash_reports_admin.py delete ZC-ABC123
+```
+
+## License Manager UI (external app)
+
+Suggested section: **Crash reports**
+
+- Table bound to `POST /admin/crashes/list`
+- Row click → `POST /admin/crash/get` → show `body` in a monospace viewer
+- Delete button → `POST /admin/crash/delete`
+- Refresh button; optional auto-refresh every 60s
+
+Use the same **Worker URL** and **Admin secret** already configured for cloud license sync.
+
+## Deploy
+
+After pulling worker changes:
+
+```bash
+cd backend/cloudflare-license-signin
+npx wrangler deploy
+```

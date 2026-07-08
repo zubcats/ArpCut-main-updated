@@ -52,7 +52,7 @@ from PyQt5.QtWidgets import QApplication, QStyleFactory
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 
 from tools.utils import goto
-from tools.crash_feedback import install_crash_feedback
+from tools.crash_feedback import install_crash_feedback, schedule_pending_crash_upload
 from tools.utils_gui import (
     npcap_exists,
     duplicate_zubcut,
@@ -313,6 +313,7 @@ if __name__ == "__main__":
     if _fusion is not None:
         app.setStyle(_fusion)
     install_crash_feedback()
+    schedule_pending_crash_upload()
     icon = _load_window_icon()
     app.setWindowIcon(icon)
 

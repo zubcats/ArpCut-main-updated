@@ -3,10 +3,17 @@
  * Admin: POST /admin/upsert (secret + account_key + bundle), POST /admin/delete (secret + account_key).
  * Users: POST / with { account, password } — password verified with PBKDF2 (matches Python license_admin).
  * Server rejects expired or non-active licenses before returning the signed document.
+ *
+ * Crash reports (ZubCut): POST /crash from the app; License Manager lists via POST /admin/crashes/list.
+ * Stored under KV keys crash:<ref> with a rolling index at __crash_index__.
  */
 
 const SIGNIN_PBKDF2_ITERS_DEFAULT = 100000;
 const SIGNIN_PBKDF2_ITERS_MAX = 100000;
+const CRASH_INDEX_KEY = '__crash_index__';
+const CRASH_KV_PREFIX = 'crash:';
+const CRASH_INDEX_MAX = 500;
+const CRASH_BODY_MAX = 48000;
 
 function jsonResponse(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
@@ -95,6 +102,77 @@ function pathnameKey(requestUrl) {
   } catch {
     return '/';
   }
+}
+
+function normalizeCrashRef(ref) {
+  const s = String(ref || '').trim().toUpperCase();
+  if (!/^ZC-[0-9A-HJKLMNPQRSTUVWXYZ]{6}$/.test(s)) return '';
+  return s;
+}
+
+function crashKvKey(ref) {
+  return `${CRASH_KV_PREFIX}${ref}`;
+}
+
+async function readCrashIndex(kv) {
+  try {
+    const raw = await kv.get(CRASH_INDEX_KEY, { type: 'text' });
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeCrashIndex(kv, entries) {
+  const trimmed = Array.isArray(entries) ? entries.slice(0, CRASH_INDEX_MAX) : [];
+  await kv.put(CRASH_INDEX_KEY, JSON.stringify(trimmed));
+}
+
+async function storeCrashReport(kv, report) {
+  const ref = normalizeCrashRef(report?.ref);
+  if (!ref) return { ok: false, error: 'Invalid crash reference.' };
+  const body = String(report?.body || report?.log || '');
+  const accountHint = String(
+    report?.account_hint || report?.licenseKey || report?.account || '',
+  )
+    .trim()
+    .toLowerCase()
+    .slice(0, 120);
+  const payload = {
+    ref,
+    time_utc: String(report?.time_utc || new Date().toISOString()),
+    platform: String(report?.platform || ''),
+    frozen: Boolean(report?.frozen),
+    build_commit: String(report?.build_commit || ''),
+    build_channel: String(report?.build_channel || ''),
+    build_time: String(report?.build_time || ''),
+    app_version: String(report?.app_version || ''),
+    account_hint: accountHint,
+    exc_type: String(report?.exc_type || '').slice(0, 120),
+    exc_message: String(report?.exc_message || '').slice(0, 500),
+    body: body.length > CRASH_BODY_MAX ? body.slice(0, CRASH_BODY_MAX) : body,
+    received_at: new Date().toISOString(),
+  };
+  await kv.put(crashKvKey(ref), JSON.stringify(payload));
+  const index = await readCrashIndex(kv);
+  const summary = {
+    ref,
+    time_utc: payload.time_utc,
+    platform: payload.platform,
+    build_commit: payload.build_commit,
+    build_channel: payload.build_channel,
+    app_version: payload.app_version,
+    account_hint: payload.account_hint,
+    exc_type: payload.exc_type,
+    exc_message: payload.exc_message,
+    received_at: payload.received_at,
+  };
+  const filtered = index.filter((e) => e && e.ref !== ref);
+  filtered.unshift(summary);
+  await writeCrashIndex(kv, filtered);
+  return { ok: true, ref };
 }
 
 export default {
@@ -196,6 +274,77 @@ export default {
       }
       return jsonResponse({ ok: true });
     }
+
+      if (path === '/admin/crashes/list') {
+        const expected = env.ADMIN_SECRET;
+        const okSecret = await adminSecretOk(String(body?.secret ?? ''), expected);
+        if (!okSecret) {
+          return jsonResponse({ ok: false, error: 'Unauthorized.' }, 401);
+        }
+        if (!kv) {
+          return jsonResponse({ ok: false, error: 'Server misconfigured (no KV).' }, 500);
+        }
+        const limit = Math.max(1, Math.min(Number(body?.limit || 100), CRASH_INDEX_MAX));
+        const index = await readCrashIndex(kv);
+        return jsonResponse({ ok: true, crashes: index.slice(0, limit), total: index.length });
+      }
+
+      if (path === '/admin/crash/get') {
+        const expected = env.ADMIN_SECRET;
+        const okSecret = await adminSecretOk(String(body?.secret ?? ''), expected);
+        if (!okSecret) {
+          return jsonResponse({ ok: false, error: 'Unauthorized.' }, 401);
+        }
+        if (!kv) {
+          return jsonResponse({ ok: false, error: 'Server misconfigured (no KV).' }, 500);
+        }
+        const ref = normalizeCrashRef(body?.ref);
+        if (!ref) {
+          return jsonResponse({ ok: false, error: 'Missing or invalid ref.' }, 400);
+        }
+        const raw = await kv.get(crashKvKey(ref), { type: 'text' });
+        if (!raw) {
+          return jsonResponse({ ok: false, error: 'Crash report not found.' }, 404);
+        }
+        try {
+          return jsonResponse({ ok: true, report: JSON.parse(raw) });
+        } catch {
+          return jsonResponse({ ok: false, error: 'Stored report is corrupt.' }, 500);
+        }
+      }
+
+      if (path === '/admin/crash/delete') {
+        const expected = env.ADMIN_SECRET;
+        const okSecret = await adminSecretOk(String(body?.secret ?? ''), expected);
+        if (!okSecret) {
+          return jsonResponse({ ok: false, error: 'Unauthorized.' }, 401);
+        }
+        if (!kv) {
+          return jsonResponse({ ok: false, error: 'Server misconfigured (no KV).' }, 500);
+        }
+        const ref = normalizeCrashRef(body?.ref);
+        if (!ref) {
+          return jsonResponse({ ok: false, error: 'Missing or invalid ref.' }, 400);
+        }
+        await kv.delete(crashKvKey(ref));
+        const index = await readCrashIndex(kv);
+        await writeCrashIndex(
+          kv,
+          index.filter((e) => e && e.ref !== ref),
+        );
+        return jsonResponse({ ok: true });
+      }
+
+      if (path === '/crash') {
+        if (!kv) {
+          return jsonResponse({ ok: false, error: 'Server misconfigured (no KV).' }, 500);
+        }
+        const result = await storeCrashReport(kv, body || {});
+        if (!result.ok) {
+          return jsonResponse(result, 400);
+        }
+        return jsonResponse({ ok: true, ref: result.ref, message: 'Crash report received.' });
+      }
 
       if (path === '/validate') {
       const account = String(body?.account || '').trim().toLowerCase();
