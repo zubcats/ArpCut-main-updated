@@ -29,9 +29,9 @@ from constants import (
 from gui.crash_reports_panel import CrashReportsPanel
 from tools.frameless_chrome import (
     FramelessResizableMixin,
-    register_window_surface_effects,
     setup_frameless_main_window,
 )
+from tools.utils_gui import register_window_surface_effects
 from tools.license_admin import (
     cloud_kv_bundle_for_license_id,
     cloud_kv_key_for_account,

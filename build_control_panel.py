@@ -25,6 +25,7 @@ HIDDEN_IMPORTS = [
     'tools.control_panel_crashes',
     'tools.updater_core',
     'tools.frameless_chrome',
+    'tools.utils_gui',
     'tools.branding',
     'PyQt5',
     'PyQt5.QtWidgets',
