@@ -69,7 +69,12 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         stop = src[src.index('def stopDupe'): src.index('def _updateDupeButtonState', src.index('def stopDupe'))]
         self.assertIn('_release_dupe_victim_immediate', stop)
         self.assertIn('_resolve_dupe_stop_snapshot', stop)
-        self.assertIn('killer.unkill(victim, ics_mode=True)', src[src.index('def _release_dupe_victim_immediate'): src.index('def _apply_victim_block', src.index('def _release_dupe_victim_immediate'))])
+        release_fn = src[
+            src.index('def _release_dupe_victim_immediate'): src.index(
+                'def _apply_victim_block', src.index('def _release_dupe_victim_immediate')
+            )
+        ]
+        self.assertIn('_release_victim_arp_mitm_stack(device)', release_fn)
         self.assertNotIn('_drain_dupe_block_if_needed', stop)
         apply_def = src[src.index('def _apply_dupe_deferred'): src.index('def _slot_finish_dupe_block', src.index('def _apply_dupe_deferred'))]
         self.assertIn('_sync_dupe_device_identity', apply_def)
