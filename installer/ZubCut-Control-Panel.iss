@@ -47,3 +47,39 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+const
+  LegacyLicenseManagerAppId = '{3C91A74A-9F49-4A66-B3A6-6F353DF32E11}';
+
+function LegacyLicenseManagerUninstallKey(): String;
+begin
+  Result := 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\' + LegacyLicenseManagerAppId + '_is1';
+end;
+
+function LegacyLicenseManagerInstalled(): Boolean;
+begin
+  Result :=
+    RegKeyExists(HKLM, LegacyLicenseManagerUninstallKey()) or
+    RegKeyExists(HKCU, LegacyLicenseManagerUninstallKey());
+end;
+
+procedure RemoveLegacyLicenseManager();
+var
+  Uninst: String;
+  ResultCode: Integer;
+begin
+  if RegQueryStringValue(HKLM, LegacyLicenseManagerUninstallKey(), 'UninstallString', Uninst) or
+     RegQueryStringValue(HKCU, LegacyLicenseManagerUninstallKey(), 'UninstallString', Uninst) then
+  begin
+    Uninst := RemoveQuotes(Uninst);
+    if Uninst <> '' then
+      Exec(Uninst, '/SILENT', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssInstall) and LegacyLicenseManagerInstalled() then
+    RemoveLegacyLicenseManager();
+end;

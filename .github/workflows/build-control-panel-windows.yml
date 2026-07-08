@@ -91,22 +91,18 @@ jobs:
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
           & $iscc "installer\ZubCut-Control-Panel.iss"
 
-      - name: Create installer alias
+      - name: Stage installer for release
         shell: pwsh
         run: |
           $built = Get-ChildItem -Path "output" -Filter "ZubCut-Control-Panel-Setup*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $built) { throw "Installer not found in output/" }
           Copy-Item $built.FullName "output/ZubCut-Control-Panel-Setup.exe" -Force
-          # One-release transition alias for older License Manager updaters
-          Copy-Item $built.FullName "output/ZubCut-License-Manager-Setup.exe" -Force
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: ZubCut-Control-Panel-Installer
-          path: |
-            output/ZubCut-Control-Panel-Setup.exe
-            output/ZubCut-License-Manager-Setup.exe
+          path: output/ZubCut-Control-Panel-Setup.exe
 
       - name: Publish control-panel-latest release
         uses: softprops/action-gh-release@v2
@@ -115,17 +111,20 @@ jobs:
           name: ZubCut Control Panel
           prerelease: false
           make_latest: false
-          files: |
-            output/ZubCut-Control-Panel-Setup.exe
-            output/ZubCut-License-Manager-Setup.exe
+          files: output/ZubCut-Control-Panel-Setup.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish paid-license-manager-latest alias (legacy updater URL)
+      - name: Publish paid-license-manager-latest (legacy updater URL only)
+        shell: pwsh
+        run: |
+          # Old License Manager EXEs hard-code this filename/tag; same installer, not shown on control-panel-latest.
+          Copy-Item "output/ZubCut-Control-Panel-Setup.exe" "output/ZubCut-License-Manager-Setup.exe" -Force
+      - name: Upload legacy alias for old updaters
         uses: softprops/action-gh-release@v2
         with:
           tag_name: paid-license-manager-latest
-          name: ZubCut Control Panel (legacy tag)
+          name: ZubCut Control Panel
           prerelease: true
           make_latest: false
           files: output/ZubCut-License-Manager-Setup.exe
