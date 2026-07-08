@@ -59,6 +59,32 @@ class TestLagInstantPreblock(unittest.TestCase):
         ics_arm = deferred[deferred.index('if plan.use_windivert:'): deferred.index('else:')]
         self.assertNotIn('_arm_victim_mitm_like_kill', ics_arm)
 
+    def test_lan_warmup_helpers_exist(self) -> None:
+        src = self._main_py()
+        self.assertIn('def _warm_lan_mitm_stack', src)
+        self.assertIn('def _lan_mitm_stack_is_warm', src)
+        warm = src[src.index('def _warm_impairment_stack'): src.index('def _start_impairment_warm_on_reactivate')]
+        self.assertIn('_warm_lan_mitm_stack()', warm)
+
+    def test_instant_preblock_covers_lan_arp(self) -> None:
+        src = self._main_py()
+        pre = src[src.index('def _lag_instant_preblock'): src.index('def startLagSwitch')]
+        self.assertIn('plan.use_arp_mitm', pre)
+        self.assertIn('_lan_mitm_stack_is_warm()', pre)
+        self.assertIn('killer.kill(dev, wait_after=0.0, traffic_cut=True)', pre)
+        self.assertIn('_lag_lan_preblocked', pre)
+
+    def test_deferred_lan_skips_full_arm_when_preblocked(self) -> None:
+        src = self._main_py()
+        deferred = src[
+            src.index('def _lag_deferred_start'): src.index('def _lag_abort_start')
+        ]
+        self.assertIn('_lag_lan_preblocked', deferred)
+        self.assertIn('_lan_mitm_stack_is_warm()', deferred)
+        lan_arm = deferred[deferred.index('else:'): deferred.index('_clear_explicit_kill_for_flow')]
+        self.assertIn('if lan_preblocked:', lan_arm)
+        self.assertIn('reassert_poison', lan_arm)
+
     def test_ensure_gate_fast_path_before_prep(self) -> None:
         src = self._main_py()
         gate_fn = src[src.index('def _ensure_ics_lag_gate'): src.index('def _apply_ics_client_block')]
