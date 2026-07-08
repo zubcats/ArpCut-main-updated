@@ -29,5 +29,17 @@ class TestLagSwitchCrashFix(unittest.TestCase):
         self.assertNotIn('\n                    mac = str(work_snap.get(', deferred)
 
 
+    def test_lag_resolved_victim_skips_ping_while_mitm_armed(self) -> None:
+        src = self._main_py()
+        block = src[src.index('def _lag_resolved_victim'): src.index('def stopLagSwitch')]
+        self.assertIn('def _lag_skip_live_resolve', src)
+        self.assertIn('if not self._lag_skip_live_resolve(merged):', block)
+
+    def test_lag_lan_mitm_stays_warm_across_cycles(self) -> None:
+        src = self._main_py()
+        warm = src[src.index('def _lag_lan_mitm_warm'): src.index('def _lag_clear_block_only')]
+        self.assertIn('or bool(self.lag_active)', warm)
+
+
 if __name__ == '__main__':
     unittest.main()

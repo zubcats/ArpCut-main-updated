@@ -5967,10 +5967,28 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         plan = self._impairment_plan_for(device)
         if plan.use_windivert or not plan.use_arp_mitm:
             return False
-        return (
-            mac in self.killer.killed
-            and getattr(self, '_lag_net_prepared_mac', None) == mac
-        )
+        if mac not in self.killer.killed:
+            return False
+        # Stay warm for every block/allow cycle once lag has armed MITM (not only first prep).
+        return getattr(self, '_lag_net_prepared_mac', None) == mac or bool(self.lag_active)
+
+    def _lag_skip_live_resolve(self, device) -> bool:
+        """
+        During lag, ARP cache shows poisoned MAC and many PS5s ignore ICMP — skip per-phase ping.
+        Avoids false 'did not answer ping' spam on allow transitions and when turning lag OFF.
+        """
+        if not self.lag_active or not isinstance(device, dict):
+            return False
+        mac = str(device.get('mac') or '').strip()
+        if not mac or mac != str(getattr(self, 'lag_device_mac', None) or '').strip():
+            return False
+        plan = self._impairment_plan_for(device)
+        if plan.use_windivert:
+            return bool(
+                getattr(self, '_lag_ics_preblocked', False)
+                or getattr(self, '_ics_lag_gate', None) is not None
+            )
+        return mac in getattr(self.killer, 'killed', {})
 
     def _lag_clear_block_only(self, device, direction: str | None = None) -> None:
         """Allow phase on home LAN: drop firewall backstop; resume forwarder pass-through."""
@@ -6291,24 +6309,25 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         if new_ip and self.lag_active:
                             self.lag_device_ip = new_ip
                 else:
-                    from tools.utils import resolve_live_lan_victim
+                    if not self._lag_skip_live_resolve(merged):
+                        from tools.utils import resolve_live_lan_victim
 
-                    iface_ip = str(getattr(self.scanner.iface, 'ip', None) or '').strip()
-                    resolved, hint = resolve_live_lan_victim(
-                        merged,
-                        getattr(self.scanner, 'devices', None) or [],
-                        iface_ip,
-                        ping_attempts=1,
-                    )
-                    if isinstance(resolved, dict):
-                        merged = dict(resolved)
-                        new_mac = str(merged.get('mac') or '').strip()
-                        if new_mac and new_mac != mac and self.lag_active:
-                            self.lag_device_mac = new_mac
-                            self.lag_device_ip = merged.get('ip')
-                            self._lag_net_prepared_mac = None
-                        if hint and self.lag_active:
-                            self.log(hint, UI_LOG_VICTIM_BLOCK_FG)
+                        iface_ip = str(getattr(self.scanner.iface, 'ip', None) or '').strip()
+                        resolved, hint = resolve_live_lan_victim(
+                            merged,
+                            getattr(self.scanner, 'devices', None) or [],
+                            iface_ip,
+                            ping_attempts=1,
+                        )
+                        if isinstance(resolved, dict):
+                            merged = dict(resolved)
+                            new_mac = str(merged.get('mac') or '').strip()
+                            if new_mac and new_mac != mac and self.lag_active:
+                                self.lag_device_mac = new_mac
+                                self.lag_device_ip = merged.get('ip')
+                                self._lag_net_prepared_mac = None
+                            if hint and self.lag_active:
+                                self.log(hint, UI_LOG_VICTIM_BLOCK_FG)
             except Exception:
                 pass
         return merged
