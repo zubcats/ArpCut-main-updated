@@ -33,7 +33,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  should-build-zubcut:
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.filter.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: filter
+        shell: bash
+        run: |
+          FILES="$(git diff --name-only HEAD^ HEAD 2>/dev/null || git show --name-only --pretty='' HEAD)"
+          CP_ONLY_RE='^(build_control_panel\.py|src/zubcut_control_panel\.py|src/gui/control_panel\.py|src/gui/crash_reports_panel\.py|src/tools/license_admin\.py|src/tools/license_cloud_sync\.py|src/tools/control_panel_crashes\.py|src/tools/qt_frozen_bootstrap\.py|installer/ZubCut-Control-Panel\.iss|installer/Build-Control-Panel-Installer\.bat|packaging/pyinstaller-hooks/rthook_qt_control_panel\.py|\.github/workflows/build-control-panel-windows\.yml)$'
+          if echo "${FILES}" | grep -vE "${CP_ONLY_RE}" | grep -q .; then
+            echo "proceed=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "proceed=false" >> "${GITHUB_OUTPUT}"
+            echo "Control Panel-only commit; skip ZubCut Windows installer."
+          fi
+
   build-windows:
+    needs: should-build-zubcut
+    if: needs.should-build-zubcut.outputs.proceed == 'true'
     runs-on: windows-latest
     timeout-minutes: 45
     steps:

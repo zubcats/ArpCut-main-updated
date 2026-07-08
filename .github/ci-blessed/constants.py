@@ -48,6 +48,24 @@ SETTINGS_PATH = path.join(DOCUMENTS_PATH, 'zubcut.json')
 LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'zubcut-license.json')
 LICENSE_PUBLIC_KEY_B64 = ''
 LICENSE_SIGNIN_URL = 'https://zubcut-license-signin.zubcats.workers.dev'
+# Crash report HTTPS URL (POST /crash). Defaults to LICENSE_SIGNIN_URL; override with ZUBCUT_CRASH_REPORT_URL.
+CRASH_REPORT_URL = LICENSE_SIGNIN_URL
+
+# ZubCut Control Panel (admin app — own CI release tag; does not use ZubCut stable/experimental updaters)
+CONTROL_PANEL_DISPLAY_NAME = 'ZubCut Control Panel'
+CONTROL_PANEL_EXE_NAME = 'ZubCutControlPanel.exe'
+CONTROL_PANEL_BUNDLE_NAME = 'ZubCutControlPanel'
+CONTROL_PANEL_UPDATE_URL = (
+    f'{GITHUB_RELEASES_BASE}/download/control-panel-latest/ZubCut-Control-Panel-Setup.exe'
+)
+CONTROL_PANEL_CLOUD_SYNC_PATH = path.join(DOCUMENTS_PATH, 'license-manager-cloud-sync.json')
+CONTROL_PANEL_ADMIN_DB_PATH = path.join(DOCUMENTS_PATH, 'paid-license-admin.json')
+CONTROL_PANEL_ADMIN_SIGNING_KEY_PATH = path.join(DOCUMENTS_PATH, 'paid-license-signing.key')
+# Legacy names (older License Manager installs / docs)
+PAID_LICENSE_MANAGER_UPDATE_URL = CONTROL_PANEL_UPDATE_URL
+PAID_LICENSE_MANAGER_CLOUD_SYNC_PATH = CONTROL_PANEL_CLOUD_SYNC_PATH
+PAID_LICENSE_ADMIN_DB_PATH = CONTROL_PANEL_ADMIN_DB_PATH
+PAID_LICENSE_ADMIN_SIGNING_KEY_PATH = CONTROL_PANEL_ADMIN_SIGNING_KEY_PATH
 
 # Extra legacy settings to migrate if zubcut.json is missing (Windows)
 LEGACY_SETTINGS_CANDIDATES = []

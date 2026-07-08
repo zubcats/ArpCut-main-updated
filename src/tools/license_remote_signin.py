@@ -139,12 +139,12 @@ def signin_failure_hint(reason: str) -> str:
     if 'invalid credentials' in low:
         return (
             'Double-check account name (lowercase) and password. If correct, ask admin to use '
-            'License Manager → Push selected to cloud for your account.'
+            'Control Panel → Push selected to cloud for your account.'
         )
     if 're-push your account' in low:
-        return 'Admin: open License Manager, select the account, click Push selected to cloud.'
+        return 'Admin: open Control Panel, select the account, click Push selected to cloud.'
     if 'expired' in low:
-        return 'Ask your administrator to renew your subscription in License Manager.'
+        return 'Ask your administrator to renew your subscription in Control Panel.'
     return ''
 
 

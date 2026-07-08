@@ -1,0 +1,132 @@
+# ZubCut Control Panel — admin app (separate from customer ZubCut stable/experimental releases).
+# Runs on main only when control-panel paths change; does not touch ZubCut update tags.
+
+name: Build Control Panel (Windows)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'build_control_panel.py'
+      - 'src/zubcut_control_panel.py'
+      - 'src/gui/control_panel.py'
+      - 'src/gui/crash_reports_panel.py'
+      - 'src/tools/license_admin.py'
+      - 'src/tools/license_cloud_sync.py'
+      - 'src/tools/control_panel_crashes.py'
+      - 'src/tools/qt_frozen_bootstrap.py'
+      - 'src/tools/updater_core.py'
+      - 'src/tools/frameless_chrome.py'
+      - 'src/tools/branding.py'
+      - 'src/constants.py'
+      - '.github/ci-blessed/constants.py'
+      - 'packaging/pyinstaller-hooks/rthook_qt_control_panel.py'
+      - 'installer/ZubCut-Control-Panel.iss'
+      - '.github/workflows/build-control-panel-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: control-panel-windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-control-panel:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore build.py and src/constants.py for CI
+        shell: bash
+        run: |
+          cp .github/ci-blessed/constants.py src/constants.py
+          cp .github/ci-blessed/build.py build.py
+
+      - name: Stamp Control Panel build metadata
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, re
+          from datetime import datetime, timezone
+          from pathlib import Path
+          p = Path("src/constants.py")
+          text = p.read_text(encoding="utf-8")
+          build_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          commit = os.environ.get("GITHUB_SHA", "").strip()
+          if "CONTROL_PANEL_BUILD_TIME_ISO" not in text:
+              text += f"\nCONTROL_PANEL_BUILD_TIME_ISO = ''\nCONTROL_PANEL_BUILD_COMMIT = ''\n"
+          text = re.sub(r"^APP_BUILD_TIME_ISO\s*=.*$", f"APP_BUILD_TIME_ISO = {build_iso!r}", text, flags=re.M)
+          text = re.sub(r"^APP_BUILD_COMMIT\s*=.*$", f"APP_BUILD_COMMIT = {commit!r}", text, flags=re.M)
+          p.write_text(text, encoding="utf-8")
+          print("Stamped build metadata", build_iso, commit[:12])
+          PY
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pillow
+
+      - name: Build Control Panel EXE
+        run: python build_control_panel.py
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Compile Control Panel installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          & $iscc "installer\ZubCut-Control-Panel.iss"
+
+      - name: Create installer alias
+        shell: pwsh
+        run: |
+          $built = Get-ChildItem -Path "output" -Filter "ZubCut-Control-Panel-Setup*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $built) { throw "Installer not found in output/" }
+          Copy-Item $built.FullName "output/ZubCut-Control-Panel-Setup.exe" -Force
+          # One-release transition alias for older License Manager updaters
+          Copy-Item $built.FullName "output/ZubCut-License-Manager-Setup.exe" -Force
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZubCut-Control-Panel-Installer
+          path: |
+            output/ZubCut-Control-Panel-Setup.exe
+            output/ZubCut-License-Manager-Setup.exe
+
+      - name: Publish control-panel-latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: control-panel-latest
+          name: ZubCut Control Panel
+          prerelease: false
+          make_latest: false
+          files: |
+            output/ZubCut-Control-Panel-Setup.exe
+            output/ZubCut-License-Manager-Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish paid-license-manager-latest alias (legacy updater URL)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: paid-license-manager-latest
+          name: ZubCut Control Panel (legacy tag)
+          prerelease: true
+          make_latest: false
+          files: output/ZubCut-License-Manager-Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,4 +1,4 @@
-"""Upload ZubCut crash logs to the license worker for admin / License Manager review."""
+"""Upload ZubCut crash logs to the license worker for admin / Control Panel review."""
 
 from __future__ import annotations
 

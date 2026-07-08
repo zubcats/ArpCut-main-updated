@@ -249,7 +249,7 @@ def validate_license_document(
     if not _verify_signature(payload, signature, key_b64):
         return LicenseValidationResult(
             False,
-            'License signature invalid. Ask your admin to re-push your account in License Manager, '
+            'License signature invalid. Ask your admin to re-push your account in Control Panel, '
             'or install the latest official ZubCut build.',
         )
     if str(payload.get('status', 'active')).strip().lower() != 'active':
