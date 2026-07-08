@@ -50,6 +50,7 @@ class TestLagCountdown(unittest.TestCase):
         self.assertIn('_lag_apply_allow_phase_sync', allow)
         self.assertIn('_arm_lag_phase_countdown', allow)
         tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
+        self.assertIn('_lag_phase_arming', tick)
         self.assertNotIn('_lag_ics_force_unpause', tick)
 
     def test_allow_phase_uses_same_countdown_format(self) -> None:
