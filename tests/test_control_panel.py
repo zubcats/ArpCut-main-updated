@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from unittest.mock import MagicMock, patch
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 _SRC = os.path.join(_ROOT, 'src')
@@ -51,6 +52,36 @@ class TestControlPanelSource(unittest.TestCase):
         from tools.control_panel_crashes import list_crash_reports
 
         self.assertTrue(callable(list_crash_reports))
+
+
+class TestWorkerHttpHeaders(unittest.TestCase):
+    def test_worker_http_headers_include_custom_user_agent(self) -> None:
+        from tools.license_cloud_sync import WORKER_HTTP_USER_AGENT, worker_http_headers
+
+        headers = worker_http_headers()
+        self.assertEqual(headers['User-Agent'], WORKER_HTTP_USER_AGENT)
+        self.assertEqual(headers['User-Agent'], 'ZubCut-ControlPanel/1.0')
+        self.assertEqual(headers['Content-Type'], 'application/json')
+
+    @patch('tools.control_panel_crashes.urllib.request.urlopen')
+    @patch('tools.control_panel_crashes.load_cloud_sync_settings')
+    def test_list_crash_reports_sends_user_agent(self, mock_settings, mock_urlopen) -> None:
+        from tools.control_panel_crashes import list_crash_reports
+        from tools.license_cloud_sync import WORKER_HTTP_USER_AGENT
+
+        mock_settings.return_value = {
+            'worker_base_url': 'https://example.test',
+            'admin_secret': 'sekret',
+        }
+        resp = MagicMock()
+        resp.read.return_value = b'{"ok": true, "crashes": []}'
+        resp.__enter__.return_value = resp
+        mock_urlopen.return_value = resp
+
+        rows = list_crash_reports(limit=5)
+        self.assertEqual(rows, [])
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual(req.get_header('User-agent'), WORKER_HTTP_USER_AGENT)
 
 
 if __name__ == '__main__':

@@ -46,7 +46,7 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     req = urllib.request.Request(
         url,
         data=body,
-        headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+        headers={'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'ZubCut-ControlPanel/1.0'},
         method='POST',
     )
     try:

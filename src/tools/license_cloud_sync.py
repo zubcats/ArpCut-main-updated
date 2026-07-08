@@ -13,6 +13,16 @@ import requests
 
 from constants import PAID_LICENSE_MANAGER_CLOUD_SYNC_PATH
 
+WORKER_HTTP_USER_AGENT = 'ZubCut-ControlPanel/1.0'
+
+
+def worker_http_headers(*, json_body: bool = True) -> dict[str, str]:
+    """Headers for Control Panel → Cloudflare Worker (avoids CF Error 1010 on default Python UA)."""
+    headers = {'Accept': 'application/json', 'User-Agent': WORKER_HTTP_USER_AGENT}
+    if json_body:
+        headers['Content-Type'] = 'application/json'
+    return headers
+
 
 def _defaults() -> dict[str, Any]:
     return {'version': 1, 'worker_base_url': '', 'admin_secret': '', 'auto_sync': True}
@@ -63,7 +73,11 @@ def test_worker_reachable(worker_base_url: str) -> tuple[bool, str]:
     if not base.startswith('https://'):
         return False, 'Worker URL must start with https://'
     try:
-        r = requests.get(f'{base}/', timeout=15)
+        r = requests.get(
+            f'{base}/',
+            headers=worker_http_headers(json_body=False),
+            timeout=15,
+        )
     except requests.RequestException as e:
         return False, str(e)
     try:
@@ -104,7 +118,7 @@ def push_account_to_worker(license_id: str) -> tuple[bool, str]:
         r = requests.post(
             url,
             json={'secret': secret, 'account_key': key, 'bundle': bundle},
-            headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+            headers=worker_http_headers(),
             timeout=45,
         )
     except requests.RequestException as e:
@@ -143,7 +157,7 @@ def delete_account_from_worker(account_key: str) -> tuple[bool, str]:
         r = requests.post(
             url,
             json={'secret': secret, 'account_key': key},
-            headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+            headers=worker_http_headers(),
             timeout=45,
         )
     except requests.RequestException as e:

@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from tools.license_cloud_sync import load_cloud_sync_settings
+from tools.license_cloud_sync import load_cloud_sync_settings, worker_http_headers
 
 DEFAULT_TIMEOUT_SEC = 30
 
@@ -28,7 +28,7 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     req = urllib.request.Request(
         f'{base}{path}',
         data=body,
-        headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+        headers=worker_http_headers(),
         method='POST',
     )
     try:
