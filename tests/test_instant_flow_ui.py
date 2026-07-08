@@ -77,7 +77,26 @@ class TestInstantFlowUi(unittest.TestCase):
     def test_lag_block_apply_deferred(self) -> None:
         src = self._main_py()
         block = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
-        self.assertIn('QTimer.singleShot(0, _lag_block_apply)', block)
+        self.assertIn('_lag_apply_block(cur)', block)
+        self.assertNotIn('QTimer.singleShot(0, _lag_block_apply)', block)
+
+    def test_lag_arming_countdown_on_click(self) -> None:
+        src = self._main_py()
+        start = src[
+            src.index('def startLagSwitch'): src.index('QTimer.singleShot(0, _lag_deferred_start)')
+        ]
+        self.assertIn('_lag_phase_arming = True', start)
+        self.assertIn("Arming…", start)
+        self.assertIn('_lag_countdown_timer.start()', start)
+        deferred = src[
+            src.index('def _lag_deferred_start'): src.index('def _lag_abort_start')
+        ]
+        self.assertNotIn('_await_mitm_teardown_thread', deferred)
+        self.assertIn('_arm_victim_mitm_like_kill', deferred)
+        self.assertIn('_clear_explicit_kill_for_flow', deferred)
+        arm_idx = deferred.index('_arm_victim_mitm_like_kill')
+        clear_idx = deferred.index('_clear_explicit_kill_for_flow')
+        self.assertLess(arm_idx, clear_idx)
 
     def test_dupe_finish_deferred(self) -> None:
         src = self._main_py()

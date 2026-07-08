@@ -3277,6 +3277,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             UI_LOG_VICTIM_BLOCK_FG,
         )
         self._paint_flow_start_ui('lag', device)
+        self._lag_phase_arming = True
+        self.lblLagCountdownMain.setVisible(True)
+        self._set_countdown_label(self.lblLagCountdownMain, 'Arming…')
+        self._lag_countdown_timer.start()
 
         self._lag_start_gen = int(getattr(self, '_lag_start_gen', 0)) + 1
         lag_gen = self._lag_start_gen
@@ -3289,16 +3293,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if self.dupe_active:
                 self.stopDupe(refresh_dialog=True, log=False)
                 if self._dupe_pending_clear or getattr(self, '_dupe_clear_future', None):
-                    self._flush_pending_dupe_clear_sync(max_wait_ms=400)
+                    self._flush_pending_dupe_clear_sync(max_wait_ms=200)
                 self._drop_dupe_restoring_banner()
-            was_mitm = bool(self.mitm_shaping_active)
-            if was_mitm:
+            if self.mitm_shaping_active:
                 self.stop_mitm_shaping(log=False)
-                self._await_mitm_teardown_thread()
-            elif getattr(self, '_mitm_teardown_thread', None) is not None:
-                t = getattr(self, '_mitm_teardown_thread', None)
-                if t is not None and t.is_alive():
-                    self._await_mitm_teardown_thread()
             if self.percent_cut_active:
                 self.stopPercentCut(log=False)
             work_mac = mac
@@ -3317,40 +3315,18 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 if live_ip:
                     self.lag_device_ip = live_ip
             except Exception as exc:
-                self.lag_active = False
-                self.lag_device_mac = None
-                self.lag_device_ip = None
-                self._lag_device_snapshot = None
-                self.btnLagSwitch.setText('Lag Switch')
-                self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-                self.log(f'Lag failed: {exc}', 'red')
-                self._refresh_flow_toggle_ui()
+                self._lag_abort_start(f'Lag failed: {exc}')
                 return
-            self._clear_explicit_kill_for_flow(work_snap)
             plan = self._impairment_plan_for(work_snap)
             if not plan.use_windivert:
                 mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(work_snap, ping_attempts=1)
                 if not mitm_ok:
-                    self.lag_active = False
-                    self.lag_device_mac = None
-                    self.lag_device_ip = None
-                    self._lag_device_snapshot = None
-                    self.btnLagSwitch.setText('Lag Switch')
-                    self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-                    self.log(f'Lag failed: {mitm_reason}', 'red')
-                    self._refresh_flow_toggle_ui()
+                    self._lag_abort_start(f'Lag failed: {mitm_reason}')
                     return
             if not self._arm_victim_mitm_like_kill(work_snap, self.lag_direction, flow='Lag'):
-                self.lag_active = False
-                self.lag_device_mac = None
-                self.lag_device_ip = None
-                self._lag_device_snapshot = None
-                self._lag_net_prepared_mac = None
-                self.btnLagSwitch.setText('Lag Switch')
-                self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-                self.log('Lag failed: could not arm MITM — rescan target', 'red')
-                self._refresh_flow_toggle_ui()
+                self._lag_abort_start('Lag failed: could not arm MITM — rescan target')
                 return
+            self._clear_explicit_kill_for_flow(work_snap)
             self._lag_net_prepared_mac = work_mac
             try:
                 iface = self.scanner.iface
@@ -3369,6 +3345,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         'red',
                     )
                     self.stopLagSwitch(refresh_dialog=True, log=False)
+                else:
+                    self._lag_abort_start('Lag aborted before first block phase')
                 return
             cur = self._lag_resolved_victim() or work_dev
             self._refresh_lag_timing_from_dialog()
@@ -3378,6 +3356,20 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._repaint_device_table_rows(cur)
 
         QTimer.singleShot(0, _lag_deferred_start)
+
+    def _lag_abort_start(self, message: str) -> None:
+        """Drop optimistic lag UI when deferred arm fails."""
+        self._lag_phase_arming = False
+        self.lag_active = False
+        self.lag_device_mac = None
+        self.lag_device_ip = None
+        self._lag_device_snapshot = None
+        self._lag_net_prepared_mac = None
+        self._stop_lag_countdown()
+        self.btnLagSwitch.setText('Lag Switch')
+        self.btnLagSwitch.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+        self.log(message, 'red')
+        self._refresh_flow_toggle_ui()
 
     def _lag_reassert_poison(self, device) -> None:
         """Poison burst only — never restart the ARP worker (see killer.reassert_poison)."""
@@ -5125,6 +5117,16 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         victim = self._victim_record_for_mac(mac) or dev
         plan = self._impairment_plan_for(dev)
         ics_mode = bool(plan.is_ics_downstream)
+        if (
+            getattr(self, 'lag_active', False)
+            and plan.use_windivert
+            and getattr(self, '_ics_lag_gate', None) is not None
+        ):
+            gate = self._ics_lag_gate
+            if gate is not None and gate.is_running():
+                self._sync_killed_devices()
+                self._updateKillButtonState()
+                return
         try:
             _bg_unblock_ip(victim.get('ip'))
             self.killer.unkill(victim, ics_mode=ics_mode)
@@ -5603,6 +5605,16 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self.lag_active:
             self._stop_lag_countdown()
             return
+        if getattr(self, '_lag_phase_arming', False):
+            self.lblLagCountdownMain.setVisible(True)
+            self._set_countdown_label(self.lblLagCountdownMain, 'Arming…')
+            dlg = getattr(self, 'lag_switch_dialog', None)
+            if dlg is not None and dlg.isVisible():
+                try:
+                    dlg.set_lag_countdown(None, False)
+                except Exception:
+                    pass
+            return
         rem = self.lag_remaining_ms()
         allow = bool(getattr(self, '_lag_in_allow_phase', False))
         if rem is not None and rem <= 0:
@@ -5637,27 +5649,21 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _lag_phase_begin_block(self, device) -> None:
         if not self.lag_active or not isinstance(device, dict):
             return
+        self._lag_phase_arming = False
         self._lag_bump_phase_seq()
         self._lag_in_allow_phase = False
         self._sync_lag_timing_values_from_ui()
         block_ms = max(1, int(self.lag_block_ms))
         self._lag_schedule_phase(block_ms)
         self._arm_lag_phase_countdown()
-        dev = dict(device)
-
-        def _lag_block_apply():
-            if not self.lag_active:
-                return
-            cur = self._lag_resolved_victim() or dev
-            try:
-                self._lag_apply_block(cur)
-            except Exception:
-                pass
-            mac = str(cur.get('mac') or '').strip()
-            if mac:
-                self._refresh_table_row_for_mac(mac, cur.get('ip'))
-
-        QTimer.singleShot(0, _lag_block_apply)
+        cur = self._lag_resolved_victim() or device
+        try:
+            self._lag_apply_block(cur)
+        except Exception:
+            pass
+        mac = str(cur.get('mac') or '').strip()
+        if mac:
+            self._refresh_table_row_for_mac(mac, cur.get('ip'))
 
     def _lag_phase_begin_allow(self, device) -> None:
         if not self.lag_active or not isinstance(device, dict):
@@ -5669,23 +5675,16 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         allow_ms = max(1, int(self.lag_release_ms))
         self._lag_schedule_phase(allow_ms)
         self._arm_lag_phase_countdown()
-        dev = dict(device)
-
-        def _lag_allow_apply():
-            if not self.lag_active:
-                return
-            cur = self._lag_resolved_victim() or dev
-            self._lag_apply_allow_phase_sync(cur)
-            try:
-                self._lag_ics_set_paused(cur, False)
-            except Exception:
-                pass
-            self._lag_ics_force_unpause()
-            mac = str(cur.get('mac') or '').strip()
-            if mac:
-                self._refresh_table_row_for_mac(mac, cur.get('ip'))
-
-        QTimer.singleShot(0, _lag_allow_apply)
+        cur = self._lag_resolved_victim() or device
+        self._lag_apply_allow_phase_sync(cur)
+        try:
+            self._lag_ics_set_paused(cur, False)
+        except Exception:
+            pass
+        self._lag_ics_force_unpause()
+        mac = str(cur.get('mac') or '').strip()
+        if mac:
+            self._refresh_table_row_for_mac(mac, cur.get('ip'))
 
     def _lag_apply_block(self, device):
         """Block phase: WinDivert pause in-place when possible (fast lag cycles on hotspot)."""
@@ -5825,6 +5824,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lag_device_mac = None
         self.lag_device_ip = None
         self._lag_net_prepared_mac = None
+        self._lag_phase_arming = False
         self._lag_in_allow_phase = False
         self._lag_restoring_after_stop = False
         self._lag_restoring_mac = None
