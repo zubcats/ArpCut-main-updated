@@ -18,7 +18,6 @@ on:
       - 'src/tools/qt_frozen_bootstrap.py'
       - 'src/tools/updater_core.py'
       - 'src/tools/frameless_chrome.py'
-      - 'src/tools/utils_gui.py'
       - 'src/tools/branding.py'
       - 'src/constants.py'
       - '.github/ci-blessed/constants.py'
