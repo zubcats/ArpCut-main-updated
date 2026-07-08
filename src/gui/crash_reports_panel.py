@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -41,6 +42,8 @@ class CrashReportsPanel(QWidget):
         root = QVBoxLayout(self)
         header = QHBoxLayout()
         self.lblStatus = QLabel('Save cloud settings on the Accounts tab, then Refresh.', self)
+        self.lblStatus.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.lblStatus.setTextInteractionFlags(Qt.TextSelectableByMouse)
         header.addWidget(self.lblStatus, 1)
         header.addWidget(QLabel('Account:', self))
         self.cmbAccount = QComboBox(self)
@@ -110,7 +113,7 @@ class CrashReportsPanel(QWidget):
         try:
             self._rows = list_crash_reports(limit=200)
         except CrashApiError as exc:
-            self.lblStatus.setText(str(exc))
+            self._set_status_label('Refresh failed. See details in the popup.', str(exc))
             QMessageBox.warning(self, 'Crash reports', str(exc))
             return
         self._rebuild_filter_combo()
@@ -168,7 +171,11 @@ class CrashReportsPanel(QWidget):
         visible = len(self._filtered_rows())
         total = len(self._rows)
         msg = f'{visible} shown' + (f' of {total} total' if visible != total else '')
-        self.lblStatus.setText(msg)
+        self._set_status_label(msg)
+
+    def _set_status_label(self, text: str, detail: str = '') -> None:
+        self.lblStatus.setText(str(text or ''))
+        self.lblStatus.setToolTip(str(detail or ''))
 
     def _populate_table(self) -> None:
         rows = self._filtered_rows()

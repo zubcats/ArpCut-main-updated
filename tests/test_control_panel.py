@@ -53,6 +53,14 @@ class TestControlPanelSource(unittest.TestCase):
 
         self.assertTrue(callable(list_crash_reports))
 
+    def test_crash_panel_source_avoids_expanding_status_banner(self) -> None:
+        path = os.path.join(_ROOT, 'src', 'gui', 'crash_reports_panel.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        self.assertIn('QSizePolicy.Ignored', src)
+        self.assertIn("Refresh failed. See details in the popup.", src)
+        self.assertIn('self.lblStatus.setToolTip', src)
+
 
 class TestWorkerHttpHeaders(unittest.TestCase):
     def test_worker_http_headers_include_custom_user_agent(self) -> None:
