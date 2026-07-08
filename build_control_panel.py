@@ -24,7 +24,6 @@ HIDDEN_IMPORTS = [
     'tools.license_cloud_sync',
     'tools.control_panel_crashes',
     'tools.updater_core',
-    'tools.frameless_chrome',
     'tools.branding',
     'tools.logo_shell_crop',
     'assets',

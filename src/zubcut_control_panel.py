@@ -127,6 +127,11 @@ if __name__ == '__main__':
             return icon
 
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+        if _sys.platform.startswith('win'):
+            _sw_gl = getattr(Qt, 'AA_UseSoftwareOpenGL', None)
+            if _sw_gl is not None:
+                QApplication.setAttribute(_sw_gl, True)
+                _cp_boot('AA_UseSoftwareOpenGL enabled')
         _ss_prop = getattr(Qt, 'AA_UseStyleSheetPropagationInWidgetStyles', None)
         if _ss_prop is not None:
             QApplication.setAttribute(_ss_prop, True)

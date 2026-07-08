@@ -24,6 +24,7 @@ on:
       - 'packaging/pyinstaller-hooks/rthook_qt_control_panel.py'
       - 'installer/ZubCut-Control-Panel.iss'
       - '.github/workflows/build-control-panel-windows.yml'
+      - 'tests/test_control_panel.py'
   workflow_dispatch:
 
 permissions:
