@@ -63,8 +63,11 @@ class TestHotspotIcsPaths(unittest.TestCase):
         ]
         self.assertIn('_prepare_victim_for_impairment', lag_def)
         self.assertIn('plan.use_windivert', lag_def)
-        prereq = lag_def[lag_def.index('mitm_prereqs_ok') - 80: lag_def.index('mitm_prereqs_ok') + 40]
-        self.assertIn('not plan.use_windivert', prereq)
+        lan_arm = lag_def[lag_def.index('else:'): lag_def.index('_clear_explicit_kill_for_flow')]
+        self.assertIn('mitm_prereqs_ok', lan_arm)
+        self.assertIn('_arm_victim_mitm_like_kill', lan_arm)
+        ics_arm = lag_def[lag_def.index('if plan.use_windivert:'): lag_def.index('else:')]
+        self.assertNotIn('mitm_prereqs_ok', ics_arm)
 
     def test_kill_dupe_and_legacy_paths_prepare_hotspot(self) -> None:
         src = self._main_py()

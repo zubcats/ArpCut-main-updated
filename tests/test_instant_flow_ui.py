@@ -92,11 +92,9 @@ class TestInstantFlowUi(unittest.TestCase):
             src.index('def _lag_deferred_start'): src.index('def _lag_abort_start')
         ]
         self.assertNotIn('_await_mitm_teardown_thread', deferred)
-        self.assertIn('_arm_victim_mitm_like_kill', deferred)
         self.assertIn('_clear_explicit_kill_for_flow', deferred)
-        arm_idx = deferred.index('_arm_victim_mitm_like_kill')
-        clear_idx = deferred.index('_clear_explicit_kill_for_flow')
-        self.assertLess(arm_idx, clear_idx)
+        self.assertIn('plan.use_windivert', deferred)
+        self.assertIn('_lag_instant_preblock', src[src.index('def startLagSwitch'): src.index('def _lag_abort_start')])
 
     def test_dupe_finish_deferred(self) -> None:
         src = self._main_py()
