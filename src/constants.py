@@ -63,11 +63,14 @@ CONTROL_PANEL_BUNDLE_NAME = 'ZubCutControlPanel'
 CONTROL_PANEL_UPDATE_URL = (
     f'{GITHUB_RELEASES_BASE}/download/control-panel-latest/ZubCut-Control-Panel-Setup.exe'
 )
+CONTROL_PANEL_LEGACY_UPDATE_URL = (
+    f'{GITHUB_RELEASES_BASE}/download/paid-license-manager-latest/ZubCut-License-Manager-Setup.exe'
+)
 CONTROL_PANEL_CLOUD_SYNC_PATH = path.join(DOCUMENTS_PATH, 'license-manager-cloud-sync.json')
 CONTROL_PANEL_ADMIN_DB_PATH = path.join(DOCUMENTS_PATH, 'paid-license-admin.json')
 CONTROL_PANEL_ADMIN_SIGNING_KEY_PATH = path.join(DOCUMENTS_PATH, 'paid-license-signing.key')
-# Legacy names (older License Manager installs / docs)
-PAID_LICENSE_MANAGER_UPDATE_URL = CONTROL_PANEL_UPDATE_URL
+# Legacy names (older License Manager installs baked this URL into the EXE at build time)
+PAID_LICENSE_MANAGER_UPDATE_URL = CONTROL_PANEL_LEGACY_UPDATE_URL
 PAID_LICENSE_MANAGER_CLOUD_SYNC_PATH = CONTROL_PANEL_CLOUD_SYNC_PATH
 PAID_LICENSE_ADMIN_DB_PATH = CONTROL_PANEL_ADMIN_DB_PATH
 PAID_LICENSE_ADMIN_SIGNING_KEY_PATH = CONTROL_PANEL_ADMIN_SIGNING_KEY_PATH

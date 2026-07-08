@@ -24,7 +24,8 @@ class TestControlPanelConstants(unittest.TestCase):
         self.assertEqual(CONTROL_PANEL_BUNDLE_NAME, 'ZubCutControlPanel')
         self.assertIn('control-panel-latest', CONTROL_PANEL_UPDATE_URL)
         self.assertIn('ZubCut-Control-Panel-Setup.exe', CONTROL_PANEL_UPDATE_URL)
-        self.assertEqual(PAID_LICENSE_MANAGER_UPDATE_URL, CONTROL_PANEL_UPDATE_URL)
+        self.assertIn('paid-license-manager-latest', PAID_LICENSE_MANAGER_UPDATE_URL)
+        self.assertIn('ZubCut-License-Manager-Setup.exe', PAID_LICENSE_MANAGER_UPDATE_URL)
 
 
 class TestControlPanelSource(unittest.TestCase):

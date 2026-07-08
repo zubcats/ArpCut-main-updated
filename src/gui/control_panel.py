@@ -21,7 +21,11 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from constants import CONTROL_PANEL_DISPLAY_NAME, CONTROL_PANEL_UPDATE_URL
+from constants import (
+    CONTROL_PANEL_DISPLAY_NAME,
+    CONTROL_PANEL_LEGACY_UPDATE_URL,
+    CONTROL_PANEL_UPDATE_URL,
+)
 from gui.crash_reports_panel import CrashReportsPanel
 from tools.frameless_chrome import (
     FramelessResizableMixin,
@@ -612,8 +616,10 @@ class ControlPanelWindow(FramelessResizableMixin, QMainWindow):
         self.tabs.setCurrentWidget(self.crash_panel)
 
     def install_latest_build(self):
-        url = str(CONTROL_PANEL_UPDATE_URL or '').strip()
-        if not url:
+        primary = str(CONTROL_PANEL_UPDATE_URL or '').strip()
+        legacy = str(CONTROL_PANEL_LEGACY_UPDATE_URL or '').strip()
+        urls = [u for u in (primary, legacy) if u]
+        if not urls:
             QMessageBox.warning(self, 'Update', 'Control Panel update URL is not configured.')
             return
         confirm = QMessageBox.question(
@@ -627,7 +633,7 @@ class ControlPanelWindow(FramelessResizableMixin, QMainWindow):
             return
         try:
             QApplication.setOverrideCursor(Qt.WaitCursor)
-            path = download_installer(url)
+            path = download_installer(urls[0], fallback_urls=urls[1:])
             launch_installer(path)
             app = QApplication.instance()
             if app is not None:
