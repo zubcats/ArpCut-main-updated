@@ -106,16 +106,17 @@ python tools/crash_reports_admin.py get ZC-ABC123 --out crash.log
 python tools/crash_reports_admin.py delete ZC-ABC123
 ```
 
-## License Manager UI (external app)
+## License Manager UI (this repo)
 
-Suggested section: **Crash reports**
+Run the PyQt admin app from `license-manager/`:
 
-- Table bound to `POST /admin/crashes/list`
-- Row click → `POST /admin/crash/get` → show `body` in a monospace viewer
-- Delete button → `POST /admin/crash/delete`
-- Refresh button; optional auto-refresh every 60s
+- **Accounts** tab — create / renew / revoke / activate / delete; push to cloud
+- **Cloud sign-in sync** tab — Worker URL, admin secret, test connection
+- **Crash reports** tab — list, view full body, export, delete, optional 60s auto-refresh
 
-Use the same **Worker URL** and **Admin secret** already configured for cloud license sync.
+See [`license-manager/README.md`](../../license-manager/README.md).
+
+## API reference (integrators)
 
 ## Deploy
 
