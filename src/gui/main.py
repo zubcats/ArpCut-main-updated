@@ -49,15 +49,12 @@ from tools.utils_gui import (
 def format_countdown_ms(left_ms):
     """Human-readable countdown (matches Dupe / Lag Switch inline labels)."""
     left_ms = max(0, int(left_ms))
-    if left_ms >= 60000:
-        sec = left_ms // 1000
-        m, s = divmod(sec, 60)
+    sec = left_ms / 1000.0
+    if sec >= 60:
+        whole = int(sec)
+        m, s = divmod(whole, 60)
         return f'Time left: {m}:{s:02d}'
-    if left_ms >= 1000:
-        return f'Time left: {(left_ms + 999) // 1000} s'
-    if left_ms <= 0:
-        return 'Time left: 0 s'
-    return 'Time left: <1 s'
+    return f'Time left: {sec:.2f}s'
 
 
 from tools.frameless_chrome import (
@@ -5579,7 +5576,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if rem_ms is None:
             return ''
         if rem_ms <= 0:
-            return 'Time left: 0 s'
+            return 'Time left: 0.00s'
         return format_countdown_ms(rem_ms)
 
     def _arm_lag_phase_countdown(self) -> None:
@@ -5610,7 +5607,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         allow = bool(getattr(self, '_lag_in_allow_phase', False))
         if rem is not None and rem <= 0:
             self.lblLagCountdownMain.setVisible(True)
-            self._set_countdown_label(self.lblLagCountdownMain, 'Time left: 0 s')
+            self._set_countdown_label(self.lblLagCountdownMain, 'Time left: 0.00s')
             dlg = getattr(self, 'lag_switch_dialog', None)
             if dlg is not None and dlg.isVisible():
                 try:
@@ -5954,7 +5951,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         rem = self.dupe_remaining_ms()
         if rem is not None and rem <= 0:
             self.lblDupeCountdownMain.setVisible(True)
-            self._set_countdown_label(self.lblDupeCountdownMain, 'Time left: 0 s')
+            self._set_countdown_label(self.lblDupeCountdownMain, 'Time left: 0.00s')
             self._dupe_finish_from_countdown('Dupe finished')
             return
         if rem is None or rem <= 0:
@@ -5978,7 +5975,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         self._dupe_finish_from_countdown_pending = True
         self._dupe_countdown_timer.stop()
-        self._set_countdown_label(self.lblDupeCountdownMain, 'Time left: 0 s')
+        self._set_countdown_label(self.lblDupeCountdownMain, 'Time left: 0.00s')
         QTimer.singleShot(0, lambda: self._dupe_finish_from_countdown_sync(log_message))
 
     def _dupe_finish_from_countdown_sync(self, log_message='Dupe finished'):

@@ -21,10 +21,11 @@ class TestLagCountdown(unittest.TestCase):
             return fh.read()
 
     def test_format_countdown_subminute(self) -> None:
-        self.assertEqual(format_countdown_ms(9000), 'Time left: 9 s')
-        self.assertEqual(format_countdown_ms(2500), 'Time left: 3 s')
-        self.assertEqual(format_countdown_ms(500), 'Time left: <1 s')
-        self.assertEqual(format_countdown_ms(0), 'Time left: 0 s')
+        self.assertEqual(format_countdown_ms(9000), 'Time left: 9.00s')
+        self.assertEqual(format_countdown_ms(2500), 'Time left: 2.50s')
+        self.assertEqual(format_countdown_ms(500), 'Time left: 0.50s')
+        self.assertEqual(format_countdown_ms(100), 'Time left: 0.10s')
+        self.assertEqual(format_countdown_ms(0), 'Time left: 0.00s')
 
     def test_format_countdown_minutes(self) -> None:
         self.assertEqual(format_countdown_ms(125000), 'Time left: 2:05')
@@ -54,8 +55,8 @@ class TestLagCountdown(unittest.TestCase):
     def test_allow_phase_uses_same_countdown_format(self) -> None:
         from gui.main import ZubCutApp
 
-        self.assertEqual(ZubCutApp._lag_countdown_label(True, 1500), 'Time left: 2 s')
-        self.assertEqual(ZubCutApp._lag_countdown_label(False, 9000), 'Time left: 9 s')
+        self.assertEqual(ZubCutApp._lag_countdown_label(True, 1500), 'Time left: 1.50s')
+        self.assertEqual(ZubCutApp._lag_countdown_label(False, 9000), 'Time left: 9.00s')
 
     def test_phase_flag_before_timing_sync_in_begin(self) -> None:
         src = self._main_py()
