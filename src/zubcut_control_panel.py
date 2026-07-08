@@ -142,6 +142,14 @@ if __name__ == '__main__':
         _cp_boot('before ControlPanelWindow()')
         win = ControlPanelWindow(icon)
         _cp_boot('after ControlPanelWindow(); calling show()')
+        _screen = app.primaryScreen()
+        if _screen is not None:
+            _fg = _screen.availableGeometry()
+            win.move(
+                _fg.x() + max(0, (_fg.width() - win.width()) // 2),
+                _fg.y() + max(0, (_fg.height() - win.height()) // 2),
+            )
+        win.showNormal()
         win.show()
         win.raise_()
         win.activateWindow()
