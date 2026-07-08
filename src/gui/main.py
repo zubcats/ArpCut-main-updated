@@ -4166,6 +4166,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._migrate_killed_profile_for_device_change(
                         old_mac, old_ip, device
                     )
+                self._purge_stale_console_mitm(device)
         except Exception:
             pass
         changed = False
@@ -4230,8 +4231,102 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return True
 
     def _resolve_flow_start_device(self, device: dict) -> dict:
-        """Resolve plan IP before pinning lag/dupe flow identity (network bind happens at arm)."""
-        return self._device_with_plan_ip(dict(device))
+        """Resolve plan IP + live LAN endpoint before pinning lag/dupe flow identity."""
+        dev = self._device_with_plan_ip(dict(device))
+        plan = self._impairment_plan_for(dev)
+        if not plan.use_arp_mitm or plan.is_ics_downstream:
+            return dev
+        try:
+            from tools.utils import resolve_live_lan_victim
+
+            iface_ip = str(getattr(self.scanner.iface, 'ip', None) or '').strip()
+            old_mac = str(dev.get('mac') or '').strip()
+            old_ip = str(dev.get('ip') or '').strip()
+            resolved, hint = resolve_live_lan_victim(
+                dev,
+                getattr(self.scanner, 'devices', None) or [],
+                iface_ip,
+                ping_attempts=1,
+            )
+            if isinstance(resolved, dict):
+                dev.clear()
+                dev.update(resolved)
+                new_mac = str(dev.get('mac') or '').strip()
+                new_ip = str(dev.get('ip') or '').strip()
+                if hint:
+                    self.log(hint, UI_LOG_VICTIM_BLOCK_FG)
+                elif new_ip != old_ip or new_mac != old_mac:
+                    self.log(
+                        f'Target updated to {new_ip} ({new_mac}) for flow.',
+                        UI_LOG_VICTIM_BLOCK_FG,
+                    )
+                if new_mac and new_mac != old_mac:
+                    self._rekey_kill_bookkeeping(old_mac, dev)
+                if new_ip != old_ip or new_mac != old_mac:
+                    self._migrate_killed_profile_for_device_change(old_mac, old_ip, dev)
+            self._purge_stale_console_mitm(dev)
+        except Exception:
+            pass
+        return dev
+
+    def _console_historical_ips(self, device) -> set[str]:
+        """Saved IPv4s for nickname-linked MACs (Wi‑Fi ↔ Ethernet handoff)."""
+        ips: set[str] = set()
+        if not isinstance(device, dict):
+            return ips
+        try:
+            from tools.utils import _resolve_allowed_macs
+            from networking.nicknames import get_nickname_last_ip_map, parse_nickname_profile_key
+
+            allowed = _resolve_allowed_macs(device)
+            if not allowed:
+                return ips
+            last_map = get_nickname_last_ip_map()
+            for key, lip in last_map.items():
+                lm, _pfx = parse_nickname_profile_key(str(key))
+                if lm not in allowed:
+                    continue
+                s = str(lip or '').strip()
+                if s and _is_valid_ip(s):
+                    ips.add(s)
+            for mac in allowed:
+                s = str(last_map.get(mac) or '').strip()
+                if s and _is_valid_ip(s):
+                    ips.add(s)
+        except Exception:
+            pass
+        return ips
+
+    def _purge_stale_console_mitm(self, device, *, keep_mac: str | None = None) -> None:
+        """Drop orphan MITM on sibling Wi‑Fi/Ethernet MACs for the same console."""
+        if not isinstance(device, dict):
+            return
+        keep = str(keep_mac or device.get('mac') or '').strip()
+        try:
+            from tools.utils import _resolve_allowed_macs
+
+            allowed = _resolve_allowed_macs(device)
+            if not allowed:
+                return
+            for emac in list(getattr(self.killer, 'killed', {}).keys()):
+                if not emac or emac == keep:
+                    continue
+                if emac not in allowed:
+                    continue
+                victim = self._victim_record_for_mac(emac) or {'mac': emac}
+                try:
+                    eip = str(victim.get('ip') or '').strip()
+                    if eip:
+                        _bg_unblock_ip(eip)
+                    self.killer.unkill(victim)
+                    self.killer.reinforce_restore(victim)
+                except Exception:
+                    pass
+            for ip in self._console_historical_ips(device):
+                if ip and ip not in {str(device.get('ip') or '').strip()}:
+                    _bg_unblock_ip(ip)
+        except Exception:
+            pass
 
     def _clear_stale_ics_mitm(self, device) -> None:
         """Drop ARP MITM left on a hotspot client from an older build or non-ICS path."""
@@ -4313,6 +4408,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             s = str(raw or '').strip()
             if s and _is_valid_ip(s):
                 ips.add(s)
+        ips.update(self._console_historical_ips(dev))
         return ips
 
     def _release_victim_arp_mitm_stack(self, device, *, refresh_context: bool = True) -> None:
