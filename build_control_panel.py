@@ -52,6 +52,13 @@ EXCLUDE_MODULES = [
     'manuf',
     'scapy',
     'gui.main',
+    'gui.settings',
+    'gui.traffic',
+    'gui.logs_window',
+    'gui.device',
+    'gui.about',
+    'gui.advanced_lag_settings',
+    'gui.license_signin',
     'networking',
 ]
 
@@ -60,7 +67,7 @@ def build() -> int:
     system = platform.system()
     cmd = [sys.executable, '-m', 'PyInstaller', '--name', CONTROL_PANEL_BUNDLE_NAME]
     cmd.extend(['--paths', os.path.join(_ROOT, 'src')])
-    cmd.extend(['--collect-submodules', 'gui'])
+    # Do NOT collect all gui.* — that bundles gui.main and pulls tools.utils/manuf into the graph.
     _hooks = os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks')
     cmd.extend(['--additional-hooks-dir', _hooks])
     cmd.extend(['--runtime-hook', os.path.join(_hooks, 'rthook_qt_control_panel.py')])

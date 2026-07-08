@@ -46,6 +46,27 @@ def _cp_boot(line: str) -> None:
 _cp_boot('zubcut_control_panel.py: after path append')
 
 
+def _maybe_attach_debug_console() -> None:
+    if (_os.environ.get('ZUBCUT_CONTROL_PANEL_DEBUG') or '').strip().lower() not in (
+        '1',
+        'true',
+        'yes',
+        'on',
+    ):
+        return
+    if not _sys.platform.startswith('win'):
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.AllocConsole()
+        _sys.stdout = open('CONOUT$', 'w', encoding='utf-8', errors='replace')
+        _sys.stderr = _sys.stdout
+        print('ZubCut Control Panel debug console attached')
+    except Exception as exc:
+        _cp_boot('AllocConsole failed: ' + repr(exc))
+
+
 def _fatal(title: str, msg: str) -> None:
     paths = _cp_log_paths('zubcut_control_panel_error.txt')
     for log in paths:
@@ -71,6 +92,7 @@ def _fatal(title: str, msg: str) -> None:
 if __name__ == '__main__':
     from constants import CONTROL_PANEL_DISPLAY_NAME
 
+    _maybe_attach_debug_console()
     _cp_boot('__main__: start')
     try:
         from tools.qt_frozen_bootstrap import configure_qt_environment
@@ -123,6 +145,17 @@ if __name__ == '__main__':
         win.show()
         win.raise_()
         win.activateWindow()
+        _cp_boot(
+            'show() done visible=%s active=%s geom=%sx%s+%s+%s'
+            % (
+                win.isVisible(),
+                win.isActiveWindow(),
+                win.width(),
+                win.height(),
+                win.x(),
+                win.y(),
+            )
+        )
         raise SystemExit(app.exec_())
     except Exception:
         _fatal(CONTROL_PANEL_DISPLAY_NAME, traceback.format_exc())

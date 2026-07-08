@@ -41,10 +41,9 @@ class TestControlPanelSource(unittest.TestCase):
         self.assertIn('class ControlPanelWindow', src)
         self.assertIn('Crash reports', src)
         self.assertIn('Install latest build', src)
-        self.assertIn('from tools.frameless_chrome import', src)
-        self.assertIn('register_window_surface_effects', src)
         self.assertNotIn('utils_gui', src)
         self.assertNotIn('tools.utils', src)
+        self.assertNotIn('register_window_surface_effects(self)', src)
 
     def test_crash_api_module(self) -> None:
         from tools.control_panel_crashes import list_crash_reports

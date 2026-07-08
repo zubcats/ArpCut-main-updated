@@ -28,7 +28,6 @@ from constants import (
 from gui.crash_reports_panel import CrashReportsPanel
 from tools.frameless_chrome import (
     FramelessResizableMixin,
-    register_window_surface_effects,
     setup_frameless_main_window,
 )
 from tools.license_admin import (
@@ -252,9 +251,7 @@ class ControlPanelWindow(FramelessResizableMixin, QMainWindow):
         self._build_ui()
         self.setStyleSheet(_control_panel_qss())
         setup_frameless_main_window(self, self.windowTitle(), icon, maximizable=False)
-        # Solid client like main ZubCut window — translucent frameless + mask can look like a second window on Windows.
-        self._zubcut_use_translucent_surface = False
-        register_window_surface_effects(self)
+        # Solid frameless title bar only (no DWM rounded mask — caused invisible window on some PCs).
         QTimer.singleShot(0, self.refresh_rows)
 
     def _build_ui(self):
