@@ -1839,8 +1839,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Remove leftover Kill/Dupe/Lag blocks from a prior session before the user acts."""
         from tools.clumsy_ics import purge_clumsy_stale_attack_blocks
         from tools.pfctl import list_blocked_ips
+        from tools.windows_network_tune import ensure_home_lan_mitm_forwarding_off
 
         purge_clumsy_stale_attack_blocks()
+        ensure_home_lan_mitm_forwarding_off()
         pre = list_blocked_ips()
         summary = self._teardown_all_attacks(log=False)
         try:

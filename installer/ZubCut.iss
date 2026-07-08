@@ -60,8 +60,6 @@ Source: "..\installer\{#NpcapInstallerName}"; DestDir: "{tmp}"; Flags: deleteaft
 Source: "..\installer\windivert\WinDivert.dll"; DestDir: "{app}\windivert"; Tasks: clumsymode; Flags: ignoreversion
 Source: "..\installer\windivert\WinDivert64.sys"; DestDir: "{app}\windivert"; Tasks: clumsymode; Flags: ignoreversion
 Source: "..\installer\windivert\WinDivert-LICENSE.txt"; DestDir: "{app}\windivert"; Tasks: clumsymode; Flags: ignoreversion skipifsourcedoesntexist
-Source: "..\tools\repair_clumsy_hotspot.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "..\tools\Repair-Clumsy-Hotspot.cmd"; DestDir: "{app}\tools"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

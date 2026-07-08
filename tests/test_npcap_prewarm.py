@@ -54,9 +54,17 @@ class TestNpcapPrewarm(unittest.TestCase):
         with open(path, encoding='utf-8') as fh:
             src = fh.read()
         self.assertIn('def maintain_windows_capture_stack', src)
+        self.assertIn('def ensure_home_lan_mitm_forwarding_off', src)
         self.assertIn('INSECURE_NPCAP', src)
         self.assertIn('Win10Pcap', src)
         self.assertIn('AllowComputerToTurnOffDevice', src)
+        self.assertIn('I219|Ethernet Connection', src)
+        self.assertIn('PnPCapabilities', src)
+
+    def test_startup_clears_ip_forwarding(self) -> None:
+        src = self._main_py()
+        block = src[src.index('def _ensure_clean_network_on_startup'): src.index('def quit_all')]
+        self.assertIn('ensure_home_lan_mitm_forwarding_off', block)
 
     def test_zubcut_post_init_maintain(self) -> None:
         path = os.path.join(_ROOT, 'src', 'zubcut.py')

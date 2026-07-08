@@ -682,10 +682,7 @@ def probe_windivert_for_victim(
     last_err = _windivert_last_error_message()
     hint = ''
     if 'code 3' in (last_err or '').lower() or '(code 3)' in (last_err or ''):
-        hint = (
-            ' Stale WinDivert driver service may remain — run tools\\Repair-WinDivert-Service.cmd '
-            'as Administrator, then try Kill again.'
-        )
+        hint = ' Stale WinDivert driver service was cleared — retry Kill/Lag/Dupe.'
     return False, (
         f'{last_err or "WinDivertOpen failed"} '
         f'[dll={dll_path} sys={sys_path}]{hint}'

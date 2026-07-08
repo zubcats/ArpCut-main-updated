@@ -1,7 +1,7 @@
 """
 Automatic Windows capture-stack maintenance (Npcap bindings, Win10Pcap, NIC power).
 
-Replaces manual Fix-ZubCut-*.ps1 scripts — runs silently during normal app warmup.
+Runs silently during normal app warmup — users never run external Fix/Repair scripts.
 Requires Administrator for binding/power changes; no-ops safely when not elevated.
 """
 from __future__ import annotations
@@ -54,7 +54,7 @@ def _run_powershell(script: str) -> None:
                 script,
             ],
             shell=False,
-            timeout=45,
+            timeout=60,
         )
     except Exception:
         pass
@@ -76,6 +76,99 @@ def _disable_pcie_aspm() -> None:
         run_command(['powercfg', '/SETACTIVE', 'SCHEME_CURRENT'], shell=False, timeout=15)
     except Exception:
         pass
+
+
+def ensure_home_lan_mitm_forwarding_off() -> None:
+    """
+    Home LAN Kill/Lag/Dupe cut requires kernel IP forwarding OFF when no forwarder owns relay.
+    Replaces manual Repair-ZubCut-Home-Lan-Mitm.ps1.
+    """
+    if not sys.platform.startswith('win') or not _is_admin():
+        return
+    try:
+        from networking.killer import disable_ip_forwarding
+
+        disable_ip_forwarding()
+    except Exception:
+        pass
+
+
+def _apply_intel_ethernet_low_latency(adapter_name: str) -> None:
+    """
+    Intel I219 / Ethernet Connection low-latency profile after driver reinstalls.
+    Replaces Fix-ZubCut-Ethernet-Latency.ps1 and Fix-ZubCut-Kill-Delay.ps1 NIC tuning.
+    """
+    safe = _safe_adapter_name(adapter_name)
+    if not safe:
+        return
+
+    ps = f"""
+$ErrorActionPreference = 'SilentlyContinue'
+$adapter = Get-NetAdapter -Name '{safe}' -ErrorAction SilentlyContinue
+if (-not $adapter) {{ return }}
+if ($adapter.InterfaceDescription -notmatch 'I219|Ethernet Connection') {{ return }}
+
+function Set-Prop($display, $value) {{
+  try {{
+    Set-NetAdapterAdvancedProperty -Name $adapter.Name -DisplayName $display -DisplayValue $value -NoRestart -ErrorAction Stop | Out-Null
+  }} catch {{ }}
+}}
+function Set-PropAny($display, $values) {{
+  foreach ($v in $values) {{
+    try {{
+      Set-NetAdapterAdvancedProperty -Name $adapter.Name -DisplayName $display -DisplayValue $v -NoRestart -ErrorAction Stop | Out-Null
+      return
+    }} catch {{ }}
+  }}
+}}
+
+Set-PropAny 'PCI Express Link Power Saving' @('Disabled', 'Off')
+Set-PropAny 'Energy Efficient Ethernet'     @('Off','Disabled')
+Set-PropAny 'Gigabit Master Slave Mode'     @('Force Master Mode')
+Set-PropAny 'Green Ethernet'                @('Off','Disabled')
+Set-PropAny 'Ultra Low Power Mode'          @('Off','Disabled')
+Set-PropAny 'Power Saving Mode'             @('Off','Disabled')
+Set-PropAny 'Reduce Speed On Power Down'    @('Off','Disabled')
+Set-PropAny 'System Idle Power Saver'       @('Off','Disabled')
+Set-Prop 'Interrupt Moderation'             'Disabled'
+Set-PropAny 'Interrupt Moderation Rate'     @('Off', 'Disabled', 'Lowest', 'Low')
+Set-PropAny 'Wake on Magic Packet'          @('Disabled', 'Off')
+Set-PropAny 'Wake on Pattern Match'         @('Disabled', 'Off')
+Set-Prop 'Large Send Offload V2 (IPv4)'     'Disabled'
+Set-Prop 'Large Send Offload V2 (IPv6)'     'Disabled'
+Set-PropAny 'Protocol ARP Offload'          @('Disabled', 'Off')
+Set-PropAny 'Protocol NS Offload'           @('Disabled', 'Off')
+Set-Prop 'Flow Control'                     'Disabled'
+Set-Prop 'Receive Side Scaling'             'Enabled'
+Set-Prop 'IPv4 Checksum Offload'            'Rx & Tx Enabled'
+Set-Prop 'TCP Checksum Offload (IPv4)'      'Rx & Tx Enabled'
+Set-Prop 'UDP Checksum Offload (IPv4)'      'Rx & Tx Enabled'
+Set-Prop 'Receive Buffers'                  '2048'
+Set-Prop 'Transmit Buffers'                 '2048'
+
+$pmOk = $false
+try {{
+  Set-NetAdapterPowerManagement -Name $adapter.Name `
+    -AllowComputerToTurnOffDevice Disabled `
+    -WakeOnMagicPacket Disabled `
+    -WakeOnPattern Disabled `
+    -DeviceSleepOnDisconnect Disabled `
+    -ErrorAction Stop | Out-Null
+  $pmOk = $true
+}} catch {{ }}
+
+if (-not $pmOk) {{
+  $guid = $adapter.InterfaceGuid
+  $classRoot = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{{4D36E972-E325-11CE-BFC1-08002BE10318}}'
+  Get-ChildItem $classRoot -ErrorAction SilentlyContinue | ForEach-Object {{
+    $netCfg = (Get-ItemProperty $_.PSPath -Name 'NetCfgInstanceId' -ErrorAction SilentlyContinue).NetCfgInstanceId
+    if ($netCfg -eq $guid) {{
+      Set-ItemProperty $_.PSPath -Name 'PnPCapabilities' -Value 0x118 -Type DWord -ErrorAction SilentlyContinue
+    }}
+  }}
+}}
+"""
+    _run_powershell(ps)
 
 
 def maintain_windows_capture_stack(
@@ -137,6 +230,9 @@ foreach ($a in $targets) {{
 """
     _run_powershell(ps)
     _disable_pcie_aspm()
+    if active:
+        _apply_intel_ethernet_low_latency(active)
+    ensure_home_lan_mitm_forwarding_off()
 
 
 def schedule_windows_capture_maintenance(

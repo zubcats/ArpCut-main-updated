@@ -134,15 +134,13 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
         self.assertNotIn('Set-Service -Name $svc -StartupType Manual', src)
 
-    def test_repair_ps1_script_does_not_demote_wlansvc(self) -> None:
-        path = os.path.join(_ROOT, 'tools', 'repair_clumsy_hotspot.ps1')
-        with open(path, encoding='utf-8') as f:
-            src = f.read()
+    def test_repair_python_does_not_demote_wlansvc(self) -> None:
+        src = inspect.getsource(ics.repair_clumsy_network_sharing)
         self.assertNotIn('Set-Service -Name $svc -StartupType Manual', src)
         self.assertNotIn('Stop-Service -Name $svc', src)
         self.assertNotIn('Restart-Service -Name $svc', src)
-        self.assertIn('Ensure-WlanAutoConfigHealthy', src)
-        self.assertIn('Ensure-SharingServicesLight', src)
+        wlan_src = inspect.getsource(ics.ensure_wlan_autoconfig_healthy)
+        self.assertIn('Ensure-WlanAutoConfigHealthy', wlan_src)
 
     def test_prepare_pc_mobile_hotspot_automation(self) -> None:
         src = inspect.getsource(ics.prepare_pc_mobile_hotspot)

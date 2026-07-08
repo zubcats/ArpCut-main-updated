@@ -409,7 +409,7 @@ def format_updater_error_message(exc: BaseException) -> str:
                 '',
                 'Fix your connection first:',
                 '• Windows Settings → Wi‑Fi → your adapter → Sharing → allow internet sharing',
-                '• If Wi‑Fi is broken after an old build: tools\\Restore-Wlan-AutoConfig.cmd (admin)',
+                '• If Wi‑Fi is broken after an old build: restart ZubCut as Administrator (WLAN AutoConfig is restored on launch)',
                 '• Windows Settings → Mobile hotspot OFF, wait 10 seconds, ON again',
                 '• Open any website in your browser to confirm internet works',
                 '',

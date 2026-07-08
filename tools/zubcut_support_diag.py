@@ -347,7 +347,7 @@ def collect_report(
                     'critical',
                     'ip_forwarding_on',
                     'Windows IP forwarding is ON — the PC may route PS5 traffic instead of cutting it. '
-                    'Run ZubCut as Administrator or run tools/Repair-ZubCut-Home-Lan-Mitm.cmd.',
+                    'Restart ZubCut as Administrator; forwarding is reset automatically on launch.',
                 )
         except Exception:
             pass
@@ -509,7 +509,7 @@ def collect_report(
     # --- Recommendations ---
     recs: list[str] = []
     if not report['admin']:
-        recs.append('Right-click Run-ZubCut-Support-Diag.cmd → Run as administrator.')
+        recs.append('Re-run this diagnostic as Administrator for full capture and MITM checks.')
     if npcap_sec.get('installed') is False:
         recs.append('Install Npcap from https://npcap.com/ (enable your Wi‑Fi adapter).')
     if iface_sec.get('saved_iface') and not iface_sec['saved_iface'].get('matches_best_live'):
@@ -522,7 +522,7 @@ def collect_report(
         recs.append('Lag Switch needs stable ping to PS5 — wake console, disable router client isolation if enabled.')
     if report.get('sections', {}).get('mitm', {}).get('ip_forwarding_enabled'):
         recs.append(
-            'Run tools/Repair-ZubCut-Home-Lan-Mitm.cmd as Administrator, then restart ZubCut elevated.'
+            'Restart ZubCut as Administrator — stale IP forwarding is cleared automatically on launch.'
         )
     recs.append('Confirm the main table "Me" row IP matches ipconfig on the adapter you use for the router.')
     report['recommendations'] = recs
