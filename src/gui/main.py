@@ -974,6 +974,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._impairment_warm_in_flight = False
         self._lag_ics_preblocked = False
         self._lag_lan_preblocked = False
+        self._dupe_preblocked = False
         self._last_app_inactive_mono = time.monotonic()
         self._ics_kill_profile_macs: set[str] = set()
         self._selected_impairment_mac: str | None = None
@@ -2087,6 +2088,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         not_enabled = not device.get('admin')
         self._refresh_selected_device_impairment_plan()
         self._reconcile_idle_mitm_state(quiet=True)
+        if not_enabled:
+            self._schedule_impairment_stack_warm('select')
 
         self.btnKill.setEnabled(not_enabled)
         self.btnLagSwitch.setEnabled(not_enabled)
@@ -2884,7 +2887,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Defer ICS/WinDivert prep so Kill/Lag/Dupe clicks skip slow checks."""
         if getattr(self, '_shutting_down', False):
             return
-        delay = 0 if reason in ('post_scan', 'reactivate') else 80
+        delay = 0 if reason in ('post_scan', 'reactivate', 'select') else 80
         QTimer.singleShot(delay, lambda r=reason: self._warm_impairment_stack(reason=r))
 
     def _warm_impairment_stack(self, *, reason: str = 'startup') -> None:
@@ -3369,21 +3372,29 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.sliderPercentCutMain.setStyleSheet(percent_style)
         self.spinPercentCutMain.setStyleSheet(percent_style)
 
-    def _lag_instant_preblock(self, device) -> bool:
+    def _flow_instant_preblock(
+        self, device, direction: str = 'both', *, flow: str = 'Lag'
+    ) -> bool:
         """
-        Cut victim traffic on Lag click — before deferred prep/teardown.
-        Hotspot: WinDivert pause with the table snapshot IP (instant red chain).
-        Home LAN: immediate ARP poison + traffic cut when MITM stack is warm.
+        Cut victim traffic synchronously on flow toggle — before deferred prep.
+        Hotspot: WinDivert pause. Home LAN: immediate ARP poison burst.
         """
         dev = dict(device) if isinstance(device, dict) else {}
         ip = str(dev.get('ip') or '').strip()
         if not ip:
             return False
         plan = self._impairment_plan_for(dev)
-        direction = getattr(self, 'lag_direction', 'both')
+        direction = str(direction or 'both').strip().lower()
+        if direction not in ('both', 'in', 'out'):
+            direction = 'both'
         if plan.use_windivert:
             if not clumsy_ics_lag_can_use_windivert(dev, self.scanner):
                 return False
+            if clumsy_mode_enabled() and not victim_on_clumsy_ics_subnet(ip):
+                rip = str(clumsy_ics_resolve_victim_ip(dev, self.scanner) or '').strip()
+                if rip and victim_on_clumsy_ics_subnet(rip):
+                    dev['ip'] = rip
+                    ip = rip
             if not victim_on_clumsy_ics_subnet(ip):
                 return False
             try:
@@ -3405,11 +3416,17 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     gate = IcsWinDivertLagGate(ip)
                     gate.start(direction=direction, start_paused=True)
                     self._ics_lag_gate = gate
-                self._lag_ics_preblocked = True
-                self._lag_lan_preblocked = False
+                if flow == 'Lag':
+                    self._lag_ics_preblocked = True
+                    self._lag_lan_preblocked = False
+                elif flow == 'Dupe':
+                    self._dupe_preblocked = True
                 return True
             except Exception:
-                self._lag_ics_preblocked = False
+                if flow == 'Lag':
+                    self._lag_ics_preblocked = False
+                elif flow == 'Dupe':
+                    self._dupe_preblocked = False
                 return False
         if plan.use_arp_mitm:
             mac = str(dev.get('mac') or '').strip()
@@ -3422,20 +3439,32 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 if mac in self.killer.killed:
                     self.killer.reassert_poison(dev)
                     self.killer._apply_traffic_cut_sync(dev)
-                elif self._lan_mitm_stack_is_warm():
-                    self.killer.kill(dev, wait_after=0.0, traffic_cut=True)
                 else:
-                    return False
-                self._lag_lan_preblocked = True
-                self._lag_ics_preblocked = False
-                self._lag_net_prepared_mac = mac
+                    self.killer.kill(dev, wait_after=0.0, traffic_cut=True)
+                if flow == 'Lag':
+                    self._lag_lan_preblocked = True
+                    self._lag_ics_preblocked = False
+                    self._lag_net_prepared_mac = mac
+                elif flow == 'Dupe':
+                    self._dupe_preblocked = True
                 return True
             except Exception:
-                self._lag_lan_preblocked = False
+                if flow == 'Lag':
+                    self._lag_lan_preblocked = False
+                elif flow == 'Dupe':
+                    self._dupe_preblocked = False
                 return False
-        self._lag_ics_preblocked = False
-        self._lag_lan_preblocked = False
+        if flow == 'Lag':
+            self._lag_ics_preblocked = False
+            self._lag_lan_preblocked = False
+        elif flow == 'Dupe':
+            self._dupe_preblocked = False
         return False
+
+    def _lag_instant_preblock(self, device) -> bool:
+        return self._flow_instant_preblock(
+            device, getattr(self, 'lag_direction', 'both'), flow='Lag'
+        )
 
     def startLagSwitch(self, device):
         device = self._resolve_flow_start_device(dict(device))
@@ -3470,10 +3499,17 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self._lag_ics_preblocked = False
         self._lag_lan_preblocked = False
+        preblocked = False
         try:
-            self._lag_instant_preblock(snap)
+            preblocked = bool(self._lag_instant_preblock(snap))
         except Exception:
             pass
+        if preblocked:
+            self._lag_net_prepared_mac = mac
+            try:
+                self._lag_phase_begin_block(dict(snap))
+            except Exception:
+                pass
 
         self._lag_start_gen = int(getattr(self, '_lag_start_gen', 0)) + 1
         lag_gen = self._lag_start_gen
@@ -3587,9 +3623,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._lag_abort_start('Lag aborted before first block phase')
                 return
             cur = self._lag_resolved_victim() or work_dev
-            self._refresh_lag_timing_from_dialog()
-            self._lag_phase_begin_block(cur)
-            self._schedule_lag_start_reassert(work_mac)
+            if getattr(self, '_lag_phase_arming', False):
+                self._refresh_lag_timing_from_dialog()
+                self._lag_phase_begin_block(cur)
+            else:
+                self._schedule_lag_start_reassert(work_mac)
             self._refresh_flow_toggle_ui(fast=True)
             self._repaint_device_table_rows(cur)
 
@@ -5391,6 +5429,29 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._sync_killed_devices()
                 self._updateKillButtonState()
                 return
+        if getattr(self, 'lag_active', False) and getattr(self, '_lag_lan_preblocked', False):
+            if mac in getattr(self.killer, 'killed', {}):
+                self._set_killed_profile(dev, False)
+                self._sync_killed_devices()
+                self._updateKillButtonState()
+                return
+        if getattr(self, 'dupe_active', False):
+            gate = getattr(self, '_ics_lag_gate', None)
+            if (
+                plan.use_windivert
+                and getattr(self, '_dupe_preblocked', False)
+                and gate is not None
+                and gate.is_running()
+            ):
+                self._set_killed_profile(dev, False)
+                self._sync_killed_devices()
+                self._updateKillButtonState()
+                return
+            if getattr(self, '_dupe_preblocked', False) and mac in getattr(self.killer, 'killed', {}):
+                self._set_killed_profile(dev, False)
+                self._sync_killed_devices()
+                self._updateKillButtonState()
+                return
         try:
             _bg_unblock_ip(victim.get('ip'))
             self.killer.unkill(victim, ics_mode=ics_mode)
@@ -5537,6 +5598,33 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         block_dir = 'both'
         try:
+            if getattr(self, '_dupe_preblocked', False):
+                plan = self._impairment_plan_for(dev)
+                if plan.use_windivert:
+                    gate = getattr(self, '_ics_lag_gate', None)
+                    if gate is None or not gate.is_running():
+                        dev = self._prepare_victim_for_impairment(dev, fast=True)
+                        if not self._apply_ics_client_block(dev, block_dir, for_dupe=True):
+                            raise RuntimeError(
+                                'Dupe block failed — rescan, pick Wi‑Fi in Settings if PC is on Wi‑Fi'
+                            )
+                else:
+                    dev = dict(dev)
+                    mac = str(dev.get('mac') or '').strip()
+                    if mac:
+                        try:
+                            self.killer.reassert_poison(dev)
+                        except Exception:
+                            pass
+                self._dupe_armed_ok = True
+                dev = self._device_with_plan_ip(dict(dev))
+                self._sync_dupe_device_identity(dev)
+                self.dupe_device_mac = (
+                    str(dev.get('mac') or self.dupe_device_mac or '').strip() or None
+                )
+                self.dupe_device_ip = dev.get('ip') or self.dupe_device_ip
+                self._start_dupe_timers_after_network_ready()
+                return
             dev = self._prepare_victim_for_impairment(dev, fast=True)
             if not self._arm_victim_mitm_like_kill(dev, block_dir, flow='Dupe'):
                 raise RuntimeError(
@@ -6154,6 +6242,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_arm_device = dict(device)
         self._dupe_arm_direction = direction
 
+        self._dupe_preblocked = False
+        try:
+            self._flow_instant_preblock(device, direction, flow='Dupe')
+        except Exception:
+            pass
+
         def _dupe_deferred_start():
             if getattr(self, '_shutting_down', False):
                 return
@@ -6280,6 +6374,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.dupe_active = False
         self.dupe_device_mac = None
         self.dupe_device_ip = None
+        self._dupe_preblocked = False
         self.btnDupe.setText('Dupe')
         self.btnDupe.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         snap = self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, arm_snap)
@@ -6610,6 +6705,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         dev = dict(device)
         on = next_state
         src = source
+        if on:
+            try:
+                self._flow_instant_preblock(dev, 'both', flow='Kill')
+            except Exception:
+                pass
         self._schedule_kill_command(mac, dev, turn_on=on, source=src)
         if bool(get_settings('debug_kill_timing')):
             _tk_t5 = _tk_time.perf_counter()
@@ -7674,20 +7774,43 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if not _is_valid_ip(device.get('ip') or ''):
                         self.log('Target has no IP yet — enable sharing and rescan.', 'red')
                     elif self._uses_windivert(device):
-                        _mark('windivert_start')
-                        device = self._prepare_victim_for_impairment(device, fast=True)
-                        kill_applied = bool(self._apply_victim_block(device, 'both'))
-                        _mark('windivert_done')
-                        if kill_applied:
+                        gate = getattr(self, '_ics_lag_gate', None)
+                        if turn_on and gate is not None and gate.is_running():
+                            _mark('windivert_instant')
+                            kill_applied = True
                             self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
                         else:
-                            self._ics_emergency_release(device, heal=False)
-                            ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
-                            detail = clumsy_windivert_probe_detail(ip)
-                            self.log(
-                                f'Kill failed — WinDivert: {detail}',
-                                'red',
-                            )
+                            _mark('windivert_start')
+                            device = self._prepare_victim_for_impairment(device, fast=True)
+                            kill_applied = bool(self._apply_victim_block(device, 'both'))
+                            _mark('windivert_done')
+                            if kill_applied:
+                                self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                            else:
+                                self._ics_emergency_release(device, heal=False)
+                                ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
+                                detail = clumsy_windivert_probe_detail(ip)
+                                self.log(
+                                    f'Kill failed — WinDivert: {detail}',
+                                    'red',
+                                )
+                    elif turn_on and mac in self.killer.killed:
+                        _mark('lan_instant')
+                        try:
+                            self.killer.reassert_poison(device)
+                            self.killer._apply_traffic_cut_sync(device)
+                        except Exception:
+                            pass
+                        try:
+                            iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
+                        except Exception:
+                            iface_name = 'en0'
+                        _bg_block_ip(iface_name, device.get('ip'), 'both')
+                        kill_applied = True
+                        self.log(
+                            'Kill ON for ' + str(device.get('ip') or ''),
+                            UI_LOG_VICTIM_BLOCK_FG,
+                        )
                     else:
                         _mark('lan_start')
                         self._reconcile_network_adapter(log=True)

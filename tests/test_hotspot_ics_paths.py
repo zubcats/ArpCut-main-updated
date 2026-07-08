@@ -73,9 +73,9 @@ class TestHotspotIcsPaths(unittest.TestCase):
         src = self._main_py()
         kill_toggle = src[
             src.index('elif self._uses_windivert(device):', src.index('def toggleKill'))
-            : src.index('else:', src.index('elif self._uses_windivert(device):', src.index('def toggleKill')))
+            : src.index('elif turn_on and mac in self.killer.killed', src.index('def _run_kill_command'))
         ]
-        self.assertIn('_prepare_victim_for_impairment', kill_toggle)
+        self.assertIn('windivert_instant', kill_toggle)
         legacy_kill = src[
             src.index('if self._uses_windivert(device):', src.index('def kill(self'))
             : src.index('else:', src.index('if self._uses_windivert(device):', src.index('def kill(self')))
