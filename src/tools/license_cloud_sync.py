@@ -68,6 +68,23 @@ def _normalize_worker_base(url: str) -> str:
     return str(url or '').strip().rstrip('/')
 
 
+def format_worker_api_error(status_code: int, error_text: str) -> str:
+    """Turn worker JSON errors into Control Panel guidance."""
+    err = str(error_text or '').strip()
+    if status_code == 401 and err == 'Invalid credentials.':
+        return (
+            'Worker treated this as a customer sign-in, not the crash admin API. '
+            'Use the base Worker URL only (https://….workers.dev), redeploy the worker '
+            'from backend/cloudflare-license-signin (npx wrangler deploy), and set Admin secret '
+            'to your wrangler ADMIN_SECRET (not a customer password).'
+        )
+    if status_code == 401 and err == 'Unauthorized.':
+        return 'Admin secret does not match the worker ADMIN_SECRET. Re-enter it on Accounts and Save.'
+    if err:
+        return f'HTTP {status_code}: {err}'
+    return f'HTTP {status_code}'
+
+
 def test_worker_reachable(worker_base_url: str) -> tuple[bool, str]:
     base = _normalize_worker_base(worker_base_url)
     if not base.startswith('https://'):
@@ -89,6 +106,37 @@ def test_worker_reachable(worker_base_url: str) -> tuple[bool, str]:
     if r.status_code == 200:
         return True, 'Worker responded (HTTP 200).'
     return False, f'Worker returned HTTP {r.status_code}.'
+
+
+def test_worker_admin_access(worker_base_url: str, admin_secret: str) -> tuple[bool, str]:
+    """Verify crash admin API (POST /admin/crashes/list) with ADMIN_SECRET."""
+    base = _normalize_worker_base(worker_base_url)
+    if not base.startswith('https://'):
+        return False, 'Worker URL must start with https://'
+    secret = str(admin_secret or '').strip()
+    if not secret:
+        return False, 'Set admin secret (wrangler ADMIN_SECRET) and save settings.'
+    ok_reach, reach_msg = test_worker_reachable(base)
+    if not ok_reach:
+        return False, reach_msg
+    try:
+        r = requests.post(
+            f'{base}/admin/crashes/list',
+            json={'secret': secret, 'limit': 1},
+            headers=worker_http_headers(),
+            timeout=15,
+        )
+    except requests.RequestException as e:
+        return False, str(e)
+    try:
+        body = r.json()
+    except Exception:
+        return False, f'Unexpected response (HTTP {r.status_code}).'
+    if isinstance(body, dict) and body.get('ok'):
+        total = body.get('total', len(body.get('crashes') or []))
+        return True, f'Admin API OK ({total} crash report(s) on worker).'
+    err = str((body or {}).get('error') or '').strip() if isinstance(body, dict) else ''
+    return False, format_worker_api_error(r.status_code, err)
 
 
 def push_account_to_worker(license_id: str) -> tuple[bool, str]:
@@ -133,6 +181,8 @@ def push_account_to_worker(license_id: str) -> tuple[bool, str]:
         return True, 'Pushed to cloud.'
 
     err = str((body or {}).get('error') or 'Upsert failed').strip() if isinstance(body, dict) else 'Upsert failed'
+    if r.status_code in (401, 403):
+        return False, format_worker_api_error(r.status_code, err)
     return False, err
 
 

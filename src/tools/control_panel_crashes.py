@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from tools.license_cloud_sync import load_cloud_sync_settings, worker_http_headers
+from tools.license_cloud_sync import format_worker_api_error, load_cloud_sync_settings, worker_http_headers
 
 DEFAULT_TIMEOUT_SEC = 30
 
@@ -42,7 +42,7 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
             msg = data.get('error') or err_body or str(exc)
         except Exception:
             msg = str(exc)
-        raise CrashApiError(f'HTTP {exc.code}: {msg}') from exc
+        raise CrashApiError(format_worker_api_error(exc.code, str(msg))) from exc
     except Exception as exc:
         raise CrashApiError(str(exc)) from exc
 

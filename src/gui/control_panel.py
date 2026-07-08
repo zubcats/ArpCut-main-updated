@@ -42,7 +42,7 @@ from tools.license_cloud_sync import (
     load_cloud_sync_settings,
     push_account_to_worker,
     save_cloud_sync_settings,
-    test_worker_reachable,
+    test_worker_admin_access,
 )
 from tools.updater_core import download_installer, launch_installer
 
@@ -382,7 +382,7 @@ class ControlPanelWindow(QMainWindow):
         QMessageBox.information(self, 'Saved', 'Cloud sync settings saved.')
 
     def _test_cloud_sync_clicked(self) -> None:
-        ok, msg = test_worker_reachable(self.edtCloudUrl.text())
+        ok, msg = test_worker_admin_access(self.edtCloudUrl.text(), self.edtCloudSecret.text())
         if ok:
             QMessageBox.information(self, 'Test', msg)
         else:

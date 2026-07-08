@@ -63,6 +63,19 @@ class TestControlPanelSource(unittest.TestCase):
 
 
 class TestWorkerHttpHeaders(unittest.TestCase):
+    def test_format_worker_api_error_invalid_credentials(self) -> None:
+        from tools.license_cloud_sync import format_worker_api_error
+
+        msg = format_worker_api_error(401, 'Invalid credentials.')
+        self.assertIn('crash admin API', msg)
+        self.assertIn('wrangler deploy', msg)
+
+    def test_format_worker_api_error_unauthorized(self) -> None:
+        from tools.license_cloud_sync import format_worker_api_error
+
+        msg = format_worker_api_error(401, 'Unauthorized.')
+        self.assertIn('ADMIN_SECRET', msg)
+
     def test_worker_http_headers_include_custom_user_agent(self) -> None:
         from tools.license_cloud_sync import WORKER_HTTP_USER_AGENT, worker_http_headers
 
