@@ -3590,8 +3590,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         return
             else:
                 if lan_preblocked:
-                    mac = str(work_snap.get('mac') or '').strip()
-                    if mac:
+                    poison_mac = str(work_snap.get('mac') or '').strip()
+                    if poison_mac:
                         try:
                             self.killer.reassert_poison(work_snap)
                         except Exception:
