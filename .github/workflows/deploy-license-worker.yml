@@ -32,12 +32,24 @@ jobs:
           node-version: '22'
 
       - name: Deploy worker
+        id: deploy
         working-directory: backend/cloudflare-license-signin
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: npx wrangler@4 deploy
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::warning::CLOUDFLARE_API_TOKEN is not set in repo secrets — skipping deploy."
+            echo "Add it under Settings → Secrets and variables → Actions, then re-run this workflow."
+            echo "Or deploy locally: cd backend/cloudflare-license-signin && npx wrangler deploy"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          npx wrangler@4 deploy
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
 
       - name: Verify crash ingest route
+        if: steps.deploy.outputs.skipped != 'true'
         run: |
           code=$(curl -sS -o /tmp/crash-probe.json -w '%{http_code}' \
             -X POST https://zubcut-license-signin.zubcats.workers.dev/crash \
