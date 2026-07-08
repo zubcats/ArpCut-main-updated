@@ -79,16 +79,27 @@ def _app_version() -> str:
 
 
 def _account_hint() -> str:
+    account, _ = _license_identity()
+    return account
+
+
+def _license_identity() -> Tuple[str, str]:
+    """Return (sign-in account key, license_id) from the installed license file."""
     try:
         from tools.license_offline import resolve_license_account
 
         if not LICENSE_FILE_PATH or not os.path.isfile(LICENSE_FILE_PATH):
-            return ''
+            return '', ''
         with open(LICENSE_FILE_PATH, 'r', encoding='utf-8') as fh:
             data = json.load(fh)
-        return resolve_license_account(data)
+        account = resolve_license_account(data)
+        payload = data.get('payload') if isinstance(data, dict) else None
+        license_id = ''
+        if isinstance(payload, dict):
+            license_id = str(payload.get('license_id') or '').strip()
+        return account, license_id
     except Exception:
-        return ''
+        return '', ''
 
 
 def _parse_exception(log_text: str) -> Tuple[str, str]:
@@ -111,8 +122,14 @@ def _build_payload(
     exc_type: str = '',
     exc_message: str = '',
     account_hint: str = '',
+    license_id: str = '',
 ) -> Dict[str, Any]:
     parsed_type, parsed_msg = _parse_exception(log_text)
+    account, lic_id = _license_identity()
+    if account_hint:
+        account = account_hint.strip().lower()[:120]
+    if license_id:
+        lic_id = license_id.strip()[:80]
     return {
         'ref': ref,
         'body': log_text,
@@ -124,7 +141,8 @@ def _build_payload(
         'build_time': str(APP_BUILD_TIME_ISO or ''),
         'app_version': _app_version(),
         'python': sys.version.split()[0] if sys.version else '',
-        'account_hint': (account_hint or _account_hint()).strip().lower()[:120],
+        'account_hint': account,
+        'license_id': lic_id[:80],
         'exc_type': (exc_type or parsed_type)[:120],
         'exc_message': (exc_message or parsed_msg)[:500],
     }

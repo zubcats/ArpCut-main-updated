@@ -25,12 +25,15 @@ ZubCut stores crash reports on the **same Cloudflare Worker + KV** as license si
   "build_time": "2026-07-08T12:00:00Z",
   "app_version": "1.2.3",
   "account_hint": "customer_username",
+  "license_id": "uuid-from-license-payload",
   "exc_type": "RuntimeError",
   "exc_message": "Percent Cut failed to start"
 }
 ```
 
 `log` is accepted as an alias for `body`. `licenseKey` / `account` are aliases for `account_hint`.
+
+**Account linking:** ZubCut sends `account_hint` (sign-in account from `zubcut-license.json`) and `license_id` when the user is signed in. Unsigned sessions appear as empty / “not signed in” in License Manager.
 
 Response: `{ "ok": true, "ref": "ZC-ABC123", "message": "Crash report received." }`
 
@@ -112,7 +115,8 @@ Run the PyQt admin app from `license-manager/`:
 
 - **Accounts** tab — create / renew / revoke / activate / delete; push to cloud
 - **Cloud sign-in sync** tab — Worker URL, admin secret, test connection
-- **Crash reports** tab — list, view full body, export, delete, optional 60s auto-refresh
+- **Crash reports** tab — list, view full body, export, delete, filter by account, optional 60s auto-refresh
+- **Accounts** tab — **View crash reports** jumps to crashes filtered for that account
 
 See [`license-manager/README.md`](../../license-manager/README.md).
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -20,6 +21,9 @@ from PyQt5.QtWidgets import (
 
 from license_manager.cloud_api import CloudApiError, delete_crash, get_crash, list_crashes
 
+_FILTER_ALL = ''
+_FILTER_UNKNOWN = '__unknown__'
+
 
 class CrashReportsWidget(QWidget):
     """Crash reports from ZubCut users (worker KV index)."""
@@ -29,6 +33,8 @@ class CrashReportsWidget(QWidget):
         self._worker_url = ''
         self._admin_secret = ''
         self._rows: list[dict] = []
+        self._known_accounts: list[str] = []
+        self._account_filter = _FILTER_ALL
         self._auto_timer = QTimer(self)
         self._auto_timer.timeout.connect(self.refresh)
         self._build_ui()
@@ -40,6 +46,11 @@ class CrashReportsWidget(QWidget):
         header = QHBoxLayout()
         self.lblStatus = QLabel('Configure Cloud sign-in sync to load crash reports.', self)
         header.addWidget(self.lblStatus, 1)
+        header.addWidget(QLabel('Account:', self))
+        self.cmbAccount = QComboBox(self)
+        self.cmbAccount.setMinimumWidth(180)
+        self.cmbAccount.currentIndexChanged.connect(self._on_filter_changed)
+        header.addWidget(self.cmbAccount)
         self.chkAutoRefresh = QPushButton('Auto-refresh: Off', self)
         self.chkAutoRefresh.setCheckable(True)
         self.chkAutoRefresh.clicked.connect(self._toggle_auto_refresh)
@@ -96,13 +107,25 @@ class CrashReportsWidget(QWidget):
         root.addWidget(splitter)
 
         self._set_actions_enabled(False)
+        self._rebuild_filter_combo()
 
-    def configure(self, worker_url: str, admin_secret: str) -> None:
+    def configure(
+        self,
+        worker_url: str,
+        admin_secret: str,
+        *,
+        known_accounts: list[str] | None = None,
+    ) -> None:
         self._worker_url = str(worker_url or '').strip()
         self._admin_secret = str(admin_secret or '').strip()
+        if known_accounts is not None:
+            self._known_accounts = [
+                str(a or '').strip().lower() for a in known_accounts if str(a or '').strip()
+            ]
         ready = bool(self._worker_url and self._admin_secret)
         self.btnRefresh.setEnabled(ready)
         self.chkAutoRefresh.setEnabled(ready)
+        self.cmbAccount.setEnabled(ready)
         if ready:
             self.lblStatus.setText(f'Worker: {self._worker_url}')
         else:
@@ -110,6 +133,19 @@ class CrashReportsWidget(QWidget):
             self._auto_timer.stop()
             self.chkAutoRefresh.setChecked(False)
             self.chkAutoRefresh.setText('Auto-refresh: Off')
+        self._rebuild_filter_combo()
+
+    def set_known_accounts(self, accounts: list[str]) -> None:
+        self._known_accounts = [str(a or '').strip().lower() for a in accounts if str(a or '').strip()]
+        self._rebuild_filter_combo()
+
+    def set_account_filter(self, account: str) -> None:
+        """Show only crashes for this sign-in account (empty = all)."""
+        target = str(account or '').strip().lower()
+        self._account_filter = target
+        self._sync_filter_combo_selection()
+        self._populate_table()
+        self._update_status_label()
 
     def refresh(self) -> None:
         if not self._worker_url or not self._admin_secret:
@@ -120,17 +156,85 @@ class CrashReportsWidget(QWidget):
             self.lblStatus.setText(str(exc))
             QMessageBox.warning(self, 'Crash reports', str(exc))
             return
+        self._rebuild_filter_combo()
         self._populate_table()
-        self.lblStatus.setText(f'{len(self._rows)} crash report(s) — Worker: {self._worker_url}')
+        self._update_status_label()
+
+    def crash_count_for_account(self, account: str) -> int:
+        key = str(account or '').strip().lower()
+        if not key:
+            return 0
+        return sum(1 for r in self._rows if str(r.get('account_hint') or '').lower() == key)
+
+    def _filtered_rows(self) -> list[dict]:
+        if self._account_filter == _FILTER_ALL:
+            return list(self._rows)
+        if self._account_filter == _FILTER_UNKNOWN:
+            return [r for r in self._rows if not str(r.get('account_hint') or '').strip()]
+        return [
+            r
+            for r in self._rows
+            if str(r.get('account_hint') or '').lower() == self._account_filter
+        ]
+
+    def _rebuild_filter_combo(self) -> None:
+        current = self._account_filter
+        accounts: set[str] = set(self._known_accounts)
+        has_unknown = False
+        for row in self._rows:
+            acct = str(row.get('account_hint') or '').strip().lower()
+            if acct:
+                accounts.add(acct)
+            else:
+                has_unknown = True
+        ordered = sorted(accounts)
+        self.cmbAccount.blockSignals(True)
+        self.cmbAccount.clear()
+        self.cmbAccount.addItem('All accounts', _FILTER_ALL)
+        for acct in ordered:
+            count = sum(1 for r in self._rows if str(r.get('account_hint') or '').lower() == acct)
+            self.cmbAccount.addItem(f'{acct} ({count})', acct)
+        if has_unknown:
+            unknown_count = sum(1 for r in self._rows if not str(r.get('account_hint') or '').strip())
+            self.cmbAccount.addItem(f'(not signed in) ({unknown_count})', _FILTER_UNKNOWN)
+        self._account_filter = current
+        self._sync_filter_combo_selection()
+        self.cmbAccount.blockSignals(False)
+
+    def _sync_filter_combo_selection(self) -> None:
+        idx = self.cmbAccount.findData(self._account_filter)
+        if idx < 0:
+            self._account_filter = _FILTER_ALL
+            idx = 0
+        self.cmbAccount.setCurrentIndex(idx)
+
+    def _on_filter_changed(self, _index: int) -> None:
+        data = self.cmbAccount.currentData()
+        self._account_filter = str(data) if data is not None else _FILTER_ALL
+        self._populate_table()
+        self._update_status_label()
+
+    def _update_status_label(self) -> None:
+        visible = len(self._filtered_rows())
+        total = len(self._rows)
+        base = f'{visible} shown'
+        if visible != total:
+            base += f' of {total} total'
+        if self._account_filter and self._account_filter not in (_FILTER_ALL, _FILTER_UNKNOWN):
+            base += f' — account {self._account_filter}'
+        elif self._account_filter == _FILTER_UNKNOWN:
+            base += ' — not signed in'
+        self.lblStatus.setText(f'{base} — Worker: {self._worker_url}')
 
     def _populate_table(self) -> None:
+        rows = self._filtered_rows()
         self.table.setRowCount(0)
-        for row in self._rows:
+        for row in rows:
             r = self.table.rowCount()
             self.table.insertRow(r)
             ref = str(row.get('ref') or '')
             received = str(row.get('received_at') or row.get('time_utc') or '')
-            account = str(row.get('account_hint') or '')
+            account = str(row.get('account_hint') or '') or '(not signed in)'
             build = ' '.join(
                 p
                 for p in (
@@ -147,7 +251,7 @@ class CrashReportsWidget(QWidget):
                 if col == 0:
                     item.setData(Qt.UserRole, ref)
                 self.table.setItem(r, col, item)
-        if self._rows:
+        if rows:
             self.table.selectRow(0)
         else:
             self.txtBody.clear()
@@ -160,18 +264,22 @@ class CrashReportsWidget(QWidget):
         item = self.table.item(items[0].row(), 0)
         return str(item.data(Qt.UserRole) or item.text() if item else '')
 
+    def _summary_for_ref(self, ref: str) -> dict | None:
+        return next((r for r in self._rows if r.get('ref') == ref), None)
+
     def _on_selection_changed(self) -> None:
         ref = self._selected_ref()
         self._set_actions_enabled(bool(ref))
         if not ref:
             self.txtBody.clear()
             return
-        summary = next((r for r in self._rows if r.get('ref') == ref), None)
+        summary = self._summary_for_ref(ref)
         if summary:
             lines = [
                 f'ref={summary.get("ref")}',
                 f'received_at={summary.get("received_at")}',
-                f'account_hint={summary.get("account_hint")}',
+                f'account={summary.get("account_hint") or "(not signed in)"}',
+                f'license_id={summary.get("license_id") or "—"}',
                 f'platform={summary.get("platform")}',
                 f'exc={summary.get("exc_type")}: {summary.get("exc_message")}',
                 '',
@@ -192,7 +300,8 @@ class CrashReportsWidget(QWidget):
         head = [
             f'ref={report.get("ref")}',
             f'received_at={report.get("received_at")}',
-            f'account_hint={report.get("account_hint")}',
+            f'account={report.get("account_hint") or "(not signed in)"}',
+            f'license_id={report.get("license_id") or "—"}',
             f'platform={report.get("platform")}',
             f'build={report.get("build_channel")} {report.get("build_commit")} {report.get("app_version")}',
             f'exc={report.get("exc_type")}: {report.get("exc_message")}',

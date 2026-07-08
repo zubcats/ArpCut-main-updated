@@ -78,6 +78,7 @@ class MainWindow(QWidget):
             ('Activate', self._activate_account),
             ('Delete', self._delete_account),
             ('Push selected to cloud', self._push_selected),
+            ('View crash reports', self._view_crash_reports_for_account),
         ):
             btn = QPushButton(label, page)
             btn.clicked.connect(slot)
@@ -155,7 +156,12 @@ class MainWindow(QWidget):
         )
 
     def _apply_cloud_to_crash_widget(self) -> None:
-        self.crashWidget.configure(self.edtWorkerUrl.text().strip(), self.edtAdminSecret.text())
+        accounts = [str(r.get('account_key') or '') for r in self._accounts]
+        self.crashWidget.configure(
+            self.edtWorkerUrl.text().strip(),
+            self.edtAdminSecret.text(),
+            known_accounts=accounts,
+        )
 
     def _browse_key(self) -> None:
         from PyQt5.QtWidgets import QFileDialog
@@ -380,6 +386,20 @@ class MainWindow(QWidget):
         self._accounts[idx] = rec
         self._persist_accounts()
         QMessageBox.information(self, 'Push complete', f'Pushed {account} to cloud.')
+
+    def _view_crash_reports_for_account(self) -> None:
+        idx = self._selected_account_index()
+        if idx < 0:
+            QMessageBox.information(self, APP_NAME, 'Select an account first.')
+            return
+        ready = self._cloud_ready()
+        if not ready:
+            return
+        account = str(self._accounts[idx].get('account_key') or '').strip().lower()
+        self._apply_cloud_to_crash_widget()
+        self.crashWidget.refresh()
+        self.crashWidget.set_account_filter(account)
+        self.tabs.setCurrentWidget(self.crashWidget)
 
     def _save_cloud_settings(self) -> None:
         self._save_all_settings()

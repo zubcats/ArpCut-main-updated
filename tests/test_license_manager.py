@@ -58,7 +58,8 @@ class TestCrashReportsWidgetSource(unittest.TestCase):
             src = fh.read()
         self.assertIn('class CrashReportsWidget', src)
         self.assertIn('list_crashes', src)
-        self.assertIn('Auto-refresh', src)
+        self.assertIn('set_account_filter', src)
+        self.assertIn('cmbAccount', src)
 
 
 if __name__ == '__main__':

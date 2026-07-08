@@ -140,6 +140,9 @@ async function storeCrashReport(kv, report) {
     .trim()
     .toLowerCase()
     .slice(0, 120);
+  const licenseId = String(report?.license_id || report?.licenseId || '')
+    .trim()
+    .slice(0, 80);
   const payload = {
     ref,
     time_utc: String(report?.time_utc || new Date().toISOString()),
@@ -150,6 +153,7 @@ async function storeCrashReport(kv, report) {
     build_time: String(report?.build_time || ''),
     app_version: String(report?.app_version || ''),
     account_hint: accountHint,
+    license_id: licenseId,
     exc_type: String(report?.exc_type || '').slice(0, 120),
     exc_message: String(report?.exc_message || '').slice(0, 500),
     body: body.length > CRASH_BODY_MAX ? body.slice(0, CRASH_BODY_MAX) : body,
@@ -165,6 +169,7 @@ async function storeCrashReport(kv, report) {
     build_channel: payload.build_channel,
     app_version: payload.app_version,
     account_hint: payload.account_hint,
+    license_id: payload.license_id,
     exc_type: payload.exc_type,
     exc_message: payload.exc_message,
     received_at: payload.received_at,

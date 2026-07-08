@@ -43,6 +43,14 @@ class TestCrashRemoteReport(unittest.TestCase):
                 mod.clear_pending_crash()
                 self.assertIsNone(mod.load_pending_crash())
 
+    def test_build_payload_includes_license_id(self) -> None:
+        from tools import crash_remote_report as mod
+
+        with patch.object(mod, '_license_identity', return_value=('demo-user', 'lic-uuid-123')):
+            payload = mod._build_payload('ZC-ABC123', 'ValueError: x\n')
+        self.assertEqual(payload['account_hint'], 'demo-user')
+        self.assertEqual(payload['license_id'], 'lic-uuid-123')
+
     @patch('tools.crash_remote_report._post_json')
     def test_submit_posts_to_crash_endpoint(self, mock_post) -> None:
         from tools.crash_remote_report import submit_crash_report
