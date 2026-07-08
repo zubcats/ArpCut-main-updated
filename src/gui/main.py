@@ -4166,7 +4166,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._migrate_killed_profile_for_device_change(
                         old_mac, old_ip, device
                     )
-                self._purge_stale_console_mitm(device)
         except Exception:
             pass
         changed = False
@@ -4264,7 +4263,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     self._rekey_kill_bookkeeping(old_mac, dev)
                 if new_ip != old_ip or new_mac != old_mac:
                     self._migrate_killed_profile_for_device_change(old_mac, old_ip, dev)
-            self._purge_stale_console_mitm(dev)
         except Exception:
             pass
         return dev
@@ -4297,34 +4295,26 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             pass
         return ips
 
-    def _purge_stale_console_mitm(self, device, *, keep_mac: str | None = None) -> None:
-        """Drop orphan MITM on sibling Wi‑Fi/Ethernet MACs for the same console."""
+    def _console_sibling_victims(self, device, victims: list[dict]) -> None:
+        """Append nickname-linked Wi‑Fi/Ethernet siblings still in killer.killed."""
         if not isinstance(device, dict):
             return
-        keep = str(keep_mac or device.get('mac') or '').strip()
         try:
-            from tools.utils import _resolve_allowed_macs
+            from tools.utils import _resolve_allowed_macs, good_mac
 
-            allowed = _resolve_allowed_macs(device)
+            allowed = {good_mac(m) for m in _resolve_allowed_macs(device) if good_mac(m)}
+            keep = good_mac(str(device.get('mac') or ''))
             if not allowed:
                 return
+            have = {good_mac(str(v.get('mac') or '')) for v in victims if isinstance(v, dict)}
             for emac in list(getattr(self.killer, 'killed', {}).keys()):
-                if not emac or emac == keep:
+                gm = good_mac(str(emac or ''))
+                if not gm or gm == keep or gm not in allowed or gm in have:
                     continue
-                if emac not in allowed:
-                    continue
-                victim = self._victim_record_for_mac(emac) or {'mac': emac}
-                try:
-                    eip = str(victim.get('ip') or '').strip()
-                    if eip:
-                        _bg_unblock_ip(eip)
-                    self.killer.unkill(victim)
-                    self.killer.reinforce_restore(victim)
-                except Exception:
-                    pass
-            for ip in self._console_historical_ips(device):
-                if ip and ip not in {str(device.get('ip') or '').strip()}:
-                    _bg_unblock_ip(ip)
+                entry = self._victim_record_for_mac(emac) or {'mac': emac}
+                if isinstance(entry, dict):
+                    victims.append(dict(entry))
+                    have.add(gm)
         except Exception:
             pass
 
@@ -4424,7 +4414,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._ensure_network_context_for_victim(device, fast=True)
             except Exception:
                 pass
-        target_mac = str(device.get('mac') or '').strip()
+        try:
+            from tools.utils import good_mac
+
+            target_mac = good_mac(str(device.get('mac') or ''))
+        except Exception:
+            target_mac = str(device.get('mac') or '').strip()
         ips = self._victim_teardown_ips(device)
         victims: list[dict] = []
         primary = self._victim_record_for_mac(target_mac) or device
@@ -4433,11 +4428,17 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         for entry in list((self.killer.killed or {}).values()):
             if not isinstance(entry, dict):
                 continue
-            emac = str(entry.get('mac') or '').strip()
+            try:
+                from tools.utils import good_mac as _gm
+
+                emac = _gm(str(entry.get('mac') or ''))
+            except Exception:
+                emac = str(entry.get('mac') or '').strip()
             eip = str(entry.get('ip') or '').strip()
             if (target_mac and emac == target_mac) or (eip and eip in ips):
                 if entry not in victims:
                     victims.append(entry)
+        self._console_sibling_victims(device, victims)
         for ip in ips:
             _bg_unblock_ip(ip)
         seen: set[str] = set()
@@ -6919,26 +6920,32 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
 
-    def _percent_cut_backend_active(self, mac: str | None, ip: str | None = None) -> bool:
-        """True when MITM forwarder or killer entry still shapes this victim."""
+    def _percent_cut_forwarder_live(self, mac: str | None, ip: str | None = None) -> bool:
+        """True when a Percent Cut forwarder is still running for this victim."""
         mac = str(mac or '').strip()
         ip = str(ip or '').strip()
         if mac and mac in getattr(self.killer, 'forwarders', {}):
             fw = self.killer.forwarders.get(mac)
             if fw is not None and getattr(fw, 'running', False):
                 return True
-        if mac and mac in getattr(self.killer, 'killed', {}):
-            return True
         if ip:
             for victim in (self.killer.killed or {}).values():
-                if isinstance(victim, dict) and str(victim.get('ip') or '').strip() == ip:
-                    return True
-            for victim in (self.killer.killed or {}).values():
+                if not isinstance(victim, dict):
+                    continue
+                if str(victim.get('ip') or '').strip() != ip:
+                    continue
                 vm = str(victim.get('mac') or '').strip()
                 if vm and vm in getattr(self.killer, 'forwarders', {}):
-                    if str(victim.get('ip') or '').strip() == ip:
+                    fw = self.killer.forwarders.get(vm)
+                    if fw is not None and getattr(fw, 'running', False):
                         return True
         return False
+
+    def _percent_cut_backend_active(self, mac: str | None, ip: str | None = None) -> bool:
+        """True when Percent Cut UI is on and the forwarder still shapes this victim."""
+        if not getattr(self, 'percent_cut_active', False):
+            return False
+        return self._percent_cut_forwarder_live(mac, ip)
 
     def _resolve_pctcut_stop_snapshot(self, prev_mac, prev_ip):
         """Victim for Percent Cut OFF (MAC may have been refreshed while ON)."""
@@ -7003,11 +7010,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log('Cannot cut admin device', UI_LOG_VICTIM_BLOCK_FG)
             return
 
+        device = self._resolve_flow_start_device(dict(device))
         mac = str(device.get('mac') or '').strip()
         ip = str(device.get('ip') or '').strip()
-        if self._percent_cut_ui_shows_on(mac, ip) or self._percent_cut_backend_active(
-            self.percent_cut_device_mac or mac, getattr(self, 'percent_cut_device_ip', None) or ip
-        ):
+        if self._percent_cut_ui_shows_on(mac, ip):
             self.stopPercentCut(log=True)
             return
         if self._toggle_start_blocked('pctcut'):
@@ -7147,7 +7153,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if log:
             if victim:
                 ip = str(victim.get('ip') or prev_ip or '')
-                still = self._percent_cut_backend_active(
+                still = self._percent_cut_forwarder_live(
                     str(victim.get('mac') or ''), ip
                 )
                 if still:

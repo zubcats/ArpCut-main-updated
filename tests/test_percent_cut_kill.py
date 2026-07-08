@@ -36,16 +36,18 @@ class TestPercentCutKill(unittest.TestCase):
         self.assertIn('return False', block)
         self.assertIn('return bool(fw', block)
 
-    def test_toggle_percent_cut_stops_when_backend_still_active(self) -> None:
+    def test_toggle_percent_cut_stops_when_ui_shows_on(self) -> None:
         src = self._main_py()
         toggle = src[src.index('def togglePercentCut'): src.index('def stopPercentCut', src.index('def togglePercentCut'))]
-        self.assertIn('_percent_cut_backend_active', toggle)
+        self.assertIn('_percent_cut_ui_shows_on', toggle)
         self.assertIn('stopPercentCut(log=True)', toggle)
+        self.assertNotIn('_percent_cut_backend_active', toggle)
 
     def test_stop_percent_cut_uses_fast_unkill(self) -> None:
         src = self._main_py()
         stop = src[src.index('def stopPercentCut'): src.index('def _refresh_advanced_lag_mitm_if_visible', src.index('def stopPercentCut'))]
         self.assertIn('_release_pctcut_victim_immediate', stop)
+        self.assertIn('_percent_cut_forwarder_live', stop)
         self.assertIn('_percent_cut_ui_shows_on', src[src.index('def _updatePercentCutButtonState'): src.index('def _refresh_flow_toggle_ui', src.index('def _updatePercentCutButtonState'))])
 
     def test_forwarder_percent_pass_is_stochastic(self) -> None:

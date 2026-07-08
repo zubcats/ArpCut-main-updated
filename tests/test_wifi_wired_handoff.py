@@ -22,23 +22,23 @@ class TestWifiWiredHandoff(unittest.TestCase):
         src = self._main_py()
         fn = src[src.index('def _resolve_flow_start_device'): src.index('def _console_historical_ips')]
         self.assertIn('resolve_live_lan_victim', fn)
-        self.assertIn('_purge_stale_console_mitm', fn)
+        self.assertNotIn('_purge_stale_console_mitm', fn)
 
     def test_teardown_includes_nickname_historical_ips(self) -> None:
         src = self._main_py()
         fn = src[src.index('def _victim_teardown_ips'): src.index('def _release_victim_arp_mitm_stack')]
         self.assertIn('_console_historical_ips', fn)
 
-    def test_ensure_network_context_purges_sibling_mitm(self) -> None:
+    def test_release_stack_collects_console_siblings(self) -> None:
         src = self._main_py()
-        fn = src[src.index('def _ensure_network_context_for_victim'): src.index('def _resolve_flow_start_device')]
-        self.assertIn('_purge_stale_console_mitm', fn)
+        fn = src[src.index('def _release_victim_arp_mitm_stack'): src.index('def _ics_gate_allow_traffic')]
+        self.assertIn('_console_sibling_victims', fn)
 
-    def test_purge_uses_allowed_macs(self) -> None:
+    def test_no_sync_unkill_on_flow_start(self) -> None:
         src = self._main_py()
-        fn = src[src.index('def _purge_stale_console_mitm'): src.index('def _clear_stale_ics_mitm')]
-        self.assertIn("_resolve_allowed_macs", fn)
-        self.assertIn("getattr(self.killer, 'killed'", fn)
+        self.assertNotIn('def _purge_stale_console_mitm', src)
+        ensure = src[src.index('def _ensure_network_context_for_victim'): src.index('def _resolve_flow_start_device')]
+        self.assertNotIn('unkill', ensure)
 
 
 if __name__ == '__main__':
