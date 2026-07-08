@@ -387,6 +387,10 @@ if __name__ == "__main__":
             GUI.scanner.add_router()
     except Exception:
         pass
+    try:
+        GUI._schedule_npcap_prewarm('post_init')
+    except Exception:
+        pass
     if GUI.scanner.iface.name == 'NULL':
         # Try to get a valid interface
         from tools.utils import get_default_iface

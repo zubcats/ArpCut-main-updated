@@ -45,8 +45,24 @@ class TestNpcapPrewarm(unittest.TestCase):
         self.assertIn('def _schedule_npcap_prewarm', src)
         self.assertIn("_schedule_npcap_prewarm('startup')", src)
         self.assertIn("_schedule_npcap_prewarm('select')", src)
+        self.assertIn('schedule_windows_capture_maintenance', src)
         clicked = src[src.index('def deviceClicked'): src.index('def _updateLagSwitchButtonState')]
         self.assertIn("_schedule_npcap_prewarm('select')", clicked)
+
+    def test_windows_network_tune_module(self) -> None:
+        path = os.path.join(_SRC, 'tools', 'windows_network_tune.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        self.assertIn('def maintain_windows_capture_stack', src)
+        self.assertIn('INSECURE_NPCAP', src)
+        self.assertIn('Win10Pcap', src)
+        self.assertIn('AllowComputerToTurnOffDevice', src)
+
+    def test_zubcut_post_init_maintain(self) -> None:
+        path = os.path.join(_ROOT, 'src', 'zubcut.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        self.assertIn("_schedule_npcap_prewarm('post_init')", src)
 
     def test_settings_apply_prewarms_npcap(self) -> None:
         path = os.path.join(_SRC, 'gui', 'settings.py')

@@ -2855,14 +2855,22 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             pass
 
     def _schedule_npcap_prewarm(self, reason: str = 'startup') -> None:
-        """Background Npcap L2 open — keeps ARP poison synchronous on first Kill/Lag."""
+        """Background Npcap maintenance + L2 socket warm (no external scripts)."""
         _ = reason
         if getattr(self, '_shutting_down', False):
             return
+        iface = ''
         try:
-            self.killer.prewarm_l2_socket()
+            iface = str(getattr(self.scanner.iface, 'name', None) or '').strip()
         except Exception:
             pass
+        from tools.windows_network_tune import schedule_windows_capture_maintenance
+
+        schedule_windows_capture_maintenance(
+            iface_name=iface,
+            force=reason in ('startup', 'settings', 'post_init'),
+            prewarm=self.killer.prewarm_l2_socket,
+        )
 
     def _ics_stack_is_warm(self) -> bool:
         """True when ICS iface/router prep ran recently (startup or wake-from-sleep)."""
@@ -2886,7 +2894,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Defer ICS/WinDivert prep so Kill/Lag/Dupe clicks skip slow checks."""
         if getattr(self, '_shutting_down', False):
             return
-        delay = 0 if reason in ('post_scan', 'reactivate', 'select') else 80
+        delay = 0 if reason in ('post_scan', 'reactivate', 'select', 'post_init', 'settings') else 80
         QTimer.singleShot(delay, lambda r=reason: self._warm_impairment_stack(reason=r))
 
     def _warm_impairment_stack(self, *, reason: str = 'startup') -> None:
