@@ -44,6 +44,8 @@ class TestControlPanelSource(unittest.TestCase):
         self.assertNotIn('utils_gui', src)
         self.assertNotIn('tools.utils', src)
         self.assertNotIn('register_window_surface_effects(self)', src)
+        self.assertNotIn('setup_frameless_main_window', src)
+        self.assertNotIn('FramelessResizableMixin', src)
 
     def test_crash_api_module(self) -> None:
         from tools.control_panel_crashes import list_crash_reports

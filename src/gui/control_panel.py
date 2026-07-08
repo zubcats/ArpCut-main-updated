@@ -26,10 +26,6 @@ from constants import (
     CONTROL_PANEL_UPDATE_URL,
 )
 from gui.crash_reports_panel import CrashReportsPanel
-from tools.frameless_chrome import (
-    FramelessResizableMixin,
-    setup_frameless_main_window,
-)
 from tools.license_admin import (
     cloud_kv_bundle_for_license_id,
     cloud_kv_key_for_account,
@@ -241,7 +237,7 @@ QMainWindow#zubcutControlPanel QGroupBox#cloudSyncGroup::title {{
 """
 
 
-class ControlPanelWindow(FramelessResizableMixin, QMainWindow):
+class ControlPanelWindow(QMainWindow):
     def __init__(self, icon):
         super().__init__()
         self.setObjectName('zubcutControlPanel')
@@ -250,8 +246,7 @@ class ControlPanelWindow(FramelessResizableMixin, QMainWindow):
         self.resize(1000, 700)
         self._build_ui()
         self.setStyleSheet(_control_panel_qss())
-        setup_frameless_main_window(self, self.windowTitle(), icon, maximizable=False)
-        # Solid frameless title bar only (no DWM rounded mask — caused invisible window on some PCs).
+        # Native Windows title bar (frameless chrome caused invisible window on some PCs).
         QTimer.singleShot(0, self.refresh_rows)
 
     def _build_ui(self):

@@ -104,7 +104,7 @@ if __name__ == '__main__':
     try:
         from os import makedirs
 
-        from PyQt5.QtCore import Qt
+        from PyQt5.QtCore import Qt, QTimer
         from PyQt5.QtGui import QIcon, QPixmap
         from PyQt5.QtWidgets import QApplication, QStyleFactory
         from qdarkstyle import load_stylesheet
@@ -153,6 +153,43 @@ if __name__ == '__main__':
         win.show()
         win.raise_()
         win.activateWindow()
+        if _sys.platform.startswith('win'):
+            try:
+                import ctypes
+
+                _hwnd = int(win.winId())
+                ctypes.windll.user32.ShowWindow(_hwnd, 9)  # SW_RESTORE
+                ctypes.windll.user32.SetForegroundWindow(_hwnd)
+                _cp_boot('Win32 ShowWindow/SetForegroundWindow hwnd=%s' % _hwnd)
+            except Exception as exc:
+                _cp_boot('Win32 foreground failed: ' + repr(exc))
+
+        def _visibility_watchdog() -> None:
+            _cp_boot(
+                'visibility watchdog visible=%s minimized=%s geom=%sx%s+%s+%s'
+                % (
+                    win.isVisible(),
+                    win.isMinimized(),
+                    win.width(),
+                    win.height(),
+                    win.x(),
+                    win.y(),
+                )
+            )
+            if win.isVisible() and not win.isMinimized():
+                return
+            win.showNormal()
+            win.show()
+            win.raise_()
+            win.activateWindow()
+            if not win.isVisible():
+                _fatal(
+                    CONTROL_PANEL_DISPLAY_NAME,
+                    'The window did not become visible after launch.\n'
+                    'Try Alt+Tab, or run with ZUBCUT_CONTROL_PANEL_DEBUG=1 and send the boot log.',
+                )
+
+        QTimer.singleShot(1500, _visibility_watchdog)
         _cp_boot(
             'show() done visible=%s active=%s geom=%sx%s+%s+%s'
             % (
