@@ -32,8 +32,11 @@ class TestVictimTrafficRestore(unittest.TestCase):
     def test_dupe_release_always_clears_arp_stack(self) -> None:
         src = self._main_py()
         fn = src[src.index('def _release_dupe_victim_immediate'): src.index('def _apply_victim_block')]
-        self.assertIn('_release_victim_arp_mitm_stack(device)', fn)
-        self.assertNotIn('return\n', fn[fn.index('_ics_emergency_release'): fn.index('_release_victim_arp_mitm_stack')])
+        self.assertIn('_release_victim_arp_mitm_stack(device, refresh_context=refresh_context)', fn)
+        self.assertNotIn(
+            'return\n',
+            fn[fn.index('_ics_emergency_release'): fn.index('_release_victim_arp_mitm_stack')],
+        )
 
     def test_deferred_dupe_clear_teardowns_windivert_net(self) -> None:
         src = self._main_py()

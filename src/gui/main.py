@@ -4315,7 +4315,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 ips.add(s)
         return ips
 
-    def _release_victim_arp_mitm_stack(self, device) -> None:
+    def _release_victim_arp_mitm_stack(self, device, *, refresh_context: bool = True) -> None:
         """
         Drop LAN ARP MITM, forwarder, and firewall for this victim.
         Safe to call after WinDivert teardown — unkill is a no-op when not armed.
@@ -4323,10 +4323,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not isinstance(device, dict):
             return
         device = self._device_with_plan_ip(dict(device))
-        try:
-            self._ensure_network_context_for_victim(device, fast=True)
-        except Exception:
-            pass
+        if refresh_context:
+            try:
+                self._ensure_network_context_for_victim(device, fast=True)
+            except Exception:
+                pass
         target_mac = str(device.get('mac') or '').strip()
         ips = self._victim_teardown_ips(device)
         victims: list[dict] = []
@@ -5134,7 +5135,23 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return dict(live)
         return None
 
-    def _release_dupe_victim_immediate(self, device) -> None:
+    def _dupe_impairment_is_live(self, device) -> bool:
+        """True when click-time preblock or gate actually owns this victim."""
+        if not isinstance(device, dict):
+            return False
+        dev = self._device_with_plan_ip(dict(device))
+        plan = self._impairment_plan_for(dev)
+        ips = self._victim_teardown_ips(dev)
+        if plan.use_windivert:
+            gate = getattr(self, '_ics_lag_gate', None)
+            if gate is not None and gate.is_running():
+                vip = str(getattr(gate, 'victim_ip', '') or '').strip()
+                return bool(vip and vip in ips)
+            return False
+        mac = str(dev.get('mac') or '').strip()
+        return bool(mac and mac in getattr(self.killer, 'killed', {}))
+
+    def _release_dupe_victim_immediate(self, device, *, refresh_context: bool = True) -> None:
         """Restore connectivity on the GUI thread (Lag Switch OFF parity).
 
         Deferred ``_do_deferred_dupe_clear`` only drops leftover firewall rules;
@@ -5150,7 +5167,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
         try:
-            self._release_victim_arp_mitm_stack(device)
+            self._release_victim_arp_mitm_stack(device, refresh_context=refresh_context)
         except Exception:
             pass
         self._schedule_dupe_off_reinforce(device.get('mac'), device)
@@ -5491,6 +5508,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._sync_killed_devices()
                 self._updateKillButtonState()
                 return
+        if getattr(self, 'dupe_active', False) and mac and mac == getattr(self, 'dupe_device_mac', None):
+            self._set_killed_profile(dev, False)
+            self._sync_killed_devices()
+            self._updateKillButtonState()
+            return
         if getattr(self, 'dupe_active', False):
             gate = getattr(self, '_ics_lag_gate', None)
             if (
@@ -5672,15 +5694,20 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                             self.killer.reassert_poison(dev)
                         except Exception:
                             pass
-                self._dupe_armed_ok = True
-                dev = self._device_with_plan_ip(dict(dev))
-                self._sync_dupe_device_identity(dev)
-                self.dupe_device_mac = (
-                    str(dev.get('mac') or self.dupe_device_mac or '').strip() or None
+                if self._dupe_impairment_is_live(dev):
+                    self._dupe_armed_ok = True
+                    dev = self._device_with_plan_ip(dict(dev))
+                    self._sync_dupe_device_identity(dev)
+                    self.dupe_device_mac = (
+                        str(dev.get('mac') or self.dupe_device_mac or '').strip() or None
+                    )
+                    self.dupe_device_ip = dev.get('ip') or self.dupe_device_ip
+                    self._start_dupe_timers_after_network_ready()
+                    return
+                self.log(
+                    'Dupe preblock did not stick — arming full MITM…',
+                    UI_LOG_VICTIM_BLOCK_FG,
                 )
-                self.dupe_device_ip = dev.get('ip') or self.dupe_device_ip
-                self._start_dupe_timers_after_network_ready()
-                return
             dev = self._prepare_victim_for_impairment(dev, fast=True)
             if not self._arm_victim_mitm_like_kill(dev, block_dir, flow='Dupe'):
                 raise RuntimeError(
@@ -6273,6 +6300,22 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.log('Target has no MAC yet — rescan after PS5 Wi‑Fi/Ethernet change.', 'red')
             return
         had_prior_dupe = bool(self.dupe_active)
+        if had_prior_dupe:
+            prev_mac = self.dupe_device_mac
+            prev_ip = getattr(self, 'dupe_device_ip', None)
+            arm_snap = (
+                dict(self._dupe_arm_device)
+                if isinstance(getattr(self, '_dupe_arm_device', None), dict)
+                else None
+            )
+            snap = self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, arm_snap)
+            if snap:
+                try:
+                    self._release_dupe_victim_immediate(snap, refresh_context=False)
+                except Exception:
+                    pass
+            self._flush_pending_dupe_clear_sync(max_wait_ms=150)
+            self._drop_dupe_restoring_banner()
         self._dupe_arm_timer.stop()
         try:
             self._dupe_arm_timer.timeout.disconnect()
@@ -6312,12 +6355,6 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         def _dupe_deferred_start():
             if getattr(self, '_shutting_down', False):
                 return
-            if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != dupe_gen:
-                return
-            if had_prior_dupe:
-                self.stopDupe(refresh_dialog=False, log=False)
-                self._flush_pending_dupe_clear_sync(max_wait_ms=400)
-                self._drop_dupe_restoring_banner()
             if not self.dupe_active or int(getattr(self, '_dupe_start_gen', 0)) != dupe_gen:
                 return
             self._schedule_dupe_arm_command(device, direction, dupe_gen)
@@ -6448,7 +6485,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
             def _release_worker():
                 try:
-                    self._release_dupe_victim_immediate(release_snap)
+                    self._release_dupe_victim_immediate(release_snap, refresh_context=False)
                 except Exception:
                     pass
 
