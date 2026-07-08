@@ -1,0 +1,51 @@
+# Deploy Cloudflare license + crash-report worker (backend/cloudflare-license-signin).
+# Requires repo secret CLOUDFLARE_API_TOKEN (Workers Scripts Edit + KV read/write).
+
+name: Deploy license worker (Cloudflare)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'backend/cloudflare-license-signin/**'
+      - '.github/workflows/deploy-license-worker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-license-worker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Deploy worker
+        working-directory: backend/cloudflare-license-signin
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler@4 deploy
+
+      - name: Verify crash ingest route
+        run: |
+          code=$(curl -sS -o /tmp/crash-probe.json -w '%{http_code}' \
+            -X POST https://zubcut-license-signin.zubcats.workers.dev/crash \
+            -H 'Content-Type: application/json' \
+            -d '{"ref":"ZC-PROBETEST","body":"github-actions deploy probe","time_utc":"2026-07-08T17:00:00Z"}')
+          cat /tmp/crash-probe.json
+          if [ "$code" != "200" ]; then
+            echo "Expected HTTP 200 from POST /crash, got $code"
+            exit 1
+          fi
+          grep -q '"ok":true' /tmp/crash-probe.json
