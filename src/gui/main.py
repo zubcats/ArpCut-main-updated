@@ -4292,15 +4292,71 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         gate = getattr(self, '_ics_lag_gate', None)
         if gate is None or not isinstance(device, dict):
             return False
-        resolved = self._flow_stable_victim_ip(
-            device,
-            lag=getattr(self, 'lag_active', False),
-            dupe=getattr(self, 'dupe_active', False),
-        )
-        if not resolved:
-            resolved = clumsy_ics_resolve_victim_ip(device, self.scanner)
-        table_ip = str(device.get('ip') or '').strip()
-        return gate.victim_ip in (resolved, table_ip)
+        vip = str(getattr(gate, 'victim_ip', None) or '').strip()
+        if not vip:
+            return False
+        return vip in self._victim_teardown_ips(device)
+
+    def _victim_teardown_ips(self, device) -> set[str]:
+        """Every IP we may have blocked for this victim (table, plan, ICS resolve)."""
+        ips: set[str] = set()
+        if not isinstance(device, dict):
+            return ips
+        dev = self._device_with_plan_ip(dict(device))
+        for raw in (
+            dev.get('ip'),
+            self._flow_stable_victim_ip(dev),
+            clumsy_ics_resolve_victim_ip(dev, self.scanner),
+        ):
+            s = str(raw or '').strip()
+            if s and _is_valid_ip(s):
+                ips.add(s)
+        return ips
+
+    def _release_victim_arp_mitm_stack(self, device) -> None:
+        """
+        Drop LAN ARP MITM, forwarder, and firewall for this victim.
+        Safe to call after WinDivert teardown — unkill is a no-op when not armed.
+        """
+        if not isinstance(device, dict):
+            return
+        device = self._device_with_plan_ip(dict(device))
+        target_mac = str(device.get('mac') or '').strip()
+        ips = self._victim_teardown_ips(device)
+        victims: list[dict] = []
+        primary = self._victim_record_for_mac(target_mac) or device
+        if isinstance(primary, dict):
+            victims.append(primary)
+        for entry in list((self.killer.killed or {}).values()):
+            if not isinstance(entry, dict):
+                continue
+            emac = str(entry.get('mac') or '').strip()
+            eip = str(entry.get('ip') or '').strip()
+            if (target_mac and emac == target_mac) or (eip and eip in ips):
+                if entry not in victims:
+                    victims.append(entry)
+        for ip in ips:
+            _bg_unblock_ip(ip)
+        seen: set[str] = set()
+        for victim in victims:
+            mac = str(victim.get('mac') or '').strip()
+            if not mac or mac in seen:
+                continue
+            seen.add(mac)
+            try:
+                self.killer.disable_percent_cut(mac)
+            except Exception:
+                pass
+            is_ics = self._is_ics_downstream(victim)
+            try:
+                self.killer.unkill(victim, ics_mode=is_ics)
+            except Exception:
+                pass
+            try:
+                self.killer.reinforce_restore(victim, ics_mode=is_ics)
+            except Exception:
+                pass
+        self._ics_teardown_gate_if_idle(target_mac or None)
 
     def _ics_gate_allow_traffic(self, gate=None) -> None:
         """Resume WinDivert forwarding without clearing percent-cut / shaping state."""
@@ -4520,13 +4576,18 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         plan = self._impairment_plan_for(device)
         device = self._device_with_plan_ip(device)
         mac = str(device.get('mac') or '').strip()
+        gate_live = self._ics_gate_matches_device(device)
         # Has-state probe: only skip when nothing to clean. If any of these are
         # live we tear them down regardless of the current plan classification.
         has_ics_state = bool(
-            mac and (
-                mac in getattr(self, '_ics_kill_profile_macs', set())
-                or mac in self.killer.killed
-                or self._ics_windivert_busy(mac)
+            gate_live
+            or (
+                mac
+                and (
+                    mac in getattr(self, '_ics_kill_profile_macs', set())
+                    or mac in self.killer.killed
+                    or self._ics_windivert_busy(mac)
+                )
             )
         )
         if not plan.is_ics_downstream and not has_ics_state:
@@ -5077,39 +5138,15 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         device = self._device_with_plan_ip(device)
         plan = self._impairment_plan_for(device)
-        if plan.use_windivert or plan.is_ics_downstream:
+        if plan.use_windivert or plan.is_ics_downstream or self._ics_gate_matches_device(device):
             try:
                 self._ics_emergency_release(device, heal=True)
             except Exception:
                 pass
-            return
-        ip = (device.get('ip') or '').strip()
-        if ip and _is_valid_ip(ip):
-            _bg_unblock_ip(ip)
-        victims = []
-        primary = self._victim_record_for_mac(device.get('mac') or '') or device
-        if isinstance(primary, dict):
-            victims.append(primary)
-        if ip:
-            for victim in (self.killer.killed or {}).values():
-                if not isinstance(victim, dict):
-                    continue
-                if str(victim.get('ip') or '').strip() == ip and victim not in victims:
-                    victims.append(victim)
-        seen_macs = set()
-        for victim in victims:
-            mac = str(victim.get('mac') or '').strip()
-            if mac in seen_macs:
-                continue
-            seen_macs.add(mac)
-            try:
-                self.killer.unkill(victim, ics_mode=True)
-            except Exception:
-                pass
-            try:
-                self.killer.reinforce_restore(victim, ics_mode=True)
-            except Exception:
-                pass
+        try:
+            self._release_victim_arp_mitm_stack(device)
+        except Exception:
+            pass
         self._schedule_dupe_off_reinforce(device.get('mac'), device)
 
     def _apply_victim_block(self, device, direction, **ics_block_kw) -> bool:
@@ -5340,6 +5377,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         snap = dict(device)
         if self._uses_windivert(snap):
+            try:
+                self._finish_dupe_ics_teardown_net(snap)
+            except Exception:
+                pass
             self._finish_dupe_ics_teardown_ui(snap)
             self._drop_dupe_restoring_banner()
             return
@@ -6180,6 +6221,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 self._lag_ics_force_unpause()
         else:
             self._ics_teardown_gate_if_idle(prev_mac)
+        if device:
+            try:
+                self._release_victim_arp_mitm_stack(device)
+            except Exception:
+                pass
 
         self.lag_active = False
         self.lag_device_mac = None
@@ -7932,6 +7978,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     # gateway via route fallback — see killer.py:123-126).
                     self._ics_emergency_release(victim, heal=True)
                     is_ics_now = self._is_ics_downstream(victim)
+                    if is_ics_now:
+                        try:
+                            self._release_victim_arp_mitm_stack(victim)
+                        except Exception:
+                            pass
                     if not is_ics_now:
                         _bg_unblock_ip(victim.get('ip'))
                         try:
