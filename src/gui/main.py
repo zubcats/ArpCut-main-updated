@@ -6928,6 +6928,15 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         src = source
         if on:
             try:
+                plan = self._impairment_plan_for(dev)
+                if clumsy_mode_enabled() and plan.is_ics_downstream:
+                    dev = self._prepare_victim_for_impairment(dev, fast=True)
+                    rip = self._ics_hotspot_victim_ip(dev) or str(dev.get('ip') or '').strip()
+                    if rip:
+                        dev['ip'] = rip
+            except Exception:
+                pass
+            try:
                 self._flow_instant_preblock(dev, 'both', flow='Kill')
             except Exception:
                 pass
@@ -8014,26 +8023,37 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     if not _is_valid_ip(device.get('ip') or ''):
                         self.log('Target has no IP yet — enable sharing and rescan.', 'red')
                     elif self._uses_windivert(device):
+                        _mark('windivert_start')
+                        device = self._prepare_victim_for_impairment(device, fast=True)
+                        resolved_ip = (
+                            self._ics_hotspot_victim_ip(device)
+                            or str(device.get('ip') or '').strip()
+                        )
+                        if resolved_ip:
+                            device['ip'] = resolved_ip
                         gate = getattr(self, '_ics_lag_gate', None)
-                        if turn_on and gate is not None and gate.is_running():
+                        if (
+                            turn_on
+                            and gate is not None
+                            and gate.is_running()
+                            and str(gate.victim_ip or '').strip() == resolved_ip
+                        ):
                             _mark('windivert_instant')
-                            kill_applied = True
-                            self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                            # Preblock opened WinDivert; still run full hotspot Kill stack (ICS-ARP + profile).
+                            kill_applied = bool(self._apply_ics_client_block(device, 'both'))
                         else:
-                            _mark('windivert_start')
-                            device = self._prepare_victim_for_impairment(device, fast=True)
                             kill_applied = bool(self._apply_victim_block(device, 'both'))
-                            _mark('windivert_done')
-                            if kill_applied:
-                                self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
-                            else:
-                                self._ics_emergency_release(device, heal=False)
-                                ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
-                                detail = clumsy_windivert_probe_detail(ip)
-                                self.log(
-                                    f'Kill failed — WinDivert: {detail}',
-                                    'red',
-                                )
+                        _mark('windivert_done')
+                        if kill_applied:
+                            self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                        elif turn_on:
+                            self._ics_emergency_release(device, heal=False)
+                            ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
+                            detail = clumsy_windivert_probe_detail(ip)
+                            self.log(
+                                f'Kill failed — WinDivert: {detail}',
+                                'red',
+                            )
                     elif turn_on and mac in self.killer.killed:
                         _mark('lan_instant')
                         try:

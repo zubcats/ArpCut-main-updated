@@ -72,10 +72,13 @@ class TestHotspotIcsPaths(unittest.TestCase):
     def test_kill_dupe_and_legacy_paths_prepare_hotspot(self) -> None:
         src = self._main_py()
         kill_toggle = src[
-            src.index('elif self._uses_windivert(device):', src.index('def toggleKill'))
+            src.index('elif self._uses_windivert(device):', src.index('def _run_kill_command'))
             : src.index('elif turn_on and mac in self.killer.killed', src.index('def _run_kill_command'))
         ]
         self.assertIn('windivert_instant', kill_toggle)
+        self.assertIn('_apply_ics_client_block', kill_toggle)
+        toggle_kill = src[src.index('def toggleKill'): src.index('def _percent_cut_forwarder_live')]
+        self.assertIn('_prepare_victim_for_impairment(dev, fast=True)', toggle_kill)
         legacy_kill = src[
             src.index('if self._uses_windivert(device):', src.index('def kill(self'))
             : src.index('else:', src.index('if self._uses_windivert(device):', src.index('def kill(self')))
