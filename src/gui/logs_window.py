@@ -70,7 +70,10 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         self.setMinimumSize(520, 360)
         self.resize(640, 480)
 
+        # Same object name as Designer windows so translucent_main_chrome_qss
+        # paints charcoal (#141414) instead of qdarkstyle blue-grey.
         root = QWidget(self)
+        root.setObjectName('centralwidget')
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
         layout.setContentsMargins(12, 10, 12, 12)
@@ -80,11 +83,13 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
             'Status messages from the main window. Select a line to read the full text.',
             root,
         )
+        hint.setObjectName('logsHintLabel')
         hint.setWordWrap(True)
         hint.setStyleSheet('color: #9a9a9a; font-size: 11px;')
         layout.addWidget(hint)
 
         self._splitter = QSplitter(Qt.Vertical, root)
+        self._splitter.setObjectName('logsSplitter')
         self._list = QListWidget(self._splitter)
         self._list.setObjectName('logsHistoryList')
         mono = QFont('Consolas' if __import__('sys').platform.startswith('win') else 'Menlo', 10)
@@ -93,10 +98,13 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         self._list.currentRowChanged.connect(self._on_row_changed)
 
         detail_wrap = QWidget(self._splitter)
+        detail_wrap.setObjectName('logsDetailWrap')
         detail_layout = QVBoxLayout(detail_wrap)
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(4)
-        detail_layout.addWidget(QLabel('Full message', detail_wrap))
+        detail_heading = QLabel('Full message', detail_wrap)
+        detail_heading.setObjectName('logsDetailHeading')
+        detail_layout.addWidget(detail_heading)
         self._detail = QPlainTextEdit(detail_wrap)
         self._detail.setObjectName('logsDetailPane')
         self._detail.setReadOnly(True)
@@ -111,10 +119,11 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         layout.addWidget(self._splitter, 1)
 
         self._diag_group = QLabel('Diagnostic tools — coming soon', root)
+        self._diag_group.setObjectName('logsDiagPlaceholder')
         self._diag_group.setAlignment(Qt.AlignCenter)
         self._diag_group.setStyleSheet(
-            'color: #6a6a6a; font-size: 11px; padding: 8px; '
-            'border: 1px dashed #3a3a3a; border-radius: 4px;'
+            'color: #9a9a9a; font-size: 11px; padding: 8px; '
+            'border: 1px dashed #3d3d3d; border-radius: 4px;'
         )
         layout.addWidget(self._diag_group)
 

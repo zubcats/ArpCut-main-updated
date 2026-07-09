@@ -713,6 +713,65 @@ QDialog QHeaderView::section {{
     border-bottom: 1px solid #2a2a2a;
     padding: 4px;
 }}
+/* Logs window: kill qdarkstyle blue-grey list / editor / splitter chrome. */
+QMainWindow#zubcutAuxiliaryWindow QSplitter#logsSplitter {{
+    background-color: {panel};
+    border: none;
+}}
+QMainWindow#zubcutAuxiliaryWindow QSplitter#logsSplitter::handle {{
+    background-color: {bd};
+    border: none;
+    margin: 2px 0;
+    height: 3px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QSplitter#logsSplitter::handle:hover {{
+    background-color: {sel_bg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QWidget#logsDetailWrap {{
+    background-color: transparent;
+}}
+QMainWindow#zubcutAuxiliaryWindow QListWidget#logsHistoryList {{
+    background-color: #000000;
+    alternate-background-color: {tbl_alt};
+    color: {tx};
+    border: 1px solid {bd};
+    border-radius: 4px;
+    outline: none;
+    padding: 2px;
+    selection-background-color: {admin_bg};
+    selection-color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QListWidget#logsHistoryList::item {{
+    padding: 3px 6px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QListWidget#logsHistoryList::item:hover,
+QMainWindow#zubcutAuxiliaryWindow QListWidget#logsHistoryList::item:selected,
+QMainWindow#zubcutAuxiliaryWindow QListWidget#logsHistoryList::item:selected:active,
+QMainWindow#zubcutAuxiliaryWindow QListWidget#logsHistoryList::item:selected:!active {{
+    background-color: {admin_bg};
+    color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QPlainTextEdit#logsDetailPane {{
+    background-color: #000000;
+    color: {tx};
+    border: 1px solid {field_bd};
+    border-radius: 4px;
+    padding: 6px;
+    selection-background-color: {admin_bg};
+    selection-color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QPlainTextEdit#logsDetailPane:focus {{
+    border: 1px solid {field_bd};
+}}
+QMainWindow#zubcutAuxiliaryWindow QLabel#logsDetailHeading {{
+    color: {admin_bg};
+    background-color: transparent;
+}}
+QMainWindow#zubcutAuxiliaryWindow QLabel#logsHintLabel,
+QMainWindow#zubcutAuxiliaryWindow QLabel#logsDiagPlaceholder {{
+    color: {mute};
+    background-color: transparent;
+}}
 """
 
 

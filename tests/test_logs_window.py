@@ -47,6 +47,25 @@ class TestLogsWindowWiring(unittest.TestCase):
         self.assertIn('class LogEntry', src)
         self.assertIn('def sync_entries', src)
         self.assertIn('Diagnostic tools — coming soon', src)
+        self.assertIn("setObjectName('centralwidget')", src)
+        self.assertIn("setObjectName('logsHistoryList')", src)
+        self.assertIn("setObjectName('logsDetailPane')", src)
+        self.assertIn("setObjectName('logsSplitter')", src)
+
+    def test_logs_window_matches_main_charcoal_theme(self) -> None:
+        path = os.path.join(_SRC, 'tools', 'utils_gui.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('QListWidget#logsHistoryList', src)
+        self.assertIn('QPlainTextEdit#logsDetailPane', src)
+        self.assertIn('QSplitter#logsSplitter', src)
+        block = src[
+            src.index('QListWidget#logsHistoryList'):
+            src.index('QLabel#logsDetailHeading')
+        ]
+        self.assertIn('background-color: #000000', block)
+        self.assertNotIn('#19232D', block)
+        self.assertNotIn('#1A72BB', block)
 
 
 if __name__ == '__main__':
