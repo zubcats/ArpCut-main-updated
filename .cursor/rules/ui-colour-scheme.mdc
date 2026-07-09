@@ -1,0 +1,40 @@
+---
+description: Always apply ZubCut charcoal/teal colour scheme to new or changed UI
+alwaysApply: true
+---
+
+# UI Colour Scheme
+
+Whenever you add or change UI (windows, dialogs, menus, panels, controls, QSS, inline styles), match the main-window charcoal/teal theme. Do not leave qdarkstyle blue-grey (`#19232D`, `#37414F`, `#455364`, `#1A72BB`, `#346792`) visible.
+
+## Palette tokens (`src/constants.py`)
+
+| Role | Constant | Hex |
+|------|----------|-----|
+| Window / panel chrome | (QSS) | `#141414` |
+| Title / button fill | (QSS) | `#2b2b2b` |
+| Borders / idle chrome | (QSS) | `#3d3d3d` |
+| Me / Router row (sage) | `ADMIN_DEVICE_TABLE_ROW_BG` | `#5D706E` |
+| Me / Router text | `ADMIN_DEVICE_TABLE_ROW_FG` | `#eef1f0` |
+| Row selection / accents | `UI_TABLE_SELECTION_BG` | `#316E69` |
+| Selection text | `UI_TABLE_SELECTION_FG` | `#f2f2f2` |
+| Toggle / field accent | `UI_TOGGLE_BORDER_ACCENT` | `#316E69` |
+| Victim-block log | `UI_LOG_VICTIM_BLOCK_FG` | `#32716D` |
+| Restore / off log | `UI_LOG_RESTORE_FG` | same as Me/Router BG |
+
+Prefer these constants (or `getattr(_zcut_constants, …)` fallbacks) over hard-coded one-offs.
+
+## Required when adding UI
+
+1. **Auxiliary windows** (`QMainWindow`): `setObjectName('zubcutAuxiliaryWindow')` and name the central widget `centralwidget` so global charcoal chrome applies.
+2. **Dialogs**: use existing dialog object names / `zubcutDialogBody` patterns; do not rely on raw qdarkstyle.
+3. **Lists, tables, editors, splitters, menus**: add or extend rules in `tools/utils_gui.py` (`zubcut_dark_stylesheet` / `_auxiliary_windows_qss` / charcoal QSS). Kill blue backgrounds, borders, and selection.
+4. **Context menus / popups**: theme `QMenu` globally — charcoal panel, no qdark blue; hover may stay black; accents/selection green use `UI_TABLE_SELECTION_BG`; Me-row sage text uses `ADMIN_DEVICE_TABLE_ROW_BG`.
+5. **Inline widget styles**: use palette hexes above; muted hints `#9a9a9a`; primary text `#e8eaed`.
+6. **Tests**: when UI chrome changes, assert object names and/or QSS selectors so blue qdark colours cannot regress.
+
+## Do not
+
+- Ship new surfaces that still show qdarkstyle blue tint.
+- Invent a parallel purple/indigo or cream theme.
+- Set stylesheets only on the main window when app-global QSS is required for child popups (menus, tooltips, dialogs).

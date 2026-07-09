@@ -10,3 +10,4 @@ alwaysApply: true
 - Add or update tests when behavior changes.
 - Preserve existing project structure and naming conventions.
 - Call out assumptions and risks when requirements are ambiguous.
+- New or changed UI must follow `.cursor/rules/ui-colour-scheme.mdc` (charcoal/teal; no qdarkstyle blue).

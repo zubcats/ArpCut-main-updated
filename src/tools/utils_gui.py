@@ -97,9 +97,7 @@ QProgressBar#pgbar::chunk {
     background-color: #316E69;
     border-radius: 3px;
 }
-QMenu::item:selected, QMenuBar::item:selected {
-    background-color: #000000;
-}
+/* QMenu / QMenuBar: see _context_menu_qss() (charcoal panel, black hover, selection teal). */
 /* QTabBar: see _chrome_status_strip_and_tabs_qss() (transparent, matches window chrome). */
 QCheckBox::indicator, QRadioButton::indicator {
     image: none;
@@ -1080,6 +1078,63 @@ QDialog#zubcutInstallerDownloadDialog QWidget#zubcutDialogBody QPushButton:hover
 """
 
 
+def _context_menu_qss() -> str:
+    """
+    Right-click / tray menus: kill qdarkstyle blue panel (#37414F) and blue highlight (#1A72BB).
+
+    Hover stays pure black; accents use row-selection teal; item text uses Me/Router sage.
+    """
+    sel_bg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_BG', '#316E69')
+    me_fg = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
+    me_hi = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_FG', '#eef1f0')
+    return f"""
+QMenu {{
+    background-color: #141414;
+    color: {me_fg};
+    border: 1px solid {sel_bg};
+    padding: 4px;
+    selection-background-color: #000000;
+    selection-color: {me_fg};
+}}
+QMenu::item {{
+    background-color: transparent;
+    color: {me_fg};
+    padding: 5px 24px 5px 12px;
+    border: 1px solid transparent;
+}}
+QMenu::item:selected,
+QMenuBar::item:selected {{
+    background-color: #000000;
+    color: {me_fg};
+}}
+QMenu::item:pressed,
+QMenuBar::item:pressed {{
+    background-color: {sel_bg};
+    color: {me_hi};
+}}
+QMenu::item:disabled {{
+    color: #6a6a6a;
+    background-color: transparent;
+}}
+QMenu::separator {{
+    height: 1px;
+    margin: 4px 8px;
+    background-color: {sel_bg};
+}}
+QMenuBar {{
+    background-color: #141414;
+    color: {me_fg};
+    border: none;
+    selection-background-color: #000000;
+}}
+QMenuBar::item {{
+    background: transparent;
+    color: {me_fg};
+    padding: 4px 8px;
+}}
+"""
+
+
 def zubcut_dark_stylesheet():
     base = load_stylesheet() + '\n' + translucent_main_chrome_qss()
     if _experimental_charcoal_ui():
@@ -1091,6 +1146,8 @@ def zubcut_dark_stylesheet():
     base = base + '\n' + _auxiliary_windows_qss()
     base = base + '\n' + _lag_dupe_dialog_chrome_qss()
     base = base + '\n' + _installer_download_dialog_qss()
+    # After charcoal/qdark so menu rules win over leftover blue highlights.
+    base = base + '\n' + _context_menu_qss()
     return base
 
 
