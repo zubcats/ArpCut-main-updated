@@ -54,6 +54,7 @@ jobs:
           UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
           LICENSE_PUBLIC_KEY_B64: ${{ secrets.LICENSE_PUBLIC_KEY_B64 || secrets.PAID_LICENSE_PUBLIC_KEY_B64 }}
           LICENSE_SIGNIN_URL: ${{ secrets.LICENSE_SIGNIN_URL }}
+          CRASH_INGEST_TOKEN: ${{ secrets.CRASH_INGEST_TOKEN }}
         run: python tools/ci_apply_build_constants.py
 
       - name: Set up Python
@@ -186,6 +187,7 @@ jobs:
           UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
           LICENSE_PUBLIC_KEY_B64: ${{ secrets.LICENSE_PUBLIC_KEY_B64 || secrets.PAID_LICENSE_PUBLIC_KEY_B64 }}
           LICENSE_SIGNIN_URL: ${{ secrets.LICENSE_SIGNIN_URL }}
+          CRASH_INGEST_TOKEN: ${{ secrets.CRASH_INGEST_TOKEN }}
         run: python tools/ci_apply_build_constants.py
 
       - name: Set up Python
@@ -238,6 +240,7 @@ jobs:
           UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
           LICENSE_PUBLIC_KEY_B64: ${{ secrets.LICENSE_PUBLIC_KEY_B64 || secrets.PAID_LICENSE_PUBLIC_KEY_B64 }}
           LICENSE_SIGNIN_URL: ${{ secrets.LICENSE_SIGNIN_URL }}
+          CRASH_INGEST_TOKEN: ${{ secrets.CRASH_INGEST_TOKEN }}
         run: python tools/ci_apply_build_constants.py
 
       - name: Set up Python

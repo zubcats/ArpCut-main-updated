@@ -55,6 +55,9 @@ LICENSE_PUBLIC_KEY_B64 = ''
 LICENSE_SIGNIN_URL = 'https://zubcut-license-signin.zubcats.workers.dev'
 # Crash report HTTPS URL (POST /crash). Defaults to LICENSE_SIGNIN_URL; override with ZUBCUT_CRASH_REPORT_URL.
 CRASH_REPORT_URL = LICENSE_SIGNIN_URL
+# Optional shared secret for POST /crash (must match Worker secret CRASH_INGEST_TOKEN).
+# CI injects from GitHub Actions secret CRASH_INGEST_TOKEN. Override with ZUBCUT_CRASH_INGEST_TOKEN.
+CRASH_INGEST_TOKEN = ''
 
 # ZubCut Control Panel (admin app — own CI release tag; does not use ZubCut stable/experimental updaters)
 CONTROL_PANEL_DISPLAY_NAME = 'ZubCut Control Panel'

@@ -74,6 +74,8 @@ Same as **section C**: public verify key + Worker URL in the build. Customers us
 
 ZubCut can POST crash logs to `POST /crash`; Control Panel (or `tools/crash_reports_admin.py`) lists them with the same **Admin secret**. See **[CRASH_REPORTS.md](./CRASH_REPORTS.md)** for full API details.
 
+Optional: lock down ingest with Worker secret **`CRASH_INGEST_TOKEN`** (same value as GitHub Actions secret / baked `CRASH_INGEST_TOKEN` in the app). Helper: `tools/set_crash_ingest_token.sh`.
+
 ## Limits
 
 Cloudflare free tier has [limits](https://developers.cloudflare.com/workers/platform/limits/) on Workers and KV; suitable for modest user counts. Add rate limiting or WAF rules if you see abuse.

@@ -11,12 +11,26 @@ ZubCut stores crash reports on the **same Cloudflare Worker + KV** as license si
 
 ## App endpoint
 
-`POST /crash` — no admin secret; public ingest (rate-limit at Cloudflare if needed).
+`POST /crash` — public ingest with optional shared secret + per-IP rate limit.
+
+### Auth (recommended)
+
+1. Set Worker secret: `npx wrangler secret put CRASH_INGEST_TOKEN` (or run `tools/set_crash_ingest_token.sh`).
+2. Set the **same** value as GitHub Actions secret `CRASH_INGEST_TOKEN` so CI bakes it into ZubCut builds (`constants.CRASH_INGEST_TOKEN`).
+3. Redeploy the worker, then rebuild experimental/main.
+
+If `CRASH_INGEST_TOKEN` is **unset** on the Worker, `/crash` stays open (backward compatible).  
+If it **is** set, the JSON body must include matching `ingest_token` (or `token`).
+
+Runtime override on a PC: Windows env `ZUBCUT_CRASH_INGEST_TOKEN`.
+
+Rate limit: about **30 reports per client IP per hour** (KV counter).
 
 ```json
 {
   "ref": "ZC-ABC123",
   "body": "full traceback text…",
+  "ingest_token": "<CRASH_INGEST_TOKEN when configured>",
   "time_utc": "2026-07-08T16:00:00+00:00",
   "platform": "Windows-10-…",
   "frozen": true,
@@ -35,7 +49,9 @@ ZubCut stores crash reports on the **same Cloudflare Worker + KV** as license si
 
 **Account linking:** ZubCut sends `account_hint` (sign-in account from `zubcut-license.json`) and `license_id` when the user is signed in. Unsigned sessions appear as empty / “not signed in” in Control Panel.
 
-Response: `{ "ok": true, "ref": "ZC-ABC123", "message": "Crash report received." }`
+Response: `{ "ok": true, "ref": "ZC-ABC123", "message": "Crash report received." }`  
+Unauthorized: `{ "ok": false, "error": "Unauthorized crash ingest." }` (HTTP 401)  
+Rate limited: `{ "ok": false, "error": "Too many crash reports. Try again later." }` (HTTP 429)
 
 ## Admin endpoints (Control Panel / developer CLI)
 
@@ -131,4 +147,12 @@ After pulling worker changes:
 ```bash
 cd backend/cloudflare-license-signin
 npx wrangler deploy
+```
+
+To enable crash ingest auth (recommended):
+
+```bash
+# from repo root — generates a token, sets the Worker secret, deploys
+tools/set_crash_ingest_token.sh
+# then paste the printed token into GitHub Actions secret CRASH_INGEST_TOKEN and rebuild
 ```

@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional, Tuple
 from constants import (
     APP_BUILD_COMMIT,
     APP_BUILD_TIME_ISO,
+    CRASH_INGEST_TOKEN,
     CRASH_REPORT_URL,
     LICENSE_FILE_PATH,
     SETTINGS_KEYS,
@@ -150,7 +151,7 @@ def _build_payload(
     token = (
         os.environ.get('ZUBCUT_CRASH_INGEST_TOKEN')
         or os.environ.get('CRASH_INGEST_TOKEN')
-        or ''
+        or str(CRASH_INGEST_TOKEN or '')
     ).strip()
     if token:
         payload['ingest_token'] = token
