@@ -101,7 +101,28 @@ def build():
     cmd = [sys.executable, '-m', 'PyInstaller', '--name', APP_BUNDLE_NAME]
     # Explicit src path: frozen builds resolve `gui.*` from here; avoids missed submodules.
     cmd.extend(['--paths', os.path.join(_ROOT, 'src')])
-    cmd.extend(['--collect-submodules', 'gui'])
+    # Do not --collect-submodules gui (would pull Control Panel / crash admin into customer EXE).
+    for _gui_mod in (
+        'gui',
+        'gui.main',
+        'gui.settings',
+        'gui.about',
+        'gui.device',
+        'gui.traffic',
+        'gui.logs_window',
+        'gui.license_signin',
+        'gui.advanced_lag_settings',
+    ):
+        cmd.extend(['--hidden-import', _gui_mod])
+    for _excl in (
+        'gui.control_panel',
+        'gui.crash_reports_panel',
+        'tools.license_admin',
+        'tools.license_cloud_sync',
+        'tools.control_panel_crashes',
+        'zubcut_control_panel',
+    ):
+        cmd.extend(['--exclude-module', _excl])
     cmd.extend(['--additional-hooks-dir', os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks')])
 
     # Platform-specific options

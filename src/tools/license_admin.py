@@ -42,9 +42,23 @@ def _load_signing_key() -> SigningKey:
     os.makedirs(os.path.dirname(PAID_LICENSE_ADMIN_SIGNING_KEY_PATH), exist_ok=True)
     if os.path.exists(PAID_LICENSE_ADMIN_SIGNING_KEY_PATH):
         raw = open(PAID_LICENSE_ADMIN_SIGNING_KEY_PATH, 'rb').read()
+        try:
+            from tools.secret_store import unprotect_bytes
+
+            raw = unprotect_bytes(raw)
+        except Exception:
+            pass
         return SigningKey(raw)
     key = SigningKey.generate()
-    open(PAID_LICENSE_ADMIN_SIGNING_KEY_PATH, 'wb').write(bytes(key))
+    blob = bytes(key)
+    try:
+        from tools.secret_store import protect_bytes, restrict_user_only_acl
+
+        blob = protect_bytes(blob)
+        open(PAID_LICENSE_ADMIN_SIGNING_KEY_PATH, 'wb').write(blob)
+        restrict_user_only_acl(PAID_LICENSE_ADMIN_SIGNING_KEY_PATH)
+    except Exception:
+        open(PAID_LICENSE_ADMIN_SIGNING_KEY_PATH, 'wb').write(bytes(key))
     return key
 
 

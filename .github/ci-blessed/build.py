@@ -1,4 +1,3 @@
-# CI copy of repo-root build.py. Copied to ./build.py before CI runs PyInstaller.
 #!/usr/bin/env python3
 """
 Build script for ZubCut
@@ -32,7 +31,7 @@ HIDDEN_IMPORTS = [
     'tools.updater_debug',
     'PyQt5',
     'PyQt5.QtWidgets',
-    'PyQt5.QtCore',
+    'PyQt5.QtCore', 
     'PyQt5.QtGui',
     'PyQt5.sip',
     'qdarkstyle',
@@ -79,6 +78,7 @@ def _windows_pyinstaller_icon_path():
 
 
 def _stage_windivert_dist_if_present() -> None:
+    """Copy installer\\windivert into dist\\ZubCut\\windivert when binaries exist (local release builds)."""
     src_dir = os.path.join(_ROOT, 'installer', 'windivert')
     dll = os.path.join(src_dir, 'WinDivert.dll')
     sys_file = os.path.join(src_dir, 'WinDivert64.sys')
@@ -95,14 +95,40 @@ def _stage_windivert_dist_if_present() -> None:
 
 def build():
     system = platform.system()
-
+    
     # Base command (name must match constants.APP_BUNDLE_NAME for installer / autostart)
+    # Use python -m PyInstaller so CI and venvs do not rely on a Scripts\pyinstaller.exe on PATH
     cmd = [sys.executable, '-m', 'PyInstaller', '--name', APP_BUNDLE_NAME]
+    # Explicit src path: frozen builds resolve `gui.*` from here; avoids missed submodules.
     cmd.extend(['--paths', os.path.join(_ROOT, 'src')])
-    cmd.extend(['--collect-submodules', 'gui'])
+    # Do not --collect-submodules gui (would pull Control Panel / crash admin into customer EXE).
+    for _gui_mod in (
+        'gui',
+        'gui.main',
+        'gui.settings',
+        'gui.about',
+        'gui.device',
+        'gui.traffic',
+        'gui.logs_window',
+        'gui.license_signin',
+        'gui.advanced_lag_settings',
+    ):
+        cmd.extend(['--hidden-import', _gui_mod])
+    for _excl in (
+        'gui.control_panel',
+        'gui.crash_reports_panel',
+        'tools.license_admin',
+        'tools.license_cloud_sync',
+        'tools.control_panel_crashes',
+        'zubcut_control_panel',
+    ):
+        cmd.extend(['--exclude-module', _excl])
     cmd.extend(['--additional-hooks-dir', os.path.join(_ROOT, 'packaging', 'pyinstaller-hooks')])
 
+    # Platform-specific options
     if system == 'Windows':
+        # Onedir avoids one-file temp extraction (_MEI*) which often breaks python311.dll load
+        # (AV, temp cleanup, or missing deps beside the DLL on some systems).
         cmd.extend(['--onedir', '--windowed'])
         cmd.extend(['--add-data', 'exe/manuf;manuf'])
         cmd.extend(['--add-data', 'exe/zubcut_icon.png;.'])
@@ -110,31 +136,34 @@ def build():
         cmd.extend(['--collect-data', 'certifi'])
         _ico = _windows_pyinstaller_icon_path()
         cmd.extend(['--icon', os.path.relpath(_ico, _ROOT).replace('\\', '/')])
-        cmd.extend(['--uac-admin'])
-    elif system == 'Darwin':
+        cmd.extend(['--uac-admin'])  # Force admin elevation prompt
+    elif system == 'Darwin':  # macOS
         cmd.extend(['--onedir', '--windowed'])
         cmd.extend(['--add-data', 'exe/manuf:manuf'])
         cmd.extend(['--add-data', 'exe/zubcut_icon.png:.'])
         cmd.extend(['--icon', 'exe/zubcut_icon.png'])
-    else:
+    else:  # Linux
         cmd.extend(['--onefile'])
         cmd.extend(['--add-data', 'exe/manuf:manuf'])
         cmd.extend(['--add-data', 'exe/zubcut_icon.png:.'])
-
+    
+    # Add hidden imports
     for imp in HIDDEN_IMPORTS:
         cmd.extend(['--hidden-import', imp])
-
+    
+    # Collect all data for these packages
     for pkg in COLLECT_ALL:
         cmd.extend(['--collect-all', pkg])
-
+    
+    # Entry point
     cmd.append('src/zubcut.py')
-
+    
     print(f"Building for {system}...")
     print(f"Command: {' '.join(cmd)}")
     print()
-
+    
     result = subprocess.run(cmd, cwd=_ROOT)
-
+    
     if result.returncode == 0:
         print()
         print("Build complete!")
@@ -152,7 +181,6 @@ def build():
     else:
         print("Build failed!")
         sys.exit(1)
-
 
 if __name__ == '__main__':
     build()

@@ -42,6 +42,12 @@ def load_cloud_sync_settings() -> dict[str, Any]:
     for k in ('worker_base_url', 'admin_secret', 'auto_sync'):
         if k in raw:
             out[k] = raw[k]
+    try:
+        from tools.secret_store import unprotect_secret
+
+        out['admin_secret'] = unprotect_secret(str(out.get('admin_secret') or ''))
+    except Exception:
+        pass
     return out
 
 
@@ -51,10 +57,17 @@ def save_cloud_sync_settings(
     admin_secret: str,
     auto_sync: bool,
 ) -> None:
+    secret = str(admin_secret or '')
+    try:
+        from tools.secret_store import protect_secret, restrict_user_only_acl
+
+        secret = protect_secret(secret)
+    except Exception:
+        restrict_user_only_acl = None  # type: ignore
     data = {
         'version': 1,
         'worker_base_url': str(worker_base_url or '').strip().rstrip('/'),
-        'admin_secret': str(admin_secret or ''),
+        'admin_secret': secret,
         'auto_sync': bool(auto_sync),
     }
     parent = os.path.dirname(PAID_LICENSE_MANAGER_CLOUD_SYNC_PATH)
@@ -62,6 +75,12 @@ def save_cloud_sync_settings(
         os.makedirs(parent, exist_ok=True)
     with open(PAID_LICENSE_MANAGER_CLOUD_SYNC_PATH, 'w', encoding='utf-8') as fh:
         json.dump(data, fh, indent=2)
+    try:
+        from tools.secret_store import restrict_user_only_acl as _acl
+
+        _acl(PAID_LICENSE_MANAGER_CLOUD_SYNC_PATH)
+    except Exception:
+        pass
 
 
 def _normalize_worker_base(url: str) -> str:

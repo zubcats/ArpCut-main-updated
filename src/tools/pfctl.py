@@ -205,18 +205,63 @@ def list_rules():
     return _stdout_lines(res)
 
 
+def _safe_zubcut_rule_name(name: str) -> str | None:
+    """Allow only ZubCut-owned firewall rule names (no quotes / shell metacharacters)."""
+    n = str(name or '').strip()
+    if not n.lower().startswith('zubcut'):
+        return None
+    if len(n) > 180:
+        return None
+    if any(c in n for c in '"&|<>^%!\n\r\t'):
+        return None
+    return n
+
+
+def _normalize_firewall_proto(proto: str | None) -> str | None:
+    if proto is None or str(proto).strip() == '':
+        return None
+    p = str(proto).strip().upper()
+    if p in ('TCP', 'UDP', 'ANY'):
+        return p
+    return None
+
+
 def block_dst(iface: str, victim_ip: str, dst_ip: str, port: int | None = None, proto: str | None = None):
     if sys.platform != 'darwin':
         # Windows: use netsh advfirewall (simplified - block destination IP)
         if sys.platform.startswith('win'):
+            if not _is_valid_ip(victim_ip) or not _is_valid_ip(dst_ip):
+                _set_err('block_dst: invalid IPv4')
+                return False
+            port_i = None
+            if port is not None:
+                try:
+                    port_i = int(port)
+                except (TypeError, ValueError):
+                    _set_err('block_dst: invalid port')
+                    return False
+                if not (1 <= port_i <= 65535):
+                    _set_err('block_dst: port out of range')
+                    return False
+            proto_n = _normalize_firewall_proto(proto) or 'TCP'
             rule_name = f'zubcut_{victim_ip.replace(".", "_")}_to_{dst_ip.replace(".", "_")}'
-            if port:
-                rule_name += f'_p{port}'
-            cmd = f'netsh advfirewall firewall add rule name="{rule_name}" dir=out action=block remoteip={dst_ip} enable=yes'
-            if port:
-                cmd += f' protocol={proto.lower() if proto else "TCP"} localport={port}'
+            if port_i:
+                rule_name += f'_p{port_i}'
+            safe = _safe_zubcut_rule_name(rule_name)
+            if not safe:
+                _set_err('block_dst: unsafe rule name')
+                return False
+            cmd = (
+                f'netsh advfirewall firewall add rule name="{safe}" '
+                f'dir=out action=block remoteip={dst_ip} enable=yes'
+            )
+            if port_i:
+                cmd += f' protocol={proto_n.lower()} localport={port_i}'
             res = _exec(cmd)
             return res.returncode == 0
+        return False
+    if not _is_valid_ip(victim_ip) or not _is_valid_ip(dst_ip):
+        _set_err('block_dst: invalid IPv4')
         return False
     port_clause = f' port {port}' if port else ''
     proto_clause = f' proto {proto.lower()}' if proto and proto.upper() in ['TCP','UDP'] else ''
@@ -229,18 +274,25 @@ def unblock_dst(dst_ip: str, port: int | None = None):
     if sys.platform != 'darwin':
         # Windows: remove firewall rule by name pattern
         if sys.platform.startswith('win'):
+            if not _is_valid_ip(dst_ip):
+                _set_err('unblock_dst: invalid IPv4')
+                return False
             # List rules and delete matching ones
             list_cmd = 'netsh advfirewall firewall show rule name=all dir=out'
             res = _exec(list_cmd)
             if res.returncode == 0:
                 lines = _stdout_lines(res)
-                rule_name = None
+                needle = dst_ip.replace('.', '_')
                 for line in lines:
-                    if 'zubcut' in line.lower() and dst_ip.replace('.', '_') in line:
-                        # Extract rule name from line like "Rule Name: zubcut_..."
-                        if 'Rule Name:' in line:
-                            rule_name = line.split('Rule Name:')[1].strip()
-                            _exec(f'netsh advfirewall firewall delete rule name="{rule_name}"')
+                    if 'zubcut' not in line.lower() or needle not in line:
+                        continue
+                    if 'Rule Name:' not in line:
+                        continue
+                    rule_name = line.split('Rule Name:', 1)[1].strip()
+                    safe = _safe_zubcut_rule_name(rule_name)
+                    if not safe:
+                        continue
+                    _exec(f'netsh advfirewall firewall delete rule name="{safe}"')
             return True
         return False
     # Safely rewrite the anchor file without shell quoting issues
@@ -770,13 +822,17 @@ def clear_all_port_blocks() -> bool:
         except Exception:
             return False
     elif sys.platform.startswith('win'):
-        # Delete all zubcut_port rules
+        # Delete all zubcut_port rules (names must stay ZubCut-owned / shell-safe).
         res = _exec('netsh advfirewall firewall show rule name=all')
         if res.returncode == 0:
             for line in _stdout_lines(res):
-                if 'zubcut_port' in line.lower() and 'Rule Name:' in line:
-                    rule_name = line.split('Rule Name:')[1].strip()
-                    _exec(f'netsh advfirewall firewall delete rule name="{rule_name}"')
+                if 'zubcut_port' not in line.lower() or 'Rule Name:' not in line:
+                    continue
+                rule_name = line.split('Rule Name:', 1)[1].strip()
+                safe = _safe_zubcut_rule_name(rule_name)
+                if not safe:
+                    continue
+                _exec(f'netsh advfirewall firewall delete rule name="{safe}"')
         return True
     return False
 

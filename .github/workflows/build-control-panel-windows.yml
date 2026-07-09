@@ -39,7 +39,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Restore build.py and src/constants.py for CI
         shell: bash
@@ -67,7 +67,7 @@ jobs:
           PY
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -99,13 +99,13 @@ jobs:
           Copy-Item $built.FullName "output/ZubCut-Control-Panel-Setup.exe" -Force
 
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ZubCut-Control-Panel-Installer
           path: output/ZubCut-Control-Panel-Setup.exe
 
       - name: Publish control-panel-latest release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.6.1
         with:
           tag_name: control-panel-latest
           name: ZubCut Control Panel
@@ -121,7 +121,7 @@ jobs:
           # Old License Manager EXEs hard-code this filename/tag; same installer, not shown on control-panel-latest.
           Copy-Item "output/ZubCut-Control-Panel-Setup.exe" "output/ZubCut-License-Manager-Setup.exe" -Force
       - name: Upload legacy alias for old updaters
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.6.1
         with:
           tag_name: paid-license-manager-latest
           name: ZubCut Control Panel

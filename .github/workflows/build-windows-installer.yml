@@ -59,7 +59,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Verify tracked files exist on disk
         run: python tools/verify_tracked_files_exist.py
@@ -85,7 +85,7 @@ jobs:
         run: python tools/ci_apply_build_constants.py
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -171,21 +171,21 @@ jobs:
 
       - name: Upload installer EXE
         if: ${{ github.event.inputs.release_channel == 'main' || github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && (github.ref_name == 'main' || github.ref_type == 'tag')) }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ZubCut-Windows-Installer
           path: output/ZubCut-Setup.exe
 
       - name: Upload installer EXE (Experimental)
         if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ZubCut-Windows-Installer-Experimental
           path: output/ZubCut-Setup-experimental.exe
 
       - name: Publish rolling stable release
         if: ${{ github.event.inputs.release_channel == 'main' || github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && github.ref_name == 'main') }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.6.1
         with:
           tag_name: stable-latest
           name: ZubCut
@@ -199,7 +199,7 @@ jobs:
 
       - name: Publish rolling experimental release
         if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.event.inputs.release_channel != 'stable' && github.ref_name == 'experimental') }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.6.1
         with:
           tag_name: experimental-latest
           name: ZubCut (experimental)

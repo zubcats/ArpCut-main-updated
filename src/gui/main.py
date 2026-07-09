@@ -1032,7 +1032,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Threading
         self.scan_thread = ScanThread()
         self.scan_thread.thread_finished.connect(self.ScanThread_Reciever)
-        self.scan_thread.progress.connect(self.pgbar.setValue)
+        self.scan_thread.progress.connect(self.pgbar.setValue, Qt.QueuedConnection)
         self.pgbar.setAttribute(Qt.WA_StyledBackground, True)
 
         # Update thread disabled for fork
@@ -2040,7 +2040,15 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if not self.remember:
             set_settings('killed', [])
             return
-        set_settings('killed', list(self.killer.killed.keys()))
+        kept = []
+        for mac, entry in list((self.killer.killed or {}).items()):
+            device = entry if isinstance(entry, dict) else {'mac': mac}
+            try:
+                if should_restore_remembered_kill(device, self.scanner):
+                    kept.append(mac)
+            except Exception:
+                continue
+        set_settings('killed', kept)
 
     def _device_with_plan_ip(self, device):
         """Return device dict with resolved IP for the active impairment path."""
@@ -5068,7 +5076,11 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                     UI_LOG_VICTIM_BLOCK_FG,
                 )
             return True
-        self._stop_ics_lag_gate()
+        # Do not tear down a shared gate still used by Lag / Dupe / Percent Cut.
+        try:
+            self._ics_teardown_gate_if_idle(str(device.get('mac') or '').strip() or None)
+        except Exception:
+            pass
         if stack_arp and not arp_ok:
             self.log(
                 f'Hotspot block failed for {ip} — rescan so the PS5 shows 192.168.137.x, '
@@ -5274,6 +5286,25 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         device = self._device_with_plan_ip(device)
         if plan.use_windivert:
             return self._apply_ics_client_block(device, direction, **ics_block_kw)
+        if plan.is_ics_downstream and not plan.use_windivert:
+            # Hotspot/ethernet-console with no WinDivert: do not pretend Kill/Lag armed.
+            try:
+                from tools.zubcut_log import app_log
+
+                app_log(
+                    'impairment_dead_zone',
+                    mac=str(device.get('mac') or ''),
+                    ip=str(device.get('ip') or ''),
+                    path=getattr(plan, 'path', None),
+                )
+            except Exception:
+                pass
+            self.log(
+                'Hotspot impairment unavailable — run as Administrator and confirm the '
+                'WinDivert bundle is installed, then rescan.',
+                'red',
+            )
+            return False
         if not plan.use_arp_mitm:
             return False
         mac = str(device.get('mac') or '').strip()
@@ -6604,15 +6635,19 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if snap:
             release_snap = dict(snap)
             release_mac = prev_mac
-            release_ip = prev_ip
 
-            def _release_worker():
+            def _release_on_gui():
+                # Gate / killer / ARP teardown must stay on the GUI thread so Kill/Lag
+                # cannot race a worker-pool release (experimental hardening).
                 try:
                     self._release_dupe_victim_immediate(release_snap, refresh_context=False)
                 except Exception:
-                    pass
+                    try:
+                        from tools.zubcut_log import app_log
 
-            def _release_done():
+                        app_log('dupe_release_failed', mac=str(release_mac or ''), exc_info=True)
+                    except Exception:
+                        pass
                 try:
                     self._sync_killed_devices()
                     refresh_mac = str(release_snap.get('mac') or release_mac or '').strip()
@@ -6641,19 +6676,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 except Exception:
                     pass
 
-            try:
-                fut = self._dupe_net_executor.submit(_release_worker)
-            except Exception:
-                _release_worker()
-                _release_done()
-            else:
-                def _on_release_done(_f):
-                    QMetaObject.invokeMethod(
-                        self, '_slot_dupe_release_done', Qt.QueuedConnection
-                    )
-
-                self._dupe_release_done_cb = _release_done
-                fut.add_done_callback(_on_release_done)
+            QTimer.singleShot(0, _release_on_gui)
             # Do not drain in-flight block_ip here — restore must not wait on netsh add.
             self._dupe_block_apply_pending = False
             self._dupe_block_ctx = None
@@ -6721,7 +6744,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._sync_inline_flow_controls_enabled()
 
     def _percent_cut_ui_shows_on(self, mac: str | None = None, ip: str | None = None) -> bool:
-        """True when Percent Cut is armed for the selected row or any active victim."""
+        """True when Percent Cut is armed for the selected row (or any victim when no row given)."""
         if not self.percent_cut_active:
             return False
         stored_mac = str(self.percent_cut_device_mac or '').strip()
@@ -6732,7 +6755,8 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return True
         if stored_ip and ip and stored_ip == str(ip).strip():
             return True
-        return bool(stored_mac or stored_ip)
+        # Selected row is not the active Percent Cut victim.
+        return False
 
     def _updatePercentCutButtonState(self):
         pct = self._clamp_percent(self.spinPercentCutMain.value())
@@ -8491,10 +8515,19 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 continue
             if pk in pending:
                 continue
-            if mac in getattr(self, '_ics_kill_profile_macs', set()):
-                continue
             if self._explicit_kill_backend_live(mac):
                 continue
+            # Clear ghost ICS Kill profiles when WinDivert/ARP backend is gone.
+            try:
+                from tools.utils import good_mac
+
+                mac_n = good_mac(str(mac or '').strip())
+                ics = getattr(self, '_ics_kill_profile_macs', None)
+                if isinstance(ics, set) and mac_n:
+                    ics.discard(mac_n)
+                    ics.discard(mac)
+            except Exception:
+                pass
             self.killed_devices[pk] = False
 
     def _set_kill_button_idle_look(self):

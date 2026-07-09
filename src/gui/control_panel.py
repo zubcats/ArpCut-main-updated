@@ -237,7 +237,68 @@ QMainWindow#zubcutControlPanel QGroupBox#cloudSyncGroup::title {{
 """
 
 
+
+def control_panel_app_stylesheet() -> str:
+    """App-level charcoal theme for Control Panel (dialogs + message boxes)."""
+    try:
+        from qdarkstyle import load_stylesheet
+
+        base = load_stylesheet()
+    except Exception:
+        base = ''
+    accent = '#316E69'
+    me = '#5D706E'
+    panel = '#141414'
+    field = '#2b2b2b'
+    border = '#3d3d3d'
+    text = '#e8eaed'
+    extra = f"""
+QWidget {{
+    selection-background-color: #000000;
+    selection-color: #f2f2f2;
+}}
+QDialog, QMessageBox, QInputDialog {{
+    background-color: {panel};
+    color: {text};
+}}
+QDialog QLabel, QMessageBox QLabel, QInputDialog QLabel {{
+    color: {me};
+    background: transparent;
+}}
+QDialog QPushButton, QMessageBox QPushButton, QInputDialog QPushButton {{
+    background-color: {field};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 4px;
+    padding: 6px 12px;
+    min-height: 22px;
+}}
+QDialog QPushButton:hover, QMessageBox QPushButton:hover, QInputDialog QPushButton:hover {{
+    background-color: #383838;
+    border: 1px solid #383838;
+}}
+QDialog QLineEdit, QInputDialog QLineEdit, QMessageBox QLineEdit {{
+    background-color: {field};
+    color: {text};
+    border: 1px solid {accent};
+    border-radius: 3px;
+    padding: 4px 6px;
+}}
+QMenu {{
+    background-color: {panel};
+    color: {me};
+    border: 1px solid {accent};
+}}
+QMenu::item:selected {{
+    background-color: #000000;
+    color: {me};
+}}
+"""
+    return (base + '\n' + extra).strip()
+
+
 class ControlPanelWindow(QMainWindow):
+
     def __init__(self, icon):
         super().__init__()
         self.setObjectName('zubcutControlPanel')

@@ -12,8 +12,11 @@ const SIGNIN_PBKDF2_ITERS_DEFAULT = 100000;
 const SIGNIN_PBKDF2_ITERS_MAX = 100000;
 const CRASH_INDEX_KEY = '__crash_index__';
 const CRASH_KV_PREFIX = 'crash:';
+const CRASH_RATE_PREFIX = 'crashrate:';
 const CRASH_INDEX_MAX = 500;
 const CRASH_BODY_MAX = 48000;
+const CRASH_RATE_WINDOW_SEC = 3600;
+const CRASH_RATE_MAX_PER_IP = 30;
 
 function jsonResponse(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
@@ -128,6 +131,38 @@ async function readCrashIndex(kv) {
 async function writeCrashIndex(kv, entries) {
   const trimmed = Array.isArray(entries) ? entries.slice(0, CRASH_INDEX_MAX) : [];
   await kv.put(CRASH_INDEX_KEY, JSON.stringify(trimmed));
+}
+
+async function crashIngestAuthorized(env, body) {
+  const expected = String(env.CRASH_INGEST_TOKEN || '').trim();
+  if (!expected) return true; // optional until secret is configured
+  const provided = String(body?.ingest_token || body?.token || '').trim();
+  if (!provided) return false;
+  return adminSecretOk(provided, expected);
+}
+
+async function enforceCrashRateLimit(kv, ip) {
+  const keyIp = String(ip || 'unknown')
+    .trim()
+    .toLowerCase()
+    .slice(0, 80) || 'unknown';
+  const key = `${CRASH_RATE_PREFIX}${keyIp}`;
+  let count = 0;
+  try {
+    const raw = await kv.get(key, { type: 'text' });
+    count = Math.max(0, parseInt(raw || '0', 10) || 0);
+  } catch {
+    count = 0;
+  }
+  if (count >= CRASH_RATE_MAX_PER_IP) {
+    return { ok: false, error: 'Too many crash reports. Try again later.' };
+  }
+  try {
+    await kv.put(key, String(count + 1), { expirationTtl: CRASH_RATE_WINDOW_SEC });
+  } catch {
+    // Best-effort; still accept the report if rate counter write fails.
+  }
+  return { ok: true };
 }
 
 async function storeCrashReport(kv, report) {
@@ -343,6 +378,18 @@ export default {
       if (path === '/crash') {
         if (!kv) {
           return jsonResponse({ ok: false, error: 'Server misconfigured (no KV).' }, 500);
+        }
+        const authOk = await crashIngestAuthorized(env, body || {});
+        if (!authOk) {
+          return jsonResponse({ ok: false, error: 'Unauthorized crash ingest.' }, 401);
+        }
+        const clientIp =
+          request.headers.get('cf-connecting-ip') ||
+          request.headers.get('x-forwarded-for') ||
+          '';
+        const rate = await enforceCrashRateLimit(kv, clientIp);
+        if (!rate.ok) {
+          return jsonResponse(rate, 429);
         }
         const result = await storeCrashReport(kv, body || {});
         if (!result.ok) {

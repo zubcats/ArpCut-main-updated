@@ -1300,9 +1300,51 @@ def npcap_exists():
     # macOS/Linux uses libpcap (bundled); always True
     return True
 
+_SINGLE_INSTANCE_MUTEX = None
+
+
 def duplicate_zubcut():
-    """Single-instance guard (reserved; not implemented)."""
-    return False
+    """
+    Return True when another ZubCut instance already holds the single-instance lock.
+
+    Windows: named mutex. Non-Windows: advisory lock file under DOCUMENTS_PATH.
+    """
+    global _SINGLE_INSTANCE_MUTEX
+    if sys.platform.startswith('win'):
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            ERROR_ALREADY_EXISTS = 183
+            name = f'Global\\{APP_BUNDLE_NAME}SingleInstance'
+            handle = kernel32.CreateMutexW(None, False, name)
+            if not handle:
+                return False
+            if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+                kernel32.CloseHandle(handle)
+                return True
+            _SINGLE_INSTANCE_MUTEX = handle
+            return False
+        except Exception:
+            return False
+    try:
+        lock_path = path.join(DOCUMENTS_PATH, f'{APP_BUNDLE_NAME.lower()}.single.lock')
+        makedirs(DOCUMENTS_PATH, exist_ok=True)
+        fp = open(lock_path, 'a+', encoding='utf-8')
+        try:
+            import fcntl
+
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fp.close()
+            return True
+        except Exception:
+            fp.close()
+            return False
+        _SINGLE_INSTANCE_MUTEX = fp
+        return False
+    except Exception:
+        return False
 
 def check_documents_dir():
     """

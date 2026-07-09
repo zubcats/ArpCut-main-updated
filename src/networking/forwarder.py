@@ -227,6 +227,13 @@ class MitmForwarder:
             except Exception:
                 pass
             self._socket = None
+        thr = getattr(self, '_delay_thread', None)
+        if thr is not None and thr.is_alive():
+            try:
+                thr.join(timeout=0.75)
+            except Exception:
+                pass
+        self._delay_thread = None
 
     def get_stats(self):
         """Return current packet statistics"""

@@ -1,0 +1,120 @@
+"""Hardening guards: netsh validation, remember-kill filter, ICS ghost sync, packaging."""
+
+from __future__ import annotations
+
+import os
+import sys
+import unittest
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SRC = os.path.join(_ROOT, 'src')
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+
+
+class TestPfctlValidation(unittest.TestCase):
+    def test_safe_rule_name_rejects_metacharacters(self) -> None:
+        from tools.pfctl import _safe_zubcut_rule_name
+
+        self.assertEqual(_safe_zubcut_rule_name('zubcut_1_2_3_to_4_5_6'), 'zubcut_1_2_3_to_4_5_6')
+        self.assertIsNone(_safe_zubcut_rule_name('evil'))
+        self.assertIsNone(_safe_zubcut_rule_name('zubcut_"&calc'))
+        self.assertIsNone(_safe_zubcut_rule_name('zubcut_x|y'))
+
+    def test_block_dst_rejects_bad_ip(self) -> None:
+        from tools import pfctl
+
+        self.assertFalse(pfctl.block_dst('eth0', 'not-an-ip', '1.2.3.4'))
+        self.assertFalse(pfctl.block_dst('eth0', '1.2.3.4', '999.1.1.1'))
+        self.assertFalse(pfctl.block_dst('eth0', '1.2.3.4', '8.8.8.8', port=99999))
+
+
+class TestRememberKillFilter(unittest.TestCase):
+    def test_write_remembered_uses_should_restore(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'main.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        block = src[
+            src.index('def _write_remembered_killed_macs'):
+            src.index('def _device_with_plan_ip')
+        ]
+        self.assertIn('should_restore_remembered_kill', block)
+        self.assertNotIn("list(self.killer.killed.keys())", block)
+
+
+class TestIcsKillGhostSync(unittest.TestCase):
+    def test_sync_clears_ics_profiles_without_backend(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'main.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        block = src[
+            src.index('def _sync_killed_devices'):
+            src.index('def _set_kill_button_idle_look')
+        ]
+        self.assertNotIn(
+            "if mac in getattr(self, '_ics_kill_profile_macs', set()):\n                continue",
+            block,
+        )
+        self.assertIn('_ics_kill_profile_macs', block)
+        self.assertIn('_explicit_kill_backend_live', block)
+
+
+class TestDupeReleaseOnGuiThread(unittest.TestCase):
+    def test_stop_dupe_releases_via_qtimer(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'main.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        block = src[
+            src.index('def stopDupe'): src.index('def _updateDupeButtonState', src.index('def stopDupe'))
+        ]
+        self.assertIn('QTimer.singleShot(0, _release_on_gui)', block)
+        self.assertNotIn('_dupe_net_executor.submit(_release_worker)', block)
+
+
+class TestPercentCutRowUi(unittest.TestCase):
+    def test_percent_cut_ui_false_for_other_row(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'main.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        block = src[
+            src.index('def _percent_cut_ui_shows_on'):
+            src.index('def _updatePercentCutButtonState')
+        ]
+        self.assertIn('return False', block)
+        self.assertNotIn('return bool(stored_mac or stored_ip)', block.split('if stored_ip')[-1])
+
+
+class TestCustomerBuildExcludesAdmin(unittest.TestCase):
+    def test_build_py_excludes_control_panel(self) -> None:
+        path = os.path.join(_ROOT, 'build.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn("'gui.control_panel'", src)
+        self.assertIn('--exclude-module', src)
+        self.assertNotIn("--collect-submodules', 'gui'", src.replace('"', "'"))
+        self.assertNotIn('--collect-submodules", "gui"', src)
+
+
+class TestCrashWorkerHardening(unittest.TestCase):
+    def test_worker_has_rate_limit_and_optional_token(self) -> None:
+        path = os.path.join(_ROOT, 'backend', 'cloudflare-license-signin', 'worker.mjs')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('crashIngestAuthorized', src)
+        self.assertIn('enforceCrashRateLimit', src)
+        self.assertIn('CRASH_INGEST_TOKEN', src)
+        self.assertIn('429', src)
+
+
+class TestSingleInstanceGuard(unittest.TestCase):
+    def test_duplicate_zubcut_implemented(self) -> None:
+        path = os.path.join(_SRC, 'tools', 'utils_gui.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        block = src[src.index('def duplicate_zubcut'): src.index('def check_documents_dir')]
+        self.assertIn('CreateMutexW', block)
+        self.assertNotIn('not implemented', block.lower())
+
+
+if __name__ == '__main__':
+    unittest.main()

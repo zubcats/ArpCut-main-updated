@@ -140,7 +140,13 @@ if __name__ == '__main__':
         _fusion = QStyleFactory.create('Fusion')
         if _fusion is not None:
             app.setStyle(_fusion)
-        app.setStyleSheet(load_stylesheet())
+        # Charcoal app chrome (avoid raw qdark blue on dialogs / message boxes).
+        try:
+            from gui.control_panel import control_panel_app_stylesheet
+
+            app.setStyleSheet(control_panel_app_stylesheet())
+        except Exception:
+            app.setStyleSheet(load_stylesheet())
         makedirs(DOCUMENTS_PATH, exist_ok=True)
         icon = _load_window_icon()
         app.setWindowIcon(icon)

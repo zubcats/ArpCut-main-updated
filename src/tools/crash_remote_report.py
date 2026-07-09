@@ -130,7 +130,7 @@ def _build_payload(
         account = account_hint.strip().lower()[:120]
     if license_id:
         lic_id = license_id.strip()[:80]
-    return {
+    payload = {
         'ref': ref,
         'body': log_text,
         'time_utc': datetime.now(timezone.utc).isoformat(),
@@ -146,6 +146,15 @@ def _build_payload(
         'exc_type': (exc_type or parsed_type)[:120],
         'exc_message': (exc_message or parsed_msg)[:500],
     }
+    # Optional worker secret (wrangler CRASH_INGEST_TOKEN). Empty = worker accepts all.
+    token = (
+        os.environ.get('ZUBCUT_CRASH_INGEST_TOKEN')
+        or os.environ.get('CRASH_INGEST_TOKEN')
+        or ''
+    ).strip()
+    if token:
+        payload['ingest_token'] = token
+    return payload
 
 
 def submit_crash_report(

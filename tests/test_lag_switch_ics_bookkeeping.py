@@ -74,11 +74,10 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
                 'def _apply_victim_block', src.index('def _release_dupe_victim_immediate')
             )
         ]
-        self.assertIn('_release_victim_arp_mitm_stack(device)', release_fn)
+        self.assertIn('_release_victim_arp_mitm_stack(device', release_fn)
         self.assertNotIn('_drain_dupe_block_if_needed', stop)
         apply_def = src[src.index('def _apply_dupe_deferred'): src.index('def _slot_finish_dupe_block', src.index('def _apply_dupe_deferred'))]
-        self.assertIn('_sync_dupe_device_identity', apply_def)
-        self.assertIn('_arm_dupe_mitm_like_kill(dev, direction)', apply_def)
+        self.assertIn('_run_dupe_arm_command', apply_def)
         deferred = src[src.index('def _do_deferred_dupe_clear'): src.index('def _arm_dupe_burst_wall_clock', src.index('def _do_deferred_dupe_clear'))]
         self.assertNotIn('_clear_victim_block', deferred)
         self.assertNotIn('killer.unkill', deferred)
@@ -107,7 +106,10 @@ class TestLagSwitchIcsBookkeeping(unittest.TestCase):
         self.assertIn('_schedule_lag_start_reassert', start)
         tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
         self.assertNotIn('_lag_ics_force_unpause', tick)
-        self.assertIn('_lag_do_phase_advance(force=True)', tick)
+        self.assertTrue(
+            '_lag_do_phase_advance(force=True)' in tick or '_lag_request_phase_advance()' in tick,
+            'countdown expiry must advance the lag phase',
+        )
 
     def test_lag_warm_mitm_skips_unkill_between_phases(self) -> None:
         src = self._main_py()
