@@ -180,3 +180,5 @@ backend/**/.wrangler/
 tools/_*.txt
 tools/_poll_ics.ps1
 tools/run_hotspot_fix_elevated.ps1
+# Local agent tooling (Cloudflare skills cache)
+.agents/
