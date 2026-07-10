@@ -2706,6 +2706,7 @@ class ZubCutApp(
         except Exception:
             return False
 
+    def _ignore_duplicate_toggle_edge(self, kind: str, mac: str | None, edge: str) -> bool:
         """
         Ignore a second identical edge (same MAC, same activate/stop/…) within a few
         ms — filters duplicate clicks / key deliveries. Alternating on/off is not delayed.

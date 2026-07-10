@@ -77,5 +77,15 @@ class TestImpairmentExtraction(unittest.TestCase):
         self.assertGreater(len(src), 200_000)
 
 
+    def test_ignore_duplicate_toggle_edge_defined_on_main(self) -> None:
+        # Extraction once dropped the def line while leaving the body orphaned.
+        path = os.path.join(_SRC, 'gui', 'main.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        self.assertIn('def _ignore_duplicate_toggle_edge(self', src)
+        body = method_src('_ignore_duplicate_toggle_edge')
+        self.assertIn('ignore_duplicate_toggle_edge', body)
+
+
 if __name__ == '__main__':
     unittest.main()
