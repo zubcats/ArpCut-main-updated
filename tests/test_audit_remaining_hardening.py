@@ -124,6 +124,48 @@ class TestUpdaterPublisherPin(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_unsigned_allowed_without_publisher_pin(self) -> None:
+        import tempfile
+        from unittest import mock
+        from tools import updater_core as uc
+
+        with tempfile.NamedTemporaryFile(suffix='.exe', delete=False) as fh:
+            fh.write(b'MZ' + b'\0' * 2048)
+            path = fh.name
+        try:
+            with mock.patch.object(
+                uc,
+                '_authenticode_signature_info',
+                return_value={'status': 'NotSigned', 'thumbprint': ''},
+            ), mock.patch.object(
+                uc, '_configured_publisher_thumbprints', return_value=()
+            ):
+                uc._validate_installer_exe(path)
+        finally:
+            os.unlink(path)
+
+    def test_hashmismatch_refused_without_publisher_pin(self) -> None:
+        import tempfile
+        from unittest import mock
+        from tools import updater_core as uc
+
+        with tempfile.NamedTemporaryFile(suffix='.exe', delete=False) as fh:
+            fh.write(b'MZ' + b'\0' * 2048)
+            path = fh.name
+        try:
+            with mock.patch.object(
+                uc,
+                '_authenticode_signature_info',
+                return_value={'status': 'HashMismatch', 'thumbprint': 'AAAABBBB'},
+            ), mock.patch.object(
+                uc, '_configured_publisher_thumbprints', return_value=()
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    uc._validate_installer_exe(path)
+                self.assertIn('HashMismatch', str(ctx.exception))
+        finally:
+            os.unlink(path)
+
 
 class TestSecretRewrap(unittest.TestCase):
     def test_rewrap_secret_passthrough_without_dpapi(self) -> None:

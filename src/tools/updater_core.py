@@ -674,7 +674,6 @@ def _validate_installer_exe(tmp_path, *, expected_size: int = 0):
     status = str(info.get('status') or '').strip()
     thumb = str(info.get('thumbprint') or '').strip()
     allow = _configured_publisher_thumbprints()
-    channel = str(UPDATE_CHANNEL or '').strip().lower()
     if allow:
         if not status:
             raise RuntimeError(
@@ -692,8 +691,9 @@ def _validate_installer_exe(tmp_path, *, expected_size: int = 0):
                 'Refusing to launch an untrusted update.'
             )
         return
-    # No publisher pin configured yet: experimental still refuses clear unsigned / hash mismatch.
-    if status and channel == 'experimental' and status.lower() in ('notsigned', 'hashmismatch'):
+    # No publisher pin: allow unsigned builds (no paid Authenticode cert yet).
+    # Still refuse HashMismatch — that means a signature was present but the file was altered.
+    if status and status.lower() == 'hashmismatch':
         raise RuntimeError(
             f'Downloaded installer failed Authenticode check (Status={status}). '
             'Refusing to launch an untrusted update.'
