@@ -1,10 +1,11 @@
-# Unit tests — once per experimental push (Windows product).
+# Unit tests — once per main/experimental push (Windows product).
 # Cursor feature branches and PRs do not trigger this; use workflow_dispatch if needed.
 name: Unit tests
 
 on:
   push:
     branches:
+      - main
       - experimental
   workflow_dispatch:
 
