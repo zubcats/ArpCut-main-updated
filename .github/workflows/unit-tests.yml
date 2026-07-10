@@ -1,12 +1,9 @@
-# Unit tests for experimental / PR validation (Windows product; no installer build).
+# Unit tests — once per experimental push (Windows product).
+# Cursor feature branches and PRs do not trigger this; use workflow_dispatch if needed.
 name: Unit tests
 
 on:
   push:
-    branches:
-      - experimental
-      - 'cursor/**'
-  pull_request:
     branches:
       - experimental
   workflow_dispatch:
