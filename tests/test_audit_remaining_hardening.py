@@ -134,37 +134,22 @@ class TestUpdaterPublisherPin(unittest.TestCase):
             path = fh.name
         try:
             with mock.patch.object(
-                uc,
-                '_authenticode_signature_info',
-                return_value={'status': 'NotSigned', 'thumbprint': ''},
-            ), mock.patch.object(
                 uc, '_configured_publisher_thumbprints', return_value=()
             ):
+                # No pin → signature probe returns {} and validation still passes.
+                self.assertEqual(uc._authenticode_signature_info(path), {})
                 uc._validate_installer_exe(path)
         finally:
             os.unlink(path)
 
-    def test_hashmismatch_refused_without_publisher_pin(self) -> None:
-        import tempfile
-        from unittest import mock
+    def test_authenticode_probe_hidden_when_pin_configured(self) -> None:
+        import inspect
         from tools import updater_core as uc
 
-        with tempfile.NamedTemporaryFile(suffix='.exe', delete=False) as fh:
-            fh.write(b'MZ' + b'\0' * 2048)
-            path = fh.name
-        try:
-            with mock.patch.object(
-                uc,
-                '_authenticode_signature_info',
-                return_value={'status': 'HashMismatch', 'thumbprint': 'AAAABBBB'},
-            ), mock.patch.object(
-                uc, '_configured_publisher_thumbprints', return_value=()
-            ):
-                with self.assertRaises(RuntimeError) as ctx:
-                    uc._validate_installer_exe(path)
-                self.assertIn('HashMismatch', str(ctx.exception))
-        finally:
-            os.unlink(path)
+        src = inspect.getsource(uc._authenticode_signature_info)
+        self.assertIn('_windows_subprocess_no_window_kwargs', src)
+        self.assertIn('WindowStyle', src)
+        self.assertIn('Hidden', src)
 
 
 class TestSecretRewrap(unittest.TestCase):

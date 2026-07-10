@@ -597,14 +597,22 @@ def _authenticode_signature_info(tmp_path: str) -> dict:
     """
     Return Authenticode Status + Thumbprint via PowerShell, or {} if skipped/unavailable.
     Keys: status (str), thumbprint (str, normalized).
+
+    Skips the PowerShell probe when no publisher pin is configured (unsigned builds
+    are allowed) so updates do not flash a console window.
     """
     if not sys.platform.startswith('win'):
         return {}
     skip = (os.environ.get('ZUBCUT_SKIP_AUTHENTICODE') or '').strip().lower()
     if skip in ('1', 'true', 'yes', 'on'):
         return {}
+    # No pin → no need to spawn powershell.exe (NotSigned is allowed).
+    if not _configured_publisher_thumbprints():
+        return {}
     try:
         import subprocess
+
+        from tools.utils import _windows_subprocess_no_window_kwargs, subprocess_text_kwargs
 
         safe = tmp_path.replace("'", "''")
         ps = (
@@ -612,12 +620,25 @@ def _authenticode_signature_info(tmp_path: str) -> dict:
             "$tp = ''; if ($null -ne $s.SignerCertificate) { $tp = $s.SignerCertificate.Thumbprint }; "
             "Write-Output ($s.Status.ToString() + '|' + $tp)"
         )
+        system_root = os.environ.get('SystemRoot', r'C:\Windows')
+        ps_exe = os.path.join(system_root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+        if not os.path.isfile(ps_exe):
+            ps_exe = 'powershell.exe'
         proc = subprocess.run(
-            ['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
+            [
+                ps_exe,
+                '-NoProfile',
+                '-NonInteractive',
+                '-WindowStyle',
+                'Hidden',
+                '-Command',
+                ps,
+            ],
             capture_output=True,
-            text=True,
             timeout=30,
             check=False,
+            **subprocess_text_kwargs(),
+            **_windows_subprocess_no_window_kwargs(),
         )
         line = (proc.stdout or '').strip().splitlines()
         raw = (line[-1] if line else '').strip()
@@ -692,12 +713,7 @@ def _validate_installer_exe(tmp_path, *, expected_size: int = 0):
             )
         return
     # No publisher pin: allow unsigned builds (no paid Authenticode cert yet).
-    # Still refuse HashMismatch — that means a signature was present but the file was altered.
-    if status and status.lower() == 'hashmismatch':
-        raise RuntimeError(
-            f'Downloaded installer failed Authenticode check (Status={status}). '
-            'Refusing to launch an untrusted update.'
-        )
+    # Authenticode PowerShell is skipped in that case, so HashMismatch is not probed here.
 
 
 def _temp_installer_path(url):

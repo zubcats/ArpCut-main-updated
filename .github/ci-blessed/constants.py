@@ -60,7 +60,7 @@ CRASH_REPORT_URL = LICENSE_SIGNIN_URL
 CRASH_INGEST_TOKEN = ''
 
 # Authenticode publisher pin for downloaded installers (SHA1 thumbprints, no spaces/colons).
-# Empty = allow unsigned installers; still refuse HashMismatch (tampered signed file).
+# Empty = allow unsigned installers and skip the PowerShell Authenticode probe (no console flash).
 # When set, updates require Status=Valid and a matching thumbprint (main + experimental).
 # Override / extend at runtime with ZUBCUT_INSTALLER_PUBLISHER_THUMBPRINT (comma-separated).
 INSTALLER_PUBLISHER_CERT_THUMBPRINTS: tuple[str, ...] = ()
