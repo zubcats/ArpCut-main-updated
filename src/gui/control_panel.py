@@ -288,10 +288,37 @@ QMenu {{
     background-color: {panel};
     color: {me};
     border: 1px solid {accent};
+    margin: 0px;
+    selection-background-color: #000000;
+    selection-color: {me};
+}}
+QMenu::item {{
+    background-color: {panel};
+    color: {me};
+    padding: 5px 24px 5px 12px;
+    border: 1px solid transparent;
 }}
 QMenu::item:selected {{
     background-color: #000000;
     color: {me};
+}}
+QMenu::item:pressed {{
+    background-color: {accent};
+    color: #eef1f0;
+}}
+QMenu::indicator {{
+    width: 12px;
+    height: 12px;
+    margin-left: 6px;
+    border: 1px solid {me};
+    background-color: transparent;
+    image: none;
+}}
+QMenu::indicator:non-exclusive:checked,
+QMenu::indicator:exclusive:checked {{
+    image: none;
+    background-color: {accent};
+    border: 1px solid {me};
 }}
 """
     return (base + '\n' + extra).strip()

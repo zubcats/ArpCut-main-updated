@@ -45,6 +45,7 @@ from tools.utils_gui import (
     register_window_surface_effects,
     table_row_hover_chrome,
     table_row_selection_chrome,
+    theme_popup_menu,
 )
 def format_countdown_ms(left_ms):
     """Human-readable countdown (matches Dupe / Lag Switch inline labels)."""
@@ -1329,6 +1330,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         quit_option.triggered.connect(self.quit_all)
 
         tray_menu = QMenu()
+        theme_popup_menu(tray_menu)
         tray_menu.addAction(show_option)
         tray_menu.addAction(hide_option)
         tray_menu.addSeparator()
@@ -1517,6 +1519,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _on_status_log_context_menu(self, pos):
         menu = QMenu(self)
+        theme_popup_menu(menu)
         act_open = QAction('Open Logs…', self)
         act_open.triggered.connect(self.openLogs)
         menu.addAction(act_open)
@@ -1635,6 +1638,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if w is None:
             return
         menu = QMenu(self)
+        theme_popup_menu(menu)
         act_adv = QAction('Advanced Lag Settings…', self)
         act_adv.triggered.connect(self._open_advanced_lag_settings)
         menu.addAction(act_adv)
@@ -1671,6 +1675,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def table_context_menu(self, pos):
         menu = QMenu(self)
+        theme_popup_menu(menu)
         act_traffic = QAction('Traffic for Selected', self)
         act_probe = QAction('Probe IP…', self)
         act_traffic.triggered.connect(self.openTraffic)
@@ -1683,6 +1688,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _scan_table_header_context_menu(self, pos):
         menu = QMenu(self)
+        theme_popup_menu(menu)
         self._append_scan_column_visibility_actions(menu)
         menu.exec_(self.tableScan.horizontalHeader().mapToGlobal(pos))
 

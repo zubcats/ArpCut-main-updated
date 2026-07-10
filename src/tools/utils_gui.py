@@ -1083,6 +1083,7 @@ def _context_menu_qss() -> str:
     Right-click / tray menus: kill qdarkstyle blue panel (#37414F) and blue highlight (#1A72BB).
 
     Hover stays pure black; accents use row-selection teal; item text uses Me/Router sage.
+    Also overrides qdark checkbox/radio indicator images (those keep a blue tint on Windows).
     """
     sel_bg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_BG', '#316E69')
     me_fg = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
@@ -1093,11 +1094,12 @@ QMenu {{
     color: {me_fg};
     border: 1px solid {sel_bg};
     padding: 4px;
+    margin: 0px;
     selection-background-color: #000000;
     selection-color: {me_fg};
 }}
 QMenu::item {{
-    background-color: transparent;
+    background-color: #141414;
     color: {me_fg};
     padding: 5px 24px 5px 12px;
     border: 1px solid transparent;
@@ -1114,12 +1116,51 @@ QMenuBar::item:pressed {{
 }}
 QMenu::item:disabled {{
     color: #6a6a6a;
-    background-color: transparent;
+    background-color: #141414;
 }}
 QMenu::separator {{
     height: 1px;
     margin: 4px 8px;
     background-color: {sel_bg};
+}}
+QMenu::icon {{
+    padding-left: 8px;
+}}
+QMenu::indicator {{
+    width: 12px;
+    height: 12px;
+    margin-left: 6px;
+    border: 1px solid {me_fg};
+    background-color: transparent;
+    image: none;
+}}
+QMenu::indicator:non-exclusive:unchecked,
+QMenu::indicator:exclusive:unchecked {{
+    image: none;
+    background-color: transparent;
+    border: 1px solid {me_fg};
+}}
+QMenu::indicator:non-exclusive:unchecked:selected,
+QMenu::indicator:exclusive:unchecked:selected,
+QMenu::indicator:non-exclusive:unchecked:hover,
+QMenu::indicator:exclusive:unchecked:hover {{
+    image: none;
+    border: 1px solid {sel_bg};
+    background-color: transparent;
+}}
+QMenu::indicator:non-exclusive:checked,
+QMenu::indicator:exclusive:checked {{
+    image: none;
+    background-color: {sel_bg};
+    border: 1px solid {me_fg};
+}}
+QMenu::indicator:non-exclusive:checked:selected,
+QMenu::indicator:exclusive:checked:selected,
+QMenu::indicator:non-exclusive:checked:hover,
+QMenu::indicator:exclusive:checked:hover {{
+    image: none;
+    background-color: {sel_bg};
+    border: 1px solid {me_hi};
 }}
 QMenuBar {{
     background-color: #141414;
@@ -1133,6 +1174,49 @@ QMenuBar::item {{
     padding: 4px 8px;
 }}
 """
+
+
+def theme_popup_menu(menu) -> None:
+    """
+    Apply charcoal/teal QSS + palette on a QMenu instance.
+
+    Windows popup menus often ignore app-global stylesheets; setting the sheet on
+    the menu itself is required for right-click / tray menus to leave qdark blue.
+    """
+    if menu is None:
+        return
+    try:
+        from PyQt5.QtGui import QColor, QPalette
+    except Exception:
+        return
+    sheet = _context_menu_qss()
+    try:
+        menu.setStyleSheet(sheet)
+    except Exception:
+        pass
+    sel_bg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_BG', '#316E69')
+    me_fg = getattr(_zcut_constants, 'ADMIN_DEVICE_TABLE_ROW_BG', '#5D706E')
+    try:
+        pal = menu.palette()
+        panel = QColor('#141414')
+        text = QColor(me_fg)
+        black = QColor('#000000')
+        accent = QColor(sel_bg)
+        for group in (QPalette.Active, QPalette.Inactive, QPalette.Disabled):
+            pal.setColor(group, QPalette.Window, panel)
+            pal.setColor(group, QPalette.Base, panel)
+            pal.setColor(group, QPalette.Button, panel)
+            pal.setColor(group, QPalette.Text, text)
+            pal.setColor(group, QPalette.WindowText, text)
+            pal.setColor(group, QPalette.ButtonText, text)
+            pal.setColor(group, QPalette.Highlight, black)
+            pal.setColor(group, QPalette.HighlightedText, text)
+            pal.setColor(group, QPalette.Light, accent)
+            pal.setColor(group, QPalette.Mid, accent)
+        menu.setPalette(pal)
+        menu.setAutoFillBackground(True)
+    except Exception:
+        pass
 
 
 def zubcut_dark_stylesheet():

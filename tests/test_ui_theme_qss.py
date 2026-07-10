@@ -18,13 +18,16 @@ class TestUiThemeQss(unittest.TestCase):
         with open(path, encoding='utf-8') as f:
             src = f.read()
         self.assertIn('def _context_menu_qss', src)
+        self.assertIn('def theme_popup_menu', src)
         self.assertIn('_context_menu_qss()', src)
-        block = src[src.index('def _context_menu_qss'): src.index('def zubcut_dark_stylesheet')]
+        block = src[src.index('def _context_menu_qss'): src.index('def theme_popup_menu')]
         self.assertIn('UI_TABLE_SELECTION_BG', block)
         self.assertIn('ADMIN_DEVICE_TABLE_ROW_BG', block)
         # Only the returned QSS template — docstring may mention banned qdark blues.
         qss = block[block.index('return f"""') :]
         self.assertIn('background-color: #000000', qss)
+        self.assertIn('QMenu::indicator', qss)
+        self.assertIn('image: none', qss)
         self.assertNotIn('#1A72BB', qss)
         self.assertNotIn('#37414F', qss)
 
@@ -47,6 +50,43 @@ class TestUiThemeQss(unittest.TestCase):
         self.assertNotIn('#1A72BB', tail)
         self.assertIn(UI_TABLE_SELECTION_BG, sheet[sheet.rfind('QMenu::item:pressed') :])
         _ = app  # keep app alive for stylesheet helpers
+
+    def test_theme_popup_menu_sets_widget_stylesheet(self) -> None:
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        from PyQt5.QtWidgets import QApplication, QMenu
+
+        app = QApplication.instance() or QApplication([])
+        from tools.utils_gui import theme_popup_menu
+        from constants import ADMIN_DEVICE_TABLE_ROW_BG, UI_TABLE_SELECTION_BG
+
+        menu = QMenu()
+        theme_popup_menu(menu)
+        sheet = menu.styleSheet()
+        self.assertIn('background-color: #141414', sheet)
+        self.assertIn(ADMIN_DEVICE_TABLE_ROW_BG, sheet)
+        self.assertIn(UI_TABLE_SELECTION_BG, sheet)
+        self.assertNotIn('#37414F', sheet)
+        self.assertNotIn('#1A72BB', sheet)
+        self.assertIn('QMenu::indicator', sheet)
+        _ = app
+
+    def test_main_applies_theme_to_all_context_menus(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'main.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('theme_popup_menu', src)
+        for fn in (
+            '_on_status_log_context_menu',
+            '_on_main_flow_toggle_context_menu',
+            'table_context_menu',
+            '_scan_table_header_context_menu',
+        ):
+            block = src[src.index(f'def {fn}'):]
+            # Stop at next top-level method-ish def at same indent roughly via next "\n    def "
+            nxt = block.find('\n    def ', 1)
+            chunk = block[:nxt] if nxt > 0 else block[:800]
+            self.assertIn('theme_popup_menu(menu)', chunk, msg=fn)
+        self.assertIn('theme_popup_menu(tray_menu)', src)
 
 
 if __name__ == '__main__':
