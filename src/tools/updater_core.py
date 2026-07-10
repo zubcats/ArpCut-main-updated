@@ -26,6 +26,7 @@ from constants import (
     APP_BUNDLE_NAME,
     APP_BUILD_COMMIT,
     APP_BUILD_TIME_ISO,
+    INSTALLER_PUBLISHER_CERT_THUMBPRINTS,
     UPDATE_CHANNEL,
     UPDATE_DOWNLOAD_URL_EXPERIMENTAL,
     UPDATE_DOWNLOAD_URL_MAIN,
@@ -568,19 +569,48 @@ def update_is_available():
 _READ_CHUNK = 256 * 1024
 
 
-def _authenticode_status(tmp_path: str) -> str:
-    """Return Authenticode Status string, or '' if unavailable / skipped."""
+def _normalize_thumbprint(value: str) -> str:
+    return ''.join(ch for ch in str(value or '').upper() if ch.isalnum())
+
+
+def _configured_publisher_thumbprints() -> tuple[str, ...]:
+    """Allowlist from constants + optional env override (comma-separated)."""
+    out: list[str] = []
+    try:
+        baked = tuple(INSTALLER_PUBLISHER_CERT_THUMBPRINTS or ())
+    except Exception:
+        baked = ()
+    for item in baked:
+        norm = _normalize_thumbprint(item)
+        if norm and norm not in out:
+            out.append(norm)
+    env = (os.environ.get('ZUBCUT_INSTALLER_PUBLISHER_THUMBPRINT') or '').strip()
+    if env:
+        for part in env.split(','):
+            norm = _normalize_thumbprint(part)
+            if norm and norm not in out:
+                out.append(norm)
+    return tuple(out)
+
+
+def _authenticode_signature_info(tmp_path: str) -> dict:
+    """
+    Return Authenticode Status + Thumbprint via PowerShell, or {} if skipped/unavailable.
+    Keys: status (str), thumbprint (str, normalized).
+    """
     if not sys.platform.startswith('win'):
-        return ''
+        return {}
     skip = (os.environ.get('ZUBCUT_SKIP_AUTHENTICODE') or '').strip().lower()
     if skip in ('1', 'true', 'yes', 'on'):
-        return ''
+        return {}
     try:
         import subprocess
 
+        safe = tmp_path.replace("'", "''")
         ps = (
-            f"$s = Get-AuthenticodeSignature -FilePath '{tmp_path.replace(chr(39), chr(39)+chr(39))}'; "
-            "Write-Output $s.Status"
+            f"$s = Get-AuthenticodeSignature -FilePath '{safe}'; "
+            "$tp = ''; if ($null -ne $s.SignerCertificate) { $tp = $s.SignerCertificate.Thumbprint }; "
+            "Write-Output ($s.Status.ToString() + '|' + $tp)"
         )
         proc = subprocess.run(
             ['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
@@ -589,9 +619,26 @@ def _authenticode_status(tmp_path: str) -> str:
             timeout=30,
             check=False,
         )
-        return (proc.stdout or '').strip()
+        line = (proc.stdout or '').strip().splitlines()
+        raw = (line[-1] if line else '').strip()
+        if not raw:
+            return {}
+        if '|' in raw:
+            status, thumb = raw.split('|', 1)
+        else:
+            status, thumb = raw, ''
+        return {
+            'status': str(status or '').strip(),
+            'thumbprint': _normalize_thumbprint(thumb),
+        }
     except Exception:
-        return ''
+        return {}
+
+
+def _authenticode_status(tmp_path: str) -> str:
+    """Return Authenticode Status string, or '' if unavailable / skipped."""
+    info = _authenticode_signature_info(tmp_path)
+    return str(info.get('status') or '')
 
 
 def _validate_installer_exe(tmp_path, *, expected_size: int = 0):
@@ -623,19 +670,34 @@ def _validate_installer_exe(tmp_path, *, expected_size: int = 0):
             f'Downloaded installer size mismatch (got {sz} bytes, expected {expected_size}). '
             'Try again in a minute or use Install Latest Build in Settings.'
         )
-    # Experimental builds: refuse NotSigned / HashMismatch when Authenticode is readable.
-    # Valid / UnknownError (tooling gaps) still allow install so unsigned local CI builds work
-    # until a publisher cert is configured.
-    status = _authenticode_status(tmp_path)
-    if status:
-        bad = {s.lower() for s in ('NotSigned', 'HashMismatch', 'UnknownError')}
-        # Only hard-fail clear forgery / missing signature on experimental channel.
-        channel = str(UPDATE_CHANNEL or '').strip().lower()
-        if channel == 'experimental' and status.lower() in ('notsigned', 'hashmismatch'):
+    info = _authenticode_signature_info(tmp_path)
+    status = str(info.get('status') or '').strip()
+    thumb = str(info.get('thumbprint') or '').strip()
+    allow = _configured_publisher_thumbprints()
+    channel = str(UPDATE_CHANNEL or '').strip().lower()
+    if allow:
+        if not status:
+            raise RuntimeError(
+                'Could not read Authenticode signature for the downloaded installer. '
+                'Refusing update while publisher certificate pinning is enabled.'
+            )
+        if status.lower() != 'valid':
             raise RuntimeError(
                 f'Downloaded installer failed Authenticode check (Status={status}). '
                 'Refusing to launch an untrusted update.'
             )
+        if thumb not in allow:
+            raise RuntimeError(
+                'Downloaded installer is signed, but not by the expected ZubCut publisher certificate. '
+                'Refusing to launch an untrusted update.'
+            )
+        return
+    # No publisher pin configured yet: experimental still refuses clear unsigned / hash mismatch.
+    if status and channel == 'experimental' and status.lower() in ('notsigned', 'hashmismatch'):
+        raise RuntimeError(
+            f'Downloaded installer failed Authenticode check (Status={status}). '
+            'Refusing to launch an untrusted update.'
+        )
 
 
 def _temp_installer_path(url):

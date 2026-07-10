@@ -1,5 +1,3 @@
-# CI copy of src/constants.py (GitHub web UI often breaks indentation on the real file).
-# Workflows copy this to src/constants.py before building. Edit the real src/constants.py first, then mirror changes here.
 from os import path, environ
 import sys
 
@@ -14,15 +12,20 @@ APP_USER_DATA_DIR = 'ZubCut'
 # CI overwrites UPDATE_CHANNEL and APP_BUILD_TIME_ISO per branch; match your branch when developing.
 UPDATE_CHANNEL = 'experimental'
 
+# GitHub releases/API (update slug when the repository is renamed on GitHub).
 GITHUB_REPO_SLUG = 'zubcats/ArpCut-main-updated'
 GITHUB_RELEASES_BASE = f'https://github.com/{GITHUB_REPO_SLUG}/releases'
 
-# Single-line: tools/ci_apply_build_constants.py replaces these via ^NAME\s*=.*$
+# Direct download URL for the latest installer package per channel (.exe).
+# Single-line: CI copies .github/ci-blessed/constants.py then tools/ci_apply_build_constants.py patches these.
 UPDATE_DOWNLOAD_URL_MAIN = f'{GITHUB_RELEASES_BASE}/download/stable-latest/ZubCut-Setup.exe'
 UPDATE_DOWNLOAD_URL_EXPERIMENTAL = f'{GITHUB_RELEASES_BASE}/download/experimental-latest/ZubCut-Setup-experimental.exe'
+# UTC ISO timestamp when this binary was built (CI overwrites). Used to detect newer installers online.
 APP_BUILD_TIME_ISO = ''
+# Git commit baked into this binary (CI sets GITHUB_SHA). Used to detect stale CDN installers.
 APP_BUILD_COMMIT = ''
 
+# User data (Windows production path)
 if sys.platform.startswith('win'):
     from zubcut_legacy_migrate import (
         legacy_documents_path_windows,
@@ -46,13 +49,21 @@ else:
     OLD_SETTINGS_PATH = legacy_settings_path_unix(home, darwin=_darwin)
 SETTINGS_PATH = path.join(DOCUMENTS_PATH, 'zubcut.json')
 LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'zubcut-license.json')
+# CI injects from secret LICENSE_PUBLIC_KEY_B64 (Ed25519 verify key, base64).
 LICENSE_PUBLIC_KEY_B64 = ''
+# License sign-in HTTPS URL. Override at runtime with ZUBCUT_LICENSE_SIGNIN_URL.
 LICENSE_SIGNIN_URL = 'https://zubcut-license-signin.zubcats.workers.dev'
 # Crash report HTTPS URL (POST /crash). Defaults to LICENSE_SIGNIN_URL; override with ZUBCUT_CRASH_REPORT_URL.
 CRASH_REPORT_URL = LICENSE_SIGNIN_URL
 # Optional shared secret for POST /crash (must match Worker secret CRASH_INGEST_TOKEN).
 # CI injects from GitHub Actions secret CRASH_INGEST_TOKEN. Override with ZUBCUT_CRASH_INGEST_TOKEN.
 CRASH_INGEST_TOKEN = ''
+
+# Authenticode publisher pin for downloaded installers (SHA1 thumbprints, no spaces/colons).
+# Empty = status-only checks (experimental refuses NotSigned/HashMismatch).
+# When set, updates require Status=Valid and a matching thumbprint (main + experimental).
+# Override / extend at runtime with ZUBCUT_INSTALLER_PUBLISHER_THUMBPRINT (comma-separated).
+INSTALLER_PUBLISHER_CERT_THUMBPRINTS: tuple[str, ...] = ()
 
 # ZubCut Control Panel (admin app — own CI release tag; does not use ZubCut stable/experimental updaters)
 CONTROL_PANEL_DISPLAY_NAME = 'ZubCut Control Panel'
@@ -144,13 +155,15 @@ SETTINGS_KEYS = [
     'show_scan_mac_column', 'show_scan_vendor_column',
     'traffic_percent',
     'clumsy_mode',
-    'clumsy_topology',
+    'clumsy_persist_across_restart',  # internal: keep clumsy_mode after Settings-driven restart
+    'clumsy_topology',  # legacy; last path is stored in clumsy ICS state file on enable
     'mitm_delay_up_ms',
     'mitm_delay_down_ms',
     'mitm_cap_up_mbps',
     'mitm_cap_down_mbps',
     'mitm_delay_enabled',
     'mitm_cap_enabled',
+    # Advanced Lag clumsy-style panel (mitm_adv_*); legacy mitm_* kept for migration.
     'mitm_adv_delay_on',
     'mitm_adv_delay_in',
     'mitm_adv_delay_out',
@@ -168,11 +181,41 @@ SETTINGS_KEYS = [
     'mitm_adv_loss_in',
     'mitm_adv_loss_out',
     'mitm_adv_loss_pct',
+    # Per-impairment schedule: timer on, lag ms, pause ms, repeat (lag+pause cycles), runs (−1 = ∞ cycles).
+    'mitm_adv_delay_timer_on',
+    'mitm_adv_delay_timer_lag_ms',
+    'mitm_adv_delay_timer_pause_ms',
+    'mitm_adv_delay_timer_repeat_forever',
+    'mitm_adv_delay_timer_runs',
+    'mitm_adv_jitter_timer_on',
+    'mitm_adv_jitter_timer_lag_ms',
+    'mitm_adv_jitter_timer_pause_ms',
+    'mitm_adv_jitter_timer_repeat_forever',
+    'mitm_adv_jitter_timer_runs',
+    'mitm_adv_cap_timer_on',
+    'mitm_adv_cap_timer_lag_ms',
+    'mitm_adv_cap_timer_pause_ms',
+    'mitm_adv_cap_timer_repeat_forever',
+    'mitm_adv_cap_timer_runs',
+    'mitm_adv_loss_timer_on',
+    'mitm_adv_loss_timer_lag_ms',
+    'mitm_adv_loss_timer_pause_ms',
+    'mitm_adv_loss_timer_repeat_forever',
+    'mitm_adv_loss_timer_runs',
+    # One-shot migration: old "repeat forever" checkbox meant infinite cycles; runs=-1 now.
+    'mitm_adv_timer_schema_v2',
+    # Diagnostics: prints per-step Kill ON/OFF timings to the log box when True.
+    'debug_kill_timing',
+    # When True, uncaught errors are uploaded automatically (user can still send manually on failure).
+    'crash_report_auto_send',
 ]
 
 # key_* stored as QKeySequence PortableText (e.g. L, M, P or Ctrl+L)
 # show_scan_* default False: MAC / Vendor columns hidden until enabled (header or table context menu).
-# clumsy_mode default False: must be enabled in Settings (requires restart).
+# clumsy_mode default False; cleared on cold start (quit + relaunch), not after Settings restart.
+# iface_before_clumsy: last Settings iface before enabling Clumsy; restored when Clumsy is turned off.
+# nicknames / nickname_last_ip: keys are MAC|subnet (e.g. aa:bb:cc:dd:ee:ff|192.168.137) for per-network names.
+# mitm_*: legacy Advanced Lag keys; mitm_adv_* clumsy-style rows (caps in Mbps).
 SETTINGS_VALS = [
     25,
     False,
@@ -193,6 +236,7 @@ SETTINGS_VALS = [
     False,
     50,
     False,
+    False,
     'hotspot',
     0,
     0,
@@ -200,6 +244,7 @@ SETTINGS_VALS = [
     0.0,
     True,
     True,
+    # mitm_adv_* defaults: rows off; In/Out checked so enabling a row is one click.
     False,
     True,
     True,
@@ -217,4 +262,27 @@ SETTINGS_VALS = [
     True,
     True,
     0,
+    False,
+    1000,
+    1000,
+    True,
+    -1,
+    False,
+    1000,
+    1000,
+    True,
+    -1,
+    False,
+    1000,
+    1000,
+    True,
+    -1,
+    False,
+    1000,
+    1000,
+    True,
+    -1,
+    False,
+    False,
+    False,
 ]

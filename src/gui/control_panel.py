@@ -27,6 +27,7 @@ from constants import (
 )
 from gui.crash_reports_panel import CrashReportsPanel
 from tools.license_admin import (
+    admin_public_verify_key_b64,
     cloud_kv_bundle_for_license_id,
     cloud_kv_key_for_account,
     create_license,
@@ -34,6 +35,8 @@ from tools.license_admin import (
     export_cloud_kv_bundle,
     list_license_rows,
     renew_license,
+    rewrap_signing_key,
+    rotate_signing_key,
     set_license_status,
     signed_document_for_license_id,
 )
@@ -41,6 +44,7 @@ from tools.license_cloud_sync import (
     delete_account_from_worker,
     load_cloud_sync_settings,
     push_account_to_worker,
+    rewrap_cloud_sync_secrets,
     save_cloud_sync_settings,
     test_worker_admin_access,
 )
@@ -390,9 +394,13 @@ class ControlPanelWindow(QMainWindow):
         self.btnCloudSave = QPushButton('Save cloud settings', self)
         self.btnCloudTest = QPushButton('Test connection', self)
         self.btnPushCloud = QPushButton('Push selected to cloud', self)
+        self.btnRewrapSecrets = QPushButton('Re-protect secrets', self)
+        self.btnRotateSigningKey = QPushButton('Rotate signing key…', self)
         cloud_btns.addWidget(self.btnCloudSave)
         cloud_btns.addWidget(self.btnCloudTest)
         cloud_btns.addWidget(self.btnPushCloud)
+        cloud_btns.addWidget(self.btnRewrapSecrets)
+        cloud_btns.addWidget(self.btnRotateSigningKey)
         cloud_btns.addStretch()
         cloud_lay.addLayout(cloud_btns)
         lay.addWidget(cloud)
@@ -451,6 +459,8 @@ class ControlPanelWindow(QMainWindow):
         self.btnCloudSave.clicked.connect(self._save_cloud_sync_clicked)
         self.btnCloudTest.clicked.connect(self._test_cloud_sync_clicked)
         self.btnPushCloud.clicked.connect(self.push_cloud_selected)
+        self.btnRewrapSecrets.clicked.connect(self._rewrap_secrets_clicked)
+        self.btnRotateSigningKey.clicked.connect(self._rotate_signing_key_clicked)
 
         self._load_cloud_sync_fields()
         return page
@@ -475,6 +485,45 @@ class ControlPanelWindow(QMainWindow):
             QMessageBox.information(self, 'Test', msg)
         else:
             QMessageBox.warning(self, 'Test failed', msg)
+
+    def _rewrap_secrets_clicked(self) -> None:
+        notes = []
+        ok1, msg1 = rewrap_cloud_sync_secrets()
+        notes.append(msg1)
+        ok2, msg2 = rewrap_signing_key()
+        notes.append(msg2)
+        text = '\n'.join(notes)
+        if ok1 or ok2:
+            QMessageBox.information(self, 'Re-protect secrets', text)
+        else:
+            QMessageBox.warning(self, 'Re-protect secrets', text)
+
+    def _rotate_signing_key_clicked(self) -> None:
+        reply = QMessageBox.warning(
+            self,
+            'Rotate signing key',
+            'This creates a NEW license signing key and re-signs all local accounts.\n\n'
+            'You must then update GitHub secret LICENSE_PUBLIC_KEY_B64 to the new public key '
+            'and rebuild ZubCut, or customer sign-in will fail.\n\nContinue?',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        ok, msg, pub = rotate_signing_key(re_sign_licenses=True)
+        if not ok:
+            QMessageBox.warning(self, 'Rotate signing key', msg)
+            return
+        # Prefer clipboard for the pubkey so the admin can paste into GitHub secrets.
+        try:
+            QApplication.clipboard().setText(pub or admin_public_verify_key_b64())
+        except Exception:
+            pass
+        QMessageBox.information(
+            self,
+            'Rotate signing key',
+            f'{msg}\n\nNew public key (also copied to clipboard):\n{pub}',
+        )
 
     def _maybe_auto_push_cloud(self, license_id: str) -> tuple[bool, str]:
         s = load_cloud_sync_settings()

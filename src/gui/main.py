@@ -47,6 +47,7 @@ from tools.utils_gui import (
     table_row_selection_chrome,
     theme_popup_menu,
 )
+from gui.impairment_controller import ImpairmentController, toggle_kind_label as _impairment_toggle_kind_label
 def format_countdown_ms(left_ms):
     """Human-readable countdown (matches Dupe / Lag Switch inline labels)."""
     left_ms = max(0, int(left_ms))
@@ -914,6 +915,14 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Explicit Kill OFF in flight: ignore killer.killed fallback until _run_kill_command finishes.
         self._kill_teardown_mac = None
         self._kill_teardown_ip = None
+        self._impairment = ImpairmentController(
+            state_provider=lambda: self,
+            killed_profile_on=self._killed_profile_on,
+            log=lambda msg, kind: self.log(
+                msg,
+                UI_LOG_RESTORE_FG if kind == 'restore' else UI_LOG_VICTIM_BLOCK_FG,
+            ),
+        )
         self.lag_active = False
         self.lag_block_ms = 9000
         self.lag_release_ms = 1500
@@ -1909,7 +1918,7 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.taskbar_button = QWinTaskbarButton()
         self.taskbar_progress = self.taskbar_button.progress()
         self.taskbar_button.setWindow(self.windowHandle())
-        self.pgbar.valueChanged.connect(self.taskbar_progress.setValue)
+        self.pgbar.valueChanged.connect(self.taskbar_progress.setValue, Qt.QueuedConnection)
 
     def _apply_scan_table_column_layout(self):
         """
@@ -5467,6 +5476,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Clear 'Restoring network…' after dupe firewall/unkill teardown completes."""
         self._dupe_restoring_after_stop = False
         self._dupe_restoring_mac = None
+        gate = getattr(self, '_impairment', None)
+        if gate is not None:
+            gate.teardown.end('dupe')
         self.lblDupeCountdownMain.setVisible(False)
         self.lblDupeCountdownMain.setText('')
         dlg = getattr(self, 'dupe_switch_dialog', None)
@@ -5480,6 +5492,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         """Clear lag stop restoring flags after teardown (Kill UI / dialog)."""
         self._lag_restoring_after_stop = False
         self._lag_restoring_mac = None
+        gate = getattr(self, '_impairment', None)
+        if gate is not None:
+            gate.teardown.end('lag')
         dlg = getattr(self, 'lag_switch_dialog', None)
         if dlg is not None and dlg.isVisible():
             try:
@@ -6375,6 +6390,10 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         prev_mac = self.lag_device_mac
         snap = getattr(self, '_lag_device_snapshot', None)
+        self._lag_restoring_after_stop = True
+        gate = getattr(self, '_impairment', None)
+        if gate is not None:
+            gate.teardown.begin('lag', prev_mac)
         # Stop phase timer before clearing lag_active so a tick cannot re-block.
         self._lag_phase_end_timer.stop()
         self._lag_phase_advance_pending = False
@@ -6405,11 +6424,21 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                         try:
                             self.killer.unkill(victim)
                         except Exception:
-                            pass
+                            try:
+                                from tools.zubcut_log import app_log
+
+                                app_log('lag_unkill_failed', mac=str(prev_mac or ''), exc_info=True)
+                            except Exception:
+                                pass
                         try:
                             self.killer.reinforce_restore(victim)
                         except Exception:
-                            pass
+                            try:
+                                from tools.zubcut_log import app_log
+
+                                app_log('lag_reinforce_failed', mac=str(prev_mac or ''), exc_info=True)
+                            except Exception:
+                                pass
             except Exception:
                 self._lag_ics_force_unpause()
         else:
@@ -6418,7 +6447,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             try:
                 self._release_victim_arp_mitm_stack(device)
             except Exception:
-                pass
+                try:
+                    from tools.zubcut_log import app_log
+
+                    app_log('lag_release_stack_failed', mac=str(prev_mac or ''), exc_info=True)
+                except Exception:
+                    pass
 
         self.lag_active = False
         self.lag_device_mac = None
@@ -6430,6 +6464,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._lag_in_allow_phase = False
         self._lag_restoring_after_stop = False
         self._lag_restoring_mac = None
+        gate = getattr(self, '_impairment', None)
+        if gate is not None:
+            gate.teardown.end('lag')
         self._ics_teardown_gate_if_idle(prev_mac)
         self._sync_killed_devices()
         self.btnLagSwitch.setText('Lag Switch')
@@ -6627,6 +6664,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._dupe_restoring_after_stop = True
         self._dupe_restoring_mac = prev_mac
         self._dupe_restoring_ip = prev_ip
+        gate = getattr(self, '_impairment', None)
+        if gate is not None:
+            gate.teardown.begin('dupe', prev_mac)
         self._show_dupe_status('Dupe OFF — restoring connection…', UI_LOG_RESTORE_FG, hold_ms=0)
         # Mark inactive after timers are stopped so _tick cannot race with teardown.
         self.dupe_active = False
@@ -6831,6 +6871,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         ms — filters duplicate clicks / key deliveries. Alternating on/off is not delayed.
         Held keys: use QShortcut.setAutoRepeat(False).
         """
+        ctrl = getattr(self, '_impairment', None)
+        if ctrl is not None:
+            return ctrl.ignore_duplicate_toggle_edge(kind, mac, edge)
         if not mac:
             return False
         now = time.monotonic()
@@ -6853,15 +6896,12 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     @staticmethod
     def _toggle_kind_label(kind):
-        return {
-            'kill': 'Kill',
-            'lag': 'Lag Switch',
-            'dupe': 'Dupe',
-            'pctcut': 'Percent Cut',
-            'mitmshape': 'MITM shaping',
-        }.get(kind, kind)
+        return _impairment_toggle_kind_label(kind)
 
     def _active_toggle_kind(self):
+        ctrl = getattr(self, '_impairment', None)
+        if ctrl is not None:
+            return ctrl.active_toggle_kind()
         if self.lag_active and self.lag_device_mac:
             return 'lag'
         if self.dupe_active and self.dupe_device_mac:
@@ -6875,6 +6915,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         return None
 
     def _toggle_start_blocked(self, requested_kind, device=None):
+        ctrl = getattr(self, '_impairment', None)
+        if ctrl is not None:
+            return ctrl.toggle_start_blocked(requested_kind, device)
         active_kind = self._active_toggle_kind()
         if active_kind and active_kind != requested_kind:
             if (
@@ -7995,6 +8038,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         else:
             self._kill_teardown_mac = mac
             self._kill_teardown_ip = device.get('ip')
+            gate = getattr(self, '_impairment', None)
+            if gate is not None:
+                gate.teardown.begin('kill', mac)
         teardown_off = not turn_on
         try:
             snapshot_map = getattr(self, '_kill_device_snapshot', None)
@@ -8253,6 +8299,9 @@ class ZubCutApp(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             if teardown_off and getattr(self, '_kill_teardown_mac', None) == mac:
                 self._kill_teardown_mac = None
                 self._kill_teardown_ip = None
+                gate = getattr(self, '_impairment', None)
+                if gate is not None:
+                    gate.teardown.end('kill')
             try:
                 pk = self._killed_profile_key(device)
                 if pk:

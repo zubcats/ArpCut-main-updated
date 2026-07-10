@@ -1,5 +1,6 @@
 from concurrent.futures.thread import ThreadPoolExecutor
 import os
+import threading
 from scapy.all import Ether, arping, conf, get_if_addr
 from time import sleep
 import re
@@ -35,6 +36,7 @@ class Scanner():
         self.device_count = 25
         self.max_threads = 12
         self.__ping_done = 0
+        self.__ping_done_lock = threading.Lock()
         self.devices = []
         self.old_ips = {}
         self.router = {}
@@ -568,16 +570,21 @@ class Scanner():
            (All Threads will run at the same tine)
         """
         self.init()
-        self.__ping_done = 0
+        with self.__ping_done_lock:
+            self.__ping_done = 0
         
         self.generate_ips()
         total_ips = len(self.ips)
         self.ping_thread_pool()
         
-        while self.__ping_done < total_ips:
+        while True:
+            with self.__ping_done_lock:
+                done = self.__ping_done
             # Add a sleep to overcome High CPU usage
             sleep(.01)
-            self.qt_progress_signal(self.__ping_done)
+            self.qt_progress_signal(done)
+            if done >= total_ips:
+                break
         
         return True
     
@@ -603,7 +610,8 @@ class Scanner():
         else:
             # macOS: -W is millis for some ping variants; use higher timeout via -t if available
             terminal(f'ping -c 1 {ip}', decode=False)
-        self.__ping_done += 1
+        with self.__ping_done_lock:
+            self.__ping_done += 1
 
     def probe_ip(self, ip: str) -> Optional[tuple]:
         """

@@ -83,6 +83,37 @@ def save_cloud_sync_settings(
         pass
 
 
+def rewrap_cloud_sync_secrets() -> tuple[bool, str]:
+    """Re-DPAPI-protect the saved admin secret with the current Windows user."""
+    path = PAID_LICENSE_MANAGER_CLOUD_SYNC_PATH
+    if not os.path.exists(path):
+        return False, 'No cloud sync settings file yet — save settings first.'
+    try:
+        raw = json.load(open(path, 'r', encoding='utf-8'))
+    except Exception:
+        return False, 'Could not read cloud sync settings (corrupt JSON?).'
+    if not isinstance(raw, dict):
+        return False, 'Cloud sync settings file is invalid.'
+    secret = str(raw.get('admin_secret') or '')
+    if not secret:
+        return False, 'Admin secret is empty — nothing to re-protect.'
+    try:
+        from tools.secret_store import rewrap_secret, restrict_user_only_acl
+
+        new_secret, note = rewrap_secret(secret)
+        if note == 'decrypt_failed':
+            return False, 'Could not decrypt the saved admin secret (wrong Windows user?).'
+        if note == 'encrypt_failed':
+            return False, 'DPAPI encrypt failed — secret left unchanged.'
+        raw['admin_secret'] = new_secret
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump(raw, fh, indent=2)
+        restrict_user_only_acl(path)
+        return True, 'Admin secret re-protected with DPAPI for this Windows user.'
+    except Exception as exc:
+        return False, f'Re-protect failed: {exc}'
+
+
 def _normalize_worker_base(url: str) -> str:
     return str(url or '').strip().rstrip('/')
 

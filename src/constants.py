@@ -59,6 +59,12 @@ CRASH_REPORT_URL = LICENSE_SIGNIN_URL
 # CI injects from GitHub Actions secret CRASH_INGEST_TOKEN. Override with ZUBCUT_CRASH_INGEST_TOKEN.
 CRASH_INGEST_TOKEN = ''
 
+# Authenticode publisher pin for downloaded installers (SHA1 thumbprints, no spaces/colons).
+# Empty = status-only checks (experimental refuses NotSigned/HashMismatch).
+# When set, updates require Status=Valid and a matching thumbprint (main + experimental).
+# Override / extend at runtime with ZUBCUT_INSTALLER_PUBLISHER_THUMBPRINT (comma-separated).
+INSTALLER_PUBLISHER_CERT_THUMBPRINTS: tuple[str, ...] = ()
+
 # ZubCut Control Panel (admin app — own CI release tag; does not use ZubCut stable/experimental updaters)
 CONTROL_PANEL_DISPLAY_NAME = 'ZubCut Control Panel'
 CONTROL_PANEL_EXE_NAME = 'ZubCutControlPanel.exe'

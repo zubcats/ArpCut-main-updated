@@ -160,6 +160,44 @@ def unprotect_bytes(stored: bytes) -> bytes:
         return b''
 
 
+def is_dpapi_secret(stored: str) -> bool:
+    return str(stored or '').startswith('dpapi:')
+
+
+def is_dpapi_bytes(stored: bytes) -> bool:
+    return bytes(stored or b'').startswith(b'DPAPI1:')
+
+
+def rewrap_secret(stored: str) -> tuple[str, str]:
+    """
+    Decrypt (if needed) and re-encrypt with current-user DPAPI.
+    Returns (new_stored, note). note is empty on success.
+    """
+    text = str(stored or '')
+    if not text:
+        return '', 'empty'
+    plain = unprotect_secret(text) if is_dpapi_secret(text) else text
+    if is_dpapi_secret(text) and not plain:
+        return text, 'decrypt_failed'
+    protected = protect_secret(plain)
+    if _dpapi_available() and plain and not is_dpapi_secret(protected):
+        return text, 'encrypt_failed'
+    return protected, ''
+
+
+def rewrap_bytes(stored: bytes) -> tuple[bytes, str]:
+    data = bytes(stored or b'')
+    if not data:
+        return b'', 'empty'
+    plain = unprotect_bytes(data) if is_dpapi_bytes(data) else data
+    if is_dpapi_bytes(data) and not plain:
+        return data, 'decrypt_failed'
+    protected = protect_bytes(plain)
+    if _dpapi_available() and plain and not is_dpapi_bytes(protected):
+        return data, 'encrypt_failed'
+    return protected, ''
+
+
 def restrict_user_only_acl(path: str) -> None:
     """Best-effort: restrict a file to the current user on Windows."""
     if not path or not os.path.exists(path) or not sys.platform.startswith('win'):

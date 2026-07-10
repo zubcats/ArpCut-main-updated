@@ -67,6 +67,84 @@ def admin_public_verify_key_b64() -> str:
     return base64.b64encode(bytes(key.verify_key)).decode('ascii')
 
 
+def rewrap_signing_key() -> tuple[bool, str]:
+    """Re-DPAPI-protect the existing signing key file for the current Windows user."""
+    path = PAID_LICENSE_ADMIN_SIGNING_KEY_PATH
+    if not os.path.exists(path):
+        return False, 'No signing key file yet — create a license first.'
+    try:
+        raw = open(path, 'rb').read()
+    except OSError as exc:
+        return False, f'Could not read signing key: {exc}'
+    try:
+        from tools.secret_store import rewrap_bytes, restrict_user_only_acl
+
+        new_raw, note = rewrap_bytes(raw)
+        if note == 'decrypt_failed':
+            return False, 'Could not decrypt signing key (wrong Windows user?).'
+        if note == 'encrypt_failed':
+            return False, 'DPAPI encrypt failed — signing key left unchanged.'
+        open(path, 'wb').write(new_raw)
+        restrict_user_only_acl(path)
+        return True, 'Signing key re-protected with DPAPI for this Windows user.'
+    except Exception as exc:
+        return False, f'Re-protect failed: {exc}'
+
+
+def rotate_signing_key(*, re_sign_licenses: bool = True) -> tuple[bool, str, str]:
+    """
+    Generate a new Ed25519 signing key (DPAPI-wrapped) and optionally re-sign all licenses.
+
+    Returns (ok, message, new_public_key_b64). Update CI LICENSE_PUBLIC_KEY_B64 to the new pubkey.
+    """
+    path = PAID_LICENSE_ADMIN_SIGNING_KEY_PATH
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    key = SigningKey.generate()
+    blob = bytes(key)
+    try:
+        from tools.secret_store import protect_bytes, restrict_user_only_acl
+
+        blob = protect_bytes(blob)
+        open(path, 'wb').write(blob)
+        restrict_user_only_acl(path)
+    except Exception:
+        open(path, 'wb').write(bytes(key))
+    pub = base64.b64encode(bytes(key.verify_key)).decode('ascii')
+    if re_sign_licenses:
+        n = re_sign_all_licenses()
+        return (
+            True,
+            f'New signing key saved. Re-signed {n} license(s). '
+            'Update GitHub secret LICENSE_PUBLIC_KEY_B64 and rebuild ZubCut with the new public key.',
+            pub,
+        )
+    return (
+        True,
+        'New signing key saved (licenses not re-signed — existing signatures are now invalid). '
+        'Update GitHub secret LICENSE_PUBLIC_KEY_B64 and rebuild ZubCut.',
+        pub,
+    )
+
+
+def re_sign_all_licenses() -> int:
+    """Re-sign every license payload with the current signing key. Returns count."""
+    db = load_license_db()
+    now = _utc_now()
+    count = 0
+    for rec in db.get('licenses') or []:
+        p = rec.get('payload')
+        if not isinstance(p, dict):
+            continue
+        signed = _signed_document(p)
+        rec['payload'] = p
+        rec['signature'] = signed['signature']
+        rec['updated_at'] = _iso(now)
+        count += 1
+    if count:
+        save_license_db(db)
+    return count
+
+
 def _license_record_schema() -> dict[str, Any]:
     return {'version': 1, 'licenses': []}
 

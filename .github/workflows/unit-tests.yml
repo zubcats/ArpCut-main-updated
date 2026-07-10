@@ -35,11 +35,12 @@ jobs:
         run: |
           set -e
           if ! diff -q build.py .github/ci-blessed/build.py; then
-            echo "::error::build.py drifted from .github/ci-blessed/build.py — update the mirror."
+            echo "::error::build.py drifted from .github/ci-blessed/build.py — run: python tools/sync_ci_blessed_mirrors.py"
             exit 1
           fi
           if ! diff -q src/constants.py .github/ci-blessed/constants.py; then
-            echo "::warning::src/constants.py differs from ci-blessed (CI may overwrite on installer builds)."
+            echo "::error::src/constants.py drifted from .github/ci-blessed/constants.py — run: python tools/sync_ci_blessed_mirrors.py"
+            exit 1
           fi
 
       - name: Run unit tests
