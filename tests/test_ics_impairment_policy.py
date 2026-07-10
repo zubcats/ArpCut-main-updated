@@ -12,6 +12,11 @@ _SRC = os.path.join(_ROOT, 'src')
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
+
 from tools import ics_impairment_policy as policy
 from tools import clumsy_inline as inline
 
@@ -143,13 +148,11 @@ class TestIcsImpairmentPolicy(unittest.TestCase):
         self.assertFalse(plan.use_windivert)
 
     def test_main_wires_selection_and_plan_helpers(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as fh:
-            src = fh.read()
+        src = load_main_window_source()
         self.assertIn('def _refresh_selected_device_impairment_plan', src)
         self.assertIn('def _impairment_plan_for', src)
         self.assertIn('classify_device_impairment', src)
         self.assertIn('_device_with_plan_ip', src)
-        block = src[src.index('def _apply_victim_block'): src.index('def _clear_victim_block')]
+        block = methods_through('_apply_victim_block', '_clear_victim_block')
         self.assertIn('_impairment_plan_for(device)', block)
         self.assertIn('plan.use_windivert', block)

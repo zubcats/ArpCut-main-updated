@@ -12,6 +12,11 @@ _SRC = os.path.join(_ROOT, 'src')
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
+
 from tools import ics_windivert_shaper as wd
 
 
@@ -69,13 +74,11 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertLess(shape_idx, block_idx)
 
     def test_hotspot_percent_cut_uses_windivert_helper(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as fh:
-            src = fh.read()
+        src = load_main_window_source()
         self.assertIn('def _ics_hotspot_victim_ip', src)
         self.assertIn('def _ics_apply_percent_cut_windivert', src)
         self.assertIn('def _ics_apply_advanced_shaping_windivert', src)
-        toggle = src[src.index('def togglePercentCut'): src.index('def stopPercentCut')]
+        toggle = methods_through('togglePercentCut', 'stopPercentCut')
         self.assertIn('plan.is_ics_downstream', toggle)
         self.assertIn('_ics_apply_percent_cut_windivert(device, pct)', toggle)
         self.assertIn('def _ics_quiesce_killer_mitm', src)
@@ -247,10 +250,8 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertIn('_send_immediate', src)
 
     def test_hotspot_sched_tick_uses_windivert_on_ics(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as fh:
-            src = fh.read()
-        tick = src[src.index('def _mitm_adv_apply_sched_tick'): src.index('def start_mitm_shaping_from_advanced')]
+        src = load_main_window_source()
+        tick = methods_through('_mitm_adv_apply_sched_tick', 'start_mitm_shaping_from_advanced')
         self.assertIn('_uses_windivert(device)', tick)
         self.assertIn('_ics_apply_advanced_shaping_windivert', tick)
 
@@ -280,10 +281,8 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertNotIn('self._victim = active', src)
 
     def test_flow_stable_pins_percent_cut_and_mitm_ips(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as fh:
-            src = fh.read()
-        fn = src[src.index('def _flow_stable_victim_ip'): src.index('def _ensure_ics_lag_gate')]
+        src = load_main_window_source()
+        fn = methods_through('_flow_stable_victim_ip', '_ensure_ics_lag_gate')
         self.assertIn('percent_cut_device_ip', fn)
         self.assertIn('mitm_shaping_device_ip', fn)
 

@@ -10,6 +10,11 @@ _SRC = os.path.join(_ROOT, 'src')
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
+
 
 class TestNpcapPrewarm(unittest.TestCase):
     @staticmethod
@@ -18,11 +23,8 @@ class TestNpcapPrewarm(unittest.TestCase):
         with open(path, encoding='utf-8') as fh:
             return fh.read()
 
-    @staticmethod
-    def _main_py() -> str:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as fh:
-            return fh.read()
+    def _main_py(self) -> str:
+        return load_main_window_source()
 
     def test_get_socket_tries_npcap_tokens(self) -> None:
         src = self._killer_py()
@@ -46,7 +48,7 @@ class TestNpcapPrewarm(unittest.TestCase):
         self.assertIn("_schedule_npcap_prewarm('startup')", src)
         self.assertIn("_schedule_npcap_prewarm('select')", src)
         self.assertIn('schedule_windows_capture_maintenance', src)
-        clicked = src[src.index('def deviceClicked'): src.index('def _updateLagSwitchButtonState')]
+        clicked = methods_through('deviceClicked', '_updateLagSwitchButtonState')
         self.assertIn("_schedule_npcap_prewarm('select')", clicked)
 
     def test_windows_network_tune_module(self) -> None:
@@ -63,7 +65,7 @@ class TestNpcapPrewarm(unittest.TestCase):
 
     def test_startup_clears_ip_forwarding(self) -> None:
         src = self._main_py()
-        block = src[src.index('def _ensure_clean_network_on_startup'): src.index('def quit_all')]
+        block = methods_through('_ensure_clean_network_on_startup', 'quit_all')
         self.assertIn('ensure_home_lan_mitm_forwarding_off', block)
 
     def test_zubcut_post_init_maintain(self) -> None:

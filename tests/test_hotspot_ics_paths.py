@@ -10,45 +10,38 @@ _SRC = os.path.join(_ROOT, 'src')
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
+
 
 class TestHotspotIcsPaths(unittest.TestCase):
-    @staticmethod
-    def _main_py() -> str:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as fh:
-            return fh.read()
+    def _main_py(self) -> str:
+        return load_main_window_source()
 
     def test_unified_prepare_helper_exists(self) -> None:
         src = self._main_py()
         self.assertIn('def _prepare_victim_for_impairment', src)
-        body = src[
-            src.index('def _prepare_victim_for_impairment')
-            : src.index('def _reconcile_network_adapter', src.index('def _prepare_victim_for_impairment'))
-        ]
+        body = methods_through('_prepare_victim_for_impairment', '_reconcile_network_adapter')
         self.assertIn('plan.is_ics_downstream', body)
         self.assertIn('_prepare_ics_victim_context', body)
 
     def test_ics_lag_gate_prepares_hotspot(self) -> None:
         src = self._main_py()
-        gate = src[src.index('def _ensure_ics_lag_gate'): src.index('def _apply_ics_client_block')]
+        gate = methods_through('_ensure_ics_lag_gate', '_apply_ics_client_block')
         self.assertIn('_prepare_victim_for_impairment', gate)
 
     def test_percent_cut_and_advanced_shaping_prepare_hotspot(self) -> None:
         src = self._main_py()
-        pct = src[
-            src.index('def _ics_apply_percent_cut_windivert')
-            : src.index('def _ics_apply_advanced_shaping_windivert')
-        ]
-        adv = src[
-            src.index('def _ics_apply_advanced_shaping_windivert')
-            : src.index('def _ics_hotspot_windivert_teardown')
-        ]
+        pct = methods_through('_ics_apply_percent_cut_windivert', '_ics_apply_advanced_shaping_windivert')
+        adv = methods_through('_ics_apply_advanced_shaping_windivert', '_ics_hotspot_windivert_teardown')
         self.assertIn('_prepare_victim_for_impairment', pct)
         self.assertIn('_prepare_victim_for_impairment', adv)
 
     def test_lag_resolved_victim_skips_lan_resolve_on_hotspot(self) -> None:
         src = self._main_py()
-        fn = src[src.index('def _lag_resolved_victim'): src.index('def stopLagSwitch')]
+        fn = methods_through('_lag_resolved_victim', 'stopLagSwitch')
         self.assertIn('plan.is_ics_downstream', fn)
         self.assertIn('_prepare_victim_for_impairment', fn)
         ics_branch = fn[fn.index('plan.is_ics_downstream'): fn.index('resolve_live_lan_victim')]
@@ -57,10 +50,7 @@ class TestHotspotIcsPaths(unittest.TestCase):
 
     def test_lag_deferred_skips_mitm_prereqs_for_windivert(self) -> None:
         src = self._main_py()
-        lag_def = src[
-            src.index('def _lag_deferred_start')
-            : src.index('def _lag_reassert_poison', src.index('def startLagSwitch'))
-        ]
+        lag_def = methods_through('_lag_deferred_start', '_lag_reassert_poison')
         self.assertIn('_prepare_victim_for_impairment', lag_def)
         self.assertIn('plan.use_windivert', lag_def)
         lan_arm = lag_def[lag_def.index('else:'): lag_def.index('_clear_explicit_kill_for_flow')]
@@ -77,16 +67,16 @@ class TestHotspotIcsPaths(unittest.TestCase):
         ]
         self.assertIn('windivert_instant', kill_toggle)
         self.assertIn('_apply_ics_client_block', kill_toggle)
-        toggle_kill = src[src.index('def toggleKill'): src.index('def _percent_cut_forwarder_live')]
+        toggle_kill = methods_through('toggleKill', '_percent_cut_forwarder_live')
         self.assertIn('_prepare_victim_for_impairment(dev, fast=True)', toggle_kill)
         legacy_kill = src[
             src.index('if self._uses_windivert(device):', src.index('def kill(self'))
             : src.index('else:', src.index('if self._uses_windivert(device):', src.index('def kill(self')))
         ]
         self.assertIn('_prepare_victim_for_impairment', legacy_kill)
-        dupe_arm = src[src.index('def _run_dupe_arm_command'): src.index('def _apply_dupe_deferred')]
+        dupe_arm = methods_through('_run_dupe_arm_command', '_apply_dupe_deferred')
         self.assertIn('_prepare_victim_for_impairment', dupe_arm)
-        ics_block = src[src.index('def _apply_ics_client_block'): src.index('def _clear_ics_client_block')]
+        ics_block = methods_through('_apply_ics_client_block', '_clear_ics_client_block')
         self.assertIn('_prepare_victim_for_impairment', ics_block)
 
 

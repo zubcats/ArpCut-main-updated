@@ -10,15 +10,17 @@ _SRC = os.path.join(_ROOT, 'src')
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
+
 from gui.main import format_countdown_ms
 
 
 class TestLagCountdown(unittest.TestCase):
-    @staticmethod
-    def _main_py() -> str:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as fh:
-            return fh.read()
+    def _main_py(self) -> str:
+        return load_main_window_source()
 
     def test_format_countdown_subminute(self) -> None:
         self.assertEqual(format_countdown_ms(9000), 'Time left: 9.00s')
@@ -43,13 +45,13 @@ class TestLagCountdown(unittest.TestCase):
         self.assertIn('def _tick_lag_countdown', src)
         self.assertIn('def lag_remaining_ms', src)
         self.assertIn('_arm_lag_phase_countdown', src)
-        block = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
+        block = methods_through('_lag_phase_begin_block', '_lag_phase_begin_allow')
         self.assertIn('_arm_lag_phase_countdown', block)
-        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block(self, device):')]
+        allow = methods_through('_lag_phase_begin_allow', '_lag_apply_block')
         self.assertIn('_lag_schedule_phase', allow)
         self.assertIn('_lag_apply_allow_phase_sync', allow)
         self.assertIn('_arm_lag_phase_countdown', allow)
-        tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
+        tick = methods_through('_tick_lag_countdown', '_lag_phase_begin_block')
         self.assertIn('_lag_phase_arming', tick)
         self.assertNotIn('_lag_ics_force_unpause', tick)
 
@@ -61,8 +63,8 @@ class TestLagCountdown(unittest.TestCase):
 
     def test_phase_flag_before_timing_sync_in_begin(self) -> None:
         src = self._main_py()
-        block = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
-        allow = src[src.index('def _lag_phase_begin_allow'): src.index('def _lag_apply_block(self, device):')]
+        block = methods_through('_lag_phase_begin_block', '_lag_phase_begin_allow')
+        allow = methods_through('_lag_phase_begin_allow', '_lag_apply_block')
         self.assertLess(
             block.index('_lag_in_allow_phase = False'),
             block.index('_sync_lag_timing_values_from_ui'),
@@ -74,7 +76,7 @@ class TestLagCountdown(unittest.TestCase):
 
     def test_tick_advances_phase_at_zero(self) -> None:
         src = self._main_py()
-        tick = src[src.index('def _tick_lag_countdown'): src.index('def _lag_phase_begin_block')]
+        tick = methods_through('_tick_lag_countdown', '_lag_phase_begin_block')
         # Tick must advance the phase when rem <= 0 (either via the deferred
         # _lag_request_phase_advance helper or directly via _lag_do_phase_advance
         # when no advance is already pending). Both keep the single-shot phase
@@ -92,17 +94,17 @@ class TestLagCountdown(unittest.TestCase):
         self.assertIn('def _lag_request_phase_advance', src)
         self.assertIn('def _lag_do_phase_advance', src)
         self.assertIn('_lag_phase_advance_pending', src)
-        req = src[src.index('def _lag_request_phase_advance'): src.index('def _lag_phase_end_timer_fired')]
+        req = methods_through('_lag_request_phase_advance', '_lag_phase_end_timer_fired')
         self.assertIn('QTimer.singleShot(0, self._lag_do_phase_advance)', req)
-        fired = src[src.index('def _lag_phase_end_timer_fired'): src.index('def _lag_do_phase_advance')]
+        fired = methods_through('_lag_phase_end_timer_fired', '_lag_do_phase_advance')
         self.assertIn('_lag_do_phase_advance', fired)
         self.assertNotIn('_lag_request_phase_advance', fired)
-        begin = src[src.index('def _lag_phase_begin_block'): src.index('def _lag_phase_begin_allow')]
+        begin = methods_through('_lag_phase_begin_block', '_lag_phase_begin_allow')
         self.assertNotIn('_lag_do_phase_advance', begin)
 
     def test_lag_block_rearm_retry_on_miss(self) -> None:
         src = self._main_py()
-        block = src[src.index('def _lag_apply_block(self, device):'): src.index('def _lag_resolved_victim')]
+        block = methods_through('_lag_apply_block', '_lag_resolved_victim')
         self.assertIn('_schedule_lag_block_rearm_retry', block)
         self.assertIn('Lag block missed', block)
 

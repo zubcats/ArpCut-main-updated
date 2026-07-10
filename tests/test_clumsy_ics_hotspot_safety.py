@@ -12,6 +12,11 @@ _SRC = os.path.join(_ROOT, 'src')
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
+
 from tools import clumsy_ics as ics
 from tools import clumsy_inline as inline
 
@@ -299,12 +304,10 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('IcsWinDivertLagGate', inspect.getsource(
             __import__('tools.ics_windivert_shaper', fromlist=['IcsWinDivertLagGate'])
         ))
-        main_py = os.path.join(_SRC, 'gui', 'main.py')
-        with open(main_py, encoding='utf-8') as f:
-            src = f.read()
+        src = load_main_window_source()
         self.assertIn('def _apply_ics_client_block', src)
         self.assertIn('release_ics_victim_block', src)
-        ics_block = src[src.index('def _apply_ics_client_block'):src.index('def _clear_ics_client_block')]
+        ics_block = methods_through('_apply_ics_client_block', '_clear_ics_client_block')
         self.assertIn('_ensure_ics_lag_gate', ics_block)
         self.assertTrue(
             'pause_connection' in ics_block or 'set_blocking(' in ics_block,
@@ -343,9 +346,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('refresh_router=not ics_mode', ksrc)
 
     def test_ensure_network_skips_arp_flush_in_clumsy_mode(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as f:
-            src = f.read()
+        src = load_main_window_source()
         # flush_arp must NOT be called from _ensure_network_context_for_victim:
         # it wipes the local ARP cache the next Kill ON depends on for fast
         # get_gateway_mac lookups (scapy.getmacbyip fallback = ~4 s timeout).
@@ -441,9 +442,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         term.assert_not_called()
 
     def test_startup_teardown_does_not_clear_killed_before_unkill(self) -> None:
-        main_py = os.path.join(_SRC, 'gui', 'main.py')
-        with open(main_py, encoding='utf-8') as fh:
-            src = fh.read()
+        src = load_main_window_source()
         block = src.split('def _ensure_clean_network_on_startup', 1)[1].split('\n    def ', 1)[0]
         self.assertNotIn('self.killer.killed.clear()', block)
         self.assertIn('heal_all_hotspot_arp_clients', block)

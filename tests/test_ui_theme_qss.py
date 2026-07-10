@@ -11,6 +11,11 @@ _SRC = os.path.join(_ROOT, 'src')
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
+
 
 class TestUiThemeQss(unittest.TestCase):
     def test_context_menu_qss_uses_selection_and_me_palette(self) -> None:
@@ -71,9 +76,7 @@ class TestUiThemeQss(unittest.TestCase):
         _ = app
 
     def test_main_applies_theme_to_all_context_menus(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as f:
-            src = f.read()
+        src = load_main_window_source()
         self.assertIn('theme_popup_menu', src)
         for fn in (
             '_on_status_log_context_menu',

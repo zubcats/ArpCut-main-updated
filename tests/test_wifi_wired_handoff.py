@@ -10,34 +10,36 @@ _SRC = os.path.join(_ROOT, 'src')
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
+
 
 class TestWifiWiredHandoff(unittest.TestCase):
-    @staticmethod
-    def _main_py() -> str:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as fh:
-            return fh.read()
+    def _main_py(self) -> str:
+        return load_main_window_source()
 
     def test_flow_start_resolves_live_lan_victim(self) -> None:
         src = self._main_py()
-        fn = src[src.index('def _resolve_flow_start_device'): src.index('def _console_historical_ips')]
+        fn = methods_through('_resolve_flow_start_device', '_console_historical_ips')
         self.assertIn('resolve_live_lan_victim', fn)
         self.assertNotIn('_purge_stale_console_mitm', fn)
 
     def test_teardown_includes_nickname_historical_ips(self) -> None:
         src = self._main_py()
-        fn = src[src.index('def _victim_teardown_ips'): src.index('def _release_victim_arp_mitm_stack')]
+        fn = methods_through('_victim_teardown_ips', '_release_victim_arp_mitm_stack')
         self.assertIn('_console_historical_ips', fn)
 
     def test_release_stack_collects_console_siblings(self) -> None:
         src = self._main_py()
-        fn = src[src.index('def _release_victim_arp_mitm_stack'): src.index('def _ics_gate_allow_traffic')]
+        fn = methods_through('_release_victim_arp_mitm_stack', '_ics_gate_allow_traffic')
         self.assertIn('_console_sibling_victims', fn)
 
     def test_no_sync_unkill_on_flow_start(self) -> None:
         src = self._main_py()
         self.assertNotIn('def _purge_stale_console_mitm', src)
-        ensure = src[src.index('def _ensure_network_context_for_victim'): src.index('def _resolve_flow_start_device')]
+        ensure = methods_through('_ensure_network_context_for_victim', '_resolve_flow_start_device')
         self.assertNotIn('unkill', ensure)
 
 

@@ -10,19 +10,21 @@ _SRC = os.path.join(_ROOT, 'src')
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
+
 
 class TestLagInstantPreblock(unittest.TestCase):
-    @staticmethod
-    def _main_py() -> str:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as fh:
-            return fh.read()
+    def _main_py(self) -> str:
+        return load_main_window_source()
 
     def test_instant_preblock_helper_exists(self) -> None:
         src = self._main_py()
         self.assertIn('def _lag_instant_preblock', src)
         self.assertIn('def _flow_instant_preblock', src)
-        flow = src[src.index('def _flow_instant_preblock'): src.index('def _lag_instant_preblock')]
+        flow = methods_through('_flow_instant_preblock', '_lag_instant_preblock')
         self.assertIn('IcsWinDivertLagGate(ip)', flow)
 
     def test_lag_preblocks_before_deferred(self) -> None:
@@ -45,15 +47,13 @@ class TestLagInstantPreblock(unittest.TestCase):
 
     def test_ics_context_skips_bind_when_warm(self) -> None:
         src = self._main_py()
-        ctx = src[src.index('def _prepare_ics_victim_context'): src.index('def _prepare_victim_for_impairment')]
+        ctx = methods_through('_prepare_ics_victim_context', '_prepare_victim_for_impairment')
         self.assertIn('_ics_stack_is_warm()', ctx)
         self.assertIn('if not warm:', ctx)
 
     def test_deferred_ics_skips_full_arm_when_preblocked(self) -> None:
         src = self._main_py()
-        deferred = src[
-            src.index('def _lag_deferred_start'): src.index('def _lag_abort_start')
-        ]
+        deferred = methods_through('_lag_deferred_start', '_lag_abort_start')
         self.assertIn('_lag_ics_preblocked', deferred)
         self.assertIn('plan.use_windivert', deferred)
         self.assertIn('_apply_ics_client_block', deferred)
@@ -65,7 +65,7 @@ class TestLagInstantPreblock(unittest.TestCase):
         src = self._main_py()
         self.assertIn('def _warm_lan_mitm_stack', src)
         self.assertIn('def _lan_mitm_stack_is_warm', src)
-        warm = src[src.index('def _warm_impairment_stack'): src.index('def _start_impairment_warm_on_reactivate')]
+        warm = methods_through('_warm_impairment_stack', '_start_impairment_warm_on_reactivate')
         self.assertIn('_warm_lan_mitm_stack()', warm)
 
     def test_unified_flow_preblock_helper(self) -> None:
@@ -74,7 +74,7 @@ class TestLagInstantPreblock(unittest.TestCase):
 
     def test_instant_preblock_covers_lan_arp(self) -> None:
         src = self._main_py()
-        pre = src[src.index('def _flow_instant_preblock'): src.index('def _lag_instant_preblock')]
+        pre = methods_through('_flow_instant_preblock', '_lag_instant_preblock')
         self.assertIn('plan.use_arp_mitm', pre)
         self.assertIn('killer.kill(dev, wait_after=0.0, traffic_cut=True)', pre)
         self.assertNotIn('elif self._lan_mitm_stack_is_warm():', pre)
@@ -88,21 +88,18 @@ class TestLagInstantPreblock(unittest.TestCase):
 
     def test_kill_clear_skips_unkill_when_lag_lan_preblocked(self) -> None:
         src = self._main_py()
-        clear_fn = src[
-            src.index('def _clear_explicit_kill_for_flow')
-            : src.index('def _clear_explicit_kill_for_dupe')
-        ]
+        clear_fn = methods_through('_clear_explicit_kill_for_flow', '_clear_explicit_kill_for_dupe')
         self.assertIn('_lag_lan_preblocked', clear_fn)
         self.assertIn('_dupe_preblocked', clear_fn)
 
     def test_warmup_on_device_select(self) -> None:
         src = self._main_py()
-        clicked = src[src.index('def deviceClicked'): src.index('def _updateLagSwitchButtonState')]
+        clicked = methods_through('deviceClicked', '_updateLagSwitchButtonState')
         self.assertIn("_schedule_impairment_stack_warm('select')", clicked)
 
     def test_kill_preblocks_before_schedule(self) -> None:
         src = self._main_py()
-        toggle = src[src.index('def toggleKill'): src.index('def _percent_cut_backend_active')]
+        toggle = methods_through('toggleKill', '_percent_cut_backend_active')
         self.assertIn("_flow_instant_preblock(dev, 'both', flow='Kill')", toggle)
         pre = toggle.index('_flow_instant_preblock')
         sched = toggle.index('_schedule_kill_command')
@@ -117,9 +114,7 @@ class TestLagInstantPreblock(unittest.TestCase):
 
     def test_deferred_lan_skips_full_arm_when_preblocked(self) -> None:
         src = self._main_py()
-        deferred = src[
-            src.index('def _lag_deferred_start'): src.index('def _lag_abort_start')
-        ]
+        deferred = methods_through('_lag_deferred_start', '_lag_abort_start')
         self.assertIn('_lag_lan_preblocked', deferred)
         self.assertIn('_lan_mitm_stack_is_warm()', deferred)
         lan_arm = deferred[deferred.index('else:'): deferred.index('_clear_explicit_kill_for_flow')]
@@ -128,7 +123,7 @@ class TestLagInstantPreblock(unittest.TestCase):
 
     def test_ensure_gate_fast_path_before_prep(self) -> None:
         src = self._main_py()
-        gate_fn = src[src.index('def _ensure_ics_lag_gate'): src.index('def _apply_ics_client_block')]
+        gate_fn = methods_through('_ensure_ics_lag_gate', '_apply_ics_client_block')
         prep_idx = gate_fn.index('_prepare_victim_for_impairment')
         fast_idx = gate_fn.index('ip_quick')
         self.assertLess(fast_idx, prep_idx)

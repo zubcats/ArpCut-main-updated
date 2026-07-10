@@ -11,6 +11,11 @@ _SRC = os.path.join(_ROOT, 'src')
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
+
 
 class TestPfctlValidation(unittest.TestCase):
     def test_safe_rule_name_rejects_metacharacters(self) -> None:
@@ -31,26 +36,16 @@ class TestPfctlValidation(unittest.TestCase):
 
 class TestRememberKillFilter(unittest.TestCase):
     def test_write_remembered_uses_should_restore(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as f:
-            src = f.read()
-        block = src[
-            src.index('def _write_remembered_killed_macs'):
-            src.index('def _device_with_plan_ip')
-        ]
+        src = load_main_window_source()
+        block = methods_through('_write_remembered_killed_macs', '_device_with_plan_ip')
         self.assertIn('should_restore_remembered_kill', block)
         self.assertNotIn("list(self.killer.killed.keys())", block)
 
 
 class TestIcsKillGhostSync(unittest.TestCase):
     def test_sync_clears_ics_profiles_without_backend(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as f:
-            src = f.read()
-        block = src[
-            src.index('def _sync_killed_devices'):
-            src.index('def _set_kill_button_idle_look')
-        ]
+        src = load_main_window_source()
+        block = methods_through('_sync_killed_devices', '_set_kill_button_idle_look')
         self.assertNotIn(
             "if mac in getattr(self, '_ics_kill_profile_macs', set()):\n                continue",
             block,
@@ -61,25 +56,16 @@ class TestIcsKillGhostSync(unittest.TestCase):
 
 class TestDupeReleaseOnGuiThread(unittest.TestCase):
     def test_stop_dupe_releases_via_qtimer(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as f:
-            src = f.read()
-        block = src[
-            src.index('def stopDupe'): src.index('def _updateDupeButtonState', src.index('def stopDupe'))
-        ]
+        src = load_main_window_source()
+        block = methods_through('stopDupe', '_updateDupeButtonState')
         self.assertIn('QTimer.singleShot(0, _release_on_gui)', block)
         self.assertNotIn('_dupe_net_executor.submit(_release_worker)', block)
 
 
 class TestPercentCutRowUi(unittest.TestCase):
     def test_percent_cut_ui_false_for_other_row(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as f:
-            src = f.read()
-        block = src[
-            src.index('def _percent_cut_ui_shows_on'):
-            src.index('def _updatePercentCutButtonState')
-        ]
+        src = load_main_window_source()
+        block = methods_through('_percent_cut_ui_shows_on', '_updatePercentCutButtonState')
         self.assertIn('return False', block)
         self.assertNotIn('return bool(stored_mac or stored_ip)', block.split('if stored_ip')[-1])
 

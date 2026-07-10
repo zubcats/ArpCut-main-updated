@@ -2,29 +2,28 @@
 from __future__ import annotations
 
 import os
+import sys
 import unittest
+
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
 
 
 class TestMitmShapingStop(unittest.TestCase):
     def test_stop_halt_traffic_before_ui_clear(self) -> None:
         root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        path = os.path.join(root, "src", "gui", "main.py")
-        with open(path, encoding="utf-8") as fh:
-            src = fh.read()
-        fn = src[src.index("def stop_mitm_shaping") : src.index("def _schedule_kill_command")]
+        src = load_main_window_source()
+        fn = method_src("stop_mitm_shaping")
         halt = fn.index("_halt_mitm_shaping_traffic_now")
         clear = fn.index("self.mitm_shaping_active = False")
         self.assertLess(halt, clear, "shaping must stop before mitm_shaping_active clears")
 
     def test_halt_helper_stops_forwarder_and_unkill(self) -> None:
         root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        path = os.path.join(root, "src", "gui", "main.py")
-        with open(path, encoding="utf-8") as fh:
-            src = fh.read()
-        fn = src[
-            src.index("def _halt_mitm_shaping_traffic_now")
-            : src.index("def stop_mitm_shaping")
-        ]
+        src = load_main_window_source()
+        fn = method_src("_halt_mitm_shaping_traffic_now")
         self.assertIn("_stop_forwarder", fn)
         self.assertIn("unkill", fn)
 

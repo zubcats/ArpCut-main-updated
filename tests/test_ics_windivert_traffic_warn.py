@@ -10,13 +10,15 @@ _SRC = os.path.join(_ROOT, 'src')
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
+
 
 class TestIcsWinDivertTrafficWarn(unittest.TestCase):
-    @staticmethod
-    def _main_py() -> str:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as fh:
-            return fh.read()
+    def _main_py(self) -> str:
+        return load_main_window_source()
 
     def test_impairment_guard_exists(self) -> None:
         src = self._main_py()
@@ -24,11 +26,7 @@ class TestIcsWinDivertTrafficWarn(unittest.TestCase):
 
     def test_traffic_check_skips_during_impairment(self) -> None:
         src = self._main_py()
-        sched = src[
-            src.index('def _schedule_ics_windivert_traffic_check'): src.index(
-                'def _flow_stable_victim_ip'
-            )
-        ]
+        sched = methods_through('_schedule_ics_windivert_traffic_check', '_flow_stable_victim_ip')
         self.assertIn('_ics_victim_impairment_active(ip)', sched)
         check = sched[sched.index('def _check'):]
         self.assertIn('_ics_victim_impairment_active(ip)', check)

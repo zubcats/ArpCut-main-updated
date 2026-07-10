@@ -10,6 +10,11 @@ _SRC = os.path.join(_ROOT, 'src')
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+from _gui_source import load_main_window_source, methods_through, method_src
+
 
 class TestPercentCutKill(unittest.TestCase):
     @staticmethod
@@ -18,11 +23,8 @@ class TestPercentCutKill(unittest.TestCase):
         with open(path, encoding='utf-8') as fh:
             return fh.read()
 
-    @staticmethod
-    def _main_py() -> str:
-        path = os.path.join(_SRC, 'gui', 'main.py')
-        with open(path, encoding='utf-8') as fh:
-            return fh.read()
+    def _main_py(self) -> str:
+        return load_main_window_source()
 
     def test_kill_supports_traffic_cut_flag(self) -> None:
         src = self._killer_py()
@@ -38,17 +40,17 @@ class TestPercentCutKill(unittest.TestCase):
 
     def test_toggle_percent_cut_stops_when_ui_shows_on(self) -> None:
         src = self._main_py()
-        toggle = src[src.index('def togglePercentCut'): src.index('def stopPercentCut', src.index('def togglePercentCut'))]
+        toggle = methods_through('togglePercentCut', 'stopPercentCut')
         self.assertIn('_percent_cut_ui_shows_on', toggle)
         self.assertIn('stopPercentCut(log=True)', toggle)
         self.assertNotIn('_percent_cut_backend_active', toggle)
 
     def test_stop_percent_cut_uses_fast_unkill(self) -> None:
         src = self._main_py()
-        stop = src[src.index('def stopPercentCut'): src.index('def _refresh_advanced_lag_mitm_if_visible', src.index('def stopPercentCut'))]
+        stop = methods_through('stopPercentCut', '_refresh_advanced_lag_mitm_if_visible')
         self.assertIn('_release_pctcut_victim_immediate', stop)
         self.assertIn('_percent_cut_forwarder_live', stop)
-        self.assertIn('_percent_cut_ui_shows_on', src[src.index('def _updatePercentCutButtonState'): src.index('def _refresh_flow_toggle_ui', src.index('def _updatePercentCutButtonState'))])
+        self.assertIn('_percent_cut_ui_shows_on', methods_through('_updatePercentCutButtonState', '_refresh_flow_toggle_ui'))
 
     def test_forwarder_percent_pass_is_stochastic(self) -> None:
         from networking.forwarder import MitmForwarder
