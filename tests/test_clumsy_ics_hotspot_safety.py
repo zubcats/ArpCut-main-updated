@@ -253,8 +253,9 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
 
         with patch.object(inline, 'clumsy_mode_enabled', return_value=False):
             self.assertFalse(inline.clumsy_hotspot_session_active())
-        with patch.object(inline, 'clumsy_mode_enabled', return_value=True), patch(
-            'tools.clumsy_ics.read_clumsy_topology', return_value='hotspot'
+        # Patch the name bound in clumsy_inline (from-import), not clumsy_ics.
+        with patch.object(inline, 'clumsy_mode_enabled', return_value=True), patch.object(
+            inline, 'read_clumsy_topology', return_value='hotspot'
         ):
             self.assertTrue(inline.clumsy_hotspot_session_active())
 
