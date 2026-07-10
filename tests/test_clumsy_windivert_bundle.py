@@ -24,24 +24,25 @@ class TestClumsyWinDivertBundle(unittest.TestCase):
             os.makedirs(wd)
             open(os.path.join(wd, 'WinDivert.dll'), 'wb').close()
             open(os.path.join(wd, 'WinDivert64.sys'), 'wb').close()
-            with patch.object(sys, 'frozen', True, create=True):
-                with patch.object(sys, 'executable', os.path.join(tmp, 'ZubCut.exe')):
-                    self.assertTrue(inline.windivert_bundled_next_to_app())
-                    self.assertTrue(inline.windivert_driver_installed())
+            with patch.object(inline.sys, 'platform', 'win32'), patch.object(
+                sys, 'frozen', True, create=True
+            ), patch.object(sys, 'executable', os.path.join(tmp, 'ZubCut.exe')):
+                self.assertTrue(inline.windivert_bundled_next_to_app())
+                self.assertTrue(inline.windivert_driver_installed())
 
     def test_clumsy_bundle_incomplete_when_flag_without_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             flag = os.path.join(tmp, inline.CLUMSY_BUNDLE_FLAG_NAME)
             with open(flag, 'w', encoding='utf-8') as fh:
                 fh.write('1')
-            with patch.object(sys, 'frozen', True, create=True):
-                with patch.object(sys, 'executable', os.path.join(tmp, 'ZubCut.exe')):
-                    with patch.object(
-                        inline, 'clumsy_bundle_flag_path', return_value=flag
-                    ):
-                        self.assertTrue(inline.clumsy_bundle_offered())
-                        self.assertTrue(inline.clumsy_bundle_incomplete())
-                        self.assertFalse(inline.clumsy_runtime_ready())
+            with patch.object(inline.sys, 'platform', 'win32'), patch.object(
+                sys, 'frozen', True, create=True
+            ), patch.object(sys, 'executable', os.path.join(tmp, 'ZubCut.exe')), patch.object(
+                inline, 'clumsy_bundle_flag_path', return_value=flag
+            ):
+                self.assertTrue(inline.clumsy_bundle_offered())
+                self.assertTrue(inline.clumsy_bundle_incomplete())
+                self.assertFalse(inline.clumsy_runtime_ready())
 
 
 if __name__ == '__main__':

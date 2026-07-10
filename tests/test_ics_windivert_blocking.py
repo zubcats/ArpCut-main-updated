@@ -82,6 +82,11 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
         self.assertIn('_ics_quiesce_killer_mitm(device)', src)
 
     def test_passes_byte_ratio_matches_forwarder_semantics(self) -> None:
+        import random
+        from unittest import mock
+
+        # Deterministic mid-rate sample (99% over 200 trials is flaky without a seed).
+        random.seed(1)
         budget = 0.0
         allowed = 0
         for _ in range(200):
@@ -90,8 +95,17 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
                 allowed += 1
         self.assertGreater(allowed, 150)
         self.assertLess(allowed, 200)
+
         ok2, _ = wd.IcsWinDivertLagGate._passes_byte_ratio(1, 0.0, 1000)
-        self.assertFalse(ok2)
+        # 1% can still pass; force the reject path via mocked roll.
+        with mock.patch('random.randint', return_value=2):
+            ok2, _ = wd.IcsWinDivertLagGate._passes_byte_ratio(1, 0.0, 1000)
+            self.assertFalse(ok2)
+        with mock.patch('random.randint', return_value=1):
+            ok3, _ = wd.IcsWinDivertLagGate._passes_byte_ratio(1, 0.0, 1000)
+            self.assertTrue(ok3)
+        self.assertFalse(wd.IcsWinDivertLagGate._passes_byte_ratio(0, 0.0, 100)[0])
+        self.assertTrue(wd.IcsWinDivertLagGate._passes_byte_ratio(100, 0.0, 100)[0])
 
     def test_run_loop_passthrough_non_victim_before_impairment(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)

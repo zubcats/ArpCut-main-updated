@@ -35,10 +35,12 @@ class TestInstantFlowUi(unittest.TestCase):
 
     def test_dupe_paints_before_deferred_arm(self) -> None:
         src = self._main_py()
-        start = src[
-            src.index('def startDupe'): src.index("self._paint_flow_start_ui('dupe', device)")
-        ]
-        self.assertNotIn('_flush_pending_dupe_clear_sync', start)
+        full = src[src.index('def startDupe'): src.index('def dupe_remaining_ms')]
+        paint_at = full.index("self._paint_flow_start_ui('dupe', device)")
+        deferred_at = full.index('QTimer.singleShot(0, _dupe_deferred_start)')
+        self.assertLess(paint_at, deferred_at)
+        # Optimistic button/status chrome must appear before paint helper / deferred arm.
+        self.assertLess(full.index("btnDupe.setText('■ DUPE')"), paint_at)
 
     def test_percent_cut_paints_before_crossflow_teardown(self) -> None:
         src = self._main_py()

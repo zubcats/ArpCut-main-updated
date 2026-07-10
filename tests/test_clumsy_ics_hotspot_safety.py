@@ -254,9 +254,10 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         with patch.object(inline, 'clumsy_mode_enabled', return_value=False):
             self.assertFalse(inline.clumsy_hotspot_session_active())
         # Patch the name bound in clumsy_inline (from-import), not clumsy_ics.
+        # Function is Windows-gated; force win platform so Linux CI exercises the path.
         with patch.object(inline, 'clumsy_mode_enabled', return_value=True), patch.object(
             inline, 'read_clumsy_topology', return_value='hotspot'
-        ):
+        ), patch.object(inline.sys, 'platform', 'win32'):
             self.assertTrue(inline.clumsy_hotspot_session_active())
 
     def test_clumsy_ics_subnet_and_gateway(self) -> None:
@@ -383,7 +384,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
     def test_reset_clumsy_mode_on_startup_clears_setting(self) -> None:
         from unittest.mock import patch
 
-        with patch(
+        with patch.object(ics.os, 'name', 'nt'), patch(
             'tools.clumsy_ics.consume_clumsy_settings_restart_pending',
             return_value=False,
         ), patch(
@@ -396,7 +397,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
     def test_reset_clumsy_mode_skips_when_restart_marker_present(self) -> None:
         from unittest.mock import patch
 
-        with patch(
+        with patch.object(ics.os, 'name', 'nt'), patch(
             'tools.clumsy_ics.consume_clumsy_settings_restart_pending',
             return_value=True,
         ), patch('tools.utils_gui.set_settings_many') as sm:
@@ -406,7 +407,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
     def test_reset_clumsy_mode_skips_when_persist_flag_set(self) -> None:
         from unittest.mock import patch
 
-        with patch(
+        with patch.object(ics.os, 'name', 'nt'), patch(
             'tools.clumsy_ics.consume_clumsy_settings_restart_pending',
             return_value=False,
         ), patch(

@@ -27,7 +27,9 @@ class TestIcsImpairmentPolicy(unittest.TestCase):
 
     def test_hotspot_client_on_137_subnet(self) -> None:
         dev = {'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.137.42'}
-        with mock.patch.object(inline, 'clumsy_mode_enabled', return_value=True), mock.patch.object(
+        with mock.patch('sys.platform', 'win32'), mock.patch.object(
+            inline, 'clumsy_mode_enabled', return_value=True
+        ), mock.patch.object(
             inline, 'clumsy_runtime_ready', return_value=True
         ), mock.patch.object(inline, 'windivert_bundle_complete', return_value=True), mock.patch.object(
             inline, 'clumsy_ics_resolve_victim_ip', return_value='192.168.137.42'
@@ -46,7 +48,9 @@ class TestIcsImpairmentPolicy(unittest.TestCase):
 
     def test_ethernet_console_path(self) -> None:
         dev = {'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.56.10'}
-        with mock.patch.object(inline, 'clumsy_mode_enabled', return_value=True), mock.patch.object(
+        with mock.patch('sys.platform', 'win32'), mock.patch.object(
+            inline, 'clumsy_mode_enabled', return_value=True
+        ), mock.patch.object(
             inline, 'clumsy_runtime_ready', return_value=True
         ), mock.patch.object(inline, 'windivert_bundle_complete', return_value=True), mock.patch.object(
             inline, 'clumsy_ics_resolve_victim_ip', return_value='192.168.56.10'
@@ -71,7 +75,9 @@ class TestIcsImpairmentPolicy(unittest.TestCase):
 
     def test_misdetected_ethernet_with_137_gateway_treated_as_hotspot(self) -> None:
         dev = {'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.137.42'}
-        with mock.patch.object(inline, 'clumsy_mode_enabled', return_value=True), mock.patch.object(
+        with mock.patch('sys.platform', 'win32'), mock.patch.object(
+            inline, 'clumsy_mode_enabled', return_value=True
+        ), mock.patch.object(
             inline, 'clumsy_runtime_ready', return_value=True
         ), mock.patch.object(inline, 'windivert_bundle_complete', return_value=True), mock.patch.object(
             inline, 'clumsy_ics_resolve_victim_ip', return_value='192.168.137.42'
@@ -91,7 +97,9 @@ class TestIcsImpairmentPolicy(unittest.TestCase):
 
     def test_hotspot_session_uses_windivert_when_arp_finds_ics_ip(self) -> None:
         dev = {'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.1.50'}
-        with mock.patch.object(inline, 'clumsy_mode_enabled', return_value=True), mock.patch.object(
+        with mock.patch('sys.platform', 'win32'), mock.patch.object(
+            inline, 'clumsy_mode_enabled', return_value=True
+        ), mock.patch.object(
             inline, 'clumsy_hotspot_session_active', return_value=True
         ), mock.patch.object(
             inline, 'clumsy_runtime_ready', return_value=True
@@ -114,7 +122,9 @@ class TestIcsImpairmentPolicy(unittest.TestCase):
     def test_hotspot_session_home_lan_ip_without_ics_arp_uses_regular_mitm(self) -> None:
         """PS5 on router Wi‑Fi while PC hotspot session is still active."""
         dev = {'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.1.50'}
-        with mock.patch.object(inline, 'clumsy_mode_enabled', return_value=True), mock.patch.object(
+        with mock.patch('sys.platform', 'win32'), mock.patch.object(
+            inline, 'clumsy_mode_enabled', return_value=True
+        ), mock.patch.object(
             inline, 'clumsy_hotspot_session_active', return_value=True
         ), mock.patch.object(
             inline, 'clumsy_runtime_ready', return_value=True

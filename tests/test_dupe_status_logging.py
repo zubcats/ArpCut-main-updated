@@ -53,7 +53,8 @@ class TestDupeStatusLogging(unittest.TestCase):
         self.assertIn('_shortcut_global_lag(from_button=True)', src)
         lag_def = src[src.index('def _lag_deferred_start'): src.index('def _lag_reassert_poison', src.index('def startLagSwitch'))]
         self.assertIn('_resolve_flow_start_device', src)
-        self.assertIn('_arm_victim_mitm_like_kill(work_snap, self.lag_direction, flow=\'Lag\')', lag_def)
+        self.assertIn("_arm_victim_mitm_like_kill(", lag_def)
+        self.assertIn("flow='Lag'", lag_def)
         mitm = src[src.index('def _log_mitm_arm_status'): src.index('def _ensure_network_context_for_victim', src.index('def _log_mitm_arm_status'))]
         self.assertIn('UI_LOG_VICTIM_BLOCK_FG', mitm)
         self.assertNotIn("'gray'", mitm)

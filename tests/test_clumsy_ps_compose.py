@@ -31,7 +31,8 @@ class ClumsyPsComposeTests(unittest.TestCase):
     def test_enable_script_uses_compose_not_inline_fstring_helpers(self) -> None:
         import inspect
 
-        src = inspect.getsource(ics.ensure_clumsy_ics_enabled)
+        # Public wrapper is thin; compose lives in the Windows impl.
+        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
         self.assertIn('_compose_ps_script(', src)
         self.assertNotIn('{_PS_HOTSPOT_HELPERS}', src)
 

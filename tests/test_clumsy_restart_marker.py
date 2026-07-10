@@ -18,7 +18,8 @@ from tools import clumsy_ics as ics
 class TestClumsyRestartMarker(unittest.TestCase):
     def test_marker_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.object(ics, 'DOCUMENTS_PATH', tmp):
+            # mark_* is Windows-gated (os.name == 'nt'); force that for Linux CI.
+            with patch.object(ics, 'DOCUMENTS_PATH', tmp), patch.object(ics.os, 'name', 'nt'):
                 self.assertFalse(ics.consume_clumsy_settings_restart_pending())
                 ics.mark_clumsy_settings_restart_pending()
                 self.assertTrue(os.path.isfile(ics.clumsy_settings_restart_marker_path()))
