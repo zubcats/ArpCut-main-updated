@@ -1,4 +1,4 @@
-# Unit tests for experimental / PR validation (no Windows installer build).
+# Unit tests for experimental / PR validation (Windows product; no installer build).
 name: Unit tests
 
 on:
@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
@@ -31,11 +31,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # Headless Qt for stylesheet / widget smoke tests
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libxkbcommon-x11-0 libxcb-cursor0 libegl1 libgl1 || true
 
       - name: Drift check (ci-blessed mirrors)
+        shell: bash
         run: |
           set -e
           if ! diff -q build.py .github/ci-blessed/build.py; then
@@ -51,4 +49,4 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           PYTHONPATH: src
           ZUBCUT_SKIP_ELEVATE: '1'
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
+        run: python -m unittest discover -s tests -p "test_*.py" -v

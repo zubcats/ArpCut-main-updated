@@ -1,4 +1,4 @@
-# Windows installer only — does not run macOS/Linux (faster, fewer failure points).
+# Windows installer only — primary shipping path (no Linux builds).
 #
 # Push to `main` (stable production) → rolling tag `stable-latest`, artifact ZubCut-Setup.exe.
 # Push to `experimental` → tester build: tag `experimental-latest`, ZubCut-Setup-experimental.exe.

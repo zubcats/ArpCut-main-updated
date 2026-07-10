@@ -254,7 +254,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         with patch.object(inline, 'clumsy_mode_enabled', return_value=False):
             self.assertFalse(inline.clumsy_hotspot_session_active())
         # Patch the name bound in clumsy_inline (from-import), not clumsy_ics.
-        # Function is Windows-gated; force win platform so Linux CI exercises the path.
+        # Force win32 so non-Windows hosts (e.g. local agents) still exercise the path.
         with patch.object(inline, 'clumsy_mode_enabled', return_value=True), patch.object(
             inline, 'read_clumsy_topology', return_value='hotspot'
         ), patch.object(inline.sys, 'platform', 'win32'):
