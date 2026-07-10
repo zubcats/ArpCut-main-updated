@@ -43,6 +43,9 @@ class ImpairmentFlowState:
 class ImpairmentTeardownGate:
     """Serialize OFF/teardown so a new ON cannot race ARP/WinDivert cleanup."""
 
+    # If end() never runs (bug / missed reconnect), auto-clear so toggles are not stuck forever.
+    STALE_AFTER_S = 8.0
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._kind: Optional[str] = None
@@ -53,7 +56,12 @@ class ImpairmentTeardownGate:
         """Claim the gate. Returns False if another teardown is already in progress."""
         with self._lock:
             if self._kind is not None:
-                return False
+                if self._started and (time.monotonic() - self._started) >= self.STALE_AFTER_S:
+                    self._kind = None
+                    self._mac = None
+                    self._started = 0.0
+                else:
+                    return False
             self._kind = str(kind or '') or 'unknown'
             self._mac = (str(mac).strip() if mac else None) or None
             self._started = time.monotonic()
@@ -67,12 +75,22 @@ class ImpairmentTeardownGate:
             self._mac = None
             self._started = 0.0
 
+    def _clear_if_stale_unlocked(self) -> None:
+        if self._kind is None:
+            return
+        if self._started and (time.monotonic() - self._started) >= self.STALE_AFTER_S:
+            self._kind = None
+            self._mac = None
+            self._started = 0.0
+
     def busy(self) -> bool:
         with self._lock:
+            self._clear_if_stale_unlocked()
             return self._kind is not None
 
     def busy_for(self, mac: Optional[str] = None) -> bool:
         with self._lock:
+            self._clear_if_stale_unlocked()
             if self._kind is None:
                 return False
             if not mac:
@@ -83,6 +101,7 @@ class ImpairmentTeardownGate:
 
     def snapshot(self) -> tuple[Optional[str], Optional[str]]:
         with self._lock:
+            self._clear_if_stale_unlocked()
             return self._kind, self._mac
 
 

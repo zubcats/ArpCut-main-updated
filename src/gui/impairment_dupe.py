@@ -807,6 +807,9 @@ class ImpairmentDupeMixin:
                     self._log_dupe_restore_result(release_snap)
                 except Exception:
                     pass
+                # Clear teardown latch here — restore already finished. Waiting only on
+                # deferred firewall cleanup left Dupe stuck on "still restoring".
+                self._drop_dupe_restoring_banner()
                 if refresh_dialog:
                     self._refresh_flow_toggle_ui(fast=True)
                 else:
@@ -836,6 +839,11 @@ class ImpairmentDupeMixin:
                 self._dupe_deferred_clear_timer.timeout.disconnect()
             except TypeError:
                 pass
+            # Must reconnect after disconnect — otherwise deferred clear never runs and
+            # the teardown gate stays latched forever ("Dupe is still restoring").
+            self._dupe_deferred_clear_timer.timeout.connect(
+                self._do_deferred_dupe_clear, Qt.UniqueConnection
+            )
             self._dupe_deferred_clear_timer.start(0)
             return
         elif prev_ip or prev_mac:

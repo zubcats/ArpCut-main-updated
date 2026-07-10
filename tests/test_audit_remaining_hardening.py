@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import unittest
 from types import SimpleNamespace
 
@@ -74,6 +75,13 @@ class TestImpairmentController(unittest.TestCase):
         self.assertTrue(ctrl.toggle_start_blocked('kill'))
         gate.end('dupe')
         self.assertFalse(ctrl.toggle_start_blocked('kill'))
+
+    def test_teardown_gate_expires_when_stale(self) -> None:
+        gate = ImpairmentTeardownGate()
+        self.assertTrue(gate.begin('dupe', 'aa:bb'))
+        gate._started = time.monotonic() - (ImpairmentTeardownGate.STALE_AFTER_S + 1.0)
+        self.assertFalse(gate.busy())
+        self.assertTrue(gate.begin('kill', 'cc:dd'))
 
     def test_edge_debounce(self) -> None:
         st = SimpleNamespace(

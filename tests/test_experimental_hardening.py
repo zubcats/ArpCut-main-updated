@@ -61,6 +61,18 @@ class TestDupeReleaseOnGuiThread(unittest.TestCase):
         self.assertIn('QTimer.singleShot(0, _release_on_gui)', block)
         self.assertNotIn('_dupe_net_executor.submit(_release_worker)', block)
 
+    def test_stop_dupe_reconnects_deferred_clear_and_drops_gate(self) -> None:
+        """Snap-path OFF must not leave teardown latched ('still restoring')."""
+        stop = method_src('stopDupe')
+        # After disconnect on the snap path, reconnect before start(0).
+        snap_arm = stop.split('QTimer.singleShot(0, _release_on_gui)', 1)[1]
+        snap_arm = snap_arm.split('return', 1)[0]
+        self.assertIn('_dupe_deferred_clear_timer.timeout.disconnect()', snap_arm)
+        self.assertIn('_do_deferred_dupe_clear', snap_arm)
+        self.assertIn('UniqueConnection', snap_arm)
+        release = stop[stop.index('def _release_on_gui'): stop.index('QTimer.singleShot(0, _release_on_gui)')]
+        self.assertIn('_drop_dupe_restoring_banner()', release)
+
 
 class TestPercentCutRowUi(unittest.TestCase):
     def test_percent_cut_ui_false_for_other_row(self) -> None:
