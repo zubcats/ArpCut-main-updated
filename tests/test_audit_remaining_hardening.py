@@ -127,11 +127,28 @@ class TestUpdaterPublisherPin(unittest.TestCase):
 
 class TestSecretRewrap(unittest.TestCase):
     def test_rewrap_secret_passthrough_without_dpapi(self) -> None:
-        from tools.secret_store import rewrap_secret
+        from unittest import mock
 
-        out, note = rewrap_secret('plain-secret')
+        from tools import secret_store as ss
+
+        # Windows CI has real DPAPI; force the non-Windows path so this asserts
+        # passthrough rather than encrypting into a dpapi: blob.
+        with mock.patch.object(ss, '_dpapi_available', return_value=False):
+            out, note = ss.rewrap_secret('plain-secret')
         self.assertEqual(note, '')
         self.assertEqual(out, 'plain-secret')
+
+    def test_rewrap_secret_protects_when_dpapi_mocked(self) -> None:
+        from unittest import mock
+
+        from tools import secret_store as ss
+
+        with mock.patch.object(ss, '_dpapi_available', return_value=True), mock.patch.object(
+            ss, 'protect_secret', return_value='dpapi:ZmFrZQ=='
+        ), mock.patch.object(ss, 'unprotect_secret', side_effect=lambda s: s):
+            out, note = ss.rewrap_secret('plain-secret')
+        self.assertEqual(note, '')
+        self.assertEqual(out, 'dpapi:ZmFrZQ==')
 
 
 if __name__ == '__main__':
