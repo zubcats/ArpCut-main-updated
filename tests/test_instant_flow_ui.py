@@ -52,6 +52,14 @@ class TestInstantFlowUi(unittest.TestCase):
         self.assertNotIn('_await_mitm_teardown_thread', toggle)
         self.assertNotIn('stopLagSwitch', toggle)
 
+    def test_percent_cut_off_paints_before_release(self) -> None:
+        stop = method_src('stopPercentCut')
+        self.assertLess(
+            stop.index('_updatePercentCutButtonState()'),
+            stop.index('QTimer.singleShot(0, _release_on_gui)'),
+        )
+        self.assertNotIn('_release_pctcut_victim_immediate', stop.split('def _release_on_gui')[0])
+
     def test_kill_paints_before_schedule(self) -> None:
         src = self._main_py()
         toggle = method_src('toggleKill')

@@ -47,9 +47,16 @@ class TestPercentCutKill(unittest.TestCase):
 
     def test_stop_percent_cut_uses_fast_unkill(self) -> None:
         src = self._main_py()
-        stop = methods_through('stopPercentCut', '_refresh_advanced_lag_mitm_if_visible')
+        stop = method_src('stopPercentCut')
         self.assertIn('_release_pctcut_victim_immediate', stop)
         self.assertIn('_percent_cut_forwarder_live', stop)
+        self.assertIn('QTimer.singleShot(0, _release_on_gui)', stop)
+        # UI must clear before deferred network teardown (same pattern as Dupe/Kill OFF).
+        paint = stop.index('_updatePercentCutButtonState()')
+        defer = stop.index('QTimer.singleShot(0, _release_on_gui)')
+        self.assertLess(paint, defer)
+        release = stop[stop.index('def _release_on_gui'): defer]
+        self.assertIn('_release_pctcut_victim_immediate', release)
         self.assertIn('_percent_cut_ui_shows_on', methods_through('_updatePercentCutButtonState', '_refresh_flow_toggle_ui'))
 
     def test_forwarder_percent_pass_is_stochastic(self) -> None:

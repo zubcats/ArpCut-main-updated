@@ -280,39 +280,59 @@ class ImpairmentPctCutMixin:
 
 
     def stopPercentCut(self, log=True):
+        """Paint OFF immediately; defer ARP/WinDivert teardown (Dupe/Kill parity)."""
         prev_mac = self.percent_cut_device_mac
         prev_ip = getattr(self, 'percent_cut_device_ip', None)
         was_ui_on = bool(self.percent_cut_active)
+        # Cancel any in-flight deferred ON so it cannot re-arm after this OFF.
+        self._pctcut_start_gen = int(getattr(self, '_pctcut_start_gen', 0)) + 1
         self.percent_cut_active = False
         self.percent_cut_device_mac = None
         self.percent_cut_device_ip = None
-        self.btnPercentCut.setStyleSheet(self.BUTTON_NORMAL_STYLE)
-        self._refresh_flow_toggle_ui()
+        # Optimistic chrome first — do not run unkill/reinforce on this call stack.
+        self._updatePercentCutButtonState()
+        self._refresh_flow_toggle_ui(fast=True)
         try:
             app = QApplication.instance()
             if app is not None:
                 app.processEvents(QEventLoop.ExcludeUserInputEvents)
         except Exception:
             pass
-        victim = self._resolve_pctcut_stop_snapshot(prev_mac, prev_ip)
-        if victim:
-            try:
-                self._release_pctcut_victim_immediate(victim)
-            except Exception:
-                pass
-        if log:
+
+        snap_mac = prev_mac
+        snap_ip = prev_ip
+        want_log = bool(log)
+        showed_on = was_ui_on
+
+        def _release_on_gui():
+            victim = self._resolve_pctcut_stop_snapshot(snap_mac, snap_ip)
             if victim:
-                ip = str(victim.get('ip') or prev_ip or '')
-                still = self._percent_cut_forwarder_live(
-                    str(victim.get('mac') or ''), ip
-                )
-                if still:
-                    self.log(
-                        f'Percent Cut OFF: cut still active on {ip} — toggle again',
-                        'red',
+                try:
+                    self._release_pctcut_victim_immediate(victim)
+                except Exception:
+                    pass
+            if want_log:
+                if victim:
+                    ip = str(victim.get('ip') or snap_ip or '')
+                    still = self._percent_cut_forwarder_live(
+                        str(victim.get('mac') or ''), ip
                     )
-                else:
-                    self.log('Percent Cut OFF for ' + ip, UI_LOG_RESTORE_FG)
-            elif was_ui_on:
-                self.log('Percent Cut OFF', UI_LOG_RESTORE_FG)
-        self._refresh_flow_toggle_ui()
+                    if still:
+                        self.log(
+                            f'Percent Cut OFF: cut still active on {ip} — toggle again',
+                            'red',
+                        )
+                    else:
+                        self.log('Percent Cut OFF for ' + ip, UI_LOG_RESTORE_FG)
+                elif showed_on:
+                    self.log('Percent Cut OFF', UI_LOG_RESTORE_FG)
+            self._refresh_flow_toggle_ui(fast=True)
+            if victim:
+                try:
+                    mac = str(victim.get('mac') or snap_mac or '').strip()
+                    if mac:
+                        self._refresh_table_row_for_mac(mac, victim.get('ip') or snap_ip)
+                except Exception:
+                    pass
+
+        QTimer.singleShot(0, _release_on_gui)
