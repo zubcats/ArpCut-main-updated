@@ -59,19 +59,24 @@ class TestPercentCutKill(unittest.TestCase):
         stop = method_src('stopPercentCut')
         self.assertIn('_pctcut_instant_resume', stop)
         self.assertIn('QTimer.singleShot(0, _finish_off)', stop)
-        # Resume/unkill must run before chrome; reinforce stays deferred.
-        resume = stop.index('_pctcut_instant_resume')
+        # Paint first; resume/unkill on this stack; delayed reinforce only in _finish_off.
         paint = stop.index("btnPercentCut.setText(f'Percent Cut: {pct}%')")
+        resume = stop.index('_pctcut_instant_resume')
         defer = stop.index('QTimer.singleShot(0, _finish_off)')
-        self.assertLess(resume, paint)
-        self.assertLess(paint, defer)
+        self.assertLess(paint, resume)
+        self.assertLess(resume, defer)
         self.assertIn('_schedule_pctcut_off_reinforce', stop)
-        self.assertNotIn('_release_victim_arp_mitm_stack', stop)
         self.assertNotIn('_release_pctcut_victim_immediate', stop.split('def _finish_off')[0])
         resume_fn = method_src('_pctcut_instant_resume')
         self.assertIn('killer.unkill', resume_fn)
+        self.assertIn('reinforce_restore', resume_fn)
+        self.assertIn('_release_victim_arp_mitm_stack', resume_fn)
         self.assertIn('resume_percent_cut_live', resume_fn)
         self.assertIn('pass_all_live', self._forwarder_py())
+        # Second OFF click must clear residue instead of re-arming ON.
+        toggle = methods_through('togglePercentCut', 'stopPercentCut')
+        self.assertIn('_percent_cut_forwarder_live', toggle)
+        self.assertIn('_killed_profile_on', toggle)
 
     @staticmethod
     def _forwarder_py() -> str:

@@ -68,18 +68,19 @@ class TestInstantFlowUi(unittest.TestCase):
 
     def test_percent_cut_off_paints_before_release(self) -> None:
         stop = method_src('stopPercentCut')
+        # Paint OFF before network resume (Dupe parity) — avoids sticky ON chrome.
+        self.assertLess(
+            stop.index("btnPercentCut.setText(f'Percent Cut: {pct}%')"),
+            stop.index('_pctcut_instant_resume'),
+        )
         self.assertLess(
             stop.index('_pctcut_instant_resume'),
-            stop.index("btnPercentCut.setText(f'Percent Cut: {pct}%')"),
-        )
-        self.assertLess(
-            stop.index("btnPercentCut.setText(f'Percent Cut: {pct}%')"),
             stop.index('QTimer.singleShot(0, _finish_off)'),
         )
-        # Heavy ARP stack release must not run on the click path.
-        self.assertNotIn('_release_victim_arp_mitm_stack', stop)
         resume = method_src('_pctcut_instant_resume')
         self.assertIn('killer.unkill', resume)
+        self.assertIn('reinforce_restore', resume)
+        self.assertIn('_release_victim_arp_mitm_stack', resume)
 
     def test_kill_paints_before_schedule(self) -> None:
         src = self._main_py()

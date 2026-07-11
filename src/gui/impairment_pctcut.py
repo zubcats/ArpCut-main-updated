@@ -159,6 +159,24 @@ class ImpairmentPctCutMixin:
         if self._percent_cut_ui_shows_on(mac, ip):
             self.stopPercentCut(log=True)
             return
+        # UI already OFF but MITM/forwarder residue still cutting — force restore
+        # (second OFF click used to re-arm ON and leave the victim stuck).
+        if not self.percent_cut_active and (
+            self._percent_cut_forwarder_live(mac, ip)
+            or (
+                mac in getattr(self.killer, 'killed', {})
+                and not self._killed_profile_on(device)
+                and not self.lag_active
+                and not self.dupe_active
+                and not getattr(self, 'mitm_shaping_active', False)
+            )
+        ):
+            if not self.percent_cut_device_mac:
+                self.percent_cut_device_mac = mac
+            if not getattr(self, 'percent_cut_device_ip', None):
+                self.percent_cut_device_ip = ip
+            self.stopPercentCut(log=True)
+            return
         if self._toggle_start_blocked('pctcut'):
             return
 
@@ -338,7 +356,7 @@ class ImpairmentPctCutMixin:
 
 
     def stopPercentCut(self, log=True):
-        """Resume traffic + unkill on this stack; paint OFF; defer reinforce only."""
+        """Paint OFF first (Dupe parity), then unkill/release MITM on this stack."""
         prev_mac = self.percent_cut_device_mac
         prev_ip = getattr(self, 'percent_cut_device_ip', None)
         was_ui_on = bool(self.percent_cut_active)
@@ -349,13 +367,26 @@ class ImpairmentPctCutMixin:
         self.percent_cut_device_ip = None
         self._pctcut_preapplied = False
 
-        # Connectivity first (Lag/Kill OFF): clear cut + end ARP poison now.
-        try:
-            self._pctcut_instant_resume(prev_mac, prev_ip)
-        except Exception:
-            pass
+        # Snapshot before resume pops killer.killed (needed for reinforce/log).
+        snap_mac = str(prev_mac or '').strip()
+        snap_ip = str(prev_ip or '').strip()
+        snap = None
+        if snap_mac or snap_ip:
+            snap = self._victim_record_for_mac(snap_mac) if snap_mac else None
+            if not isinstance(snap, dict) and snap_ip:
+                for entry in list((self.killer.killed or {}).values()):
+                    if isinstance(entry, dict) and str(entry.get('ip') or '').strip() == snap_ip:
+                        snap = dict(entry)
+                        snap_mac = str(snap.get('mac') or snap_mac).strip()
+                        break
+            if not isinstance(snap, dict):
+                snap = {'mac': snap_mac or '', 'ip': snap_ip or ''}
+            else:
+                snap = dict(snap)
+                if snap_ip and not str(snap.get('ip') or '').strip():
+                    snap['ip'] = snap_ip
 
-        # Direct chrome like Dupe — avoid full cross-flow refresh before paint.
+        # Direct chrome like Dupe — paint before network work so OFF never feels stuck.
         pct = self._clamp_percent(self.spinPercentCutMain.value())
         self.btnPercentCut.setText(f'Percent Cut: {pct}%')
         self.btnPercentCut.setStyleSheet(self.BUTTON_NORMAL_STYLE)
@@ -369,15 +400,14 @@ class ImpairmentPctCutMixin:
             except Exception:
                 pass
 
-        snap_mac = prev_mac
-        snap_ip = prev_ip
+        # Connectivity now (Lag OFF parity): 100% pass + unkill + full MITM sweep.
+        try:
+            self._pctcut_instant_resume(snap_mac or prev_mac, snap_ip or prev_ip)
+        except Exception:
+            pass
+
         want_log = bool(log)
         showed_on = was_ui_on
-        snap = None
-        if snap_mac or snap_ip:
-            snap = self._victim_record_for_mac(snap_mac) if snap_mac else None
-            if not isinstance(snap, dict):
-                snap = {'mac': snap_mac or '', 'ip': snap_ip or ''}
 
         def _finish_off():
             if snap_mac and isinstance(snap, dict):
