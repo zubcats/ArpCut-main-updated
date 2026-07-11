@@ -487,7 +487,8 @@ class ImpairmentPctCutMixin:
             except Exception:
                 pass
 
-        # Connectivity now (Lag/Kill OFF parity): bind NIC, then unkill + reinforce.
+        # Connectivity now: pass_all + unkill only (Lag click parity). Heavy
+        # reinforce/stack sweep runs in _finish_off so OFF is not a 3–5s stall.
         try:
             self._pctcut_instant_resume(snap_mac or prev_mac, snap_ip or prev_ip)
         except Exception:
@@ -512,6 +513,10 @@ class ImpairmentPctCutMixin:
             except Exception:
                 pass
             if snap_mac and isinstance(snap, dict):
+                try:
+                    self._pctcut_off_reinforce_now(snap_mac, snap)
+                except Exception:
+                    pass
                 try:
                     self._schedule_pctcut_off_reinforce(snap_mac, snap)
                 except Exception:

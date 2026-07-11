@@ -70,11 +70,17 @@ class TestPercentCutKill(unittest.TestCase):
         self.assertNotIn('_release_pctcut_victim_immediate', stop.split('def _finish_off')[0])
         resume_fn = method_src('_pctcut_instant_resume')
         self.assertIn('killer.unkill', resume_fn)
-        self.assertIn('reinforce_restore', resume_fn)
-        self.assertIn('_ensure_network_context_for_victim', resume_fn)
-        self.assertIn('_release_victim_arp_mitm_stack', resume_fn)
         self.assertIn('resume_percent_cut_live', resume_fn)
+        # Click path must stay instant — no ping/resolve or heavy sweep.
+        self.assertNotIn('_ensure_network_context_for_victim', resume_fn)
+        self.assertNotIn('reinforce_restore', resume_fn)
+        self.assertNotIn('_release_victim_arp_mitm_stack', resume_fn)
         self.assertIn('pass_all_live', self._forwarder_py())
+        # Heavy reinforce runs deferred in _finish_off.
+        self.assertIn('_pctcut_off_reinforce_now', stop)
+        reinforce = method_src('_pctcut_off_reinforce_now')
+        self.assertIn('reinforce_restore', reinforce)
+        self.assertIn('_release_victim_arp_mitm_stack', reinforce)
         # Second OFF click must clear residue instead of re-arming ON.
         toggle = methods_through('togglePercentCut', 'stopPercentCut')
         self.assertIn('_percent_cut_forwarder_live', toggle)

@@ -635,11 +635,10 @@ class ImpairmentBlocksMixin:
         return found
 
     def _pctcut_instant_resume(self, mac: str | None, ip: str | None = None) -> None:
-        """Restore connectivity on the OFF click stack (Lag/Dupe/Kill parity).
+        """Restore connectivity on the OFF click stack — must stay instant (Lag OFF).
 
-        1) Clear WinDivert percent cut / set MITM forwarder to 100% pass
-        2) Unkill immediately (all matching MAC/IP entries) + reinforce ARP
-        3) Full ARP MITM stack release so a stale MAC key cannot leave poison live
+        Click path only: 100% pass + unkill. No ping/resolve, no reinforce, no
+        full stack sweep (those run from stopPercentCut's deferred _finish_off).
         """
         mac = str(mac or '').strip()
         ip = str(ip or '').strip()
@@ -647,7 +646,6 @@ class ImpairmentBlocksMixin:
         if mac:
             victim = self._victim_record_for_mac(mac)
         if not isinstance(victim, dict) and ip:
-            # MAC key may have drifted; still tear down by IP.
             for entry in list((self.killer.killed or {}).values()):
                 if isinstance(entry, dict) and str(entry.get('ip') or '').strip() == ip:
                     victim = dict(entry)
@@ -659,13 +657,9 @@ class ImpairmentBlocksMixin:
             victim = dict(victim)
             victim['ip'] = ip
 
-        # Kill OFF parity: bind killer iface/router before ARP restore packets.
+        # Warm bind only — never resolve_live_lan_victim/ping on the toggle stack
+        # (that path is 1–4s and is why Percent Cut OFF felt uniquely slow).
         try:
-            self._ensure_network_context_for_victim(victim, fast=True)
-        except Exception:
-            pass
-        try:
-            # Prefer live scanner router/iface after ensure.
             self.killer.iface = self.scanner.iface
             self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
         except Exception:
@@ -683,8 +677,8 @@ class ImpairmentBlocksMixin:
         except Exception:
             pass
 
-        # Keep forwarding at 100% until ARP restore completes (avoid blackhole).
-        for residue_mac in self._pctcut_residue_macs(mac, ip):
+        residue_macs = self._pctcut_residue_macs(mac, ip)
+        for residue_mac in residue_macs:
             try:
                 self.killer.resume_percent_cut_live(residue_mac)
             except Exception:
@@ -696,17 +690,16 @@ class ImpairmentBlocksMixin:
             except Exception:
                 pass
 
-        # Unkill unconditionally — Lag OFF learned that skipping when the plan
-        # looks "ICS" left the ARP poison worker running after UI showed OFF.
+        ics_mode = False
         try:
-            plan = self._impairment_plan_for(victim)
-            ics_mode = bool(
-                getattr(plan, 'use_windivert', False) or getattr(plan, 'is_ics_downstream', False)
-            )
+            gate = getattr(self, '_ics_lag_gate', None)
+            if gate is not None and gate.is_running():
+                ics_mode = True
         except Exception:
             ics_mode = False
 
-        for residue_mac in self._pctcut_residue_macs(mac, ip):
+        # One unkill per residue MAC — Lag OFF parity (no reinforce on click).
+        for residue_mac in residue_macs:
             entry = self._victim_record_for_mac(residue_mac) or {
                 'mac': residue_mac,
                 'ip': ip or (victim.get('ip') if isinstance(victim, dict) else ''),
@@ -715,13 +708,31 @@ class ImpairmentBlocksMixin:
                 self.killer.unkill(entry, ics_mode=ics_mode)
             except Exception:
                 pass
+
+    def _pctcut_off_reinforce_now(self, mac: str | None, device) -> None:
+        """Deferred OFF follow-up: ARP reinforce + sibling MITM sweep (not on click)."""
+        mac = str(mac or '').strip()
+        if not mac or not isinstance(device, dict):
+            return
+        victim = dict(device)
+        ip = str(victim.get('ip') or '').strip()
+        ics_mode = False
+        try:
+            plan = self._impairment_plan_for(victim)
+            ics_mode = bool(
+                getattr(plan, 'use_windivert', False) or getattr(plan, 'is_ics_downstream', False)
+            )
+        except Exception:
+            ics_mode = False
+        for residue_mac in self._pctcut_residue_macs(mac, ip):
+            entry = self._victim_record_for_mac(residue_mac) or {
+                'mac': residue_mac,
+                'ip': ip,
+            }
             try:
                 self.killer.reinforce_restore(entry, ics_mode=ics_mode)
             except Exception:
                 pass
-
-        # Sweep any leftover MITM keyed by sibling console MACs / stale IPs.
-        # Context already refreshed above; keep this sweep off the slow resolve path.
         try:
             self._release_victim_arp_mitm_stack(victim, refresh_context=False)
         except Exception:
@@ -736,6 +747,10 @@ class ImpairmentBlocksMixin:
         ip = str(victim.get('ip') or '').strip()
         try:
             self._pctcut_instant_resume(mac, ip)
+        except Exception:
+            pass
+        try:
+            self._pctcut_off_reinforce_now(mac, victim)
         except Exception:
             pass
         self._schedule_pctcut_off_reinforce(mac, victim)
