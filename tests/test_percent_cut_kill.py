@@ -66,10 +66,12 @@ class TestPercentCutKill(unittest.TestCase):
         self.assertLess(paint, resume)
         self.assertLess(resume, defer)
         self.assertIn('_schedule_pctcut_off_reinforce', stop)
+        self.assertIn('_pctcut_off_until', stop)
         self.assertNotIn('_release_pctcut_victim_immediate', stop.split('def _finish_off')[0])
         resume_fn = method_src('_pctcut_instant_resume')
         self.assertIn('killer.unkill', resume_fn)
         self.assertIn('reinforce_restore', resume_fn)
+        self.assertIn('_ensure_network_context_for_victim', resume_fn)
         self.assertIn('_release_victim_arp_mitm_stack', resume_fn)
         self.assertIn('resume_percent_cut_live', resume_fn)
         self.assertIn('pass_all_live', self._forwarder_py())
@@ -77,6 +79,9 @@ class TestPercentCutKill(unittest.TestCase):
         toggle = methods_through('togglePercentCut', 'stopPercentCut')
         self.assertIn('_percent_cut_forwarder_live', toggle)
         self.assertIn('_killed_profile_on', toggle)
+        self.assertIn("_ignore_duplicate_toggle_edge('pctcut'", toggle)
+        self.assertIn('_pctcut_undo_cancelled_arm', toggle)
+        self.assertIn('_pctcut_start_cancelled', toggle)
 
     @staticmethod
     def _forwarder_py() -> str:

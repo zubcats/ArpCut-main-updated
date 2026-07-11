@@ -80,7 +80,12 @@ class TestInstantFlowUi(unittest.TestCase):
         resume = method_src('_pctcut_instant_resume')
         self.assertIn('killer.unkill', resume)
         self.assertIn('reinforce_restore', resume)
+        self.assertIn('_ensure_network_context_for_victim', resume)
         self.assertIn('_release_victim_arp_mitm_stack', resume)
+        # Deferred ON must undo if OFF wins the race after apply.
+        toggle = method_src('togglePercentCut')
+        self.assertIn('_pctcut_undo_cancelled_arm', toggle)
+        self.assertIn('_pctcut_start_cancelled', toggle)
 
     def test_kill_paints_before_schedule(self) -> None:
         src = self._main_py()

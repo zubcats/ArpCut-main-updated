@@ -42,6 +42,12 @@ class ImpairmentKillMixin:
             device, self.dupe_device_mac, getattr(self, 'dupe_device_ip', None)
         ):
             return True
+        if getattr(self, 'percent_cut_active', False) and self._flow_matches_active_row(
+            device,
+            getattr(self, 'percent_cut_device_mac', None),
+            getattr(self, 'percent_cut_device_ip', None),
+        ):
+            return True
         pk = self._killed_profile_key(device)
         if pk and pk in getattr(self, '_kill_pending_profiles', set()):
             return True

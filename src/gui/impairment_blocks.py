@@ -659,6 +659,18 @@ class ImpairmentBlocksMixin:
             victim = dict(victim)
             victim['ip'] = ip
 
+        # Kill OFF parity: bind killer iface/router before ARP restore packets.
+        try:
+            self._ensure_network_context_for_victim(victim, fast=True)
+        except Exception:
+            pass
+        try:
+            # Prefer live scanner router/iface after ensure.
+            self.killer.iface = self.scanner.iface
+            self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
+        except Exception:
+            pass
+
         # Hotspot: clear cut mode so packets pass while the gate stays warm.
         try:
             gate = getattr(self, '_ics_lag_gate', None)
@@ -709,7 +721,7 @@ class ImpairmentBlocksMixin:
                 pass
 
         # Sweep any leftover MITM keyed by sibling console MACs / stale IPs.
-        # refresh_context=False: Dupe OFF parity — avoid ping/resolve on the click stack.
+        # Context already refreshed above; keep this sweep off the slow resolve path.
         try:
             self._release_victim_arp_mitm_stack(victim, refresh_context=False)
         except Exception:

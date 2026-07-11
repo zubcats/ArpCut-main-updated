@@ -134,6 +134,24 @@ class ImpairmentPctCutMixin:
         return self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, None)
 
 
+    def _pctcut_start_cancelled(self, pct_gen: int) -> bool:
+        """True when OFF cancelled this deferred ON (gen bump and/or active cleared)."""
+        return (
+            not getattr(self, 'percent_cut_active', False)
+            or int(getattr(self, '_pctcut_start_gen', 0)) != int(pct_gen)
+        )
+
+    def _pctcut_undo_cancelled_arm(self, device) -> None:
+        """If deferred ON applied after OFF, tear the cut back down immediately."""
+        if not isinstance(device, dict):
+            return
+        mac = str(device.get('mac') or '').strip()
+        ip = str(device.get('ip') or '').strip()
+        try:
+            self._pctcut_instant_resume(mac, ip)
+        except Exception:
+            pass
+
     def togglePercentCut(self, source='unknown'):
         if not self.connected():
             return
@@ -157,6 +175,8 @@ class ImpairmentPctCutMixin:
             self.log('Target has no MAC yet — rescan after PS5 Wi‑Fi/Ethernet change.', 'red')
             return
         if self._percent_cut_ui_shows_on(mac, ip):
+            if self._ignore_duplicate_toggle_edge('pctcut', mac, 'stop'):
+                return
             self.stopPercentCut(log=True)
             return
         # UI already OFF but MITM/forwarder residue still cutting — force restore
@@ -171,13 +191,25 @@ class ImpairmentPctCutMixin:
                 and not getattr(self, 'mitm_shaping_active', False)
             )
         ):
+            if self._ignore_duplicate_toggle_edge('pctcut', mac, 'stop'):
+                return
             if not self.percent_cut_device_mac:
                 self.percent_cut_device_mac = mac
             if not getattr(self, 'percent_cut_device_ip', None):
                 self.percent_cut_device_ip = ip
             self.stopPercentCut(log=True)
             return
+        # Block bounce-back ON right after OFF (pressed-signal / deferred re-entry).
+        try:
+            import time as _time
+
+            if _time.monotonic() < float(getattr(self, '_pctcut_off_until', 0.0) or 0.0):
+                return
+        except Exception:
+            pass
         if self._toggle_start_blocked('pctcut'):
+            return
+        if self._ignore_duplicate_toggle_edge('pctcut', mac, 'start'):
             return
 
         had_prior_pct_other_mac = bool(
@@ -223,19 +255,20 @@ class ImpairmentPctCutMixin:
         def _pctcut_deferred_start():
             if getattr(self, '_shutting_down', False):
                 return
-            if (
-                not self.percent_cut_active
-                or int(getattr(self, '_pctcut_start_gen', 0)) != pct_gen
-            ):
+            if self._pctcut_start_cancelled(pct_gen):
                 return
+            armed_device = dict(pct_device)
             try:
                 device = self._resolve_flow_start_device(dict(pct_device))
+                if self._pctcut_start_cancelled(pct_gen):
+                    return
                 mac = str(device.get('mac') or '').strip()
                 ip = str(device.get('ip') or '').strip()
                 if mac:
                     self.percent_cut_device_mac = mac
                 if ip:
                     self.percent_cut_device_ip = ip
+                armed_device = dict(device)
                 if had_prior_pct_other_mac and prior_pct_mac:
                     prior = self._resolve_pctcut_stop_snapshot(prior_pct_mac, prior_pct_ip)
                     if prior:
@@ -253,10 +286,7 @@ class ImpairmentPctCutMixin:
                     self._flush_pending_dupe_clear_sync(max_wait_ms=200)
                 if self._kill_ui_shows_on(mac, device.get('ip'), device):
                     self._clear_explicit_kill_for_flow(dict(device))
-                if (
-                    not self.percent_cut_active
-                    or int(getattr(self, '_pctcut_start_gen', 0)) != pct_gen
-                ):
+                if self._pctcut_start_cancelled(pct_gen):
                     return
                 pct = pct_val
                 allow_pct = pct_allow
@@ -286,7 +316,12 @@ class ImpairmentPctCutMixin:
                         # Re-apply after resolve so WinDivert tracks the live client IP.
                         if not self._ics_apply_percent_cut_windivert(device, pct):
                             preapplied = False
+                        if self._pctcut_start_cancelled(pct_gen):
+                            self._pctcut_undo_cancelled_arm(device)
+                            return
                     if not preapplied:
+                        if self._pctcut_start_cancelled(pct_gen):
+                            return
                         device = self._prepare_victim_for_impairment(dict(device), fast=True)
                         if not self._ics_apply_percent_cut_windivert(device, pct):
                             self.percent_cut_active = False
@@ -299,11 +334,16 @@ class ImpairmentPctCutMixin:
                             )
                             self._refresh_flow_toggle_ui()
                             return
+                        if self._pctcut_start_cancelled(pct_gen):
+                            self._pctcut_undo_cancelled_arm(device)
+                            return
                     resolved_ip = self._ics_hotspot_victim_ip(device, pctcut=True)
                 else:
                     if preapplied and self._lan_mitm_stack_is_warm():
                         self._refresh_victim_mac_from_system_arp(device)
                         mac = str(device.get('mac') or '').strip()
+                        if self._pctcut_start_cancelled(pct_gen):
+                            return
                         self.percent_cut_device_mac = mac
                         # Keep existing forwarder unless apply fails / mac drifted.
                         if not self._percent_cut_forwarder_live(mac, device.get('ip')):
@@ -311,10 +351,17 @@ class ImpairmentPctCutMixin:
                                 device, pass_percent=allow_pct
                             ):
                                 preapplied = False
+                            if self._pctcut_start_cancelled(pct_gen):
+                                self._pctcut_undo_cancelled_arm(device)
+                                return
                     if not preapplied:
+                        if self._pctcut_start_cancelled(pct_gen):
+                            return
                         device = self._prepare_victim_for_impairment(dict(device), fast=True)
                         self._refresh_victim_mac_from_system_arp(device)
                         mac = str(device.get('mac') or '').strip()
+                        if self._pctcut_start_cancelled(pct_gen):
+                            return
                         self.percent_cut_device_mac = mac
                         if not self.killer.apply_percent_cut(device, pass_percent=allow_pct):
                             self.percent_cut_active = False
@@ -331,12 +378,17 @@ class ImpairmentPctCutMixin:
                             )
                             self._refresh_flow_toggle_ui()
                             return
+                        if self._pctcut_start_cancelled(pct_gen):
+                            self._pctcut_undo_cancelled_arm(device)
+                            return
                     self._log_mitm_arm_status(device, action='Percent Cut')
                     resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
                         device.get('ip') or ''
                     ).strip()
-                if int(getattr(self, '_pctcut_start_gen', 0)) != pct_gen:
+                if self._pctcut_start_cancelled(pct_gen):
+                    self._pctcut_undo_cancelled_arm(device)
                     return
+                armed_device = dict(device)
                 self.percent_cut_device_ip = resolved_ip
                 self._pctcut_preapplied = True
                 self.log(
@@ -345,6 +397,9 @@ class ImpairmentPctCutMixin:
                 )
                 self._refresh_flow_toggle_ui()
             except Exception as exc:
+                if self._pctcut_start_cancelled(pct_gen):
+                    self._pctcut_undo_cancelled_arm(armed_device)
+                    return
                 self.percent_cut_active = False
                 self.percent_cut_device_mac = None
                 self.percent_cut_device_ip = None
@@ -366,6 +421,13 @@ class ImpairmentPctCutMixin:
         self.percent_cut_device_mac = None
         self.percent_cut_device_ip = None
         self._pctcut_preapplied = False
+        try:
+            import time as _time
+
+            # Prevent pressed/deferred bounce from turning CUT back on immediately.
+            self._pctcut_off_until = _time.monotonic() + 0.4
+        except Exception:
+            self._pctcut_off_until = 0.0
 
         # Snapshot before resume pops killer.killed (needed for reinforce/log).
         snap_mac = str(prev_mac or '').strip()
@@ -400,16 +462,30 @@ class ImpairmentPctCutMixin:
             except Exception:
                 pass
 
-        # Connectivity now (Lag OFF parity): 100% pass + unkill + full MITM sweep.
+        # Connectivity now (Lag/Kill OFF parity): bind NIC, then unkill + reinforce.
         try:
             self._pctcut_instant_resume(snap_mac or prev_mac, snap_ip or prev_ip)
         except Exception:
             pass
 
+        # Re-assert OFF chrome after resume (resume must not leave ON styling).
+        self.btnPercentCut.setText(f'Percent Cut: {pct}%')
+        self.btnPercentCut.setStyleSheet(self.BUTTON_NORMAL_STYLE)
+
         want_log = bool(log)
         showed_on = was_ui_on
 
         def _finish_off():
+            # Keep OFF latch alive across reinforce callbacks.
+            try:
+                import time as _time
+
+                self._pctcut_off_until = max(
+                    float(getattr(self, '_pctcut_off_until', 0.0) or 0.0),
+                    _time.monotonic() + 0.25,
+                )
+            except Exception:
+                pass
             if snap_mac and isinstance(snap, dict):
                 try:
                     self._schedule_pctcut_off_reinforce(snap_mac, snap)

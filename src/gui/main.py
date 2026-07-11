@@ -976,6 +976,7 @@ class ZubCutApp(
         self._dupe_armed_ok = False
         self._pctcut_start_gen = 0
         self._pctcut_preapplied = False
+        self._pctcut_off_until = 0.0
 
         # Threading
         self.scan_thread = ScanThread()
