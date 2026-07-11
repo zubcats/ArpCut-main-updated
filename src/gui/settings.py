@@ -113,7 +113,10 @@ class _UpdateBannerPollThread(QThread):
         try:
             avail, label = get_update_status()
         except Exception:
-            avail, label = False, ''
+            return
+        # None = indeterminate (API/republish race); keep existing green hint.
+        if avail is None:
+            return
         self.done.emit(bool(avail), str(label or ''))
 
 

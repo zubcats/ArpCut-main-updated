@@ -126,8 +126,11 @@ class _UpdateStatusPollThread(QThread):
         try:
             avail, label = get_update_status()
         except Exception:
-            avail, label = False, ''
-        self.done.emit(avail, label)
+            return
+        # None = indeterminate (API/republish race); keep existing green hint.
+        if avail is None:
+            return
+        self.done.emit(bool(avail), str(label or ''))
 
 import constants as _zcut_constants
 from constants import *

@@ -156,6 +156,34 @@ class UpdaterCoreTest(unittest.TestCase):
         self.assertFalse(available)
         self.assertIn('Up to date', label)
 
+    def test_indeterminate_when_remote_release_unreachable(self):
+        """Republish races / API failures must not report False (clears green gear)."""
+        import tools.updater_core as uc
+
+        with patch.object(uc, 'APP_BUILD_TIME_ISO', '2026-05-16T10:00:00Z'), patch.object(
+            uc, 'APP_BUILD_COMMIT', 'localonlycommit1'
+        ), patch.object(uc, 'UPDATE_CHANNEL', 'main'), patch.object(
+            uc,
+            'UPDATE_DOWNLOAD_URL_MAIN',
+            UPDATE_DOWNLOAD_URL_MAIN,
+        ), patch.object(uc, 'UPDATE_DOWNLOAD_URL_EXPERIMENTAL', ''), patch.object(
+            uc, '_cached_remote_installer_info', return_value=None
+        ), patch.object(uc, '_remote_compare_datetime', return_value=None):
+            available, label = uc.get_update_status()
+        self.assertIsNone(available)
+        self.assertEqual(label, '')
+
+    def test_misses_are_not_cached(self):
+        import tools.updater_core as uc
+
+        uc._remote_cache = None
+        with patch.object(uc, '_fetch_remote_installer_info', return_value=None) as fetch:
+            self.assertIsNone(uc._cached_remote_installer_info('experimental'))
+            self.assertIsNone(uc._remote_cache)
+            self.assertIsNone(uc._cached_remote_installer_info('experimental'))
+            self.assertEqual(fetch.call_count, 2)
+        uc._remote_cache = None
+
     def test_resolve_download_uses_api_asset_url(self):
         import tools.updater_core as uc
 

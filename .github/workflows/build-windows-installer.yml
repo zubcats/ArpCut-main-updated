@@ -180,10 +180,11 @@ jobs:
 
       - name: Publish rolling stable release
         if: ${{ github.event.inputs.release_channel == 'main' || github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && github.ref_name == 'main') }}
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2.6.2
         with:
           tag_name: stable-latest
           name: ZubCut
+          target_commitish: ${{ github.sha }}
           prerelease: false
           make_latest: false
           files: |
@@ -194,10 +195,11 @@ jobs:
 
       - name: Publish rolling experimental release
         if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.event.inputs.release_channel != 'stable' && github.ref_name == 'experimental') }}
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2.6.2
         with:
           tag_name: experimental-latest
           name: ZubCut (experimental)
+          target_commitish: ${{ github.sha }}
           prerelease: true
           make_latest: false
           files: |

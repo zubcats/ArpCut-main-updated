@@ -100,10 +100,11 @@ jobs:
           path: output/ZubCut-Control-Panel-Setup.exe
 
       - name: Publish control-panel-latest release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2.6.2
         with:
           tag_name: control-panel-latest
           name: ZubCut Control Panel
+          target_commitish: ${{ github.sha }}
           prerelease: false
           make_latest: false
           files: output/ZubCut-Control-Panel-Setup.exe
@@ -116,10 +117,11 @@ jobs:
           # Old License Manager EXEs hard-code this filename/tag; same installer, not shown on control-panel-latest.
           Copy-Item "output/ZubCut-Control-Panel-Setup.exe" "output/ZubCut-License-Manager-Setup.exe" -Force
       - name: Upload legacy alias for old updaters
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2.6.2
         with:
           tag_name: paid-license-manager-latest
           name: ZubCut Control Panel
+          target_commitish: ${{ github.sha }}
           prerelease: true
           make_latest: false
           files: output/ZubCut-License-Manager-Setup.exe

@@ -294,7 +294,10 @@ def _cached_remote_installer_info(channel: str, *, force: bool = False) -> Remot
     ):
         return _remote_cache[1]
     info = _fetch_remote_installer_info(channel)
-    _remote_cache = (now, info)
+    # Do not cache misses: rolling-release republish deletes assets for a few
+    # seconds; caching None would falsely clear the green update hint.
+    if info is not None:
+        _remote_cache = (now, info)
     return info
 
 
@@ -504,6 +507,10 @@ def get_update_status():
     Compare local CI build metadata to the latest channel installer online.
 
     Returns (update_available, status_label_for_ui).
+
+    ``update_available`` is True/False when the check succeeds, or None when the
+    remote release cannot be read (network/API/republish race). Callers must not
+    treat None as "up to date" — that would clear the green Settings hint.
     """
     channel = _normalized_update_channel()
     url = selected_update_url()
@@ -513,7 +520,7 @@ def get_update_status():
     remote_info = _cached_remote_installer_info(channel)
     remote_dt = _remote_compare_datetime(remote_info, channel, url)
     if remote_dt is None and remote_info is None:
-        return False, ''
+        return None, ''
 
     local_dt = local_build_datetime()
     remote_label = _format_dt_label(remote_dt)
@@ -563,7 +570,7 @@ def get_update_status():
 
 def update_is_available():
     available, _ = get_update_status()
-    return available
+    return bool(available)
 
 
 _READ_CHUNK = 256 * 1024
