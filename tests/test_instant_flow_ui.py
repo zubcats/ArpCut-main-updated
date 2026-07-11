@@ -70,16 +70,16 @@ class TestInstantFlowUi(unittest.TestCase):
         stop = method_src('stopPercentCut')
         self.assertLess(
             stop.index('_pctcut_instant_resume'),
-            stop.index('_updatePercentCutButtonState()'),
+            stop.index("btnPercentCut.setText(f'Percent Cut: {pct}%')"),
         )
         self.assertLess(
-            stop.index('_updatePercentCutButtonState()'),
-            stop.index('QTimer.singleShot(0, _release_on_gui)'),
+            stop.index("btnPercentCut.setText(f'Percent Cut: {pct}%')"),
+            stop.index('QTimer.singleShot(0, _finish_off)'),
         )
-        self.assertNotIn('_release_pctcut_victim_immediate', stop.split('def _release_on_gui')[0])
-        release = method_src('_release_pctcut_victim_immediate')
-        self.assertIn('join_timeout=0.05', release)
-        self.assertNotIn('_ics_emergency_release', release)
+        # Heavy ARP stack release must not run on the click path.
+        self.assertNotIn('_release_victim_arp_mitm_stack', stop)
+        resume = method_src('_pctcut_instant_resume')
+        self.assertIn('killer.unkill', resume)
 
     def test_kill_paints_before_schedule(self) -> None:
         src = self._main_py()

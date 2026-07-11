@@ -338,7 +338,7 @@ class ImpairmentPctCutMixin:
 
 
     def stopPercentCut(self, log=True):
-        """Paint OFF immediately; resume traffic on this stack; defer Npcap/ARP teardown."""
+        """Resume traffic + unkill on this stack; paint OFF; defer reinforce only."""
         prev_mac = self.percent_cut_device_mac
         prev_ip = getattr(self, 'percent_cut_device_ip', None)
         was_ui_on = bool(self.percent_cut_active)
@@ -348,46 +348,65 @@ class ImpairmentPctCutMixin:
         self.percent_cut_device_mac = None
         self.percent_cut_device_ip = None
         self._pctcut_preapplied = False
-        # Instant full-pass before chrome — Dupe/Lag feel; sniffer stop comes later.
+
+        # Connectivity first (Lag/Kill OFF): clear cut + end ARP poison now.
         try:
             self._pctcut_instant_resume(prev_mac, prev_ip)
         except Exception:
             pass
-        # Optimistic chrome first — do not run unkill/reinforce on this call stack.
-        self._updatePercentCutButtonState()
-        self._refresh_flow_toggle_ui(fast=True)
+
+        # Direct chrome like Dupe — avoid full cross-flow refresh before paint.
+        pct = self._clamp_percent(self.spinPercentCutMain.value())
+        self.btnPercentCut.setText(f'Percent Cut: {pct}%')
+        self.btnPercentCut.setStyleSheet(self.BUTTON_NORMAL_STYLE)
         try:
-            app = QApplication.instance()
-            if app is not None:
-                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+            self._flush_gui_events()
         except Exception:
-            pass
+            try:
+                app = QApplication.instance()
+                if app is not None:
+                    app.processEvents(QEventLoop.ExcludeUserInputEvents)
+            except Exception:
+                pass
 
         snap_mac = prev_mac
         snap_ip = prev_ip
         want_log = bool(log)
         showed_on = was_ui_on
+        snap = None
+        if snap_mac or snap_ip:
+            snap = self._victim_record_for_mac(snap_mac) if snap_mac else None
+            if not isinstance(snap, dict):
+                snap = {'mac': snap_mac or '', 'ip': snap_ip or ''}
 
-        def _release_on_gui():
-            victim = self._resolve_pctcut_stop_snapshot(snap_mac, snap_ip)
-            if victim:
+        def _finish_off():
+            if snap_mac and isinstance(snap, dict):
                 try:
-                    self._release_pctcut_victim_immediate(victim)
+                    self._schedule_pctcut_off_reinforce(snap_mac, snap)
+                except Exception:
+                    pass
+                try:
+                    QTimer.singleShot(
+                        150, lambda m=snap_mac: self._ics_teardown_gate_if_idle(m)
+                    )
                 except Exception:
                     pass
             if want_log:
-                if victim:
-                    ip = str(victim.get('ip') or snap_ip or '')
+                if snap_ip or (isinstance(snap, dict) and snap.get('ip')):
+                    ip = str((snap or {}).get('ip') or snap_ip or '')
                     self.log('Percent Cut OFF for ' + ip, UI_LOG_RESTORE_FG)
                 elif showed_on:
                     self.log('Percent Cut OFF', UI_LOG_RESTORE_FG)
-            self._refresh_flow_toggle_ui(fast=True)
-            if victim:
+            try:
+                self._refresh_flow_toggle_ui(fast=True)
+            except Exception:
+                pass
+            if isinstance(snap, dict):
                 try:
-                    mac = str(victim.get('mac') or snap_mac or '').strip()
+                    mac = str(snap.get('mac') or snap_mac or '').strip()
                     if mac:
-                        self._refresh_table_row_for_mac(mac, victim.get('ip') or snap_ip)
+                        self._refresh_table_row_for_mac(mac, snap.get('ip') or snap_ip)
                 except Exception:
                     pass
 
-        QTimer.singleShot(0, _release_on_gui)
+        QTimer.singleShot(0, _finish_off)

@@ -1,6 +1,8 @@
 """Apply/clear victim block helpers for impairment (extracted from MainWindow)."""
 from __future__ import annotations
 
+from PyQt5.QtCore import QTimer
+
 from tools.clumsy_inline import (
     clumsy_ics_lag_can_use_windivert,
     clumsy_ics_resolve_victim_ip,
@@ -587,69 +589,38 @@ class ImpairmentBlocksMixin:
     def _has_explicit_kill_active(self):
         return any(bool(v) for v in self.killed_devices.values())
 
-    def _release_pctcut_victim_immediate(self, victim) -> None:
-        """Stop Percent Cut like Dupe OFF: traffic already resumed; teardown without GUI stalls."""
-        if not isinstance(victim, dict):
-            return
-        victim = self._device_with_plan_ip(victim)
-        plan = self._impairment_plan_for(victim)
-        mac = str(victim.get('mac') or '').strip()
-        ip = str(victim.get('ip') or '').strip()
-        if plan.use_windivert or plan.is_ics_downstream or self._ics_gate_matches_device(victim):
-            try:
-                gate = getattr(self, '_ics_lag_gate', None)
-                if gate is not None:
-                    if hasattr(gate, 'clear_blocking_pause'):
-                        gate.clear_blocking_pause()
-                    else:
-                        gate.set_blocking(False)
-                    gate.apply_percent_cut(0)
-            except Exception:
-                pass
-            if ip and _is_valid_ip(ip):
-                _bg_unblock_ip(ip)
-            # Drop stray ARP MITM if any; do not emergency-stop WinDivert here —
-            # join_timeout on gate.stop freezes OFF. Keep gate warm or stop idle later.
-            try:
-                if mac and mac in (self.killer.killed or {}):
-                    self.killer.unkill(
-                        self._victim_record_for_mac(mac) or victim, ics_mode=True
-                    )
-            except Exception:
-                pass
-            try:
-                # Short join only when nothing else needs the shared gate.
-                if not self._ics_windivert_busy(mac or None):
-                    self._stop_ics_lag_gate(join_timeout=0.05)
-            except Exception:
-                pass
-            return
-        # LAN MITM: pass_all_live already restored traffic; stop sniffer async + unkill.
-        try:
-            if mac:
-                self.killer.disable_percent_cut(mac)
-        except Exception:
-            pass
-        try:
-            self._release_victim_arp_mitm_stack(victim, refresh_context=False)
-        except Exception:
-            pass
-        self._schedule_pctcut_off_reinforce(mac, victim)
-
     def _schedule_pctcut_off_reinforce(self, prev_mac, device) -> None:
         """ARP reinforce only (Dupe OFF parity) — never block the toggle click."""
         if not device or not prev_mac:
             return
-        if self._uses_windivert(device) and prev_mac not in self.killer.killed:
-            return
+        try:
+            if self._uses_windivert(device) and prev_mac not in self.killer.killed:
+                return
+        except Exception:
+            pass
         pct_off_seq = self._bump_flow_off_intent('pctcut', prev_mac)
         self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 25, device)
         self._schedule_flow_off_reinforce('pctcut', prev_mac, pct_off_seq, 100, device)
 
     def _pctcut_instant_resume(self, mac: str | None, ip: str | None = None) -> None:
-        """Restore full pass ratio / clear WinDivert cut on the OFF click stack."""
+        """Restore connectivity on the OFF click stack (Lag/Kill parity).
+
+        1) Clear WinDivert percent cut / set MITM forwarder to 100% pass
+        2) Stop Npcap sniffer off-thread
+        3) Unkill immediately so ARP poison ends now (not on a deferred timer)
+        """
         mac = str(mac or '').strip()
         ip = str(ip or '').strip()
+        victim = None
+        if mac:
+            victim = self._victim_record_for_mac(mac)
+        if not isinstance(victim, dict):
+            victim = {'mac': mac, 'ip': ip}
+        elif ip and not str(victim.get('ip') or '').strip():
+            victim = dict(victim)
+            victim['ip'] = ip
+
+        # Hotspot: clear cut mode so packets pass while the gate stays warm.
         try:
             gate = getattr(self, '_ics_lag_gate', None)
             if gate is not None:
@@ -660,13 +631,63 @@ class ImpairmentBlocksMixin:
                 gate.apply_percent_cut(0)
         except Exception:
             pass
+
+        plan_ics = False
+        try:
+            plan = self._impairment_plan_for(victim)
+            plan_ics = bool(
+                getattr(plan, 'use_windivert', False) or getattr(plan, 'is_ics_downstream', False)
+            )
+        except Exception:
+            plan_ics = bool(getattr(self, '_ics_lag_gate', None) is not None)
+
         if mac:
             try:
+                # Keep forwarding at 100% until ARP restore completes (avoid blackhole).
                 self.killer.resume_percent_cut_live(mac)
             except Exception:
                 pass
+
         if ip and _is_valid_ip(ip):
             try:
                 _bg_unblock_ip(ip)
+            except Exception:
+                pass
+
+        # End ARP poison on this call stack — deferring unkill is what felt "stuck ON".
+        # unkill also stops the forwarder (sniffer stop is async).
+        if mac and not plan_ics:
+            try:
+                self.killer.unkill(victim, ics_mode=False)
+            except Exception:
+                pass
+        elif mac and plan_ics and mac in (self.killer.killed or {}):
+            try:
+                self.killer.unkill(victim, ics_mode=True)
+            except Exception:
+                pass
+        elif mac:
+            # ICS path with no killer.killed entry: just drop the forwarder if any.
+            try:
+                self.killer.disable_percent_cut(mac)
+            except Exception:
+                pass
+
+    def _release_pctcut_victim_immediate(self, victim) -> None:
+        """Teardown leftover Percent Cut state (cross-flow callers). Prefer instant resume first."""
+        if not isinstance(victim, dict):
+            return
+        victim = self._device_with_plan_ip(victim)
+        mac = str(victim.get('mac') or '').strip()
+        ip = str(victim.get('ip') or '').strip()
+        try:
+            self._pctcut_instant_resume(mac, ip)
+        except Exception:
+            pass
+        self._schedule_pctcut_off_reinforce(mac, victim)
+        # Idle WinDivert gate stop later — never join on the toggle stack.
+        if mac:
+            try:
+                QTimer.singleShot(150, lambda m=mac: self._ics_teardown_gate_if_idle(m))
             except Exception:
                 pass

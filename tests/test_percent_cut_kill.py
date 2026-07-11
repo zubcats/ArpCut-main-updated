@@ -58,18 +58,20 @@ class TestPercentCutKill(unittest.TestCase):
         src = self._main_py()
         stop = method_src('stopPercentCut')
         self.assertIn('_pctcut_instant_resume', stop)
-        self.assertIn('_release_pctcut_victim_immediate', stop)
-        self.assertIn('QTimer.singleShot(0, _release_on_gui)', stop)
-        # Resume + UI must clear before deferred network teardown.
+        self.assertIn('QTimer.singleShot(0, _finish_off)', stop)
+        # Resume/unkill must run before chrome; reinforce stays deferred.
         resume = stop.index('_pctcut_instant_resume')
-        paint = stop.index('_updatePercentCutButtonState()')
-        defer = stop.index('QTimer.singleShot(0, _release_on_gui)')
+        paint = stop.index("btnPercentCut.setText(f'Percent Cut: {pct}%')")
+        defer = stop.index('QTimer.singleShot(0, _finish_off)')
         self.assertLess(resume, paint)
         self.assertLess(paint, defer)
-        release = method_src('_release_pctcut_victim_immediate')
-        self.assertIn('_schedule_pctcut_off_reinforce', release)
-        self.assertNotIn('reinforce_restore', release)
-        self.assertIn('pass_all_live', self._killer_py() + self._forwarder_py())
+        self.assertIn('_schedule_pctcut_off_reinforce', stop)
+        self.assertNotIn('_release_victim_arp_mitm_stack', stop)
+        self.assertNotIn('_release_pctcut_victim_immediate', stop.split('def _finish_off')[0])
+        resume_fn = method_src('_pctcut_instant_resume')
+        self.assertIn('killer.unkill', resume_fn)
+        self.assertIn('resume_percent_cut_live', resume_fn)
+        self.assertIn('pass_all_live', self._forwarder_py())
 
     @staticmethod
     def _forwarder_py() -> str:
