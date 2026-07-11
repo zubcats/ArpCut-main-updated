@@ -4,7 +4,8 @@
 # Push to `experimental` → tester build: tag `experimental-latest`, ZubCut-Setup-experimental.exe.
 # Manual `workflow_dispatch` is still available when you want a build without a push.
 #
-# Control Panel-only commits (paths-ignore below) do not start this workflow at all.
+# Control Panel-only commits (paths-ignore below) do not start this workflow.
+# Shared modules (constants, updater_core, branding, …) still build ZubCut.
 
 name: Build Windows installer only
 
@@ -22,11 +23,6 @@ on:
       - 'src/tools/license_cloud_sync.py'
       - 'src/tools/control_panel_crashes.py'
       - 'src/tools/qt_frozen_bootstrap.py'
-      - 'src/tools/updater_core.py'
-      - 'src/tools/frameless_chrome.py'
-      - 'src/tools/branding.py'
-      - 'src/constants.py'
-      - '.github/ci-blessed/constants.py'
       - 'packaging/pyinstaller-hooks/rthook_qt_control_panel.py'
       - 'installer/ZubCut-Control-Panel.iss'
       - 'installer/Build-Control-Panel-Installer.bat'

@@ -1,5 +1,8 @@
 # ZubCut Control Panel — admin app (separate from customer ZubCut stable/experimental releases).
-# Runs on main only when control-panel paths change; does not touch ZubCut update tags.
+# Runs on main only when Control Panel–specific sources change. Shared modules
+# (constants, updater_core, branding, frameless_chrome, …) do NOT trigger a CP
+# publish — use workflow_dispatch when CP should pick those up. Does not touch
+# ZubCut update tags.
 
 name: Build Control Panel (Windows)
 
@@ -16,14 +19,10 @@ on:
       - 'src/tools/license_cloud_sync.py'
       - 'src/tools/control_panel_crashes.py'
       - 'src/tools/qt_frozen_bootstrap.py'
-      - 'src/tools/updater_core.py'
-      - 'src/tools/frameless_chrome.py'
-      - 'src/tools/branding.py'
-      - 'src/constants.py'
-      - '.github/ci-blessed/constants.py'
       - 'packaging/pyinstaller-hooks/rthook_qt_control_panel.py'
       - 'installer/ZubCut-Control-Panel.iss'
-      - '.github/workflows/build-control-panel-windows.yml'
+      - 'installer/Build-Control-Panel-Installer.bat'
+      - 'tools/crash_reports_admin.py'
       - 'tests/test_control_panel.py'
   workflow_dispatch:
 
