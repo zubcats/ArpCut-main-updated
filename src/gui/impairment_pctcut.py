@@ -291,9 +291,10 @@ class ImpairmentPctCutMixin:
                 pct = pct_val
                 allow_pct = pct_allow
                 plan = self._impairment_plan_for(device)
-                preapplied = pct_preapplied and bool(
-                    getattr(self, '_pctcut_preapplied', False)
-                )
+                # Use the click-time latch only. OFF clears self._pctcut_preapplied;
+                # ANDing with that forced a full re-apply after quick OFF stopped the
+                # forwarder (Lag uses lan_preblocked the same way — never re-kill).
+                click_preapplied = bool(pct_preapplied)
                 if plan.is_ics_downstream:
                     if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
                         self.percent_cut_active = False
@@ -307,22 +308,28 @@ class ImpairmentPctCutMixin:
                         )
                         self._refresh_flow_toggle_ui()
                         return
-                    if preapplied and self._ics_stack_is_warm():
+                    if click_preapplied and self._ics_stack_is_warm():
+                        if self._pctcut_start_cancelled(pct_gen):
+                            return
                         rip = self._ics_hotspot_victim_ip(device, pctcut=True) or str(
                             device.get('ip') or ''
                         ).strip()
                         if rip:
                             device['ip'] = rip
-                        # Re-apply after resolve so WinDivert tracks the live client IP.
+                        # Refresh cut ratio for resolved IP only while still ON.
+                        if self._pctcut_start_cancelled(pct_gen):
+                            return
                         if not self._ics_apply_percent_cut_windivert(device, pct):
-                            preapplied = False
+                            click_preapplied = False
                         if self._pctcut_start_cancelled(pct_gen):
                             self._pctcut_undo_cancelled_arm(device)
                             return
-                    if not preapplied:
+                    if not click_preapplied:
                         if self._pctcut_start_cancelled(pct_gen):
                             return
                         device = self._prepare_victim_for_impairment(dict(device), fast=True)
+                        if self._pctcut_start_cancelled(pct_gen):
+                            return
                         if not self._ics_apply_percent_cut_windivert(device, pct):
                             self.percent_cut_active = False
                             self.percent_cut_device_mac = None
@@ -339,22 +346,35 @@ class ImpairmentPctCutMixin:
                             return
                     resolved_ip = self._ics_hotspot_victim_ip(device, pctcut=True)
                 else:
-                    if preapplied and self._lan_mitm_stack_is_warm():
+                    if click_preapplied and self._lan_mitm_stack_is_warm():
+                        # Lag lan_preblocked parity: refresh MAC / reassert only —
+                        # never apply_percent_cut (kill+forwarder) after quick OFF
+                        # cleared the forwarder, which re-armed the cut behind OFF UI.
+                        if self._pctcut_start_cancelled(pct_gen):
+                            return
                         self._refresh_victim_mac_from_system_arp(device)
                         mac = str(device.get('mac') or '').strip()
                         if self._pctcut_start_cancelled(pct_gen):
                             return
-                        self.percent_cut_device_mac = mac
-                        # Keep existing forwarder unless apply fails / mac drifted.
-                        if not self._percent_cut_forwarder_live(mac, device.get('ip')):
+                        if mac:
+                            self.percent_cut_device_mac = mac
+                        if self._percent_cut_forwarder_live(mac, device.get('ip')):
+                            try:
+                                self.killer.reassert_poison(device)
+                            except Exception:
+                                pass
+                        else:
+                            # Still ON but forwarder died — re-arm only if OFF did not win.
+                            if self._pctcut_start_cancelled(pct_gen):
+                                return
                             if not self.killer.apply_percent_cut(
                                 device, pass_percent=allow_pct
                             ):
-                                preapplied = False
+                                click_preapplied = False
                             if self._pctcut_start_cancelled(pct_gen):
                                 self._pctcut_undo_cancelled_arm(device)
                                 return
-                    if not preapplied:
+                    if not click_preapplied:
                         if self._pctcut_start_cancelled(pct_gen):
                             return
                         device = self._prepare_victim_for_impairment(dict(device), fast=True)
@@ -362,7 +382,10 @@ class ImpairmentPctCutMixin:
                         mac = str(device.get('mac') or '').strip()
                         if self._pctcut_start_cancelled(pct_gen):
                             return
-                        self.percent_cut_device_mac = mac
+                        if mac:
+                            self.percent_cut_device_mac = mac
+                        if self._pctcut_start_cancelled(pct_gen):
+                            return
                         if not self.killer.apply_percent_cut(device, pass_percent=allow_pct):
                             self.percent_cut_active = False
                             self.percent_cut_device_mac = None
@@ -381,6 +404,8 @@ class ImpairmentPctCutMixin:
                         if self._pctcut_start_cancelled(pct_gen):
                             self._pctcut_undo_cancelled_arm(device)
                             return
+                    if self._pctcut_start_cancelled(pct_gen):
+                        return
                     self._log_mitm_arm_status(device, action='Percent Cut')
                     resolved_ip = clumsy_ics_resolve_victim_ip(device, self.scanner) or str(
                         device.get('ip') or ''

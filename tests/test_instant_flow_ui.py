@@ -86,6 +86,8 @@ class TestInstantFlowUi(unittest.TestCase):
         toggle = method_src('togglePercentCut')
         self.assertIn('_pctcut_undo_cancelled_arm', toggle)
         self.assertIn('_pctcut_start_cancelled', toggle)
+        self.assertIn('click_preapplied', toggle)
+        self.assertIn('reassert_poison', toggle)
 
     def test_kill_paints_before_schedule(self) -> None:
         src = self._main_py()

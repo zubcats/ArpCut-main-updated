@@ -82,6 +82,14 @@ class TestPercentCutKill(unittest.TestCase):
         self.assertIn("_ignore_duplicate_toggle_edge('pctcut'", toggle)
         self.assertIn('_pctcut_undo_cancelled_arm', toggle)
         self.assertIn('_pctcut_start_cancelled', toggle)
+        # Quick OFF: deferred must use click-time preapplied latch (not live flag
+        # cleared by stop), and must not re-kill when forwarder is already live.
+        self.assertIn('click_preapplied', toggle)
+        self.assertIn('reassert_poison', toggle)
+        self.assertNotIn(
+            'pct_preapplied and bool(\n                    getattr(self, \'_pctcut_preapplied\'',
+            toggle,
+        )
 
     @staticmethod
     def _forwarder_py() -> str:
