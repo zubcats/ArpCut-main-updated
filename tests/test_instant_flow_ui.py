@@ -69,10 +69,17 @@ class TestInstantFlowUi(unittest.TestCase):
     def test_percent_cut_off_paints_before_release(self) -> None:
         stop = method_src('stopPercentCut')
         self.assertLess(
+            stop.index('_pctcut_instant_resume'),
+            stop.index('_updatePercentCutButtonState()'),
+        )
+        self.assertLess(
             stop.index('_updatePercentCutButtonState()'),
             stop.index('QTimer.singleShot(0, _release_on_gui)'),
         )
         self.assertNotIn('_release_pctcut_victim_immediate', stop.split('def _release_on_gui')[0])
+        release = method_src('_release_pctcut_victim_immediate')
+        self.assertIn('join_timeout=0.05', release)
+        self.assertNotIn('_ics_emergency_release', release)
 
     def test_kill_paints_before_schedule(self) -> None:
         src = self._main_py()

@@ -621,6 +621,26 @@ class Killer:
     def disable_percent_cut(self, mac):
         self._stop_forwarder(mac)
 
+    def resume_percent_cut_live(self, mac) -> bool:
+        """Set forwarder to 100% pass without stopping Npcap (instant OFF feel)."""
+        mac = str(mac or '').strip()
+        if not mac:
+            return False
+        fw = self.forwarders.get(mac)
+        if fw is None:
+            return False
+        try:
+            if hasattr(fw, 'pass_all_live'):
+                fw.pass_all_live()
+            else:
+                fw.pass_from_victim_pct = 100
+                fw.pass_to_victim_pct = 100
+                fw.drop_from_victim = False
+                fw.drop_to_victim = False
+            return True
+        except Exception:
+            return False
+
     def apply_link_shaping(
         self,
         victim,

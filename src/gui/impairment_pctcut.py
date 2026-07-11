@@ -338,7 +338,7 @@ class ImpairmentPctCutMixin:
 
 
     def stopPercentCut(self, log=True):
-        """Paint OFF immediately; defer ARP/WinDivert teardown (Dupe/Kill parity)."""
+        """Paint OFF immediately; resume traffic on this stack; defer Npcap/ARP teardown."""
         prev_mac = self.percent_cut_device_mac
         prev_ip = getattr(self, 'percent_cut_device_ip', None)
         was_ui_on = bool(self.percent_cut_active)
@@ -348,6 +348,11 @@ class ImpairmentPctCutMixin:
         self.percent_cut_device_mac = None
         self.percent_cut_device_ip = None
         self._pctcut_preapplied = False
+        # Instant full-pass before chrome — Dupe/Lag feel; sniffer stop comes later.
+        try:
+            self._pctcut_instant_resume(prev_mac, prev_ip)
+        except Exception:
+            pass
         # Optimistic chrome first — do not run unkill/reinforce on this call stack.
         self._updatePercentCutButtonState()
         self._refresh_flow_toggle_ui(fast=True)
@@ -373,16 +378,7 @@ class ImpairmentPctCutMixin:
             if want_log:
                 if victim:
                     ip = str(victim.get('ip') or snap_ip or '')
-                    still = self._percent_cut_forwarder_live(
-                        str(victim.get('mac') or ''), ip
-                    )
-                    if still:
-                        self.log(
-                            f'Percent Cut OFF: cut still active on {ip} — toggle again',
-                            'red',
-                        )
-                    else:
-                        self.log('Percent Cut OFF for ' + ip, UI_LOG_RESTORE_FG)
+                    self.log('Percent Cut OFF for ' + ip, UI_LOG_RESTORE_FG)
                 elif showed_on:
                     self.log('Percent Cut OFF', UI_LOG_RESTORE_FG)
             self._refresh_flow_toggle_ui(fast=True)

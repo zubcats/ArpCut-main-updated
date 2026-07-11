@@ -209,17 +209,48 @@ class MitmForwarder:
             )
             self._delay_thread.start()
 
+    def pass_all_live(self) -> None:
+        """Resume full forwarding without stopping the sniffer (instant Percent Cut OFF)."""
+        self.drop_from_victim = False
+        self.drop_to_victim = False
+        self.pass_from_victim_pct = 100
+        self.pass_to_victim_pct = 100
+        self.loss_pct_from_victim = 0
+        self.loss_pct_to_victim = 0
+        self.delay_ms_from_victim = 0
+        self.delay_ms_to_victim = 0
+        self.jitter_ms_from_victim = 0
+        self.jitter_ms_to_victim = 0
+        self.max_kbps_from_victim = 0.0
+        self.max_kbps_to_victim = 0.0
+        self._delay_event.set()
+        with self._delay_lock:
+            self._delay_heap.clear()
+
     def stop(self):
         self.running = False
         self._delay_event.set()
         with self._delay_lock:
             self._delay_heap.clear()
-        if self.sniffer:
+        sniffer = self.sniffer
+        self.sniffer = None
+        if sniffer is not None:
+            # AsyncSniffer.stop() can block the GUI for hundreds of ms — never join it here.
+            def _stop_sniff():
+                try:
+                    sniffer.stop()
+                except Exception:
+                    pass
+
             try:
-                self.sniffer.stop()
+                threading.Thread(
+                    target=safe_daemon_target(_stop_sniff), daemon=True
+                ).start()
             except Exception:
-                pass
-            self.sniffer = None
+                try:
+                    sniffer.stop()
+                except Exception:
+                    pass
         # Close persistent socket
         if self._socket:
             try:
@@ -230,7 +261,7 @@ class MitmForwarder:
         thr = getattr(self, '_delay_thread', None)
         if thr is not None and thr.is_alive():
             try:
-                thr.join(timeout=0.75)
+                thr.join(timeout=0.05)
             except Exception:
                 pass
         self._delay_thread = None

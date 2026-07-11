@@ -57,16 +57,25 @@ class TestPercentCutKill(unittest.TestCase):
     def test_stop_percent_cut_uses_fast_unkill(self) -> None:
         src = self._main_py()
         stop = method_src('stopPercentCut')
+        self.assertIn('_pctcut_instant_resume', stop)
         self.assertIn('_release_pctcut_victim_immediate', stop)
-        self.assertIn('_percent_cut_forwarder_live', stop)
         self.assertIn('QTimer.singleShot(0, _release_on_gui)', stop)
-        # UI must clear before deferred network teardown (same pattern as Dupe/Kill OFF).
+        # Resume + UI must clear before deferred network teardown.
+        resume = stop.index('_pctcut_instant_resume')
         paint = stop.index('_updatePercentCutButtonState()')
         defer = stop.index('QTimer.singleShot(0, _release_on_gui)')
+        self.assertLess(resume, paint)
         self.assertLess(paint, defer)
-        release = stop[stop.index('def _release_on_gui'): defer]
-        self.assertIn('_release_pctcut_victim_immediate', release)
-        self.assertIn('_percent_cut_ui_shows_on', methods_through('_updatePercentCutButtonState', '_refresh_flow_toggle_ui'))
+        release = method_src('_release_pctcut_victim_immediate')
+        self.assertIn('_schedule_pctcut_off_reinforce', release)
+        self.assertNotIn('reinforce_restore', release)
+        self.assertIn('pass_all_live', self._killer_py() + self._forwarder_py())
+
+    @staticmethod
+    def _forwarder_py() -> str:
+        path = os.path.join(_SRC, 'networking', 'forwarder.py')
+        with open(path, encoding='utf-8') as fh:
+            return fh.read()
 
     def test_forwarder_percent_pass_is_stochastic(self) -> None:
         from networking.forwarder import MitmForwarder
