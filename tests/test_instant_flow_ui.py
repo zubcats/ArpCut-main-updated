@@ -51,6 +51,20 @@ class TestInstantFlowUi(unittest.TestCase):
         ]
         self.assertNotIn('_await_mitm_teardown_thread', toggle)
         self.assertNotIn('stopLagSwitch', toggle)
+        self.assertNotIn('_resolve_flow_start_device', toggle)
+
+    def test_percent_cut_instant_apply_before_deferred(self) -> None:
+        src = self._main_py()
+        start = src[
+            src.index('def togglePercentCut'): src.index('QTimer.singleShot(0, _pctcut_deferred_start)')
+        ]
+        self.assertIn('_pctcut_instant_apply', start)
+        self.assertLess(start.index('_pctcut_instant_apply'), start.index('_pctcut_start_gen'))
+        deferred = src[
+            src.index('def _pctcut_deferred_start'): src.index('QTimer.singleShot(0, _pctcut_deferred_start)')
+        ]
+        self.assertNotIn('_await_mitm_teardown_thread', deferred)
+        self.assertIn('_resolve_flow_start_device', deferred)
 
     def test_percent_cut_off_paints_before_release(self) -> None:
         stop = method_src('stopPercentCut')

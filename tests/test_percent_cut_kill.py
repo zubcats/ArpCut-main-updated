@@ -35,8 +35,17 @@ class TestPercentCutKill(unittest.TestCase):
         src = self._killer_py()
         block = src[src.index('def apply_percent_cut'): src.index('def disable_percent_cut', src.index('def apply_percent_cut'))]
         self.assertIn('traffic_cut=False', block)
+        self.assertIn('wait_after=0.0', block)
         self.assertIn('return False', block)
         self.assertIn('return bool(fw', block)
+
+    def test_pctcut_instant_apply_helper_exists(self) -> None:
+        src = self._main_py()
+        self.assertIn('def _pctcut_instant_apply', src)
+        helper = src[src.index('def _pctcut_instant_apply'): src.index('def _release_dupe_victim_immediate')]
+        self.assertIn('gate.apply_percent_cut', helper)
+        self.assertIn('apply_percent_cut(dev, pass_percent=allow_pct)', helper)
+        self.assertNotIn('traffic_cut=True', helper)
 
     def test_toggle_percent_cut_stops_when_ui_shows_on(self) -> None:
         src = self._main_py()

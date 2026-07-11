@@ -586,7 +586,8 @@ class Killer:
         if not mac:
             return False
         if mac not in self.killed:
-            self.kill(victim, wait_after=0.08, traffic_cut=False)
+            # 0.0: Percent Cut ON must feel instant (Lag/Kill preblock parity).
+            self.kill(victim, wait_after=0.0, traffic_cut=False)
         else:
             self._stop_forwarder(mac)
         pass_percent = max(0, min(100, int(pass_percent)))

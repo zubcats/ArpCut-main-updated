@@ -24,7 +24,7 @@ class TestPercentCutCrashFix(unittest.TestCase):
         src = self._main_py()
         toggle = methods_through('togglePercentCut', 'stopPercentCut')
         deferred = toggle[toggle.index('def _pctcut_deferred_start'):]
-        self.assertIn('_clear_explicit_kill_for_flow(dict(pct_device))', deferred)
+        self.assertIn('_clear_explicit_kill_for_flow(dict(device))', deferred)
         self.assertNotIn('_run_kill_command(mac, dev, turn_on=False', deferred)
 
     def test_clear_kill_skips_unkill_for_active_percent_cut_victim(self) -> None:
@@ -43,15 +43,23 @@ class TestPercentCutCrashFix(unittest.TestCase):
         src = self._main_py()
         toggle = methods_through('togglePercentCut', 'stopPercentCut')
         deferred = toggle[toggle.index('def _pctcut_deferred_start'): toggle.index('QTimer.singleShot(0, _pctcut_deferred_start)')]
-        mac_bind = deferred.index("mac = str(pct_device.get('mac')")
+        mac_bind = deferred.index("mac = str(device.get('mac')")
         lag_check = deferred.index('self.lag_device_mac == mac')
         self.assertLess(mac_bind, lag_check)
 
-    def test_toggle_validates_mac_and_ip_after_resolve(self) -> None:
+    def test_toggle_validates_mac_and_ip_before_paint(self) -> None:
         src = self._main_py()
         toggle = methods_through('togglePercentCut', 'stopPercentCut')
+        paint = toggle.index("_paint_flow_start_ui('pctcut', device)")
+        self.assertLess(toggle.lower().index('cannot percent cut'), paint)
         self.assertIn('_resolve_flow_start_device', toggle)
-        self.assertIn('cannot percent cut', toggle.lower())
+        deferred = toggle[toggle.index('def _pctcut_deferred_start'):]
+        self.assertIn('_resolve_flow_start_device', deferred)
+        # Slow resolve must not run before optimistic paint.
+        self.assertNotIn(
+            '_resolve_flow_start_device',
+            toggle[:paint],
+        )
 
 
 if __name__ == '__main__':

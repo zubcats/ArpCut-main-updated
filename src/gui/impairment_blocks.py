@@ -115,6 +115,65 @@ class ImpairmentBlocksMixin:
             device, getattr(self, 'lag_direction', 'both'), flow='Lag'
         )
 
+    def _pctcut_instant_apply(self, device, cut_pct: int) -> bool:
+        """
+        Apply the Percent Cut ratio on click — before deferred prep / cross-flow
+        teardown. Uses partial cut (not full Kill pause) so low % cuts stay honest.
+        """
+        self._pctcut_preapplied = False
+        dev = dict(device) if isinstance(device, dict) else {}
+        ip = str(dev.get('ip') or '').strip()
+        if not ip or not _is_valid_ip(ip):
+            return False
+        try:
+            cut_pct = max(1, min(100, int(cut_pct)))
+        except Exception:
+            cut_pct = 100
+        allow_pct = max(0, 100 - cut_pct)
+        plan = self._impairment_plan_for(dev)
+        if plan.use_windivert or plan.is_ics_downstream:
+            if not clumsy_ics_lag_can_use_windivert(dev, self.scanner):
+                return False
+            if clumsy_mode_enabled() and not victim_on_clumsy_ics_subnet(ip):
+                rip = str(clumsy_ics_resolve_victim_ip(dev, self.scanner) or '').strip()
+                if rip and victim_on_clumsy_ics_subnet(rip):
+                    dev['ip'] = rip
+                    ip = rip
+            if not victim_on_clumsy_ics_subnet(ip):
+                return False
+            try:
+                if not self._ensure_ics_lag_gate(dev, 'both'):
+                    return False
+                gate = getattr(self, '_ics_lag_gate', None)
+                if gate is None:
+                    return False
+                if hasattr(gate, 'clear_blocking_pause'):
+                    gate.clear_blocking_pause()
+                else:
+                    gate.set_blocking(False)
+                gate.apply_percent_cut(cut_pct)
+                self._pctcut_preapplied = True
+                return True
+            except Exception:
+                self._pctcut_preapplied = False
+                return False
+        if plan.use_arp_mitm:
+            mac = str(dev.get('mac') or '').strip()
+            if not mac:
+                return False
+            try:
+                self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
+                self.killer.iface = self.scanner.iface
+                if not self.killer.l2_socket_ready():
+                    self.killer.prewarm_l2_socket(join_ms=120)
+                ok = bool(self.killer.apply_percent_cut(dev, pass_percent=allow_pct))
+                self._pctcut_preapplied = ok
+                return ok
+            except Exception:
+                self._pctcut_preapplied = False
+                return False
+        return False
+
 
     def _release_dupe_victim_immediate(self, device, *, refresh_context: bool = True) -> None:
         """Restore connectivity on the GUI thread (Lag Switch OFF parity).
