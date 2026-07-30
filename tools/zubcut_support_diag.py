@@ -2,17 +2,13 @@
 """
 ZubCut support diagnostic — adapter, Npcap/WinPcap, MITM, Clumsy/WinDivert, firewall.
 
-Writes a screenshot-friendly .txt (and .json) to the Desktop by default.
+Standalone repo helper (not shipped inside ZubCut.exe). Writes a screenshot-friendly
+.txt (and .json) to the Desktop by default.
 
-Repo:
   py tools/zubcut_support_diag.py
   py tools/zubcut_support_diag.py --victim-ip 192.168.1.165
-
-Installed app:
-  ZubCut.exe --support-diag
-  ZubCut.exe --support-diag --victim-ip 192.168.1.165
-
-Or double-click: tools\\Run-ZubCut-Support-Diag.bat (elevates + opens the report).
+  tools\\Run-ZubCut-Support-Diag.bat   (elevates + opens the report)
+  tools\\ZubCut-Quick-Network-Diag.ps1 (no Python; Admin PowerShell)
 """
 from __future__ import annotations
 
@@ -802,8 +798,8 @@ def collect_report(
         recs.append('Reinstall ZubCut and keep "Clumsy mode" checked so WinDivert is installed.')
     if iface_sec.get('saved_iface', {}).get('wireless') and not clumsy_sec.get('mode_enabled'):
         recs.append(
-            'PC is on Wi‑Fi for home-LAN MITM — many modem/router setups block Wi‑Fi→wired PS5 cuts. '
-            'Try PC Ethernet + PS5 Wi‑Fi, or Clumsy hotspot.'
+            'PC adapter is Wi‑Fi — confirm Settings/saved NIC matches the live router path '
+            '(Me row IP == ipconfig), then rescan and Kill the live PS5 row.'
         )
     recs.append('Confirm the main table "Me" row IP matches ipconfig on the adapter you use for the router.')
     report['recommendations'] = recs
