@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 """
-ZubCut support diagnostic — checks adapter, Npcap, settings, MITM path, and firewall.
+ZubCut support diagnostic — adapter, Npcap/WinPcap, MITM, Clumsy/WinDivert, firewall.
 
-Writes a human-readable .txt log and machine-readable .json to send to support.
-Run from repo:  py tools/zubcut_support_diag.py
-Optional:      py tools/zubcut_support_diag.py --victim-ip 192.168.1.165
+Writes a screenshot-friendly .txt (and .json) to the Desktop by default.
+
+Repo:
+  py tools/zubcut_support_diag.py
+  py tools/zubcut_support_diag.py --victim-ip 192.168.1.165
+
+Installed app:
+  ZubCut.exe --support-diag
+  ZubCut.exe --support-diag --victim-ip 192.168.1.165
+
+Or double-click: tools\\Run-ZubCut-Support-Diag.bat (elevates + opens the report).
 """
 from __future__ import annotations
 
@@ -22,6 +30,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / 'src'
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+
+TOOL_VERSION = 2
 
 
 def _utc_stamp() -> str:
@@ -44,6 +54,125 @@ def is_admin() -> bool:
         return os.geteuid() == 0
     except AttributeError:
         return False
+
+
+def _reg_uninstall_display_names() -> list[dict[str, str]]:
+    """Installed programs that look like packet-capture stacks."""
+    if not sys.platform.startswith('win'):
+        return []
+    out: list[dict[str, str]] = []
+    try:
+        import winreg
+    except ImportError:
+        return out
+    roots = [
+        (winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+        ),
+    ]
+    needles = ('winpcap', 'npcap', 'win10pcap', 'nmap', 'wireshark')
+    seen: set[str] = set()
+    for hive, path in roots:
+        try:
+            base = winreg.OpenKey(hive, path)
+        except OSError:
+            continue
+        try:
+            i = 0
+            while True:
+                try:
+                    sub = winreg.EnumKey(base, i)
+                except OSError:
+                    break
+                i += 1
+                try:
+                    with winreg.OpenKey(base, sub) as key:
+                        name, _ = winreg.QueryValueEx(key, 'DisplayName')
+                except OSError:
+                    continue
+                display = str(name or '').strip()
+                low = display.lower()
+                if not display or not any(n in low for n in needles):
+                    continue
+                if display in seen:
+                    continue
+                seen.add(display)
+                out.append({'display_name': display, 'key': sub})
+        finally:
+            winreg.CloseKey(base)
+    return out
+
+
+def _winpcap_registry_present() -> dict[str, Any]:
+    """Detect classic WinPcap uninstall key used by the ZubCut installer."""
+    info: dict[str, Any] = {'uninstall_key_present': False, 'uninstall_string': None}
+    if not sys.platform.startswith('win'):
+        return info
+    try:
+        import winreg
+    except ImportError:
+        return info
+    for hive, path in (
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\WinPcapInst',
+        ),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\WinPcapInst',
+        ),
+    ):
+        try:
+            with winreg.OpenKey(hive, path) as key:
+                info['uninstall_key_present'] = True
+                try:
+                    val, _ = winreg.QueryValueEx(key, 'UninstallString')
+                    info['uninstall_string'] = str(val or '') or None
+                except OSError:
+                    pass
+                return info
+        except OSError:
+            continue
+    return info
+
+
+def _find_zubcut_install_dirs() -> list[str]:
+    candidates: list[str] = []
+    if getattr(sys, 'frozen', False):
+        candidates.append(os.path.dirname(sys.executable))
+    for env in ('ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA'):
+        base = os.environ.get(env) or ''
+        if not base:
+            continue
+        for name in ('ZubCut', 'zubcut'):
+            p = os.path.join(base, name)
+            if os.path.isdir(p) and p not in candidates:
+                candidates.append(p)
+    return candidates
+
+
+def _windivert_files_on_disk() -> dict[str, Any]:
+    found: list[dict[str, Any]] = []
+    dirs = _find_zubcut_install_dirs()
+    for base in dirs:
+        wd = os.path.join(base, 'windivert')
+        dll = os.path.join(wd, 'WinDivert.dll')
+        sysf = os.path.join(wd, 'WinDivert64.sys')
+        found.append(
+            {
+                'dir': wd,
+                'dll': os.path.isfile(dll),
+                'sys': os.path.isfile(sysf),
+                'complete': os.path.isfile(dll) and os.path.isfile(sysf),
+            }
+        )
+    return {
+        'install_dirs_checked': dirs,
+        'bundles': found,
+        'any_complete': any(b.get('complete') for b in found),
+    }
 
 
 def parse_ipconfig_windows(text: str) -> list[dict[str, str]]:
@@ -114,16 +243,18 @@ def collect_report(
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         'tool': 'zubcut_support_diag',
-        'tool_version': 1,
+        'tool_version': TOOL_VERSION,
         'timestamp_utc': _utc_stamp(),
         'platform': sys.platform,
         'python': sys.version.split()[0],
         'admin': is_admin(),
+        'frozen': bool(getattr(sys, 'frozen', False)),
         'cwd': os.getcwd(),
         'repo_root': str(ROOT),
         'issues': [],
         'sections': {},
         'recommendations': [],
+        'summary_lines': [],
     }
 
     # --- App / build info ---
@@ -170,6 +301,9 @@ def collect_report(
             'nickname_last_ip': nickname_last,
             'nicknames': nicknames,
             'clumsy_mode': bool(raw.get('clumsy_mode')),
+            'clumsy_topology': str(raw.get('clumsy_topology') or '') or None,
+            'count': raw.get('count'),
+            'threads': raw.get('threads'),
         }
         if not saved_iface:
             _add_issue(report, 'warn', 'iface_not_set', 'No network adapter saved in Settings.')
@@ -188,11 +322,30 @@ def collect_report(
             ipcfg = terminal('ipconfig', shell=True) or ''
             os_net['adapters'] = parse_ipconfig_windows(ipcfg)
             os_net['raw_line_count'] = len(ipcfg.splitlines())
+            os_net['has_ics_hotspot_137'] = any(
+                str(a.get('ipv4') or '').startswith('192.168.137.')
+                for a in os_net['adapters']
+            )
+            # Gateways from ipconfig (modem+router often shows multiple).
+            gws = re.findall(
+                r'Default Gateway[^:\r\n]*:\s*(\d{1,3}(?:\.\d{1,3}){3})',
+                ipcfg,
+                flags=re.I,
+            )
+            os_net['default_gateways'] = sorted(set(gws))
+            if len(os_net['default_gateways']) > 1:
+                _add_issue(
+                    report,
+                    'warn',
+                    'multiple_gateways',
+                    'Multiple default gateways detected (modem+router?). '
+                    'Confirm ZubCut Settings uses the LAN router adapter, not the modem.',
+                )
         except Exception as exc:
             os_net['error'] = str(exc)
     report['sections']['os_network'] = os_net
 
-    # --- Npcap ---
+    # --- Npcap / WinPcap ---
     npcap_sec: dict[str, Any] = {}
     if sys.platform.startswith('win'):
         try:
@@ -210,6 +363,27 @@ def collect_report(
                 )
         except Exception as exc:
             npcap_sec['error'] = str(exc)
+        npcap_sec['winpcap'] = _winpcap_registry_present()
+        npcap_sec['related_programs'] = _reg_uninstall_display_names()
+        if npcap_sec['winpcap'].get('uninstall_key_present'):
+            _add_issue(
+                report,
+                'critical',
+                'winpcap_installed',
+                'WinPcap is still installed — it conflicts with Npcap. Uninstall WinPcap, '
+                'reboot if asked, keep/install Npcap, then retry ZubCut.',
+            )
+        elif any(
+            'winpcap' in str(p.get('display_name') or '').lower()
+            or 'win10pcap' in str(p.get('display_name') or '').lower()
+            for p in npcap_sec.get('related_programs') or []
+        ):
+            _add_issue(
+                report,
+                'critical',
+                'winpcap_program_listed',
+                'WinPcap/Win10Pcap appears in Apps & Features — uninstall it (keep Npcap).',
+            )
     else:
         npcap_sec['note'] = 'Npcap check is Windows-only; macOS/Linux use libpcap.'
     report['sections']['npcap'] = npcap_sec
@@ -438,16 +612,95 @@ def collect_report(
             fw_sec['error'] = str(exc)
     report['sections']['firewall'] = fw_sec
 
-    # --- WinDivert (hotspot / ICS) ---
-    wd_sec: dict[str, Any] = {}
+    # --- Clumsy / ICS / WinDivert ---
+    clumsy_sec: dict[str, Any] = {
+        'mode_enabled': bool(settings_sec.get('clumsy_mode')),
+        'topology_setting': settings_sec.get('clumsy_topology'),
+        'hotspot_137_visible': bool(os_net.get('has_ics_hotspot_137')),
+    }
+    wd_sec: dict[str, Any] = _windivert_files_on_disk()
     if sys.platform.startswith('win'):
         try:
-            from tools.clumsy_inline import windivert_bundled_next_to_app, windivert_app_dir
+            from tools.clumsy_inline import (
+                windivert_bundled_next_to_app,
+                windivert_app_dir,
+                clumsy_bundle_offered,
+                clumsy_runtime_ready,
+            )
+            from tools.clumsy_ics import read_clumsy_ics_state
 
-            wd_sec['bundle_dir'] = windivert_app_dir()
-            wd_sec['bundle_complete'] = bool(windivert_bundled_next_to_app())
+            wd_sec['runtime_bundle_dir'] = windivert_app_dir()
+            wd_sec['runtime_bundle_complete'] = bool(windivert_bundled_next_to_app())
+            clumsy_sec['bundle_offered'] = bool(clumsy_bundle_offered())
+            clumsy_sec['runtime_ready'] = bool(clumsy_runtime_ready())
+            state = read_clumsy_ics_state() or {}
+            clumsy_sec['ics_state'] = {
+                'downstream_ipv4': state.get('downstream_ipv4'),
+                'downstream_name': state.get('downstream_name'),
+                'downstream_prefix': state.get('downstream_prefix'),
+                'topology': state.get('topology') or state.get('path'),
+            }
         except Exception as exc:
             wd_sec['error'] = str(exc)
+            clumsy_sec['error'] = str(exc)
+
+        if clumsy_sec.get('mode_enabled') and not wd_sec.get('any_complete') and not wd_sec.get(
+            'runtime_bundle_complete'
+        ):
+            _add_issue(
+                report,
+                'critical',
+                'windivert_missing',
+                'Clumsy mode is ON but WinDivert.dll/sys were not found under ZubCut\\windivert. '
+                'Reinstall ZubCut with "Clumsy mode" checked.',
+            )
+        if clumsy_sec.get('mode_enabled') and not clumsy_sec.get('hotspot_137_visible'):
+            _add_issue(
+                report,
+                'warn',
+                'no_hotspot_subnet',
+                'Clumsy mode is ON but no 192.168.137.x adapter is visible. '
+                'Turn Mobile Hotspot ON (or use Ethernet-console topology), wait for 192.168.137.1, rescan.',
+            )
+
+        # Live WinDivertOpen probe when we have a victim IP and admin.
+        probe_ip = ''
+        for ip in victim_ips_list[:8]:
+            if str(ip).startswith('192.168.137.') and ip.endswith('.1') is False:
+                probe_ip = ip
+                break
+        if not probe_ip and victim_ips_list:
+            probe_ip = victim_ips_list[0]
+        if not probe_ip and clumsy_sec.get('hotspot_137_visible'):
+            probe_ip = '192.168.137.2'
+        wd_sec['probe_ip'] = probe_ip or None
+        if report['admin'] and probe_ip and (
+            wd_sec.get('any_complete') or wd_sec.get('runtime_bundle_complete')
+        ):
+            try:
+                from tools.ics_windivert_shaper import probe_windivert_for_victim
+
+                ok, msg = probe_windivert_for_victim(probe_ip)
+                wd_sec['open_probe_ok'] = bool(ok)
+                wd_sec['open_probe_detail'] = msg
+                if not ok:
+                    _add_issue(
+                        report,
+                        'critical',
+                        'windivert_open_failed',
+                        f'WinDivert open failed for {probe_ip}: {msg}',
+                    )
+            except Exception as exc:
+                wd_sec['open_probe_error'] = str(exc)
+        elif clumsy_sec.get('mode_enabled') and not report['admin']:
+            _add_issue(
+                report,
+                'warn',
+                'windivert_probe_skipped',
+                'Skipped WinDivert open probe — re-run as Administrator.',
+            )
+
+    report['sections']['clumsy'] = clumsy_sec
     report['sections']['windivert'] = wd_sec
 
     # --- Capture probe (Npcap sniff + forwarder) ---
@@ -494,6 +747,14 @@ def collect_report(
                 except Exception as exc:
                     cap_sec.setdefault('l2_errors', []).append(str(exc))
             cap_sec['l2_ok'] = l2_ok
+            if sniff_ok and not l2_ok:
+                _add_issue(
+                    report,
+                    'critical',
+                    'l2_send_failed',
+                    'Npcap can sniff but L2 send failed — ARP Kill/Lag cannot inject poison. '
+                    'Reinstall Npcap (WinPcap API-compatible mode), run as Admin.',
+                )
         except Exception as exc:
             cap_sec['error'] = str(exc)
     elif not report['admin']:
@@ -512,6 +773,8 @@ def collect_report(
         recs.append('Re-run this diagnostic as Administrator for full capture and MITM checks.')
     if npcap_sec.get('installed') is False:
         recs.append('Install Npcap from https://npcap.com/ (enable your Wi‑Fi adapter).')
+    if any(i.get('code') in ('winpcap_installed', 'winpcap_program_listed') for i in report['issues']):
+        recs.append('Uninstall WinPcap/Win10Pcap completely, reboot, keep Npcap only.')
     if iface_sec.get('saved_iface') and not iface_sec['saved_iface'].get('matches_best_live'):
         recs.append(
             f"Settings → Network: select {iface_sec.get('best_live', {}).get('label', 'the live Wi‑Fi row')} → Apply → Rescan."
@@ -524,23 +787,106 @@ def collect_report(
         recs.append(
             'Restart ZubCut as Administrator — stale IP forwarding is cleared automatically on launch.'
         )
+    if clumsy_sec.get('mode_enabled') and not clumsy_sec.get('hotspot_137_visible'):
+        recs.append('For Clumsy: enable Mobile Hotspot, wait for 192.168.137.1, put PS5 on the hotspot Wi‑Fi, rescan.')
+    if any(i.get('code') == 'windivert_missing' for i in report['issues']):
+        recs.append('Reinstall ZubCut and keep "Clumsy mode" checked so WinDivert is installed.')
+    if iface_sec.get('saved_iface', {}).get('wireless') and not clumsy_sec.get('mode_enabled'):
+        recs.append(
+            'PC is on Wi‑Fi for home-LAN MITM — many modem/router setups block Wi‑Fi→wired PS5 cuts. '
+            'Try PC Ethernet + PS5 Wi‑Fi, or Clumsy hotspot.'
+        )
     recs.append('Confirm the main table "Me" row IP matches ipconfig on the adapter you use for the router.')
     report['recommendations'] = recs
-
+    report['summary_lines'] = _build_summary_lines(report)
     return report
+
+
+def _build_summary_lines(report: dict[str, Any]) -> list[str]:
+    """Short PASS/FAIL lines for screenshots (also stored in report JSON)."""
+    lines: list[str] = []
+    sec = report.get('sections') or {}
+    admin = bool(report.get('admin'))
+    lines.append(f"[{'PASS' if admin else 'FAIL'}] Running as Administrator")
+    npcap = sec.get('npcap') or {}
+    if 'installed' in npcap:
+        lines.append(f"[{'PASS' if npcap.get('installed') else 'FAIL'}] Npcap installed")
+    winpcap = (npcap.get('winpcap') or {}).get('uninstall_key_present')
+    related = npcap.get('related_programs') or []
+    has_wp = bool(winpcap) or any(
+        'winpcap' in str(p.get('display_name') or '').lower()
+        or 'win10pcap' in str(p.get('display_name') or '').lower()
+        for p in related
+    )
+    lines.append(f"[{'FAIL' if has_wp else 'PASS'}] WinPcap/Win10Pcap absent")
+    mitm = sec.get('mitm') or {}
+    gw_ok = bool(mitm.get('gateway_ip')) and bool(mitm.get('gateway_mac')) and not str(
+        mitm.get('gateway_mac') or ''
+    ).upper().startswith('FF:')
+    lines.append(f"[{'PASS' if gw_ok else 'FAIL'}] Gateway IP+MAC known")
+    if 'ip_forwarding_enabled' in mitm:
+        lines.append(
+            f"[{'FAIL' if mitm.get('ip_forwarding_enabled') else 'PASS'}] IP forwarding off"
+        )
+    cap = sec.get('capture_probe') or {}
+    if not cap.get('skipped') and admin:
+        lines.append(f"[{'PASS' if cap.get('sniffer_ok') else 'FAIL'}] Npcap sniffer")
+        lines.append(f"[{'PASS' if cap.get('l2_ok') else 'FAIL'}] Npcap L2 send")
+    clumsy = sec.get('clumsy') or {}
+    lines.append(f"[{'ON' if clumsy.get('mode_enabled') else 'OFF'}] Clumsy mode setting")
+    lines.append(
+        f"[{'PASS' if clumsy.get('hotspot_137_visible') else 'WARN'}] Hotspot 192.168.137.x visible"
+    )
+    wd = sec.get('windivert') or {}
+    wd_ok = bool(wd.get('any_complete') or wd.get('runtime_bundle_complete'))
+    lines.append(f"[{'PASS' if wd_ok else 'WARN'}] WinDivert bundle on disk")
+    if 'open_probe_ok' in wd:
+        lines.append(f"[{'PASS' if wd.get('open_probe_ok') else 'FAIL'}] WinDivert open probe")
+    victims = sec.get('victims') or []
+    live_victims = [v for v in victims if isinstance(v, dict) and v.get('mitm_live_ok')]
+    if victims:
+        lines.append(
+            f"[{'PASS' if live_victims else 'WARN'}] Victim/PS5 live for MITM "
+            f"({len(live_victims)}/{len([v for v in victims if isinstance(v, dict) and not v.get('error')])})"
+        )
+    crit = sum(1 for i in report.get('issues') or [] if i.get('severity') == 'critical')
+    warn = sum(1 for i in report.get('issues') or [] if i.get('severity') == 'warn')
+    lines.append(f"[INFO] Issues: {crit} critical, {warn} warnings")
+    return lines
 
 
 def format_text_report(report: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append('=' * 72)
     lines.append(' ZubCut Support Diagnostic')
+    lines.append(f" tool_version={report.get('tool_version')}   frozen={report.get('frozen')}")
     lines.append('=' * 72)
     lines.append(f"Generated (UTC): {report.get('timestamp_utc')}")
     lines.append(f"Platform: {report.get('platform')}   Python: {report.get('python')}")
-    lines.append(f"Administrator: {'yes' if report.get('admin') else 'NO'}")
+    lines.append(f"Administrator: {'yes' if report.get('admin') else 'NO — re-run elevated'}")
     lines.append('')
-    lines.append('Send this .txt file AND the matching .json to ZubCut support.')
+    lines.append('>>> SCREENSHOT THIS SUMMARY (and Issues / Recommended fixes) <<<')
+    lines.append('-' * 72)
+    for row in report.get('summary_lines') or _build_summary_lines(report):
+        lines.append(f"  {row}")
+    lines.append('-' * 72)
     lines.append('')
+    lines.append('Also send the matching .json file if asked.')
+    lines.append('')
+
+    issues = report.get('issues') or []
+    if issues:
+        lines.append('--- Issues found ---')
+        for item in issues:
+            lines.append(f"  [{item.get('severity')}] {item.get('code')}: {item.get('message')}")
+        lines.append('')
+
+    recs = report.get('recommendations') or []
+    if recs:
+        lines.append('--- Recommended fixes ---')
+        for i, r in enumerate(recs, 1):
+            lines.append(f"  {i}. {r}")
+        lines.append('')
 
     app = report.get('sections', {}).get('application', {})
     if app:
@@ -553,6 +899,9 @@ def format_text_report(report: dict[str, Any]) -> str:
     settings = report.get('sections', {}).get('settings', {})
     lines.append('--- ZubCut settings ---')
     lines.append(f"  saved adapter: {settings.get('iface_saved') or '(not set)'}")
+    lines.append(f"  clumsy_mode: {settings.get('clumsy_mode')}")
+    lines.append(f"  clumsy_topology: {settings.get('clumsy_topology')}")
+    lines.append(f"  device count / threads: {settings.get('count')} / {settings.get('threads')}")
     if settings.get('nicknames'):
         lines.append(f"  nicknames: {json.dumps(settings.get('nicknames'), ensure_ascii=False)}")
     if settings.get('nickname_last_ip'):
@@ -565,6 +914,9 @@ def format_text_report(report: dict[str, Any]) -> str:
     lines.append('--- Windows ipconfig (live adapters) ---')
     for ad in os_net.get('adapters') or []:
         lines.append(f"  {ad.get('name')}: IPv4 {ad.get('ipv4') or '(none)'}")
+    if os_net.get('default_gateways'):
+        lines.append(f"  default gateways: {', '.join(os_net['default_gateways'])}")
+    lines.append(f"  hotspot 192.168.137.x visible: {os_net.get('has_ics_hotspot_137')}")
     lines.append('')
 
     iface = report.get('sections', {}).get('adapters', {})
@@ -578,7 +930,10 @@ def format_text_report(report: dict[str, Any]) -> str:
         lines.append(f"  >> recommended: {best.get('label')}")
     saved = iface.get('saved_iface') or {}
     if saved:
-        lines.append(f"  >> saved in Settings: {saved.get('label')} (matches recommended: {saved.get('matches_best_live')})")
+        lines.append(
+            f"  >> saved in Settings: {saved.get('label')} "
+            f"(matches recommended: {saved.get('matches_best_live')})"
+        )
     lines.append('')
 
     mitm = report.get('sections', {}).get('mitm', {})
@@ -613,24 +968,43 @@ def format_text_report(report: dict[str, Any]) -> str:
 
     npcap = report.get('sections', {}).get('npcap', {})
     lines.append(f"--- Npcap installed: {npcap.get('installed')} ---")
+    wp = npcap.get('winpcap') or {}
+    lines.append(f"  WinPcap uninstall key: {wp.get('uninstall_key_present')}")
+    for prog in npcap.get('related_programs') or []:
+        lines.append(f"  related program: {prog.get('display_name')}")
     cap = report.get('sections', {}).get('capture_probe', {})
     if not cap.get('skipped'):
         lines.append(f"  sniffer test: {cap.get('sniffer_ok')}   L2 send test: {cap.get('l2_ok')}")
     lines.append('')
 
-    issues = report.get('issues') or []
-    if issues:
-        lines.append('--- Issues found ---')
-        for item in issues:
-            lines.append(f"  [{item.get('severity')}] {item.get('code')}: {item.get('message')}")
-        lines.append('')
+    clumsy = report.get('sections', {}).get('clumsy', {})
+    lines.append('--- Clumsy / Hotspot ---')
+    lines.append(f"  mode enabled: {clumsy.get('mode_enabled')}")
+    lines.append(f"  topology setting: {clumsy.get('topology_setting')}")
+    lines.append(f"  hotspot 137 visible: {clumsy.get('hotspot_137_visible')}")
+    lines.append(f"  runtime ready: {clumsy.get('runtime_ready')}")
+    ics = clumsy.get('ics_state') or {}
+    if ics:
+        lines.append(
+            f"  ics state: down={ics.get('downstream_ipv4')} "
+            f"name={ics.get('downstream_name')} topo={ics.get('topology')}"
+        )
+    lines.append('')
 
-    recs = report.get('recommendations') or []
-    if recs:
-        lines.append('--- Recommended fixes ---')
-        for i, r in enumerate(recs, 1):
-            lines.append(f"  {i}. {r}")
-        lines.append('')
+    wd = report.get('sections', {}).get('windivert', {})
+    lines.append('--- WinDivert ---')
+    lines.append(f"  any bundle complete: {wd.get('any_complete') or wd.get('runtime_bundle_complete')}")
+    for b in wd.get('bundles') or []:
+        lines.append(
+            f"  {b.get('dir')}: dll={b.get('dll')} sys={b.get('sys')} complete={b.get('complete')}"
+        )
+    if wd.get('probe_ip'):
+        lines.append(f"  open probe IP: {wd.get('probe_ip')}")
+    if 'open_probe_ok' in wd:
+        lines.append(f"  open probe: {wd.get('open_probe_ok')} — {wd.get('open_probe_detail')}")
+    if wd.get('open_probe_error'):
+        lines.append(f"  open probe error: {wd.get('open_probe_error')}")
+    lines.append('')
 
     lines.append('=' * 72)
     return '\n'.join(lines)

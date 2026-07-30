@@ -133,6 +133,8 @@ def build():
         cmd.extend(['--add-data', 'exe/manuf;manuf'])
         cmd.extend(['--add-data', 'exe/zubcut_icon.png;.'])
         cmd.extend(['--add-data', 'exe/zubcut_shell.ico;.'])
+        # Support diagnostic (ZubCut.exe --support-diag) — beside / inside onedir payload.
+        cmd.extend(['--add-data', 'tools/zubcut_support_diag.py;.'])
         cmd.extend(['--collect-data', 'certifi'])
         _ico = _windows_pyinstaller_icon_path()
         cmd.extend(['--icon', os.path.relpath(_ico, _ROOT).replace('\\', '/')])

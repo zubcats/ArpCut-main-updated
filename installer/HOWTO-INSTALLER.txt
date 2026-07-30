@@ -19,6 +19,12 @@ This installer build:
   - Executable:   ZubCut.exe
   - Autostart:    registry value "ZubCut"
 
+Support diagnostic (customer screenshot):
+  - Installed app:  ZubCut.exe --support-diag
+                    ZubCut.exe --support-diag --victim-ip 192.168.1.165
+  - Repo helper:    tools\Run-ZubCut-Support-Diag.bat  (elevates, opens Desktop .txt)
+  - No Python:      tools\ZubCut-Quick-Network-Diag.ps1  (right-click → Run with PowerShell)
+
 One-time setup
 --------------
 1. Python 3.8+ and project deps:
