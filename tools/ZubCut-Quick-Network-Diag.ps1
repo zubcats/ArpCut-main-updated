@@ -51,8 +51,25 @@ $wdOk = ($wdBundles | Where-Object Complete).Count -gt 0
 
 $ipcfg = ipconfig | Out-String
 $has137 = $ipcfg -match '192\.168\.137\.'
-$gateways = [regex]::Matches($ipcfg, 'Default Gateway[^:\r\n]*:\s*(\d{1,3}(?:\.\d{1,3}){3})') |
-    ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+# Match English + common localized labels (FR: Passerelle par défaut, DE: Standardgateway, …).
+$gateways = [regex]::Matches(
+    $ipcfg,
+    '(?i)(?:Default Gateway|Passerelle par d[eé]faut|Standardgateway|Puerta de enlace predeterminada|Gateway predefinito)[^:\r\n]*:\s*(\d{1,3}(?:\.\d{1,3}){3})'
+) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+# Fallback: any IPv4 on a gateway-ish line (covers odd locales / spacing).
+if (-not $gateways) {
+    $gateways = [regex]::Matches(
+        $ipcfg,
+        '(?i)(?:gateway|passerelle|gateway)[^:\r\n]*:\s*(\d{1,3}(?:\.\d{1,3}){3})'
+    ) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+}
+# Prefer Get-NetRoute when available (locale-independent).
+try {
+    $routeGws = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+        Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } |
+        Select-Object -ExpandProperty NextHop -Unique
+    if ($routeGws) { $gateways = @($routeGws | Sort-Object -Unique) }
+} catch {}
 
 $adapters = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Where-Object { $_.IPAddress -notlike '127.*' } |

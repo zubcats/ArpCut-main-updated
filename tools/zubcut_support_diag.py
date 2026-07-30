@@ -327,11 +327,20 @@ def collect_report(
                 for a in os_net['adapters']
             )
             # Gateways from ipconfig (modem+router often shows multiple).
+            # Include localized labels — FR "Passerelle par défaut" was a false "(none)".
             gws = re.findall(
-                r'Default Gateway[^:\r\n]*:\s*(\d{1,3}(?:\.\d{1,3}){3})',
+                r'(?:Default Gateway|Passerelle par d[eé]faut|Standardgateway|'
+                r'Puerta de enlace predeterminada|Gateway predefinito)'
+                r'[^:\r\n]*:\s*(\d{1,3}(?:\.\d{1,3}){3})',
                 ipcfg,
                 flags=re.I,
             )
+            if not gws:
+                gws = re.findall(
+                    r'(?:gateway|passerelle)[^:\r\n]*:\s*(\d{1,3}(?:\.\d{1,3}){3})',
+                    ipcfg,
+                    flags=re.I,
+                )
             os_net['default_gateways'] = sorted(set(gws))
             if len(os_net['default_gateways']) > 1:
                 _add_issue(
