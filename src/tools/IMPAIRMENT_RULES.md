@@ -3,12 +3,14 @@
 This file records failures seen across multiple fix commits. Check here before
 changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 
-## Home LAN ARP (PC on Wi‑Fi)
+## Home LAN ARP
 
 - **Wrong:** Broadcast gateway impersonation (`Ether(dst=ff:ff:ff…)` with `psrc=router`)
-  on Wi‑Fi Kill/Lag — other Wi‑Fi clients learn “PC = gateway” and lose internet while a
-  wired PS5 may stay up (modem+router / Wi‑Fi↔Ethernet isolation).
-- **Right:** Unicast poison only (`_poison_frames` → victim MAC + router MAC).
+  on Kill/Lag — every listening client learns “PC = gateway” and can lose internet.
+- **Wrong:** Unicast ARP *reply* (`op=2`) only — some stacks ignore unsolicited replies,
+  so Kill logs ON but never cuts.
+- **Right:** Unicast poison only (`_poison_frames` → victim MAC + router MAC), with both
+  ARP *request* (`op=1`) and *reply* (`op=2`) to each.
 
 ## One stack per path (from `ics_impairment_policy.py`)
 
