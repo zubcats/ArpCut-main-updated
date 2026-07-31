@@ -29,9 +29,11 @@ class TestKillPoisonFrames(unittest.TestCase):
         block = self._poison_block()
         self.assertIn('op=1', block)
         self.assertIn('op=2', block)
-        # Both ends of the MITM pair get request + reply.
+        # Both ends of the MITM pair get request + reply; router-side is reinforced.
         self.assertGreaterEqual(block.count('op=1'), 2)
         self.assertGreaterEqual(block.count('op=2'), 2)
+        self.assertIn('to_router_req', block)
+        self.assertGreaterEqual(block.count('to_router_req'), 2)
 
 
 if __name__ == '__main__':

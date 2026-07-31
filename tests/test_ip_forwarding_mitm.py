@@ -23,15 +23,19 @@ class TestIpForwardingMitm(unittest.TestCase):
             k._stop_forwarder('AA:BB:CC:DD:EE:FF')
         enable.assert_not_called()
 
-    def test_stop_forwarder_enables_when_fully_idle(self) -> None:
+    def test_stop_forwarder_keeps_forwarding_off_when_idle(self) -> None:
         from networking.killer import Killer
 
         k = Killer.__new__(Killer)
         k.forwarders = {}
         k.killed = {}
-        with mock.patch('networking.killer.enable_ip_forwarding') as enable:
+        with (
+            mock.patch('networking.killer.enable_ip_forwarding') as enable,
+            mock.patch('networking.killer.disable_ip_forwarding') as disable,
+        ):
             k._stop_forwarder('AA:BB:CC:DD:EE:FF')
-        enable.assert_called_once()
+        enable.assert_not_called()
+        disable.assert_called_once()
 
     def test_kill_disables_forwarding_on_lan_path(self) -> None:
         from networking.killer import Killer
@@ -55,3 +59,30 @@ class TestIpForwardingMitm(unittest.TestCase):
         ):
             Killer.kill(k, victim, wait_after=0, traffic_cut=True, ics_mode=False)
         disable.assert_called_once()
+
+    def test_set_windows_ip_forwarding_uses_per_iface_not_global_netsh(self) -> None:
+        path = os.path.join(_SRC, 'networking', 'killer.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('def _set_windows_ip_forwarding', src)
+        self.assertIn('Set-NetIPInterface', src)
+        self.assertIn('-Forwarding', src)
+        # Old invalid global netsh command must not come back (silent no-op → leaky Kill).
+        self.assertNotIn("'set', 'global', 'forwarding=", src)
+        self.assertNotIn('["netsh", "interface", "ipv4", "set", "global"', src)
+
+    def test_startup_does_not_reenable_forwarding_after_clean(self) -> None:
+        path = os.path.join(_SRC, 'zubcut.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        # Startup cleans forwarding off; post-init must not turn it back on.
+        self.assertIn('_ensure_clean_network_on_startup', src)
+        block = src[src.index('GUI.scanner.init()') : src.index('reconcile_scanner_with_settings_iface')]
+        self.assertNotIn('enable_ip_forwarding', block)
+
+    def test_killer_init_does_not_enable_forwarding(self) -> None:
+        path = os.path.join(_SRC, 'networking', 'killer.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        init = src[src.index('def __init__(self, router=DUMMY_ROUTER)') : src.index('def _next_op_seq')]
+        self.assertNotIn('enable_ip_forwarding()', init)

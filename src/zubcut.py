@@ -374,9 +374,9 @@ if __name__ == "__main__":
     # Initialize scanner and ensure interface is valid
     GUI.scanner.init()
     try:
-        from networking.killer import enable_ip_forwarding
-
-        enable_ip_forwarding()
+        # Do NOT re-enable kernel IP forwarding here. Startup already called
+        # ensure_home_lan_mitm_forwarding_off(); turning forwarding back on lets
+        # Windows relay MITM'd frames and makes Kill only a partial cut.
         GUI.scanner.refresh_local_topology()
     except Exception:
         pass
