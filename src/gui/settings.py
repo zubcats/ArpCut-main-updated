@@ -8,6 +8,9 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QVBoxLayout,
+    QGridLayout,
+    QScrollArea,
+    QWidget,
     QSizePolicy,
     QProgressDialog,
 )
@@ -90,6 +93,25 @@ def _coerce_scan_counts(s: dict) -> dict:
         except (TypeError, ValueError):
             out[key] = default
     return out
+
+
+def _capped_settings_window_height(
+    content_h: int,
+    avail_h: int,
+    *,
+    margin: int = 48,
+    min_h: int = 420,
+) -> int:
+    """Clamp Settings height so short / high-DPI screens keep Update reachable."""
+    try:
+        content_h = int(content_h)
+        avail_h = int(avail_h)
+    except (TypeError, ValueError):
+        content_h, avail_h = 620, 900
+    hard_floor = 280
+    preferred = max(hard_floor, int(min_h), content_h)
+    cap = max(hard_floor, int(avail_h) - int(margin))
+    return max(hard_floor, min(preferred, cap))
 
 
 def _settings_keybind_mono_font() -> QFont:
@@ -206,15 +228,12 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._install_percent_keybind_row()
         self._install_clumsy_controls()
         if _normalized_update_channel_setting() in ('main', 'experimental'):
-            self.setMaximumSize(
-                self.maximumSize().width(),
-                self.maximumSize().height() + 48,
-            )
             self.btnLicenseSignIn = QPushButton('Sign in or change license…', self.centralwidget)
             self.btnLicenseSignIn.setObjectName('btnLicenseSignIn')
             self.btnLicenseSignIn.setMinimumHeight(34)
             self.gridLayout.addWidget(self.btnLicenseSignIn, 7, 0, 1, 4)
             self.btnLicenseSignIn.clicked.connect(self._on_license_sign_in)
+        self._install_settings_scroll_shell()
         self.loadInterfaces(use_cache=True)
         QTimer.singleShot(0, self._load_interfaces_background)
 
@@ -316,18 +335,114 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             inner.setMinimumHeight(200)
         gb.setMinimumHeight(inner.minimumHeight() + 32)
 
+    def _install_settings_scroll_shell(self) -> None:
+        """Scrollable body + fixed footer so Update stays visible on short screens."""
+        if getattr(self, '_settings_scroll_installed', False):
+            return
+        groups = [
+            self.groupBox_4,
+            self.groupBox_2,
+            self.groupBox_3,
+            self.groupBox_keys,
+        ]
+        footer_btns = [self.btnDefaults, self.btnApply, self.btnUpdate]
+        license_btn = getattr(self, 'btnLicenseSignIn', None)
+        if license_btn is not None:
+            footer_btns.append(license_btn)
+
+        for w in list(groups) + list(footer_btns):
+            try:
+                self.gridLayout.removeWidget(w)
+            except Exception:
+                pass
+
+        # Detach the designer layout so we can rebuild centralwidget cleanly.
+        old = self.centralwidget.layout()
+        if old is not None:
+            while old.count():
+                old.takeAt(0)
+            QWidget().setLayout(old)
+
+        root = QVBoxLayout(self.centralwidget)
+        root.setContentsMargins(10, 8, 10, 10)
+        root.setSpacing(8)
+        self._settings_root_layout = root
+
+        scroll = QScrollArea(self.centralwidget)
+        scroll.setObjectName('zubcutSettingsScroll')
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._settings_scroll = scroll
+
+        inner = QWidget(scroll)
+        inner.setObjectName('zubcutSettingsScrollInner')
+        inner_lay = QVBoxLayout(inner)
+        inner_lay.setContentsMargins(0, 0, 4, 0)
+        inner_lay.setSpacing(8)
+        for gb in groups:
+            gb.setParent(inner)
+            gb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+            inner_lay.addWidget(gb)
+        inner_lay.addStretch(1)
+        scroll.setWidget(inner)
+        root.addWidget(scroll, 1)
+
+        footer = QWidget(self.centralwidget)
+        footer.setObjectName('zubcutSettingsFooter')
+        footer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        foot = QGridLayout(footer)
+        foot.setContentsMargins(0, 0, 0, 0)
+        foot.setSpacing(6)
+        self.btnDefaults.setParent(footer)
+        self.btnApply.setParent(footer)
+        self.btnUpdate.setParent(footer)
+        foot.addWidget(self.btnDefaults, 0, 0, 1, 2)
+        foot.addWidget(self.btnApply, 0, 2, 1, 2)
+        foot.addWidget(self.btnUpdate, 1, 0, 1, 4)
+        if license_btn is not None:
+            license_btn.setParent(footer)
+            foot.addWidget(license_btn, 2, 0, 1, 4)
+        self._settings_footer = footer
+        root.addWidget(footer, 0)
+        self._settings_scroll_installed = True
+
+    def _settings_available_height(self) -> int:
+        scr = None
+        try:
+            scr = self.screen()
+        except Exception:
+            scr = None
+        if scr is None:
+            try:
+                scr = QApplication.primaryScreen()
+            except Exception:
+                scr = None
+        if scr is None:
+            return 900
+        try:
+            return int(scr.availableGeometry().height())
+        except Exception:
+            return 900
+
     def _finalize_settings_layout(self, *, force: bool = False) -> None:
-        """Size the window after Clumsy rows are in the layout (ui file used a 71px-tall Misc. box)."""
+        """Size the window after Clumsy rows are in the layout; never taller than the screen."""
         if not force and getattr(self, '_layout_size_locked', False):
             return
+        if not getattr(self, '_settings_scroll_installed', False):
+            self._install_settings_scroll_shell()
         self._relayout_misc_group()
         self.groupBox_keys.setMinimumHeight(140)
         min_w = 430
-        min_h = max(620, self.sizeHint().height())
-        self.setMinimumSize(min_w, min_h)
-        self.setMaximumSize(16777215, min_h + 80)
-        self.adjustSize()
-        self.setFixedSize(max(min_w, self.width()), max(min_h, self.height()))
+        # Content hint includes footer; cap so short / scaled displays keep Update on-screen.
+        content_h = max(620, int(self.sizeHint().height()))
+        target_h = _capped_settings_window_height(content_h, self._settings_available_height())
+        # Allow shrinking via scroll; do not lock a fixed size taller than the screen.
+        self.setMinimumSize(min_w, min(420, target_h))
+        self.setMaximumSize(16777215, max(target_h, self._settings_available_height()))
+        self.resize(max(min_w, self.width() or min_w), target_h)
         self._layout_size_locked = True
 
     def _refresh_clumsy_settings_widgets(self):
