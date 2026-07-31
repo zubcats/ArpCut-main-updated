@@ -65,11 +65,42 @@ class TestIpForwardingMitm(unittest.TestCase):
         with open(path, encoding='utf-8') as f:
             src = f.read()
         self.assertIn('def _set_windows_ip_forwarding', src)
-        self.assertIn('Set-NetIPInterface', src)
-        self.assertIn('-Forwarding', src)
+        self.assertIn("f'forwarding={flag}'", src)
+        self.assertIn('def _iface_indexes_from_netsh', src)
+        # Kill must not block on PowerShell; PS is fallback only.
+        self.assertIn('blocking: bool = False', src)
+        self.assertIn("name='zubcut-ip-forwarding'", src)
         # Old invalid global netsh command must not come back (silent no-op → leaky Kill).
         self.assertNotIn("'set', 'global', 'forwarding=", src)
         self.assertNotIn('["netsh", "interface", "ipv4", "set", "global"', src)
+
+    def test_startup_disable_is_blocking(self) -> None:
+        path = os.path.join(_SRC, 'tools', 'windows_network_tune.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        block = src[
+            src.index('def ensure_home_lan_mitm_forwarding_off') : src.index(
+                'def _apply_intel_ethernet_low_latency'
+            )
+        ]
+        self.assertIn('disable_ip_forwarding(blocking=True)', block)
+
+    def test_iface_indexes_from_netsh_parses_idx(self) -> None:
+        path = os.path.join(_SRC, 'networking', 'killer.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        start = src.index('def _iface_indexes_from_netsh')
+        end = src.index('def _apply_windows_ip_forwarding_ifaces')
+        ns: dict = {}
+        exec(src[start:end], ns)  # noqa: S102
+        sample = (
+            'Idx     Met         MTU          State                Name\n'
+            '---  ----------  ----------  ------------  ---------------------------\n'
+            '  1          75  4294967295  connected     Loopback Pseudo-Interface 1\n'
+            ' 12          25        1500  connected     Wi-Fi\n'
+            '  5          25        1500  disconnected  Ethernet\n'
+        )
+        self.assertEqual(ns['_iface_indexes_from_netsh'](sample), ['1', '12', '5'])
 
     def test_startup_does_not_reenable_forwarding_after_clean(self) -> None:
         path = os.path.join(_SRC, 'zubcut.py')
