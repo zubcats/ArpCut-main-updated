@@ -12,6 +12,14 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 - **Right:** Unicast poison only (`_poison_frames` → victim MAC + router MAC), with both
   ARP *request* (`op=1`) and *reply* (`op=2`) to each.
 
+## Home LAN IP forwarding
+
+- **Wrong:** `netsh interface ipv4 set global forwarding=…` — invalid; does nothing.
+- **Wrong:** Re-enable kernel forwarding after startup clean / Killer idle — Windows then
+  relays MITM'd frames and Kill becomes a **partial** cut while Lag still “works a bit”.
+- **Right:** `Set-NetIPInterface -Forwarding Disabled` (plus `IPEnableRouter=0`) while
+  home-LAN MITM is armed or idle. Clumsy/ICS turns forwarding on when that path needs it.
+
 ## One stack per path (from `ics_impairment_policy.py`)
 
 | Device path | Use | Do not use |
