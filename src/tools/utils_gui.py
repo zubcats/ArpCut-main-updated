@@ -452,6 +452,18 @@ QDialog {{
 QDialog QWidget#zubcutDialogBody {{
     background-color: transparent;
 }}
+/* Settings scroll body — kill qdark blue viewport on short / high-DPI screens. */
+QMainWindow#zubcutAuxiliaryWindow QScrollArea#zubcutSettingsScroll {{
+    background-color: {panel};
+    border: none;
+}}
+QMainWindow#zubcutAuxiliaryWindow QScrollArea#zubcutSettingsScroll > QWidget > QWidget {{
+    background-color: {panel};
+}}
+QMainWindow#zubcutAuxiliaryWindow QWidget#zubcutSettingsScrollInner,
+QMainWindow#zubcutAuxiliaryWindow QWidget#zubcutSettingsFooter {{
+    background-color: {panel};
+}}
 QMainWindow#zubcutAuxiliaryWindow QPushButton,
 QDialog QPushButton {{
     font-weight: normal;
