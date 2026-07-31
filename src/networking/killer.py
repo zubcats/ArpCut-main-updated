@@ -25,30 +25,77 @@ from constants import *
 from tools.crash_feedback import safe_daemon_target
 
 
-def _set_windows_ip_forwarding(enabled: bool) -> None:
-    """Runtime + persistent IPv4 forwarding toggle (Windows).
+_forwarding_lock = threading.Lock()
+_forwarding_desired: bool | None = None
+_forwarding_worker: threading.Thread | None = None
 
-    ``netsh interface ipv4 set global forwarding=…`` is **invalid** — forwarding is
-    per-interface. Use Set-NetIPInterface so Kill's userspace drop is not bypassed
-    by the kernel still routing redirected frames.
-    """
-    if not sys.platform.startswith('win'):
-        return
-    want = 1 if enabled else 0
-    flag = 'Enabled' if enabled else 'Disabled'
+
+def _set_ip_enable_router_registry(want: int) -> None:
+    """Fast persistent IPEnableRouter write (no PowerShell)."""
     try:
-        try:
-            import winreg
+        import winreg
 
-            key = winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters',
-                0,
-                winreg.KEY_SET_VALUE,
-            )
-            winreg.SetValueEx(key, 'IPEnableRouter', 0, winreg.REG_DWORD, want)
-            winreg.CloseKey(key)
-        except Exception:
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters',
+            0,
+            winreg.KEY_SET_VALUE,
+        )
+        winreg.SetValueEx(key, 'IPEnableRouter', 0, winreg.REG_DWORD, int(want))
+        winreg.CloseKey(key)
+        return
+    except Exception:
+        pass
+    try:
+        run_command(
+            [
+                'reg',
+                'add',
+                r'HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters',
+                '/v',
+                'IPEnableRouter',
+                '/t',
+                'REG_DWORD',
+                '/d',
+                str(int(want)),
+                '/f',
+            ],
+            shell=False,
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
+def _iface_indexes_from_netsh(show_out: str) -> list[str]:
+    """Parse ``netsh interface ipv4 show interfaces`` Idx column."""
+    indexes: list[str] = []
+    for line in str(show_out or '').splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        # Typical: "  12  25  1500  connected  Wi-Fi"
+        if parts[0].isdigit():
+            indexes.append(parts[0])
+    return indexes
+
+
+def _apply_windows_ip_forwarding_ifaces(enabled: bool) -> None:
+    """Per-interface runtime switch via netsh (avoid PowerShell cold-start on Kill)."""
+    flag = 'enabled' if enabled else 'disabled'
+    try:
+        show = run_command(
+            ['netsh', 'interface', 'ipv4', 'show', 'interfaces'],
+            shell=False,
+            timeout=6,
+        )
+    except Exception:
+        show = ''
+    indexes = _iface_indexes_from_netsh(str(show or ''))
+    if not indexes:
+        # Fallback once — slower, but only when netsh parse fails.
+        try:
+            ps_flag = 'Enabled' if enabled else 'Disabled'
             run_command(
                 [
                     'powershell',
@@ -56,31 +103,93 @@ def _set_windows_ip_forwarding(enabled: bool) -> None:
                     '-WindowStyle',
                     'Hidden',
                     '-Command',
-                    "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' "
-                    f"-Name 'IPEnableRouter' -Value {want} -Type DWord -Force",
+                    'Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | '
+                    'ForEach-Object { '
+                    'Set-NetIPInterface -InterfaceIndex $_.InterfaceIndex '
+                    f"-AddressFamily IPv4 -Forwarding {ps_flag} -ErrorAction SilentlyContinue "
+                    '}',
                 ],
                 shell=False,
                 timeout=12,
             )
-        # Per-interface runtime switch (no reboot). Global netsh forwarding= is a no-op/error.
-        run_command(
-            [
-                'powershell',
-                '-NoProfile',
-                '-WindowStyle',
-                'Hidden',
-                '-Command',
-                'Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | '
-                'ForEach-Object { '
-                'Set-NetIPInterface -InterfaceIndex $_.InterfaceIndex '
-                f"-AddressFamily IPv4 -Forwarding {flag} -ErrorAction SilentlyContinue "
-                '}',
-            ],
-            shell=False,
-            timeout=20,
-        )
-    except Exception:
-        pass
+        except Exception:
+            pass
+        return
+    for idx in indexes:
+        try:
+            run_command(
+                [
+                    'netsh',
+                    'interface',
+                    'ipv4',
+                    'set',
+                    'interface',
+                    str(idx),
+                    f'forwarding={flag}',
+                ],
+                shell=False,
+                timeout=4,
+            )
+        except Exception:
+            continue
+
+
+def _drain_windows_ip_forwarding_applies() -> None:
+    """Apply `_forwarding_desired` until stable (used by background worker / blocking)."""
+    global _forwarding_worker
+    while True:
+        with _forwarding_lock:
+            target = _forwarding_desired
+        if target is None:
+            break
+        try:
+            _apply_windows_ip_forwarding_ifaces(target)
+        except Exception:
+            pass
+        with _forwarding_lock:
+            if _forwarding_desired is target:
+                _forwarding_worker = None
+                return
+
+
+def _set_windows_ip_forwarding(enabled: bool, *, blocking: bool = False) -> None:
+    """Runtime + persistent IPv4 forwarding toggle (Windows).
+
+    ``netsh interface ipv4 set global forwarding=…`` is **invalid** — forwarding is
+    per-interface. Kill's hot path must not block on PowerShell (multi-second delay);
+    registry is sync, iface apply is background unless ``blocking=True`` (startup).
+    """
+    global _forwarding_desired, _forwarding_worker
+    if not sys.platform.startswith('win'):
+        return
+    want = 1 if enabled else 0
+    # Always flip the cheap registry bit immediately.
+    _set_ip_enable_router_registry(want)
+
+    with _forwarding_lock:
+        already = _forwarding_desired is enabled
+        _forwarding_desired = enabled
+        worker_alive = _forwarding_worker is not None and _forwarding_worker.is_alive()
+        if blocking:
+            pass
+        elif already:
+            # Same target already requested — Kill must not wait on netsh again.
+            return
+        elif worker_alive:
+            # Worker will re-read `_forwarding_desired` and apply the new target.
+            return
+        else:
+            thr = threading.Thread(
+                target=safe_daemon_target(_drain_windows_ip_forwarding_applies),
+                name='zubcut-ip-forwarding',
+                daemon=True,
+            )
+            _forwarding_worker = thr
+            thr.start()
+            return
+
+    # blocking path (startup clean): apply now on this thread.
+    _drain_windows_ip_forwarding_applies()
 
 
 def is_ip_forwarding_enabled() -> bool:
@@ -104,30 +213,13 @@ def is_ip_forwarding_enabled() -> bool:
         pass
     try:
         out = run_command(
-            [
-                'powershell',
-                '-NoProfile',
-                '-WindowStyle',
-                'Hidden',
-                '-Command',
-                "(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
-                "Where-Object { $_.Forwarding -eq 'Enabled' } | Measure-Object).Count",
-            ],
-            shell=False,
-            timeout=12,
-        )
-        text = str(out or '').strip()
-        if text.isdigit() and int(text) > 0:
-            return True
-    except Exception:
-        pass
-    try:
-        out = run_command(
             ['netsh', 'interface', 'ipv4', 'show', 'interfaces'],
             shell=False,
-            timeout=8,
+            timeout=6,
         )
         text = str(out or '').lower()
+        # Per-iface lines include a Forwarding column when queried individually;
+        # show interfaces listing is enough for a coarse hint when registry is 0.
         if 'forwarding' in text and 'enabled' in text:
             return True
     except Exception:
@@ -135,14 +227,18 @@ def is_ip_forwarding_enabled() -> bool:
     return False
 
 
-def enable_ip_forwarding():
-    """Enable kernel IP forwarding (Windows: IPEnableRouter + per-iface Set-NetIPInterface)."""
-    _set_windows_ip_forwarding(True)
+def enable_ip_forwarding(*, blocking: bool = False):
+    """Enable kernel IP forwarding (Windows: IPEnableRouter + per-iface netsh)."""
+    _set_windows_ip_forwarding(True, blocking=blocking)
 
 
-def disable_ip_forwarding():
-    """Disable kernel IP forwarding so MITM forwarder is the only relay path."""
-    _set_windows_ip_forwarding(False)
+def disable_ip_forwarding(*, blocking: bool = False):
+    """Disable kernel IP forwarding so MITM forwarder is the only relay path.
+
+    Non-blocking by default so Kill/Lag stay instant; startup should pass
+    ``blocking=True``.
+    """
+    _set_windows_ip_forwarding(False, blocking=blocking)
 
 
 class Killer:

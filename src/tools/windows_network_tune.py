@@ -88,7 +88,8 @@ def ensure_home_lan_mitm_forwarding_off() -> None:
     try:
         from networking.killer import disable_ip_forwarding
 
-        disable_ip_forwarding()
+        # Blocking: finish before the user can Kill (hot path stays non-blocking).
+        disable_ip_forwarding(blocking=True)
     except Exception:
         pass
 

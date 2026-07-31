@@ -17,8 +17,11 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 - **Wrong:** `netsh interface ipv4 set global forwarding=…` — invalid; does nothing.
 - **Wrong:** Re-enable kernel forwarding after startup clean / Killer idle — Windows then
   relays MITM'd frames and Kill becomes a **partial** cut while Lag still “works a bit”.
-- **Right:** `Set-NetIPInterface -Forwarding Disabled` (plus `IPEnableRouter=0`) while
-  home-LAN MITM is armed or idle. Clumsy/ICS turns forwarding on when that path needs it.
+- **Wrong:** Synchronous PowerShell `Set-NetIPInterface` on the Kill click — multi-second
+  delay before poison (Kill feels broken / “slow”).
+- **Right:** Fast registry `IPEnableRouter=0` + per-iface `netsh … set interface <idx>
+  forwarding=disabled`. Kill/Lag call `disable_ip_forwarding()` non-blocking; startup
+  uses `blocking=True`. Clumsy/ICS turns forwarding on when that path needs it.
 
 ## One stack per path (from `ics_impairment_policy.py`)
 
