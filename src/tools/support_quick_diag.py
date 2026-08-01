@@ -46,25 +46,26 @@ function Has-UninstallDisplay([string]$needle) {
 }
 
 function Format-SafeIPv4([string]$ip) {
+    # ASCII-only separators (Unicode middle-dot can mojibake in Notepad).
     if (-not $ip) { return '(ip)' }
     $ip = $ip.Trim()
     if ($ip -match '^(192)\.(168)\.(137)\.(\d+)$') {
-        return ("hotspot 137 · .{0}" -f $Matches[4])
+        return ("hotspot 137 / .{0}" -f $Matches[4])
     }
     if ($ip -match '^(169)\.(254)\.(\d+)\.(\d+)$') {
-        return ("apipa · .{0}.{1}" -f $Matches[3], $Matches[4])
+        return ("apipa / .{0}.{1}" -f $Matches[3], $Matches[4])
     }
     if ($ip -match '^(127)\.(\d+)\.(\d+)\.(\d+)$') {
-        return ("loopback · .{0}" -f $Matches[4])
+        return ("loopback / .{0}" -f $Matches[4])
     }
     if ($ip -match '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') {
         $a = [int]$Matches[1]; $b = [int]$Matches[2]; $c = [int]$Matches[3]; $d = [int]$Matches[4]
         $private = ($a -eq 10) -or (($a -eq 172) -and ($b -ge 16) -and ($b -le 31)) -or `
             (($a -eq 192) -and ($b -eq 168)) -or (($a -eq 100) -and ($b -ge 64) -and ($b -le 127))
         if ($private) {
-            return ("{0}.{1}.{2}.0/24 · .{3}" -f $a, $b, $c, $d)
+            return ("{0}.{1}.{2}.0/24 host .{3}" -f $a, $b, $c, $d)
         }
-        return ("public · .{0}" -f $d)
+        return ("public / .{0}" -f $d)
     }
     return '(ip)'
 }
@@ -235,7 +236,13 @@ if ($pcIp -and $gwPrimary) {
 } else {
     $lines += '[WARN] Could not compare PC IP vs gateway subnet'
 }
-$lines += ("[{0}] Hotspot 192.168.137.x visible" -f $(if ($has137) { 'PASS' } else { 'WARN' }))
+if ($has137) {
+    $lines += '[PASS] Hotspot 192.168.137.x visible'
+} elseif ($clumsy) {
+    $lines += '[WARN] Hotspot 192.168.137.x not visible (Clumsy ON — turn Mobile Hotspot on)'
+} else {
+    $lines += '[INFO] Hotspot 192.168.137.x not visible (OK when Clumsy is off)'
+}
 $lines += ("[{0}] WinDivert bundle under ZubCut" -f $(if ($wdOk) { 'PASS' } else { 'WARN' }))
 $gwSafe = @($gateways | ForEach-Object { Format-SafeIPv4 $_ })
 $lines += ("[INFO] Default gateways: {0}" -f ($(if ($gwSafe) { $gwSafe -join ', ' } else { '(none)' })))
