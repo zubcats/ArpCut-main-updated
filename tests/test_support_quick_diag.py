@@ -33,16 +33,19 @@ class TestSupportQuickDiag(unittest.TestCase):
             'to match tools/ZubCut-Quick-Network-Diag.ps1',
         )
 
-    def test_materialize_writes_script(self) -> None:
+    def test_materialize_writes_script_outside_diagnostics_folder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch('tools.support_quick_diag.tempfile.gettempdir', return_value=tmp):
                 path = sqd.materialize_quick_diag_ps1()
             self.assertTrue(path.is_file())
             self.assertEqual(path.name, 'ZubCut-Quick-Network-Diag.ps1')
+            self.assertEqual(path.parent.name, 'ZubCut')
+            self.assertNotIn('ZubCut Diagnostics', str(path))
             body = path.read_text(encoding='utf-8')
             self.assertIn('ZubCut Quick Network Diagnostic', body)
             self.assertIn('SCREENSHOT THIS SUMMARY', body)
             self.assertIn('Npcap', body)
+            self.assertIn('ZubCut Diagnostics', body)  # report output dir inside script
 
     def test_launch_non_windows(self) -> None:
         with mock.patch.object(sys, 'platform', 'linux'):
@@ -63,12 +66,14 @@ class TestSupportQuickDiag(unittest.TestCase):
         self.assertIn('Quick check', msg)
         self.assertIn('Admin PowerShell', msg)
         self.assertIn('ZubCut-Quick-Diag', msg)
+        self.assertIn('ZubCut Diagnostics', msg)
         elevate.assert_called_once()
         exe, params = elevate.call_args.args[0], elevate.call_args.args[1]
         self.assertIn('powershell', exe.lower())
         self.assertIn('-ExecutionPolicy Bypass', params)
         self.assertIn('-File', params)
         self.assertIn('ZubCut-Quick-Network-Diag.ps1', params)
+        self.assertNotIn('ZubCut Diagnostics', params)
 
     def test_launch_uac_cancel(self) -> None:
         elevate = mock.Mock(return_value=False)

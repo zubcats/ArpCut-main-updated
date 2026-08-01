@@ -1,7 +1,8 @@
 """ZubCut PC Wi-Fi link diagnostic — band + security for this machine only.
 
-Parses ``netsh wlan show interfaces`` (no Admin required). Writes a Desktop
-report and opens Notepad so the user can screenshot / send it to support.
+Parses ``netsh wlan show interfaces`` (no Admin required). Writes a report
+under Desktop\\ZubCut Diagnostics and opens Notepad so the user can
+screenshot / send it to support.
 Does **not** inspect victim devices (band/security of a PS5 is not available
 from ARP).
 """
@@ -14,6 +15,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from tools.diag_paths import DIAGNOSTICS_FOLDER_NAME, ensure_zubcut_diagnostics_dir
 
 
 def _norm(text: str) -> str:
@@ -174,18 +177,6 @@ def _ethernet_uplink_aliases() -> list[str]:
         return []
 
 
-def _desktop_dir() -> Path:
-    home = Path.home()
-    desk = home / 'Desktop'
-    if desk.is_dir():
-        return desk
-    # OneDrive Desktop fallback
-    one = home / 'OneDrive' / 'Desktop'
-    if one.is_dir():
-        return one
-    return home
-
-
 def format_wifi_link_report(
     adapters: list[dict[str, Any]],
     *,
@@ -343,7 +334,7 @@ def _open_notepad(path: Path) -> None:
 
 def run_wifi_link_diag(*, open_report: bool = True) -> tuple[bool, str, Path | None]:
     """
-    Collect PC Wi-Fi link info, write Desktop report.
+    Collect PC Wi-Fi link info, write report under Desktop\\ZubCut Diagnostics.
 
     Returns ``(ok, status_message, report_path)``.
     """
@@ -354,13 +345,15 @@ def run_wifi_link_diag(*, open_report: bool = True) -> tuple[bool, str, Path | N
     eth = _ethernet_uplink_aliases()
     report = format_wifi_link_report(adapters, raw=raw, ethernet_aliases=eth)
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    path = _desktop_dir() / f'ZubCut-Wifi-Link-{stamp}.txt'
     try:
+        diag_dir = ensure_zubcut_diagnostics_dir()
+        path = diag_dir / f'ZubCut-Wifi-Link-{stamp}.txt'
         path.write_text(report, encoding='utf-8', newline='\n')
     except Exception as exc:
         return False, f'Wi-Fi link check could not write report: {exc}', None
     if open_report:
         _open_notepad(path)
+    folder = DIAGNOSTICS_FOLDER_NAME
     connected = [a for a in adapters if a.get('connected')]
     if connected:
         a = connected[0]
@@ -368,18 +361,20 @@ def run_wifi_link_diag(*, open_report: bool = True) -> tuple[bool, str, Path | N
         auth = a.get('authentication') or '?'
         msg = (
             f'Wi-Fi link: {a.get("ssid") or "?"} on {band}, security {auth} — '
-            f'report on Desktop ({path.name}).'
+            f'report in Desktop\\{folder}\\{path.name}.'
         )
         return True, msg, path
     if adapters:
         return (
             True,
-            f'Wi-Fi link: no active Wi-Fi connection — report on Desktop ({path.name}).',
+            f'Wi-Fi link: no active Wi-Fi connection — '
+            f'report in Desktop\\{folder}\\{path.name}.',
             path,
         )
     return (
         False,
-        f'Wi-Fi link: could not read WLAN interfaces — see Desktop report ({path.name}).',
+        f'Wi-Fi link: could not read WLAN interfaces — '
+        f'see Desktop\\{folder}\\{path.name}.',
         path,
     )
 

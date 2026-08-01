@@ -102,19 +102,24 @@ class TestWifiLinkParse(unittest.TestCase):
 
     def test_run_writes_report_without_notepad(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            desk = Path(tmp) / 'Desktop'
-            desk.mkdir()
+            diag = Path(tmp) / 'ZubCut Diagnostics'
+            diag.mkdir()
             with (
                 mock.patch.object(sys, 'platform', 'win32'),
-                mock.patch.object(wld, '_desktop_dir', return_value=desk),
+                mock.patch.object(wld, 'ensure_zubcut_diagnostics_dir', return_value=diag),
                 mock.patch.object(wld, '_run_netsh_wlan_interfaces', return_value=_SAMPLE),
+                mock.patch.object(wld, '_ethernet_uplink_aliases', return_value=[]),
                 mock.patch.object(wld, '_open_notepad') as open_np,
             ):
                 ok, msg, path = wld.run_wifi_link_diag(open_report=True)
-            self.assertTrue(ok)
+            self.assertTrue(ok, msg)
             self.assertIsNotNone(path)
             assert path is not None
             self.assertTrue(path.is_file())
+            self.assertEqual(path.parent.name, 'ZubCut Diagnostics')
+            self.assertTrue(path.name.startswith('ZubCut-Wifi-Link-'))
+            self.assertTrue(path.suffix == '.txt')
+            self.assertIn('ZubCut Diagnostics', msg)
             self.assertIn('HomeLan', msg)
             self.assertIn('5 GHz', msg)
             self.assertIn('WPA2-Personal', path.read_text(encoding='utf-8'))

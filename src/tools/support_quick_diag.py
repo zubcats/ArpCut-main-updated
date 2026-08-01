@@ -17,13 +17,17 @@ QUICK_DIAG_PS1_NAME = 'ZubCut-Quick-Network-Diag.ps1'
 
 _EMBEDDED_QUICK_DIAG_PS1 = r"""# ZubCut Quick Network Diagnostic (no Python / no repo required)
 # Right-click -> Run with PowerShell  (or run elevated for best results)
-# Writes ZubCut-Quick-Diag-*.txt on the Desktop for screenshots.
+# Writes ZubCut-Quick-Diag-*.txt under Desktop\ZubCut Diagnostics.
 # SUMMARY uses redacted IPs (subnet + host) so screenshots stay privacy-safe.
 
 $ErrorActionPreference = 'SilentlyContinue'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $desktop = [Environment]::GetFolderPath('Desktop')
-$out = Join-Path $desktop "ZubCut-Quick-Diag-$stamp.txt"
+$diagDir = Join-Path $desktop 'ZubCut Diagnostics'
+if (-not (Test-Path -LiteralPath $diagDir)) {
+    New-Item -ItemType Directory -Path $diagDir -Force | Out-Null
+}
+$out = Join-Path $diagDir "ZubCut-Quick-Diag-$stamp.txt"
 
 function Test-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -335,7 +339,12 @@ def quick_diag_ps1_text() -> str:
 
 
 def materialize_quick_diag_ps1() -> Path:
-    """Write the diagnostic script under %TEMP%\\ZubCut for elevated PowerShell."""
+    """
+    Overwrite a single temp runner script for elevated PowerShell.
+
+    Reports go to Desktop\\ZubCut Diagnostics; this ``.ps1`` stays out of that
+    folder (one reused temp file, not a pile of copies).
+    """
     text = quick_diag_ps1_text()
     if not text.strip().endswith('\n'):
         text = text.rstrip('\r\n') + '\n'
@@ -358,10 +367,11 @@ def _powershell_exe() -> str:
 
 def launch_quick_network_diag_elevated(*, elevate=None) -> tuple[bool, str]:
     """
-    Open Admin PowerShell, run the quick network diagnostic, open the Desktop report.
+    Open Admin PowerShell, run the quick network diagnostic, open the report.
 
     Returns ``(ok, status_message)`` for the Logs window status strip.
     ``elevate`` is injectable for tests (defaults to ``spawn_windows_elevated``).
+    Reports land in Desktop\\ZubCut Diagnostics.
     """
     if not sys.platform.startswith('win'):
         return False, 'Quick check is Windows-only.'
@@ -392,5 +402,6 @@ def launch_quick_network_diag_elevated(*, elevate=None) -> tuple[bool, str]:
     return (
         True,
         'Quick check started in Admin PowerShell — '
-        'screenshot the SUMMARY in Notepad (Desktop ZubCut-Quick-Diag-*.txt) and send it to support.',
+        'screenshot the SUMMARY in Notepad '
+        '(Desktop\\ZubCut Diagnostics\\ZubCut-Quick-Diag-*.txt) and send it to support.',
     )

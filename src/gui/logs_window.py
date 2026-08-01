@@ -128,9 +128,9 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         diag_heading.setObjectName('logsDiagHeading')
         diag_layout.addWidget(diag_heading)
         diag_hint = QLabel(
-            'Run a check, then send the Desktop report (or a SUMMARY screenshot) '
-            'to support. SUMMARY redacts LAN IPs. Quick check asks for Admin (UAC); '
-            'Wi-Fi link does not.',
+            'Reports save to Desktop\\ZubCut Diagnostics (folder is created if needed). '
+            'Send the report or a SUMMARY screenshot to support. SUMMARY redacts LAN IPs. '
+            'Quick check asks for Admin (UAC); Wi-Fi link does not.',
             diag_panel,
         )
         diag_hint.setObjectName('logsDiagHint')
@@ -143,7 +143,7 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         self._btn_quick_check.setToolTip(
             'Opens Admin PowerShell and runs a quick environment check '
             '(Npcap / WinPcap / hotspot / WinDivert / adapters / ARP). '
-            'Saves ZubCut-Quick-Diag-*.txt on the Desktop and opens it in Notepad.'
+            'Saves ZubCut-Quick-Diag-*.txt in Desktop\\ZubCut Diagnostics and opens it in Notepad.'
         )
         self._btn_quick_check.clicked.connect(self._run_quick_check)
         diag_btns.addWidget(self._btn_quick_check)
@@ -152,7 +152,7 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         self._btn_wifi_link.setToolTip(
             'Checks this PC\'s Wi-Fi band (2.4 / 5 / 6 GHz) and security type '
             '(WPA2 / WPA3, etc.). Does not read the console\'s Wi-Fi link. '
-            'Saves ZubCut-Wifi-Link-*.txt on the Desktop and opens it in Notepad.'
+            'Saves ZubCut-Wifi-Link-*.txt in Desktop\\ZubCut Diagnostics and opens it in Notepad.'
         )
         self._btn_wifi_link.clicked.connect(self._run_wifi_link_check)
         diag_btns.addWidget(self._btn_wifi_link)

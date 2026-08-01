@@ -1,12 +1,16 @@
 # ZubCut Quick Network Diagnostic (no Python / no repo required)
 # Right-click -> Run with PowerShell  (or run elevated for best results)
-# Writes ZubCut-Quick-Diag-*.txt on the Desktop for screenshots.
+# Writes ZubCut-Quick-Diag-*.txt under Desktop\ZubCut Diagnostics.
 # SUMMARY uses redacted IPs (subnet + host) so screenshots stay privacy-safe.
 
 $ErrorActionPreference = 'SilentlyContinue'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $desktop = [Environment]::GetFolderPath('Desktop')
-$out = Join-Path $desktop "ZubCut-Quick-Diag-$stamp.txt"
+$diagDir = Join-Path $desktop 'ZubCut Diagnostics'
+if (-not (Test-Path -LiteralPath $diagDir)) {
+    New-Item -ItemType Directory -Path $diagDir -Force | Out-Null
+}
+$out = Join-Path $diagDir "ZubCut-Quick-Diag-$stamp.txt"
 
 function Test-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
