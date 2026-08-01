@@ -46,6 +46,9 @@ class TestSupportQuickDiag(unittest.TestCase):
             self.assertIn('SCREENSHOT THIS SUMMARY', body)
             self.assertIn('Npcap', body)
             self.assertIn('ZubCut Diagnostics', body)  # report output dir inside script
+            self.assertIn('Test-MobileHotspotOn', body)
+            self.assertIn('Mobile Hotspot OFF', body)
+            self.assertNotIn('Hotspot 192.168.137.x visible', body)
 
     def test_launch_non_windows(self) -> None:
         with mock.patch.object(sys, 'platform', 'linux'):

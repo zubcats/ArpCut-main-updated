@@ -18,7 +18,7 @@ QUICK_DIAG_PS1_NAME = 'ZubCut-Quick-Network-Diag.ps1'
 _EMBEDDED_QUICK_DIAG_PS1 = r"""# ZubCut Quick Network Diagnostic (no Python / no repo required)
 # Right-click -> Run with PowerShell  (or run elevated for best results)
 # Writes ZubCut-Quick-Diag-*.txt under Desktop\ZubCut Diagnostics.
-# SUMMARY uses redacted IPs (subnet + host) so screenshots stay privacy-safe.
+# SUMMARY uses x-masked IPs so screenshots stay privacy-safe.
 
 $ErrorActionPreference = 'SilentlyContinue'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -85,6 +85,21 @@ function Test-SameSlash24([string]$ipA, [string]$ipB) {
     return ($a1 -eq $b1 -and $a2 -eq $b2 -and $a3 -eq $b3)
 }
 
+function Test-MobileHotspotOn {
+    # Match Windows Settings → Mobile Hotspot toggle (not leftover 192.168.137.x).
+    try {
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime -ErrorAction SilentlyContinue
+        [void][Windows.Networking.Connectivity.NetworkInformation, Windows.Networking.Connectivity, ContentType = WindowsRuntime]
+        [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager, Windows.Networking.NetworkOperators, ContentType = WindowsRuntime]
+        $profile = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
+        if (-not $profile) { return $false }
+        $mgr = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
+        return ($mgr.TetheringOperationalState.ToString() -eq 'On')
+    } catch {
+        return $false
+    }
+}
+
 $admin = Test-IsAdmin
 $npcapPath = 'C:\Windows\SysWOW64\Npcap'
 $npcapOk = Test-Path $npcapPath
@@ -126,7 +141,14 @@ foreach ($d in $zubcutDirs) {
 $wdOk = ($wdBundles | Where-Object Complete).Count -gt 0
 
 $ipcfg = ipconfig | Out-String
-$has137 = $ipcfg -match '192\.168\.137\.'
+# Mobile Hotspot ON/OFF from Windows tethering API — do not treat any leftover
+# 192.168.137.x (ICS / SoftAP) as "hotspot on" when the Settings toggle is off.
+$hotspotOn = Test-MobileHotspotOn
+$icsGw = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -eq '192.168.137.1' } |
+    Select-Object -First 1
+$hasIcsGw = $null -ne $icsGw
+$hotspotReady = $hotspotOn -and $hasIcsGw
 $gateways = [regex]::Matches(
     $ipcfg,
     '(?i)(?:Default Gateway|Passerelle par d[eé]faut|Standardgateway|Puerta de enlace predeterminada|Gateway predefinito)[^:\r\n]*:\s*(\d{1,3}(?:\.\d{1,3}){3})'
@@ -243,12 +265,19 @@ if ($pcIp -and $gwPrimary) {
 } else {
     $lines += '[WARN] Could not compare PC IP vs gateway subnet'
 }
-if ($has137) {
-    $lines += '[PASS] Hotspot 192.168.137.x visible'
+if ($hotspotOn) {
+    if ($hasIcsGw) {
+        $lines += '[PASS] Mobile Hotspot ON (ICS 192.168.137.1)'
+    } else {
+        $lines += '[WARN] Mobile Hotspot ON but ICS 192.168.137.1 missing — wait or toggle hotspot'
+    }
 } elseif ($clumsy) {
-    $lines += '[WARN] Hotspot 192.168.137.x not visible (Clumsy ON — turn Mobile Hotspot on)'
+    $lines += '[WARN] Mobile Hotspot OFF (Clumsy ON — turn Mobile Hotspot on in Settings)'
 } else {
-    $lines += '[INFO] Hotspot 192.168.137.x not visible (OK when Clumsy is off)'
+    $lines += '[INFO] Mobile Hotspot OFF (OK when Clumsy is off)'
+}
+if (-not $hotspotOn -and $hasIcsGw) {
+    $lines += '[INFO] Leftover ICS 192.168.137.1 still present (Settings hotspot is off)'
 }
 $lines += ("[{0}] WinDivert bundle under ZubCut" -f $(if ($wdOk) { 'PASS' } else { 'WARN' }))
 $gwSafe = @($gateways | ForEach-Object { Format-SafeIPv4 $_ })
@@ -303,8 +332,8 @@ if ($ifaceSaved -and -not $savedLive) {
 if ($pcIp -and $gwPrimary -and -not $pcGwSame) {
     $lines += '  8. PC and gateway on different subnets — pick the LAN router adapter (not modem/VPN).'
 }
-if ($clumsy -and -not $has137) {
-    $lines += '  9. Clumsy ON but no hotspot 137.x — turn Mobile Hotspot ON, put PS5 on it, rescan.'
+if ($clumsy -and -not $hotspotReady) {
+    $lines += '  9. Clumsy ON but Mobile Hotspot not ready — turn Mobile Hotspot ON in Settings, wait for 192.168.137.1, put PS5 on it, rescan.'
 }
 if ($clumsy -and -not $wdOk) {
     $lines += ' 10. Reinstall ZubCut with "Clumsy mode" checked (WinDivert missing).'

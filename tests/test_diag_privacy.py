@@ -53,6 +53,11 @@ class TestQuickDiagPrivacySource(unittest.TestCase):
         # in the template — dynamic only via Format-SafeIPv4.
         self.assertIn('192.168.x.', src)
         self.assertIn('Format-SafeIPv4', src)
+        # Hotspot line uses Windows Mobile Hotspot toggle — not loose ipconfig 137 match.
+        self.assertIn('Test-MobileHotspotOn', src)
+        self.assertIn('Mobile Hotspot OFF', src)
+        self.assertNotIn('Hotspot 192.168.137.x visible', src)
+        self.assertNotIn('$has137 = $ipcfg', src)
 
 
 if __name__ == '__main__':
