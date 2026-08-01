@@ -35,13 +35,18 @@ There is 1 interface on the system:
     Transmit rate (Mbps)   : 1201
     Signal                 : 88%
     Profile                : HomeLan
+
+    Name                   : Wi-Fi 2
+    State                  : disconnected
+    SSID                   :
+    Authentication         :
 """
 
 
 class TestWifiLinkParse(unittest.TestCase):
     def test_parse_connected_5ghz_wpa2(self) -> None:
         adapters = wld.parse_wlan_interfaces(_SAMPLE)
-        self.assertEqual(len(adapters), 1)
+        self.assertEqual(len(adapters), 2)
         a = adapters[0]
         self.assertTrue(a['connected'])
         self.assertEqual(a['ssid'], 'HomeLan')
@@ -50,6 +55,10 @@ class TestWifiLinkParse(unittest.TestCase):
         self.assertEqual(a['channel'], 44)
         self.assertEqual(a['band'], '5 GHz')
         self.assertIn('802.11ax', a['radio_type'])
+        self.assertEqual(a['rx_mbps'], '1201')
+        self.assertEqual(a['tx_mbps'], '1201')
+        self.assertTrue(str(a.get('guid') or '').startswith('12345678'))
+        self.assertFalse(adapters[1]['connected'])
 
     def test_band_from_channel(self) -> None:
         self.assertEqual(wld.band_from_channel(6), '2.4 GHz')
@@ -73,13 +82,23 @@ class TestWifiLinkParse(unittest.TestCase):
 
     def test_report_mentions_pc_only(self) -> None:
         adapters = wld.parse_wlan_interfaces(_SAMPLE)
-        text = wld.format_wifi_link_report(adapters)
+        text = wld.format_wifi_link_report(adapters, ethernet_aliases=['Ethernet'])
         self.assertIn('this PC only', text)
         self.assertIn('SCREENSHOT THIS SUMMARY', text)
         self.assertIn('5 GHz', text)
         self.assertIn('WPA2-Personal', text)
         self.assertIn('HomeLan', text)
+        self.assertIn('rx 1201 Mbps', text)
+        self.assertIn('Adapter GUID:', text)
+        self.assertIn('Security looks like WPA2/WPA3', text)
+        self.assertIn('Ethernet also up', text)
         self.assertNotIn('victim IP', text.lower())
+        self.assertNotIn('192.168.', text)
+
+    def test_security_strength(self) -> None:
+        self.assertEqual(wld.security_strength('WPA3-Personal'), 'strong')
+        self.assertEqual(wld.security_strength('Open'), 'weak')
+        self.assertEqual(wld.security_strength('WEP'), 'weak')
 
     def test_run_writes_report_without_notepad(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

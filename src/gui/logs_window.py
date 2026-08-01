@@ -129,7 +129,8 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         diag_layout.addWidget(diag_heading)
         diag_hint = QLabel(
             'Run a check, then send the Desktop report (or a SUMMARY screenshot) '
-            'to support. Quick check asks for Admin (UAC); Wi-Fi link does not.',
+            'to support. SUMMARY redacts LAN IPs. Quick check asks for Admin (UAC); '
+            'Wi-Fi link does not.',
             diag_panel,
         )
         diag_hint.setObjectName('logsDiagHint')

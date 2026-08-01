@@ -75,6 +75,9 @@ def parse_wlan_interfaces(text: str) -> list[dict[str, Any]]:
         band = info.get('band') or ''
         signal = info.get('signal') or ''
         profile = info.get('profile') or ''
+        guid = info.get('guid') or ''
+        rx = info.get('receive rate (mbps)') or info.get('receive rate') or ''
+        tx = info.get('transmit rate (mbps)') or info.get('transmit rate') or ''
         channel_s = info.get('channel') or ''
         channel: int | None = None
         m = re.search(r'(\d+)', channel_s)
@@ -101,9 +104,74 @@ def parse_wlan_interfaces(text: str) -> list[dict[str, Any]]:
                 'cipher': cipher,
                 'signal': signal,
                 'profile': profile,
+                'guid': guid,
+                'rx_mbps': rx,
+                'tx_mbps': tx,
             }
         )
     return out
+
+
+def security_strength(authentication: str) -> str:
+    """Return 'strong', 'weak', or 'unknown' for SUMMARY guidance."""
+    a = str(authentication or '').strip().lower()
+    if not a:
+        return 'unknown'
+    if 'wpa3' in a or 'wpa2' in a:
+        return 'strong'
+    if a in ('open', 'none') or 'wep' in a:
+        return 'weak'
+    # Legacy WPA (not WPA2/3)
+    if re.search(r'\bwpa\b', a) and 'wpa2' not in a and 'wpa3' not in a:
+        return 'weak'
+    return 'unknown'
+
+
+def _ethernet_uplink_aliases() -> list[str]:
+    """Best-effort list of live Ethernet IPv4 adapter aliases (Wi-Fi link context)."""
+    if not sys.platform.startswith('win'):
+        return []
+    creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if sys.platform.startswith('win') else 0
+    startupinfo = None
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+    except Exception:
+        startupinfo = None
+    try:
+        proc = subprocess.run(
+            [
+                'powershell',
+                '-NoProfile',
+                '-Command',
+                (
+                    "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+                    "Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | "
+                    "ForEach-Object { "
+                    "  $a = Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue; "
+                    "  if ($a -and $a.Status -eq 'Up' -and $a.MediaType -match '802.3|Ethernet') { "
+                    "    $_.InterfaceAlias "
+                    "  } "
+                    "}"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            errors='replace',
+            timeout=25,
+            shell=False,
+            startupinfo=startupinfo,
+            creationflags=creationflags,
+        )
+        names = []
+        for line in (proc.stdout or '').splitlines():
+            n = line.strip()
+            if n and n not in names:
+                names.append(n)
+        return names
+    except Exception:
+        return []
 
 
 def _desktop_dir() -> Path:
@@ -118,22 +186,37 @@ def _desktop_dir() -> Path:
     return home
 
 
-def format_wifi_link_report(adapters: list[dict[str, Any]], *, raw: str = '') -> str:
+def format_wifi_link_report(
+    adapters: list[dict[str, Any]],
+    *,
+    raw: str = '',
+    ethernet_aliases: list[str] | None = None,
+) -> str:
     lines: list[str] = []
     lines.append('========================================================================')
     lines.append(' ZubCut Wi-Fi Link (this PC only)')
     lines.append('========================================================================')
     lines.append(f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
     lines.append('Victim/PS5 band & security cannot be read from the LAN — PC link only.')
+    lines.append('No LAN IPs are listed in this report.')
     lines.append('')
     lines.append('>>> SCREENSHOT THIS SUMMARY <<<')
     lines.append('------------------------------------------------------------------------')
 
+    eth = [str(x) for x in (ethernet_aliases or []) if str(x).strip()]
     connected = [a for a in adapters if a.get('connected')]
     if not adapters:
         lines.append('[FAIL] No Wi-Fi interface info (netsh wlan returned nothing)')
     elif not connected:
-        lines.append('[WARN] No connected Wi-Fi link — PC may be on Ethernet or Wi-Fi is off')
+        if eth:
+            lines.append(
+                '[WARN] No connected Wi-Fi link — Ethernet uplink is up: '
+                + ', '.join(eth)
+            )
+        else:
+            lines.append(
+                '[WARN] No connected Wi-Fi link — Wi-Fi may be off (no Ethernet uplink detected)'
+            )
         for a in adapters:
             nm = a.get('name') or '(unknown)'
             st = a.get('state') or '?'
@@ -148,14 +231,26 @@ def format_wifi_link_report(adapters: list[dict[str, Any]], *, raw: str = '') ->
             ssid = a.get('ssid') or '(unknown)'
             radio = a.get('radio_type') or '(unknown)'
             sig = a.get('signal') or '?'
+            rx = a.get('rx_mbps') or '?'
+            tx = a.get('tx_mbps') or '?'
+            strength = security_strength(str(auth))
             lines.append(f"[PASS] Connected: {a.get('name') or 'Wi-Fi'}")
             lines.append(f'[INFO] SSID: {ssid}')
             lines.append(f'[INFO] Band: {band} (channel {ch_s})')
             lines.append(f'[INFO] Security: {auth} / {cipher}')
+            if strength == 'weak':
+                lines.append(
+                    '[WARN] Weak/open Wi-Fi security — prefer WPA2-Personal or WPA3-Personal'
+                )
+            elif strength == 'strong':
+                lines.append('[PASS] Security looks like WPA2/WPA3')
             lines.append(f'[INFO] Radio: {radio}  Signal: {sig}')
+            lines.append(f'[INFO] Rates: rx {rx} Mbps / tx {tx} Mbps')
+            if a.get('guid'):
+                lines.append(f"[INFO] Adapter GUID: {a['guid']}")
             if a.get('bssid'):
+                # AP radio id — useful for band/BSS matching; not a LAN host IP.
                 lines.append(f"[INFO] BSSID: {a['bssid']}")
-            # Soft guidance for common Kill/Lag Wi-Fi cases
             band_l = str(band).lower()
             if '6' in band_l and 'ghz' in band_l:
                 lines.append(
@@ -166,6 +261,8 @@ def format_wifi_link_report(adapters: list[dict[str, Any]], *, raw: str = '') ->
                 lines.append('[INFO] PC is on 2.4 GHz')
             elif '5' in band_l:
                 lines.append('[INFO] PC is on 5 GHz')
+        if eth:
+            lines.append('[INFO] Ethernet also up: ' + ', '.join(eth))
 
     lines.append('------------------------------------------------------------------------')
     lines.append('')
@@ -174,13 +271,17 @@ def format_wifi_link_report(adapters: list[dict[str, Any]], *, raw: str = '') ->
         lines.append('  (none)')
     for a in adapters:
         lines.append(
-            '  {name}: state={state} ssid={ssid} band={band} ch={ch} auth={auth}'.format(
+            '  {name}: state={state} ssid={ssid} band={band} ch={ch} auth={auth} '
+            'rx={rx} tx={tx} guid={guid}'.format(
                 name=a.get('name') or '?',
                 state=a.get('state') or '?',
                 ssid=a.get('ssid') or '-',
                 band=a.get('band') or '-',
                 ch=a.get('channel') if a.get('channel') is not None else '-',
                 auth=a.get('authentication') or '-',
+                rx=a.get('rx_mbps') or '-',
+                tx=a.get('tx_mbps') or '-',
+                guid=(str(a.get('guid') or '-')[:48]),
             )
         )
     lines.append('')
@@ -250,7 +351,8 @@ def run_wifi_link_diag(*, open_report: bool = True) -> tuple[bool, str, Path | N
         return False, 'Wi-Fi link check is Windows-only.', None
     raw = _run_netsh_wlan_interfaces()
     adapters = parse_wlan_interfaces(raw)
-    report = format_wifi_link_report(adapters, raw=raw)
+    eth = _ethernet_uplink_aliases()
+    report = format_wifi_link_report(adapters, raw=raw, ethernet_aliases=eth)
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     path = _desktop_dir() / f'ZubCut-Wifi-Link-{stamp}.txt'
     try:

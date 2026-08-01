@@ -18,6 +18,7 @@ QUICK_DIAG_PS1_NAME = 'ZubCut-Quick-Network-Diag.ps1'
 _EMBEDDED_QUICK_DIAG_PS1 = r"""# ZubCut Quick Network Diagnostic (no Python / no repo required)
 # Right-click -> Run with PowerShell  (or run elevated for best results)
 # Writes ZubCut-Quick-Diag-*.txt on the Desktop for screenshots.
+# SUMMARY uses redacted IPs (subnet + host) so screenshots stay privacy-safe.
 
 $ErrorActionPreference = 'SilentlyContinue'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -40,9 +41,47 @@ function Has-UninstallDisplay([string]$needle) {
         Select-Object -ExpandProperty DisplayName -Unique
 }
 
+function Format-SafeIPv4([string]$ip) {
+    if (-not $ip) { return '(ip)' }
+    $ip = $ip.Trim()
+    if ($ip -match '^(192)\.(168)\.(137)\.(\d+)$') {
+        return ("hotspot 137 · .{0}" -f $Matches[4])
+    }
+    if ($ip -match '^(169)\.(254)\.(\d+)\.(\d+)$') {
+        return ("apipa · .{0}.{1}" -f $Matches[3], $Matches[4])
+    }
+    if ($ip -match '^(127)\.(\d+)\.(\d+)\.(\d+)$') {
+        return ("loopback · .{0}" -f $Matches[4])
+    }
+    if ($ip -match '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') {
+        $a = [int]$Matches[1]; $b = [int]$Matches[2]; $c = [int]$Matches[3]; $d = [int]$Matches[4]
+        $private = ($a -eq 10) -or (($a -eq 172) -and ($b -ge 16) -and ($b -le 31)) -or `
+            (($a -eq 192) -and ($b -eq 168)) -or (($a -eq 100) -and ($b -ge 64) -and ($b -le 127))
+        if ($private) {
+            return ("{0}.{1}.{2}.0/24 · .{3}" -f $a, $b, $c, $d)
+        }
+        return ("public · .{0}" -f $d)
+    }
+    return '(ip)'
+}
+
+function Test-SameSlash24([string]$ipA, [string]$ipB) {
+    if ($ipA -notmatch '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') { return $false }
+    $a1 = $Matches[1]; $a2 = $Matches[2]; $a3 = $Matches[3]
+    if ($ipB -notmatch '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') { return $false }
+    $b1 = $Matches[1]; $b2 = $Matches[2]; $b3 = $Matches[3]
+    return ($a1 -eq $b1 -and $a2 -eq $b2 -and $a3 -eq $b3)
+}
+
 $admin = Test-IsAdmin
 $npcapPath = 'C:\Windows\SysWOW64\Npcap'
 $npcapOk = Test-Path $npcapPath
+$npcapSvc = Get-Service -Name 'npcap', 'npf' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Status -eq 'Running' } |
+    Select-Object -First 1
+$npcapSvcOk = $null -ne $npcapSvc
+$npcapSvcName = if ($npcapSvc) { $npcapSvc.Name } else { '(none running)' }
+
 $winpcapKey = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\WinPcapInst'
 if (-not $winpcapKey) {
     $winpcapKey = Test-Path 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\WinPcapInst'
@@ -50,6 +89,14 @@ if (-not $winpcapKey) {
 $winpcapApps = @(Has-UninstallDisplay 'WinPcap|Win10Pcap')
 $npcapApps = @(Has-UninstallDisplay 'Npcap')
 $nmapApps = @(Has-UninstallDisplay 'Nmap')
+
+# IP forwarding — ON causes Kill to feel like lag without full offline.
+$ipFwd = 0
+try {
+    $ipFwd = [int](Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' `
+        -Name 'IPEnableRouter' -ErrorAction SilentlyContinue).IPEnableRouter
+} catch { $ipFwd = 0 }
+$ipFwdOn = $ipFwd -ne 0
 
 $zubcutDirs = @(
     (Join-Path $env:ProgramFiles 'ZubCut'),
@@ -68,19 +115,16 @@ $wdOk = ($wdBundles | Where-Object Complete).Count -gt 0
 
 $ipcfg = ipconfig | Out-String
 $has137 = $ipcfg -match '192\.168\.137\.'
-# Match English + common localized labels (FR: Passerelle par défaut, DE: Standardgateway, …).
 $gateways = [regex]::Matches(
     $ipcfg,
     '(?i)(?:Default Gateway|Passerelle par d[eé]faut|Standardgateway|Puerta de enlace predeterminada|Gateway predefinito)[^:\r\n]*:\s*(\d{1,3}(?:\.\d{1,3}){3})'
 ) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
-# Fallback: any IPv4 on a gateway-ish line (covers odd locales / spacing).
 if (-not $gateways) {
     $gateways = [regex]::Matches(
         $ipcfg,
         '(?i)(?:gateway|passerelle|gateway)[^:\r\n]*:\s*(\d{1,3}(?:\.\d{1,3}){3})'
     ) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
 }
-# Prefer Get-NetRoute when available (locale-independent).
 try {
     $routeGws = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
         Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } |
@@ -107,22 +151,91 @@ if (Test-Path $settingsPath) {
     } catch {}
 }
 
+# Saved Settings adapter live? (exists, IPv4, not APIPA)
+$savedLive = $false
+$savedApipa = $false
+$savedIp = $null
+if ($ifaceSaved) {
+    $savedAddrs = @(
+        Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.InterfaceAlias -eq $ifaceSaved -and $_.IPAddress -notlike '127.*' }
+    )
+    if ($savedAddrs.Count -gt 0) {
+        $savedIp = [string]$savedAddrs[0].IPAddress
+        $savedApipa = $savedIp -like '169.254.*'
+        $savedLive = -not $savedApipa
+    }
+}
+
+# Gateway MAC from ARP (needed for MITM)
+$gwPrimary = if ($gateways) { [string]$gateways[0] } else { $null }
+$gwMac = $null
+$gwMacOk = $false
+if ($gwPrimary) {
+    $arpAll = arp -a | Out-String
+    $macRx = [regex]::Match(
+        $arpAll,
+        [regex]::Escape($gwPrimary) + '\s+([0-9a-fA-F\-]{17})'
+    )
+    if ($macRx.Success) {
+        $gwMac = $macRx.Groups[1].Value
+        $gwMacOk = $gwMac -and ($gwMac -notmatch '^(ff-ff-ff-ff-ff-ff|00-00-00-00-00-00)$')
+    }
+}
+
+# PC vs gateway same /24 (using first non-APIPA adapter IP if possible)
+$pcIp = $null
+foreach ($a in $adapters) {
+    if ($a.IPAddress -and ($a.IPAddress -notlike '169.254.*') -and ($a.IPAddress -notlike '192.168.137.*')) {
+        $pcIp = [string]$a.IPAddress
+        break
+    }
+}
+if (-not $pcIp -and $savedIp) { $pcIp = $savedIp }
+$pcGwSame = $false
+if ($pcIp -and $gwPrimary) {
+    $pcGwSame = Test-SameSlash24 $pcIp $gwPrimary
+}
+
 $lines = @()
 $lines += '========================================================================'
 $lines += ' ZubCut Quick Network Diagnostic (PowerShell)'
 $lines += '========================================================================'
 $lines += ("Generated: {0}" -f (Get-Date).ToString('u'))
-$lines += ("Administrator: {0}" -f $(if ($admin) { 'yes' } else { 'NO — right-click PowerShell -> Run as administrator' }))
+$lines += ("Administrator: {0}" -f $(if ($admin) { 'yes' } else { 'NO — approve UAC / Run as administrator' }))
+$lines += 'IPs in SUMMARY are redacted (subnet + host) for screenshot privacy.'
 $lines += ''
 $lines += '>>> SCREENSHOT THIS SUMMARY <<<'
 $lines += '------------------------------------------------------------------------'
 $lines += ("[{0}] Running as Administrator" -f $(if ($admin) { 'PASS' } else { 'FAIL' }))
 $lines += ("[{0}] Npcap folder present ({1})" -f $(if ($npcapOk) { 'PASS' } else { 'FAIL' }), $npcapPath)
+$lines += ("[{0}] Npcap/NPF service running ({1})" -f $(if ($npcapSvcOk) { 'PASS' } else { 'FAIL' }), $npcapSvcName)
 $lines += ("[{0}] WinPcap uninstall key absent" -f $(if ($winpcapKey) { 'FAIL' } else { 'PASS' }))
 $lines += ("[{0}] WinPcap/Win10Pcap not in Apps list" -f $(if ($winpcapApps.Count) { 'FAIL' } else { 'PASS' }))
+$lines += ("[{0}] IP forwarding off (Kill full-cut)" -f $(if ($ipFwdOn) { 'FAIL' } else { 'PASS' }))
+$lines += ("[{0}] Gateway MAC known (MITM)" -f $(if ($gwMacOk) { 'PASS' } else { 'FAIL' }))
+if ($ifaceSaved) {
+    if ($savedLive) {
+        $lines += ("[PASS] Settings adapter live: {0} ({1})" -f $ifaceSaved, (Format-SafeIPv4 $savedIp))
+    } elseif ($savedApipa) {
+        $lines += ("[FAIL] Settings adapter APIPA only: {0} ({1})" -f $ifaceSaved, (Format-SafeIPv4 $savedIp))
+    } else {
+        $lines += ("[FAIL] Settings adapter not live / no IPv4: {0}" -f $ifaceSaved)
+    }
+} else {
+    $lines += '[WARN] Settings adapter not set'
+}
+if ($pcIp -and $gwPrimary) {
+    $lines += ("[{0}] PC and gateway on same /24" -f $(if ($pcGwSame) { 'PASS' } else { 'FAIL' }))
+    $lines += ("[INFO] PC {0}  GW {1}" -f (Format-SafeIPv4 $pcIp), (Format-SafeIPv4 $gwPrimary))
+} else {
+    $lines += '[WARN] Could not compare PC IP vs gateway subnet'
+}
 $lines += ("[{0}] Hotspot 192.168.137.x visible" -f $(if ($has137) { 'PASS' } else { 'WARN' }))
 $lines += ("[{0}] WinDivert bundle under ZubCut" -f $(if ($wdOk) { 'PASS' } else { 'WARN' }))
-$lines += ("[INFO] Default gateways: {0}" -f ($(if ($gateways) { $gateways -join ', ' } else { '(none)' })))
+$gwSafe = @($gateways | ForEach-Object { Format-SafeIPv4 $_ })
+$lines += ("[INFO] Default gateways: {0}" -f ($(if ($gwSafe) { $gwSafe -join ', ' } else { '(none)' })))
+if ($gwMacOk) { $lines += ("[INFO] Gateway MAC: {0}" -f $gwMac) }
 $lines += ("[INFO] Clumsy mode (settings): {0}" -f ($(if ($null -eq $clumsy) { '(unknown)' } else { $clumsy })))
 $lines += ("[INFO] Saved adapter (settings): {0}" -f ($(if ($ifaceSaved) { $ifaceSaved } else { '(not set)' })))
 $lines += '------------------------------------------------------------------------'
@@ -131,9 +244,9 @@ $lines += '--- Related programs ---'
 foreach ($n in ($npcapApps + $winpcapApps + $nmapApps | Select-Object -Unique)) { $lines += "  $n" }
 if (-not ($npcapApps + $winpcapApps + $nmapApps)) { $lines += '  (none matched)' }
 $lines += ''
-$lines += '--- IPv4 adapters ---'
+$lines += '--- IPv4 adapters (redacted) ---'
 foreach ($a in $adapters) {
-    $lines += ("  {0}: {1}" -f $a.InterfaceAlias, $a.IPAddress)
+    $lines += ("  {0}: {1}" -f $a.InterfaceAlias, (Format-SafeIPv4 $a.IPAddress))
 }
 $lines += ''
 $lines += '--- WinDivert paths ---'
@@ -142,24 +255,44 @@ foreach ($b in $wdBundles) {
     $lines += ("  {0}  dll={1} sys={2} complete={3}" -f $b.Dir, $b.Dll, $b.Sys, $b.Complete)
 }
 $lines += ''
-$lines += '--- ARP sample (first 40 lines) ---'
+$lines += '--- ARP sample (MAC + host only, first 40) ---'
 $arp = arp -a | Select-Object -First 40
-foreach ($l in $arp) { $lines += "  $l" }
+foreach ($l in $arp) {
+    $safe = $l
+    if ($safe -match '(\d+\.\d+\.\d+\.(\d+))') {
+        $hostPart = $Matches[2]
+        $safe = $safe -replace [regex]::Escape($Matches[1]), (".{0}" -f $hostPart)
+    }
+    $lines += "  $safe"
+}
 $lines += ''
 $lines += '--- Recommended next steps ---'
-if (-not $admin) { $lines += '  1. Re-run this script as Administrator.' }
+if (-not $admin) { $lines += '  1. Re-run this script as Administrator (Quick check button / UAC).' }
 if (-not $npcapOk) { $lines += '  2. Install Npcap from https://npcap.com/ (enable Wi-Fi adapter).' }
+if (-not $npcapSvcOk) { $lines += '  3. Start Npcap service (or reboot after Npcap install).' }
 if ($winpcapKey -or $winpcapApps.Count) {
-    $lines += '  3. Uninstall WinPcap/Win10Pcap, reboot, keep Npcap only.'
+    $lines += '  4. Uninstall WinPcap/Win10Pcap, reboot, keep Npcap only.'
+}
+if ($ipFwdOn) {
+    $lines += '  5. IP forwarding is ON — restart ZubCut as Admin (or Kill OFF/ON) so Kill can fully cut.'
+}
+if (-not $gwMacOk) {
+    $lines += '  6. Gateway MAC unknown — ping the router, confirm Npcap, pick the LAN adapter in Settings.'
+}
+if ($ifaceSaved -and -not $savedLive) {
+    $lines += '  7. Settings adapter not live — open Settings, pick the connected Wi-Fi/Ethernet row, Apply, Rescan.'
+}
+if ($pcIp -and $gwPrimary -and -not $pcGwSame) {
+    $lines += '  8. PC and gateway on different subnets — pick the LAN router adapter (not modem/VPN).'
 }
 if ($clumsy -and -not $has137) {
-    $lines += '  4. Clumsy ON but no 192.168.137.x — turn Mobile Hotspot ON, wait, put PS5 on hotspot, rescan.'
+    $lines += '  9. Clumsy ON but no hotspot 137.x — turn Mobile Hotspot ON, put PS5 on it, rescan.'
 }
 if ($clumsy -and -not $wdOk) {
-    $lines += '  5. Reinstall ZubCut with "Clumsy mode" checked (WinDivert missing).'
+    $lines += ' 10. Reinstall ZubCut with "Clumsy mode" checked (WinDivert missing).'
 }
 if ($gateways.Count -gt 1) {
-    $lines += '  6. Multiple gateways (modem+router?) — pick the LAN router adapter in ZubCut Settings.'
+    $lines += ' 11. Multiple gateways (modem+router?) — pick the LAN router adapter in ZubCut Settings.'
 }
 $lines += '  Send this .txt screenshot / file to ZubCut support.'
 $lines += '========================================================================'
