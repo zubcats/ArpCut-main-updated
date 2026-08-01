@@ -1,4 +1,4 @@
-"""Advanced log viewer — full messages and room for future diagnostic tools."""
+"""Advanced log viewer — full messages and in-app diagnostic tool buttons."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -118,14 +119,36 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         self._splitter.setStretchFactor(1, 2)
         layout.addWidget(self._splitter, 1)
 
-        self._diag_group = QLabel('Diagnostic tools — coming soon', root)
-        self._diag_group.setObjectName('logsDiagPlaceholder')
-        self._diag_group.setAlignment(Qt.AlignCenter)
-        self._diag_group.setStyleSheet(
-            'color: #9a9a9a; font-size: 11px; padding: 8px; '
-            'border: 1px dashed #3d3d3d; border-radius: 4px;'
+        diag_panel = QFrame(root)
+        diag_panel.setObjectName('logsDiagPanel')
+        diag_layout = QVBoxLayout(diag_panel)
+        diag_layout.setContentsMargins(10, 8, 10, 8)
+        diag_layout.setSpacing(6)
+        diag_heading = QLabel('Diagnostic tools', diag_panel)
+        diag_heading.setObjectName('logsDiagHeading')
+        diag_layout.addWidget(diag_heading)
+        diag_hint = QLabel(
+            'Run a check, approve UAC if prompted, then send the Desktop report '
+            '(or a screenshot of the SUMMARY) to support.',
+            diag_panel,
         )
-        layout.addWidget(self._diag_group)
+        diag_hint.setObjectName('logsDiagHint')
+        diag_hint.setWordWrap(True)
+        diag_layout.addWidget(diag_hint)
+        diag_btns = QHBoxLayout()
+        diag_btns.setSpacing(8)
+        self._btn_network_diag = QPushButton('Network diagnostic', diag_panel)
+        self._btn_network_diag.setObjectName('logsDiagNetworkBtn')
+        self._btn_network_diag.setToolTip(
+            'Opens Admin PowerShell and runs the Quick Network Diagnostic '
+            '(Npcap / WinPcap / hotspot / WinDivert / adapters). '
+            'Saves ZubCut-Quick-Diag-*.txt on the Desktop and opens it in Notepad.'
+        )
+        self._btn_network_diag.clicked.connect(self._run_network_diagnostic)
+        diag_btns.addWidget(self._btn_network_diag)
+        diag_btns.addStretch(1)
+        diag_layout.addLayout(diag_btns)
+        layout.addWidget(diag_panel)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
@@ -206,3 +229,16 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         except Exception:
             pass
         self.sync_entries(())
+
+    def _run_network_diagnostic(self) -> None:
+        """Launch the friend-support Quick Network Diag in elevated PowerShell."""
+        try:
+            from tools.support_quick_diag import launch_quick_network_diag_elevated
+
+            ok, message = launch_quick_network_diag_elevated()
+        except Exception as exc:
+            ok, message = False, f'Network diagnostic failed: {exc}'
+        try:
+            self._app.log(message, 'gray' if ok else 'red')
+        except Exception:
+            pass
