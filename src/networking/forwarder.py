@@ -8,8 +8,10 @@ from scapy.all import IP, Ether, AsyncSniffer, conf
 from tools.crash_feedback import safe_daemon_target
 
 # MITM user-space shaping limits (experimental).
-_MAX_DELAY_MS = 800
-_MAX_DELAY_QUEUE_PACKETS = 500
+# 800ms felt too mild for Advanced Lag; 5s matches meaningful game stall without
+# unbounded queue growth (heap still capped below).
+_MAX_DELAY_MS = 5000
+_MAX_DELAY_QUEUE_PACKETS = 2000
 # Upper bound for token-bucket rate (kbps); 10e6 kbps ≈ 10 Gbps.
 _MAX_SHAPING_KBPS = 10_000_000.0
 
