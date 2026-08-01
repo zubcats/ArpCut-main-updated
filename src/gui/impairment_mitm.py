@@ -84,26 +84,55 @@ class ImpairmentMitmMixin:
                 f'{action} MITM armed on {iface}: victim {victim_mac} router {router_mac}',
                 UI_LOG_VICTIM_BLOCK_FG,
             )
+            # Defer forwarding probe — never stall the Kill click path.
             if sys.platform.startswith('win'):
                 try:
-                    from networking.killer import (
-                        disable_ip_forwarding,
-                        is_ip_forwarding_enabled,
+                    QTimer.singleShot(
+                        0,
+                        lambda a=action, i=str(iface): self._check_mitm_forwarding_after_arm(
+                            a, i
+                        ),
                     )
-
-                    if is_ip_forwarding_enabled():
-                        # One more sync flip on the MITM NIC — leftover ICS/Clumsy
-                        # forwarding causes lag-without-offline (no PS5 red chain).
-                        disable_ip_forwarding(priority_iface=str(iface))
-                        if is_ip_forwarding_enabled():
-                            self.log(
-                                f'{action}: Windows IP forwarding is still ON — '
-                                'PS5 may lag but stay online (no full cut). '
-                                'Run ZubCut as Administrator, then Kill OFF and ON again.',
-                                'red',
-                            )
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+    def _check_mitm_forwarding_after_arm(self, action: str, iface: str) -> None:
+        """Post-arm only: reinforce disable + warn if kernel still relays (off GUI)."""
+
+        def _work() -> None:
+            try:
+                from networking.killer import (
+                    disable_ip_forwarding,
+                    is_ip_forwarding_enabled,
+                )
+
+                disable_ip_forwarding(priority_iface=str(iface or ''))
+                if not is_ip_forwarding_enabled():
+                    return
+            except Exception:
+                return
+
+            def _warn() -> None:
+                self.log(
+                    f'{action}: Windows IP forwarding is still ON — '
+                    'PS5 may lag but stay online (no full cut). '
+                    'Run ZubCut as Administrator, then Kill OFF and ON again.',
+                    'red',
+                )
+
+            try:
+                QTimer.singleShot(0, _warn)
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-mitm-fwd-check',
+                daemon=True,
+            ).start()
         except Exception:
             pass
 
