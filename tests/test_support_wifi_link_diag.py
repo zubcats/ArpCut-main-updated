@@ -200,7 +200,7 @@ class TestLogsWifiButton(unittest.TestCase):
         self.assertIn('def _run_wifi_link_check', src)
         self.assertIn('launch_wifi_link_diag', src)
         self.assertIn('Admin PowerShell', src)
-        self.assertIn('Each check opens Admin PowerShell', src)
+        self.assertIn('open Admin PowerShell', src)
         # Still PC-only — no victim band probe wiring.
         self.assertNotIn('victim band', src.lower())
 
@@ -210,7 +210,7 @@ class TestLogsWifiButton(unittest.TestCase):
             src = fh.read()
         self.assertIn('QPushButton#logsDiagWifiBtn', src)
         start = src.index('QFrame#logsDiagPanel')
-        end = src.index('QPushButton#logsDiagWifiBtn:pressed')
+        end = src.index('QPushButton#logsDiagHotspotBtn:pressed')
         block = src[start:end]
         self.assertNotIn('#19232D', block)
         self.assertNotIn('#1A72BB', block)

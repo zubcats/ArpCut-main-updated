@@ -112,11 +112,13 @@ class TestLogsDiagButtonWiring(unittest.TestCase):
         self.assertIn('QPushButton#logsDiagWifiBtn', src)
         block = src[
             src.index('QFrame#logsDiagPanel') : src.index(
-                'QPushButton#logsDiagQuickBtn:pressed'
+                'QPushButton#logsDiagHotspotBtn:pressed'
             )
         ]
         self.assertNotIn('#19232D', block)
         self.assertNotIn('#1A72BB', block)
+        self.assertIn('logsDiagCaptureBtn', block)
+        self.assertIn('logsDiagLanBtn', block)
 
 
 if __name__ == '__main__':

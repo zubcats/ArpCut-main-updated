@@ -128,9 +128,10 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         diag_heading.setObjectName('logsDiagHeading')
         diag_layout.addWidget(diag_heading)
         diag_hint = QLabel(
-            'Each check opens Admin PowerShell (UAC). Finished reports save to '
-            'Desktop\\ZubCut Diagnostics (folder is created if needed). '
-            'Send the report or a SUMMARY screenshot to support. SUMMARY redacts LAN IPs.',
+            'Quick check / Wi-Fi / LAN / Hotspot open Admin PowerShell (UAC). '
+            'Capture stack uses this app\'s Npcap (run ZubCut as Admin). '
+            'Reports save to Desktop\\ZubCut Diagnostics. '
+            'Send the SUMMARY screenshot to support (LAN IPs masked with x).',
             diag_panel,
         )
         diag_hint.setObjectName('logsDiagHint')
@@ -159,6 +160,37 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         diag_btns.addWidget(self._btn_wifi_link)
         diag_btns.addStretch(1)
         diag_layout.addLayout(diag_btns)
+        diag_btns2 = QHBoxLayout()
+        diag_btns2.setSpacing(8)
+        self._btn_capture_stack = QPushButton('Capture stack', diag_panel)
+        self._btn_capture_stack.setObjectName('logsDiagCaptureBtn')
+        self._btn_capture_stack.setToolTip(
+            'Probes Npcap sniffer + L2 send on the Settings adapter (this app, Admin). '
+            'Use when Kill feels like lag instead of full offline. '
+            'Saves ZubCut-Capture-Stack-*.txt in Desktop\\ZubCut Diagnostics.'
+        )
+        self._btn_capture_stack.clicked.connect(self._run_capture_stack_check)
+        diag_btns2.addWidget(self._btn_capture_stack)
+        self._btn_lan_path = QPushButton('LAN path', diag_panel)
+        self._btn_lan_path.setObjectName('logsDiagLanBtn')
+        self._btn_lan_path.setToolTip(
+            'Opens Admin PowerShell — home LAN Kill readiness '
+            '(adapter live, gateway MAC, same /24, IP forwarding). '
+            'Saves ZubCut-Lan-Path-*.txt in Desktop\\ZubCut Diagnostics.'
+        )
+        self._btn_lan_path.clicked.connect(self._run_lan_path_check)
+        diag_btns2.addWidget(self._btn_lan_path)
+        self._btn_hotspot_path = QPushButton('Hotspot path', diag_panel)
+        self._btn_hotspot_path.setObjectName('logsDiagHotspotBtn')
+        self._btn_hotspot_path.setToolTip(
+            'Opens Admin PowerShell — Clumsy Mobile Hotspot readiness '
+            '(hotspot ON, 192.168.137.1, DHCP, clients, WinDivert). '
+            'Saves ZubCut-Hotspot-Path-*.txt in Desktop\\ZubCut Diagnostics.'
+        )
+        self._btn_hotspot_path.clicked.connect(self._run_hotspot_path_check)
+        diag_btns2.addWidget(self._btn_hotspot_path)
+        diag_btns2.addStretch(1)
+        diag_layout.addLayout(diag_btns2)
         layout.addWidget(diag_panel)
 
         btn_row = QHBoxLayout()
@@ -262,6 +294,45 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
             ok, message = launch_wifi_link_diag()
         except Exception as exc:
             ok, message = False, f'Wi-Fi link check failed: {exc}'
+        try:
+            self._app.log(message, 'gray' if ok else 'red')
+        except Exception:
+            pass
+
+    def _run_capture_stack_check(self) -> None:
+        """Probe Npcap sniffer + L2 on the Settings adapter (in-app, Admin)."""
+        try:
+            from tools.support_capture_stack_diag import launch_capture_stack_diag
+
+            ok, message = launch_capture_stack_diag()
+        except Exception as exc:
+            ok, message = False, f'Capture stack failed: {exc}'
+        try:
+            self._app.log(message, 'gray' if ok else 'red')
+        except Exception:
+            pass
+
+    def _run_lan_path_check(self) -> None:
+        """Home LAN Kill readiness via Admin PowerShell."""
+        try:
+            from tools.support_lan_path_diag import launch_lan_path_diag
+
+            ok, message = launch_lan_path_diag()
+        except Exception as exc:
+            ok, message = False, f'LAN path failed: {exc}'
+        try:
+            self._app.log(message, 'gray' if ok else 'red')
+        except Exception:
+            pass
+
+    def _run_hotspot_path_check(self) -> None:
+        """Clumsy Mobile Hotspot readiness via Admin PowerShell."""
+        try:
+            from tools.support_hotspot_path_diag import launch_hotspot_path_diag
+
+            ok, message = launch_hotspot_path_diag()
+        except Exception as exc:
+            ok, message = False, f'Hotspot path failed: {exc}'
         try:
             self._app.log(message, 'gray' if ok else 'red')
         except Exception:

@@ -224,6 +224,16 @@ $lines += 'IPs in SUMMARY are masked with x for screenshot privacy.'
 $lines += ''
 $lines += '>>> SCREENSHOT THIS SUMMARY <<<'
 $lines += '------------------------------------------------------------------------'
+# Which setup this report is for (Settings + hotspot) — not advice to change modes.
+if ($clumsy) {
+    if ($hotspotReady) {
+        $lines += '[INFO] Active path: Clumsy hotspot (Clumsy ON, Mobile Hotspot ready)'
+    } else {
+        $lines += '[INFO] Active path: Clumsy hotspot (Clumsy ON — hotspot not ready yet)'
+    }
+} else {
+    $lines += '[INFO] Active path: LAN Kill (Clumsy OFF)'
+}
 $lines += ("[{0}] Running as Administrator" -f $(if ($admin) { 'PASS' } else { 'FAIL' }))
 $lines += ("[{0}] Npcap folder present ({1})" -f $(if ($npcapOk) { 'PASS' } else { 'FAIL' }), $npcapPath)
 $lines += ("[{0}] Npcap/NPF service running ({1})" -f $(if ($npcapSvcOk) { 'PASS' } else { 'FAIL' }), $npcapSvcName)

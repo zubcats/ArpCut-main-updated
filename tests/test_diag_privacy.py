@@ -56,6 +56,8 @@ class TestQuickDiagPrivacySource(unittest.TestCase):
         # Hotspot line uses Windows Mobile Hotspot toggle — not loose ipconfig 137 match.
         self.assertIn('Test-MobileHotspotOn', src)
         self.assertIn('Mobile Hotspot OFF', src)
+        self.assertIn('Active path:', src)
+        self.assertIn('LAN Kill', src)
         self.assertNotIn('Hotspot 192.168.137.x visible', src)
         self.assertNotIn('$has137 = $ipcfg', src)
 
