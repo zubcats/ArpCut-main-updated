@@ -511,8 +511,24 @@ class ImpairmentKillMixin:
                     elif turn_on and mac in self.killer.killed:
                         _mark('lan_instant')
                         try:
+                            # Instant path first (same order as Killer.kill).
                             self.killer.reassert_poison(device)
                             self.killer._apply_traffic_cut_sync(device)
+                        except Exception:
+                            pass
+                        try:
+                            from networking.killer import disable_ip_forwarding
+
+                            disable_ip_forwarding(
+                                priority_iface=getattr(
+                                    getattr(self.killer, 'iface', None), 'name', None
+                                )
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            # Background seal only — never before poison/cut above.
+                            self.killer._reinforce_full_cut_async(device)
                         except Exception:
                             pass
                         try:

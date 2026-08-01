@@ -55,6 +55,7 @@ class TestIpForwardingMitm(unittest.TestCase):
             mock.patch.object(Killer, '_poison_arp_now'),
             mock.patch.object(Killer, '_kill_arp_worker'),
             mock.patch.object(Killer, '_apply_traffic_cut_sync', return_value=False),
+            mock.patch.object(Killer, '_reinforce_full_cut_async'),
             mock.patch('networking.killer.disable_ip_forwarding') as disable,
         ):
             Killer.kill(k, victim, wait_after=0, traffic_cut=True, ics_mode=False)
@@ -124,8 +125,10 @@ class TestIpForwardingMitm(unittest.TestCase):
         poison_at = kill.index('_poison_arp_now')
         cut_at = kill.index('_apply_traffic_cut_sync')
         disable_at = kill.index('disable_ip_forwarding')
+        reinforce_at = kill.index('_reinforce_full_cut_async')
         self.assertLess(poison_at, cut_at)
         self.assertLess(cut_at, disable_at)
+        self.assertLess(disable_at, reinforce_at)
         # Cut path must not re-ping (GUI already validated).
         apply = src[
             src.index('def _apply_traffic_cut_sync') : src.index('def apply_traffic_cut')
