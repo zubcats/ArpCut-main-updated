@@ -86,14 +86,22 @@ class ImpairmentMitmMixin:
             )
             if sys.platform.startswith('win'):
                 try:
-                    from networking.killer import is_ip_forwarding_enabled
+                    from networking.killer import (
+                        disable_ip_forwarding,
+                        is_ip_forwarding_enabled,
+                    )
 
                     if is_ip_forwarding_enabled():
-                        self.log(
-                            f'{action}: Windows IP forwarding is still ON — traffic may bypass the cut. '
-                            'Run ZubCut as Administrator, then Kill OFF and ON again.',
-                            'red',
-                        )
+                        # One more sync flip on the MITM NIC — leftover ICS/Clumsy
+                        # forwarding causes lag-without-offline (no PS5 red chain).
+                        disable_ip_forwarding(priority_iface=str(iface))
+                        if is_ip_forwarding_enabled():
+                            self.log(
+                                f'{action}: Windows IP forwarding is still ON — '
+                                'PS5 may lag but stay online (no full cut). '
+                                'Run ZubCut as Administrator, then Kill OFF and ON again.',
+                                'red',
+                            )
                 except Exception:
                     pass
         except Exception:
