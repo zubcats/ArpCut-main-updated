@@ -37,7 +37,12 @@ class TestPercentCutKill(unittest.TestCase):
         self.assertIn('traffic_cut=False', block)
         self.assertIn('wait_after=0.0', block)
         self.assertIn('return False', block)
-        self.assertIn('return bool(fw', block)
+        # Forwarder starts first; disable_ip_forwarding runs only after it is live.
+        self.assertIn('return True', block)
+        self.assertIn('disable_ip_forwarding(priority_iface=', block)
+        fw_start = block.index('fw.start(')
+        disable_at = block.index('disable_ip_forwarding')
+        self.assertLess(fw_start, disable_at)
 
     def test_pctcut_instant_apply_helper_exists(self) -> None:
         src = self._main_py()
