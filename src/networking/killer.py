@@ -69,20 +69,67 @@ def _set_ip_enable_router_registry(want: int) -> None:
 
 def _iface_indexes_from_netsh(show_out: str) -> list[str]:
     """Parse ``netsh interface ipv4 show interfaces`` Idx column."""
-    indexes: list[str] = []
+    return [idx for idx, _name in _iface_rows_from_netsh(show_out)]
+
+
+def _iface_rows_from_netsh(show_out: str) -> list[tuple[str, str]]:
+    """Parse ``netsh interface ipv4 show interfaces`` → [(idx, name), ...]."""
+    rows: list[tuple[str, str]] = []
     for line in str(show_out or '').splitlines():
         parts = line.split()
-        if not parts:
+        if len(parts) < 5 or not parts[0].isdigit():
             continue
         # Typical: "  12  25  1500  connected  Wi-Fi"
-        if parts[0].isdigit():
-            indexes.append(parts[0])
-    return indexes
+        rows.append((parts[0], ' '.join(parts[4:])))
+    return rows
 
 
-def _apply_windows_ip_forwarding_ifaces(enabled: bool) -> None:
-    """Per-interface runtime switch via netsh (avoid PowerShell cold-start on Kill)."""
+def _netsh_set_iface_forwarding(iface_key: str, enabled: bool) -> bool:
+    """One fast per-iface netsh toggle. ``iface_key`` is index or interface name."""
+    key = str(iface_key or '').strip()
+    if not key:
+        return False
     flag = 'enabled' if enabled else 'disabled'
+    try:
+        run_command(
+            [
+                'netsh',
+                'interface',
+                'ipv4',
+                'set',
+                'interface',
+                key,
+                f'forwarding={flag}',
+            ],
+            shell=False,
+            timeout=3,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _priority_iface_keys(priority_iface: str | None, show_out: str = '') -> list[str]:
+    """Resolve active adapter to netsh keys (name + matching Idx)."""
+    name = str(priority_iface or '').strip()
+    if not name:
+        return []
+    keys = [name]
+    name_l = name.lower()
+    for idx, iface_name in _iface_rows_from_netsh(show_out):
+        if iface_name.lower() == name_l or name_l in iface_name.lower():
+            if idx not in keys:
+                keys.append(idx)
+            break
+    return keys
+
+
+def _apply_windows_ip_forwarding_ifaces(
+    enabled: bool,
+    *,
+    priority_iface: str | None = None,
+) -> None:
+    """Per-interface runtime switch via netsh (avoid PowerShell cold-start on Kill)."""
     try:
         show = run_command(
             ['netsh', 'interface', 'ipv4', 'show', 'interfaces'],
@@ -91,7 +138,11 @@ def _apply_windows_ip_forwarding_ifaces(enabled: bool) -> None:
         )
     except Exception:
         show = ''
-    indexes = _iface_indexes_from_netsh(str(show or ''))
+    show_s = str(show or '')
+    # Kill hot path: flip the active NIC first (sync caller may have done this already).
+    for key in _priority_iface_keys(priority_iface, show_s):
+        _netsh_set_iface_forwarding(key, enabled)
+    indexes = _iface_indexes_from_netsh(show_s)
     if not indexes:
         # Fallback once — slower, but only when netsh parse fails.
         try:
@@ -117,21 +168,12 @@ def _apply_windows_ip_forwarding_ifaces(enabled: bool) -> None:
         return
     for idx in indexes:
         try:
-            run_command(
-                [
-                    'netsh',
-                    'interface',
-                    'ipv4',
-                    'set',
-                    'interface',
-                    str(idx),
-                    f'forwarding={flag}',
-                ],
-                shell=False,
-                timeout=4,
-            )
+            _netsh_set_iface_forwarding(idx, enabled)
         except Exception:
             continue
+
+
+_forwarding_priority_iface: str | None = None
 
 
 def _drain_windows_ip_forwarding_applies() -> None:
@@ -140,10 +182,11 @@ def _drain_windows_ip_forwarding_applies() -> None:
     while True:
         with _forwarding_lock:
             target = _forwarding_desired
+            prio = _forwarding_priority_iface
         if target is None:
             break
         try:
-            _apply_windows_ip_forwarding_ifaces(target)
+            _apply_windows_ip_forwarding_ifaces(target, priority_iface=prio)
         except Exception:
             pass
         with _forwarding_lock:
@@ -152,27 +195,40 @@ def _drain_windows_ip_forwarding_applies() -> None:
                 return
 
 
-def _set_windows_ip_forwarding(enabled: bool, *, blocking: bool = False) -> None:
+def _set_windows_ip_forwarding(
+    enabled: bool,
+    *,
+    blocking: bool = False,
+    priority_iface: str | None = None,
+) -> None:
     """Runtime + persistent IPv4 forwarding toggle (Windows).
 
     ``netsh interface ipv4 set global forwarding=…`` is **invalid** — forwarding is
     per-interface. Kill's hot path must not block on PowerShell (multi-second delay);
-    registry is sync, iface apply is background unless ``blocking=True`` (startup).
+    registry + active NIC are sync, remaining ifaces are background unless
+    ``blocking=True`` (startup).
     """
-    global _forwarding_desired, _forwarding_worker
+    global _forwarding_desired, _forwarding_worker, _forwarding_priority_iface
     if not sys.platform.startswith('win'):
         return
     want = 1 if enabled else 0
     # Always flip the cheap registry bit immediately.
     _set_ip_enable_router_registry(want)
+    prio = str(priority_iface or '').strip() or None
+    # Critical for full Kill: disable forwarding on the MITM NIC before poison,
+    # without waiting for every other adapter.
+    if prio and not enabled:
+        _netsh_set_iface_forwarding(prio, False)
 
     with _forwarding_lock:
         already = _forwarding_desired is enabled
         _forwarding_desired = enabled
+        if prio:
+            _forwarding_priority_iface = prio
         worker_alive = _forwarding_worker is not None and _forwarding_worker.is_alive()
         if blocking:
             pass
-        elif already:
+        elif already and not prio:
             # Same target already requested — Kill must not wait on netsh again.
             return
         elif worker_alive:
@@ -227,18 +283,20 @@ def is_ip_forwarding_enabled() -> bool:
     return False
 
 
-def enable_ip_forwarding(*, blocking: bool = False):
+def enable_ip_forwarding(*, blocking: bool = False, priority_iface: str | None = None):
     """Enable kernel IP forwarding (Windows: IPEnableRouter + per-iface netsh)."""
-    _set_windows_ip_forwarding(True, blocking=blocking)
+    _set_windows_ip_forwarding(True, blocking=blocking, priority_iface=priority_iface)
 
 
-def disable_ip_forwarding(*, blocking: bool = False):
+def disable_ip_forwarding(*, blocking: bool = False, priority_iface: str | None = None):
     """Disable kernel IP forwarding so MITM forwarder is the only relay path.
 
     Non-blocking by default so Kill/Lag stay instant; startup should pass
-    ``blocking=True``.
+    ``blocking=True``. Pass ``priority_iface`` (e.g. ``Wi-Fi``) so Kill flips the
+    active MITM NIC synchronously — otherwise kernel relay can lag the PS5 without
+    a full offline / red-chain cut.
     """
-    _set_windows_ip_forwarding(False, blocking=blocking)
+    _set_windows_ip_forwarding(False, blocking=blocking, priority_iface=priority_iface)
 
 
 class Killer:
@@ -527,7 +585,7 @@ class Killer:
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         self._refresh_victim_mac_from_cache(victim)
         if not ics_mode:
-            disable_ip_forwarding()
+            disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
         mac = victim['mac']
         # Reassert path: even if already marked killed, refresh victim record and restart
         # ARP worker generation so ON state recovers from stale/desynced workers.
@@ -733,7 +791,7 @@ class Killer:
         if not tokens:
             return False
         self._get_socket()
-        disable_ip_forwarding()
+        disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
         # Full Kill (0%): hard-drop both directions in addition to pass ratio.
         hard_drop = pass_percent <= 0
         fw = MitmForwarder(debug=debug)
@@ -811,7 +869,7 @@ class Killer:
         if not tokens:
             return
         self._get_socket()
-        disable_ip_forwarding()
+        disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
         fw = MitmForwarder(debug=debug)
         fw.start(
             victim=victim,
