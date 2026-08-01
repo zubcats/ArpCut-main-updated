@@ -137,15 +137,15 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         diag_layout.addWidget(diag_hint)
         diag_btns = QHBoxLayout()
         diag_btns.setSpacing(8)
-        self._btn_general_checks = QPushButton('General checks', diag_panel)
-        self._btn_general_checks.setObjectName('logsDiagGeneralBtn')
-        self._btn_general_checks.setToolTip(
-            'Opens Admin PowerShell and runs general environment checks '
+        self._btn_quick_check = QPushButton('Quick check', diag_panel)
+        self._btn_quick_check.setObjectName('logsDiagQuickBtn')
+        self._btn_quick_check.setToolTip(
+            'Opens Admin PowerShell and runs a quick environment check '
             '(Npcap / WinPcap / hotspot / WinDivert / adapters / ARP). '
             'Saves ZubCut-Quick-Diag-*.txt on the Desktop and opens it in Notepad.'
         )
-        self._btn_general_checks.clicked.connect(self._run_general_checks)
-        diag_btns.addWidget(self._btn_general_checks)
+        self._btn_quick_check.clicked.connect(self._run_quick_check)
+        diag_btns.addWidget(self._btn_quick_check)
         diag_btns.addStretch(1)
         diag_layout.addLayout(diag_btns)
         layout.addWidget(diag_panel)
@@ -230,14 +230,14 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
             pass
         self.sync_entries(())
 
-    def _run_general_checks(self) -> None:
+    def _run_quick_check(self) -> None:
         """Launch the friend-support Quick Network Diag in elevated PowerShell."""
         try:
             from tools.support_quick_diag import launch_quick_network_diag_elevated
 
             ok, message = launch_quick_network_diag_elevated()
         except Exception as exc:
-            ok, message = False, f'General checks failed: {exc}'
+            ok, message = False, f'Quick check failed: {exc}'
         try:
             self._app.log(message, 'gray' if ok else 'red')
         except Exception:
