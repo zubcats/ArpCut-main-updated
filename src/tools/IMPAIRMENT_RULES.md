@@ -22,6 +22,17 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   `disable_ip_forwarding(priority_iface=…)` (registry sync + background netsh). Startup
   may use `blocking=True`. Clumsy/ICS turns forwarding on when that path needs it.
 
+## Home LAN Kill — instant cut first
+
+- **Wrong:** Blocking probes, forwarding netsh, or “reinforce” work **before** the first
+  poison burst / 0% cut — Kill feels slow.
+- **Wrong:** Calling `kill()` again from ON reinforce timers — bumps `_op_seq` and cancels
+  the ARP worker (MITM dies).
+- **Right:** Hot path = `_poison_arp_now` → `_kill_arp_worker` → `_apply_traffic_cut_sync`
+  → async `disable_ip_forwarding`. After arm only: `_reinforce_full_cut_async` /
+  `reinforce_full_cut` (re-poison via `reassert_poison`, reseal hard-drop, retry forwarder,
+  re-disable forwarding). Never put reinforce before the instant cut.
+
 ## One stack per path (from `ics_impairment_policy.py`)
 
 | Device path | Use | Do not use |
