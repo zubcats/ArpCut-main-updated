@@ -82,6 +82,7 @@ class TestCaptureStackReport(unittest.TestCase):
             body = path.read_text(encoding='utf-8')
             self.assertIn('[FAIL] Npcap L2 send socket', body)
             self.assertIn('Capture stack', msg)
+            self.assertIn(str(path), msg)
             open_r.assert_called_once()
 
     def test_non_windows(self) -> None:

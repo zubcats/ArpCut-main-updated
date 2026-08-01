@@ -20,6 +20,19 @@ if (-not (Test-Path -LiteralPath $diagDir)) {
     New-Item -ItemType Directory -Path $diagDir -Force | Out-Null
 }
 $out = Join-Path $diagDir "ZubCut-Lan-Path-$stamp.txt"
+# Surface unexpected failures (otherwise the window can flash closed with no Notepad).
+trap {
+    try {
+        $errFile = Join-Path $diagDir ("ZubCut-Lan-Path-ERROR-{0}.txt" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        @(
+            'ZubCut LAN Path failed.',
+            $_.Exception.Message,
+            ($_.ScriptStackTrace | Out-String)
+        ) | Set-Content -Path $errFile -Encoding UTF8
+        notepad $errFile
+    } catch {}
+    break
+}
 
 function Test-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -221,14 +234,11 @@ def lan_path_ps1_text() -> str:
 
 
 def materialize_lan_path_ps1() -> Path:
-    text = lan_path_ps1_text()
-    if not text.strip().endswith('\n'):
-        text = text.rstrip('\r\n') + '\n'
+    from tools.diag_elevate import write_ps1_runner
+
     dest_dir = Path(tempfile.gettempdir()) / 'ZubCut'
-    dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / LAN_PATH_PS1_NAME
-    dest.write_text(text, encoding='utf-8', newline='\n')
-    return dest
+    return write_ps1_runner(dest, lan_path_ps1_text())
 
 
 def launch_lan_path_diag(*, elevate=None) -> tuple[bool, str]:

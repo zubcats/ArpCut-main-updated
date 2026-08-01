@@ -563,14 +563,11 @@ def wifi_link_ps1_text() -> str:
 
 def materialize_wifi_link_ps1() -> Path:
     """Overwrite a single temp runner script (not under ZubCut Diagnostics)."""
-    text = wifi_link_ps1_text()
-    if not text.strip().endswith("\n"):
-        text = text.rstrip("\r\n") + "\n"
+    from tools.diag_elevate import write_ps1_runner
+
     dest_dir = Path(tempfile.gettempdir()) / 'ZubCut'
-    dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / WIFI_LINK_PS1_NAME
-    dest.write_text(text, encoding='utf-8', newline='\n')
-    return dest
+    return write_ps1_runner(dest, wifi_link_ps1_text())
 
 
 def run_wifi_link_diag(*, open_report: bool = True) -> tuple[bool, str, Path | None]:

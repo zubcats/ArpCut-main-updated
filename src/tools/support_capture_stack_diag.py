@@ -228,21 +228,17 @@ def run_capture_stack_diag(*, open_report: bool = True) -> tuple[bool, str, Path
     ok = (not probe.get('skipped')) and bool(probe.get('sniffer_ok')) and bool(
         probe.get('l2_ok')
     )
+    # Show the real folder (OneDrive Desktop etc.) — not a hard-coded Desktop guess.
+    saved_at = str(path)
     if probe.get('skipped'):
         msg = (
-            f'Capture stack report saved ({probe.get("note")}) — '
-            f'Desktop\\ZubCut Diagnostics\\{path.name}'
+            f'Capture stack report saved ({probe.get("note")}) — {saved_at}'
         )
         return False, msg, path
     if ok:
-        msg = (
-            f'Capture stack PASS — Desktop\\ZubCut Diagnostics\\{path.name}'
-        )
+        msg = f'Capture stack PASS — {saved_at}'
         return True, msg, path
-    msg = (
-        f'Capture stack found issues — screenshot SUMMARY in '
-        f'Desktop\\ZubCut Diagnostics\\{path.name}'
-    )
+    msg = f'Capture stack found issues — screenshot SUMMARY in {saved_at}'
     return False, msg, path
 
 

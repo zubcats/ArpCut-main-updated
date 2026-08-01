@@ -10,6 +10,19 @@ if (-not (Test-Path -LiteralPath $diagDir)) {
     New-Item -ItemType Directory -Path $diagDir -Force | Out-Null
 }
 $out = Join-Path $diagDir "ZubCut-Hotspot-Path-$stamp.txt"
+# Surface unexpected failures (otherwise the window can flash closed with no Notepad).
+trap {
+    try {
+        $errFile = Join-Path $diagDir ("ZubCut-Hotspot-Path-ERROR-{0}.txt" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        @(
+            'ZubCut Hotspot Path failed.',
+            $_.Exception.Message,
+            ($_.ScriptStackTrace | Out-String)
+        ) | Set-Content -Path $errFile -Encoding UTF8
+        notepad $errFile
+    } catch {}
+    break
+}
 
 function Test-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()

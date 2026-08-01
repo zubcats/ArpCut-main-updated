@@ -398,14 +398,11 @@ def materialize_quick_diag_ps1() -> Path:
     Reports go to Desktop\\ZubCut Diagnostics; this ``.ps1`` stays out of that
     folder (one reused temp file, not a pile of copies).
     """
-    text = quick_diag_ps1_text()
-    if not text.strip().endswith('\n'):
-        text = text.rstrip('\r\n') + '\n'
+    from tools.diag_elevate import write_ps1_runner
+
     dest_dir = Path(tempfile.gettempdir()) / 'ZubCut'
-    dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / QUICK_DIAG_PS1_NAME
-    dest.write_text(text, encoding='utf-8', newline='\n')
-    return dest
+    return write_ps1_runner(dest, quick_diag_ps1_text())
 
 
 def launch_quick_network_diag_elevated(*, elevate=None) -> tuple[bool, str]:

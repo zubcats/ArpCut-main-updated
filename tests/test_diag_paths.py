@@ -27,6 +27,14 @@ class TestDiagPaths(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertTrue(first.is_dir())
 
+    def test_desktop_dir_prefers_shell_api_on_windows(self) -> None:
+        if not sys.platform.startswith('win'):
+            # On Linux CI: fall back path still returns a Path.
+            self.assertIsInstance(dp.desktop_dir(), Path)
+            return
+        desk = dp.desktop_dir()
+        self.assertTrue(desk.is_dir())
+
     def test_quick_ps1_writes_reports_to_diagnostics_folder(self) -> None:
         path = _ROOT / 'tools' / 'ZubCut-Quick-Network-Diag.ps1'
         src = path.read_text(encoding='utf-8')
