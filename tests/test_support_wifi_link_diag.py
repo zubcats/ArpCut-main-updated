@@ -90,15 +90,33 @@ class TestWifiLinkParse(unittest.TestCase):
         self.assertIn('HomeLan', text)
         self.assertIn('rx 1201 Mbps', text)
         self.assertIn('Adapter GUID:', text)
-        self.assertIn('Security looks like WPA2/WPA3', text)
+        self.assertIn('[PASS] WPA2 — OK for ZubCut', text)
+        self.assertNotIn('Security looks like WPA2/WPA3', text)
         self.assertIn('Ethernet also up', text)
         self.assertNotIn('victim IP', text.lower())
         self.assertNotIn('192.168.', text)
 
-    def test_security_strength(self) -> None:
-        self.assertEqual(wld.security_strength('WPA3-Personal'), 'strong')
-        self.assertEqual(wld.security_strength('Open'), 'weak')
-        self.assertEqual(wld.security_strength('WEP'), 'weak')
+    def test_report_warns_on_wpa3(self) -> None:
+        text = """
+    Name                   : Wi-Fi
+    State                  : connected
+    SSID                   : NewRouter
+    Authentication         : WPA3-Personal
+    Cipher                 : GCMP-256
+    Channel                : 36
+"""
+        adapters = wld.parse_wlan_interfaces(text)
+        report = wld.format_wifi_link_report(adapters)
+        self.assertIn('WPA3-Personal', report)
+        self.assertIn('[WARN] WPA3 — ZubCut Kill/MITM usually fails', report)
+        self.assertNotIn('[PASS] WPA2 — OK for ZubCut', report)
+
+    def test_security_zubcut_class(self) -> None:
+        self.assertEqual(wld.security_zubcut_class('WPA2-Personal'), 'wpa2')
+        self.assertEqual(wld.security_zubcut_class('WPA3-Personal'), 'wpa3')
+        self.assertEqual(wld.security_zubcut_class('Open'), 'weak')
+        self.assertEqual(wld.security_zubcut_class('WEP'), 'weak')
+        self.assertEqual(wld.security_strength('WPA2-Personal'), 'wpa2')
 
     def test_run_writes_report_without_notepad(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

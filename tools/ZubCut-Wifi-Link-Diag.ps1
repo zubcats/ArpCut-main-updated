@@ -23,12 +23,14 @@ function Get-BandFromChannel([int]$ch) {
     return '5 GHz'
 }
 
-function Get-SecurityStrength([string]$auth) {
+function Get-SecurityZubCutClass([string]$auth) {
+    # wpa2 = OK for ZubCut; wpa3 = Kill/MITM usually fails; weak = open/WEP/legacy WPA
     $a = ($auth | Out-String).Trim().ToLowerInvariant()
     if (-not $a) { return 'unknown' }
-    if ($a -match 'wpa3|wpa2') { return 'strong' }
+    if ($a -match 'wpa3' -or $a -match 'sae') { return 'wpa3' }
+    if ($a -match 'wpa2') { return 'wpa2' }
     if ($a -eq 'open' -or $a -eq 'none' -or $a -match 'wep') { return 'weak' }
-    if ($a -match '\bwpa\b' -and $a -notmatch 'wpa2' -and $a -notmatch 'wpa3') { return 'weak' }
+    if ($a -match '\bwpa\b') { return 'weak' }
     return 'unknown'
 }
 
@@ -115,16 +117,18 @@ if ($adapters.Count -eq 0) {
         $rx = if ($a.'Receive rate (Mbps)') { [string]$a.'Receive rate (Mbps)' } else { '?' }
         $tx = if ($a.'Transmit rate (Mbps)') { [string]$a.'Transmit rate (Mbps)' } else { '?' }
         $ssid = [string]$a.SSID
-        $strength = Get-SecurityStrength $auth
+        $secCls = Get-SecurityZubCutClass $auth
 
         $lines += ('[PASS] Connected: {0}' -f $a.Name)
         $lines += ('[INFO] SSID: {0}' -f $ssid)
         $lines += ('[INFO] Band: {0} (channel {1})' -f $band, $(if ($ch -gt 0) { $ch } else { '?' }))
         $lines += ('[INFO] Security: {0} / {1}' -f $auth, $cipher)
-        if ($strength -eq 'weak') {
-            $lines += '[WARN] Weak/open Wi-Fi security — prefer WPA2-Personal or WPA3-Personal'
-        } elseif ($strength -eq 'strong') {
-            $lines += '[PASS] Security looks like WPA2/WPA3'
+        if ($secCls -eq 'wpa2') {
+            $lines += '[PASS] WPA2 — OK for ZubCut'
+        } elseif ($secCls -eq 'wpa3') {
+            $lines += '[WARN] WPA3 — ZubCut Kill/MITM usually fails; set Wi-Fi to WPA2-Personal'
+        } elseif ($secCls -eq 'weak') {
+            $lines += '[WARN] Weak/open Wi-Fi security — use WPA2-Personal for ZubCut'
         }
         $lines += ('[INFO] Radio: {0}  Signal: {1}' -f $radio, $sig)
         $lines += ('[INFO] Rates: rx {0} Mbps / tx {1} Mbps' -f $rx, $tx)

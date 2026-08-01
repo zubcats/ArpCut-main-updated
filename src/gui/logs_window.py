@@ -151,7 +151,8 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         self._btn_wifi_link.setObjectName('logsDiagWifiBtn')
         self._btn_wifi_link.setToolTip(
             'Opens Admin PowerShell and checks this PC\'s Wi-Fi band (2.4 / 5 / 6 GHz) '
-            'and security type (WPA2 / WPA3, etc.). Does not read the console\'s Wi-Fi link. '
+            'and security (WPA2 OK for ZubCut; WPA3 usually breaks Kill/MITM). '
+            'Does not read the console\'s Wi-Fi link. '
             'Saves ZubCut-Wifi-Link-*.txt in Desktop\\ZubCut Diagnostics and opens it in Notepad.'
         )
         self._btn_wifi_link.clicked.connect(self._run_wifi_link_check)

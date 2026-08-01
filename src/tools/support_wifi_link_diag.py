@@ -116,19 +116,31 @@ def parse_wlan_interfaces(text: str) -> list[dict[str, Any]]:
     return out
 
 
-def security_strength(authentication: str) -> str:
-    """Return 'strong', 'weak', or 'unknown' for SUMMARY guidance."""
+def security_zubcut_class(authentication: str) -> str:
+    """
+    Wi-Fi auth class for ZubCut SUMMARY guidance.
+
+    Returns ``wpa2`` (OK), ``wpa3`` (Kill/MITM usually fails), ``weak``, or ``unknown``.
+    """
     a = str(authentication or '').strip().lower()
     if not a:
         return 'unknown'
-    if 'wpa3' in a or 'wpa2' in a:
-        return 'strong'
+    # WPA3 / SAE first — transition SSIDs that still say WPA3 are not OK for ARP MITM.
+    if 'wpa3' in a or 'sae' in a:
+        return 'wpa3'
+    if 'wpa2' in a:
+        return 'wpa2'
     if a in ('open', 'none') or 'wep' in a:
         return 'weak'
-    # Legacy WPA (not WPA2/3)
-    if re.search(r'\bwpa\b', a) and 'wpa2' not in a and 'wpa3' not in a:
+    # Legacy WPA (not WPA2)
+    if re.search(r'\bwpa\b', a):
         return 'weak'
     return 'unknown'
+
+
+def security_strength(authentication: str) -> str:
+    """Alias for ``security_zubcut_class`` (kept for older call sites/tests)."""
+    return security_zubcut_class(authentication)
 
 
 def _ethernet_uplink_aliases() -> list[str]:
@@ -225,17 +237,21 @@ def format_wifi_link_report(
             sig = a.get('signal') or '?'
             rx = a.get('rx_mbps') or '?'
             tx = a.get('tx_mbps') or '?'
-            strength = security_strength(str(auth))
+            sec_cls = security_zubcut_class(str(auth))
             lines.append(f"[PASS] Connected: {a.get('name') or 'Wi-Fi'}")
             lines.append(f'[INFO] SSID: {ssid}')
             lines.append(f'[INFO] Band: {band} (channel {ch_s})')
             lines.append(f'[INFO] Security: {auth} / {cipher}')
-            if strength == 'weak':
+            if sec_cls == 'wpa2':
+                lines.append('[PASS] WPA2 — OK for ZubCut')
+            elif sec_cls == 'wpa3':
                 lines.append(
-                    '[WARN] Weak/open Wi-Fi security — prefer WPA2-Personal or WPA3-Personal'
+                    '[WARN] WPA3 — ZubCut Kill/MITM usually fails; set Wi-Fi to WPA2-Personal'
                 )
-            elif strength == 'strong':
-                lines.append('[PASS] Security looks like WPA2/WPA3')
+            elif sec_cls == 'weak':
+                lines.append(
+                    '[WARN] Weak/open Wi-Fi security — use WPA2-Personal for ZubCut'
+                )
             lines.append(f'[INFO] Radio: {radio}  Signal: {sig}')
             lines.append(f'[INFO] Rates: rx {rx} Mbps / tx {tx} Mbps')
             if a.get('guid'):
@@ -361,12 +377,14 @@ function Get-BandFromChannel([int]$ch) {
     return '5 GHz'
 }
 
-function Get-SecurityStrength([string]$auth) {
+function Get-SecurityZubCutClass([string]$auth) {
+    # wpa2 = OK for ZubCut; wpa3 = Kill/MITM usually fails; weak = open/WEP/legacy WPA
     $a = ($auth | Out-String).Trim().ToLowerInvariant()
     if (-not $a) { return 'unknown' }
-    if ($a -match 'wpa3|wpa2') { return 'strong' }
+    if ($a -match 'wpa3' -or $a -match 'sae') { return 'wpa3' }
+    if ($a -match 'wpa2') { return 'wpa2' }
     if ($a -eq 'open' -or $a -eq 'none' -or $a -match 'wep') { return 'weak' }
-    if ($a -match '\bwpa\b' -and $a -notmatch 'wpa2' -and $a -notmatch 'wpa3') { return 'weak' }
+    if ($a -match '\bwpa\b') { return 'weak' }
     return 'unknown'
 }
 
@@ -453,16 +471,18 @@ if ($adapters.Count -eq 0) {
         $rx = if ($a.'Receive rate (Mbps)') { [string]$a.'Receive rate (Mbps)' } else { '?' }
         $tx = if ($a.'Transmit rate (Mbps)') { [string]$a.'Transmit rate (Mbps)' } else { '?' }
         $ssid = [string]$a.SSID
-        $strength = Get-SecurityStrength $auth
+        $secCls = Get-SecurityZubCutClass $auth
 
         $lines += ('[PASS] Connected: {0}' -f $a.Name)
         $lines += ('[INFO] SSID: {0}' -f $ssid)
         $lines += ('[INFO] Band: {0} (channel {1})' -f $band, $(if ($ch -gt 0) { $ch } else { '?' }))
         $lines += ('[INFO] Security: {0} / {1}' -f $auth, $cipher)
-        if ($strength -eq 'weak') {
-            $lines += '[WARN] Weak/open Wi-Fi security — prefer WPA2-Personal or WPA3-Personal'
-        } elseif ($strength -eq 'strong') {
-            $lines += '[PASS] Security looks like WPA2/WPA3'
+        if ($secCls -eq 'wpa2') {
+            $lines += '[PASS] WPA2 — OK for ZubCut'
+        } elseif ($secCls -eq 'wpa3') {
+            $lines += '[WARN] WPA3 — ZubCut Kill/MITM usually fails; set Wi-Fi to WPA2-Personal'
+        } elseif ($secCls -eq 'weak') {
+            $lines += '[WARN] Weak/open Wi-Fi security — use WPA2-Personal for ZubCut'
         }
         $lines += ('[INFO] Radio: {0}  Signal: {1}' -f $radio, $sig)
         $lines += ('[INFO] Rates: rx {0} Mbps / tx {1} Mbps' -f $rx, $tx)
