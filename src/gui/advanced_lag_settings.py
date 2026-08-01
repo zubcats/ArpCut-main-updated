@@ -114,14 +114,19 @@ def _mk_cap_mbps_spin(parent: QWidget, key: str, default: float) -> QDoubleSpinB
 
 
 def _mk_effect_ms_spin(parent: QWidget, key: str, default: int, *, effect_name: str) -> QSpinBox:
+    from networking.forwarder import _MAX_DELAY_MS
+
     s = QSpinBox(parent)
-    s.setRange(0, 800)
-    s.setSingleStep(10)
-    s.setValue(max(0, _int_setting(key, default)))
+    s.setRange(0, int(_MAX_DELAY_MS))
+    s.setSingleStep(50 if int(_MAX_DELAY_MS) >= 1000 else 10)
+    s.setValue(max(0, min(int(_MAX_DELAY_MS), _int_setting(key, default))))
     _configure_infinity_at_minimum(
         s,
         suffix=' ms',
-        tooltip=f'0 (∞) = no added {effect_name} for this direction. Set milliseconds to apply the effect.',
+        tooltip=(
+            f'0 (∞) = no added {effect_name} for this direction. '
+            f'Set milliseconds to apply the effect (max {int(_MAX_DELAY_MS)} ms).'
+        ),
     )
     return s
 

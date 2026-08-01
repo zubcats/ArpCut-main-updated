@@ -178,13 +178,16 @@ def compute_timer_gates(
 
 def base_mitm_params_from_get(get: Get) -> Tuple[int, int, int, int, float, float, int, int]:
     """Same semantics as AdvancedLagSettingsDialog._mitm_effective_params (no timer gates)."""
+    from networking.forwarder import _MAX_DELAY_MS
+
+    delay_cap = int(_MAX_DELAY_MS)
     d_on = _bool(get('mitm_adv_delay_on'), False)
-    d_ms = max(0, min(800, _int(get('mitm_adv_delay_ms'), 0)))
+    d_ms = max(0, min(delay_cap, _int(get('mitm_adv_delay_ms'), 0)))
     du = d_ms if d_on and _bool(get('mitm_adv_delay_out'), True) else 0
     dd = d_ms if d_on and _bool(get('mitm_adv_delay_in'), True) else 0
 
     j_on = _bool(get('mitm_adv_jitter_on'), False)
-    j_ms = max(0, min(800, _int(get('mitm_adv_jitter_ms'), 0)))
+    j_ms = max(0, min(delay_cap, _int(get('mitm_adv_jitter_ms'), 0)))
     ju = j_ms if j_on and _bool(get('mitm_adv_jitter_out'), True) else 0
     jd = j_ms if j_on and _bool(get('mitm_adv_jitter_in'), True) else 0
 
