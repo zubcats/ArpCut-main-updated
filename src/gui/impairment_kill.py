@@ -583,10 +583,11 @@ class ImpairmentKillMixin:
                                 _mark('lan_bg_block_ip_done')
                                 self._log_mitm_arm_status(device, action='Kill')
                                 self.log(
-                                    'Kill ON (ARP+firewall) for '
+                                    'Kill ON (ARP only) for '
                                     + str(device.get('ip') or '')
-                                    + ' — Npcap forwarder unavailable; ARP+firewall still active.',
-                                    UI_LOG_VICTIM_BLOCK_FG,
+                                    + ' — Npcap forwarder unavailable; cut may be partial '
+                                    '(lag without PS5 offline / red chain). Fix Npcap on this adapter.',
+                                    'red',
                                 )
                                 kill_applied = True
                                 self._schedule_mitm_traffic_probe(device, flow='Kill')

@@ -89,10 +89,13 @@ class TestIpForwardingMitm(unittest.TestCase):
         path = os.path.join(_SRC, 'networking', 'killer.py')
         with open(path, encoding='utf-8') as f:
             src = f.read()
-        start = src.index('def _iface_indexes_from_netsh')
-        end = src.index('def _apply_windows_ip_forwarding_ifaces')
         ns: dict = {}
-        exec(src[start:end], ns)  # noqa: S102
+        chunk = src[
+            src.index('def _iface_indexes_from_netsh') : src.index(
+                'def _apply_windows_ip_forwarding_ifaces'
+            )
+        ]
+        exec(chunk, ns)  # noqa: S102
         sample = (
             'Idx     Met         MTU          State                Name\n'
             '---  ----------  ----------  ------------  ---------------------------\n'
@@ -101,6 +104,17 @@ class TestIpForwardingMitm(unittest.TestCase):
             '  5          25        1500  disconnected  Ethernet\n'
         )
         self.assertEqual(ns['_iface_indexes_from_netsh'](sample), ['1', '12', '5'])
+        self.assertEqual(
+            ns['_priority_iface_keys']('Wi-Fi', sample),
+            ['Wi-Fi', '12'],
+        )
+
+    def test_kill_passes_priority_iface_to_disable(self) -> None:
+        path = os.path.join(_SRC, 'networking', 'killer.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('disable_ip_forwarding(priority_iface=', src)
+        self.assertIn('priority_iface: str | None = None', src)
 
     def test_startup_does_not_reenable_forwarding_after_clean(self) -> None:
         path = os.path.join(_SRC, 'zubcut.py')
