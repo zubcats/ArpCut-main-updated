@@ -116,6 +116,22 @@ class TestIpForwardingMitm(unittest.TestCase):
         self.assertIn('disable_ip_forwarding(priority_iface=', src)
         self.assertIn('priority_iface: str | None = None', src)
 
+    def test_kill_disables_forwarding_after_instant_cut(self) -> None:
+        path = os.path.join(_SRC, 'networking', 'killer.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        kill = src[src.index('def kill(') : src.index('def _apply_traffic_cut_sync')]
+        poison_at = kill.index('_poison_arp_now')
+        cut_at = kill.index('_apply_traffic_cut_sync')
+        disable_at = kill.index('disable_ip_forwarding')
+        self.assertLess(poison_at, cut_at)
+        self.assertLess(cut_at, disable_at)
+        # Cut path must not re-ping (GUI already validated).
+        apply = src[
+            src.index('def _apply_traffic_cut_sync') : src.index('def apply_traffic_cut')
+        ]
+        self.assertNotIn('mitm_prereqs_ok', apply)
+
     def test_startup_does_not_reenable_forwarding_after_clean(self) -> None:
         path = os.path.join(_SRC, 'zubcut.py')
         with open(path, encoding='utf-8') as f:
