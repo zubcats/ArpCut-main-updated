@@ -1,0 +1,159 @@
+"""In-app Quick Network Diagnostic launcher (Logs → Quick check)."""
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+_ROOT = Path(__file__).resolve().parent.parent
+_SRC = _ROOT / 'src'
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from tools import support_quick_diag as sqd  # noqa: E402
+
+
+def _norm_ps1(text: str) -> str:
+    return text.replace('\r\n', '\n').replace('\r', '\n').strip() + '\n'
+
+
+class TestSupportQuickDiag(unittest.TestCase):
+    def test_embedded_matches_repo_ps1(self) -> None:
+        repo = _ROOT / 'tools' / 'ZubCut-Quick-Network-Diag.ps1'
+        self.assertTrue(repo.is_file(), f'missing {repo}')
+        disk = _norm_ps1(repo.read_text(encoding='utf-8'))
+        embedded = _norm_ps1(sqd._EMBEDDED_QUICK_DIAG_PS1)
+        self.assertEqual(
+            embedded,
+            disk,
+            'Update src/tools/support_quick_diag.py _EMBEDDED_QUICK_DIAG_PS1 '
+            'to match tools/ZubCut-Quick-Network-Diag.ps1',
+        )
+        self.assertIn('all-in-one', disk)
+        self.assertIn('--- Capture stack ---', disk)
+        self.assertIn('--- Wi-Fi link (this PC only) ---', disk)
+        self.assertIn('--- LAN path ---', disk)
+        self.assertIn('--- Hotspot path ---', disk)
+        self.assertIn('WPA2 — OK for ZubCut', disk)
+
+    def test_materialize_writes_script_outside_diagnostics_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch('tools.support_quick_diag.tempfile.gettempdir', return_value=tmp):
+                path = sqd.materialize_quick_diag_ps1()
+            self.assertTrue(path.is_file())
+            self.assertEqual(path.name, 'ZubCut-Quick-Network-Diag.ps1')
+            self.assertEqual(path.parent.name, 'ZubCut')
+            self.assertNotIn('ZubCut Diagnostics', str(path))
+            raw = path.read_bytes()
+            self.assertTrue(raw.startswith(b'\xef\xbb\xbf'), 'runner should be UTF-8 BOM')
+            body = raw.decode('utf-8-sig')
+            self.assertIn('ZubCut Quick Check', body)
+            self.assertIn('SCREENSHOT THIS SUMMARY', body)
+            self.assertIn('npcap', body)
+            self.assertIn('ZubCut Diagnostics', body)
+            self.assertIn('quick-capture-snippet.txt', body)
+
+    def test_write_capture_snippet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch('tools.support_quick_diag.tempfile.gettempdir', return_value=tmp),
+                mock.patch(
+                    'tools.support_capture_stack_diag.probe_capture_stack',
+                    return_value={
+                        'admin': True,
+                        'skipped': False,
+                        'saved_iface': 'Wi-Fi',
+                        'iface_label': 'Wi-Fi',
+                        'sniffer_ok': True,
+                        'l2_ok': True,
+                        'sniff_iface': 'tok',
+                        'l2_iface': 'tok',
+                        'tokens_tried': ['tok'],
+                    },
+                ),
+            ):
+                path = sqd.write_capture_snippet_for_quick_check()
+            self.assertIsNotNone(path)
+            assert path is not None
+            body = path.read_text(encoding='utf-8')
+            self.assertIn('[PASS] Npcap sniffer', body)
+            self.assertIn('[PASS] Npcap L2 send socket', body)
+
+    def test_launch_non_windows(self) -> None:
+        with mock.patch.object(sys, 'platform', 'linux'):
+            ok, msg = sqd.launch_quick_network_diag_elevated()
+        self.assertFalse(ok)
+        self.assertIn('Windows-only', msg)
+        self.assertIn('Quick check', msg)
+
+    def test_launch_elevates_powershell(self) -> None:
+        elevate = mock.Mock(return_value=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.object(sys, 'platform', 'win32'),
+                mock.patch('tools.support_quick_diag.tempfile.gettempdir', return_value=tmp),
+                mock.patch.object(sqd, 'write_capture_snippet_for_quick_check'),
+            ):
+                ok, msg = sqd.launch_quick_network_diag_elevated(elevate=elevate)
+        self.assertTrue(ok)
+        self.assertIn('Quick check', msg)
+        self.assertIn('Admin PowerShell', msg)
+        self.assertIn('ZubCut Diagnostics', msg)
+        elevate.assert_called_once()
+        exe, params = elevate.call_args.args[0], elevate.call_args.args[1]
+        self.assertIn('powershell', exe.lower())
+        self.assertIn('-ExecutionPolicy Bypass', params)
+        self.assertIn('-File', params)
+        self.assertIn('ZubCut-Quick-Network-Diag.ps1', params)
+        self.assertNotIn('ZubCut Diagnostics', params)
+
+    def test_launch_uac_cancel(self) -> None:
+        elevate = mock.Mock(return_value=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.object(sys, 'platform', 'win32'),
+                mock.patch('tools.support_quick_diag.tempfile.gettempdir', return_value=tmp),
+                mock.patch.object(sqd, 'write_capture_snippet_for_quick_check'),
+            ):
+                ok, msg = sqd.launch_quick_network_diag_elevated(elevate=elevate)
+        self.assertFalse(ok)
+        self.assertIn('UAC', msg)
+
+
+class TestLogsDiagButtonWiring(unittest.TestCase):
+    def test_logs_window_has_only_quick_check_button(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'logs_window.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        self.assertIn("setObjectName('logsDiagPanel')", src)
+        self.assertIn("setObjectName('logsDiagQuickBtn')", src)
+        self.assertIn('Quick check', src)
+        self.assertIn('def _run_quick_check', src)
+        self.assertIn('launch_quick_network_diag_elevated', src)
+        self.assertNotIn('logsDiagWifiBtn', src)
+        self.assertNotIn('logsDiagCaptureBtn', src)
+        self.assertNotIn('logsDiagLanBtn', src)
+        self.assertNotIn('logsDiagHotspotBtn', src)
+        self.assertNotIn('Diagnostic tools — coming soon', src)
+
+    def test_diag_button_theme_is_charcoal(self) -> None:
+        path = os.path.join(_SRC, 'tools', 'utils_gui.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        self.assertIn('QFrame#logsDiagPanel', src)
+        self.assertIn('QPushButton#logsDiagQuickBtn', src)
+        block = src[
+            src.index('QFrame#logsDiagPanel') : src.index(
+                'QPushButton#logsDiagQuickBtn:pressed'
+            )
+        ]
+        self.assertNotIn('#19232D', block)
+        self.assertNotIn('#1A72BB', block)
+        self.assertNotIn('logsDiagWifiBtn', block)
+
+
+if __name__ == '__main__':
+    unittest.main()

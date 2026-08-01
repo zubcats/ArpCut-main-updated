@@ -244,6 +244,74 @@ class UpdaterCoreTest(unittest.TestCase):
         self.assertIn('stale', msg.lower())
         self.assertIn('again', msg.lower())
 
+    def test_size_mismatch_is_retryable(self) -> None:
+        import tools.updater_core as uc
+
+        err = RuntimeError(
+            'Downloaded installer size mismatch (got 10485760 bytes, expected 46211455).'
+        )
+        self.assertTrue(uc.is_retryable_network_error(err))
+        self.assertTrue(uc._is_incomplete_download_error(err))
+
+    def test_download_retries_then_falls_back_on_truncate(self) -> None:
+        """Truncated API download must retry and then try the static release URL."""
+        import io
+        import tools.updater_core as uc
+
+        api = _api_asset(77)
+        static = UPDATE_DOWNLOAD_URL_MAIN
+        calls: list[str] = []
+
+        class _Resp:
+            def __init__(self, data: bytes, content_length: int | None = None):
+                self._buf = io.BytesIO(data)
+                self.headers = {}
+                if content_length is not None:
+                    self.headers['Content-Length'] = str(content_length)
+
+            def read(self, n: int = -1):
+                return self._buf.read(n)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        mz_pad = b'MZ' + b'\0' * 100
+
+        def fake_urlopen(req, timeout=0, context=None):
+            url = req.full_url if hasattr(req, 'full_url') else str(req)
+            calls.append(url)
+            if '/releases/assets/' in url:
+                # Truncated body (classic ~10 MiB stall pattern, smaller for test).
+                return _Resp(mz_pad + b'\0' * 200, content_length=40_000_000)
+            # Static fallback succeeds with matching size.
+            body = mz_pad + b'\0' * (50_000 - len(mz_pad))
+            return _Resp(body, content_length=len(body))
+
+        with patch.object(uc, '_urllib_urlopen', side_effect=fake_urlopen), patch.object(
+            uc, '_DOWNLOAD_ATTEMPTS_PER_URL', 2
+        ), patch.object(uc, '_authenticode_signature_info', return_value={}), patch.object(
+            uc, 'time'
+        ) as mock_time:
+            mock_time.sleep = lambda *_a, **_k: None
+            mock_time.time = lambda: 1_700_000_000
+            path = uc.download_installer(
+                api,
+                expected_size=50_000,
+                fallback_urls=[static],
+            )
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual(os.path.getsize(path), 50_000)
+        api_tries = sum(1 for u in calls if '/releases/assets/' in u)
+        self.assertGreaterEqual(api_tries, 2)
+        self.assertTrue(any('cb=' in u or 'releases/download' in u for u in calls))
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
     def test_format_updater_error_10065_mentions_hotspot_repair(self):
         import tools.updater_core as uc
 

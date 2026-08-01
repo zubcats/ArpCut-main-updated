@@ -1,4 +1,21 @@
-# ZubCut Quick Network Diagnostic (no Python / no repo required)
+"""Launch the ZubCut Quick Network Diagnostic in elevated PowerShell.
+
+This is the same checks friends run via ``tools/ZubCut-Quick-Network-Diag.ps1`` /
+the Admin PowerShell paste — Npcap, WinPcap, hotspot, WinDivert, adapters, ARP.
+Kept in-app (not the standalone Python ``zubcut_support_diag.py``) so installed
+users do not need a repo checkout or Python.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+# Keep in sync with tools/ZubCut-Quick-Network-Diag.ps1 (tested).
+QUICK_DIAG_PS1_NAME = 'ZubCut-Quick-Network-Diag.ps1'
+
+_EMBEDDED_QUICK_DIAG_PS1 = r"""# ZubCut Quick Network Diagnostic (no Python / no repo required)
 # Right-click -> Run with PowerShell  (or run elevated for best results)
 # Writes ZubCut-Quick-Diag-*.txt under Desktop\ZubCut Diagnostics.
 # SUMMARY uses x-masked IPs so screenshots stay privacy-safe.
@@ -473,3 +490,90 @@ Write-Host $text
 Write-Host ""
 Write-Host "Saved: $out"
 try { notepad $out } catch { Invoke-Item $out }
+"""
+
+
+def repo_quick_diag_ps1_path() -> Path | None:
+    """``tools/ZubCut-Quick-Network-Diag.ps1`` when running from a source checkout."""
+    here = Path(__file__).resolve()
+    # src/tools/support_quick_diag.py -> repo root
+    candidates = [
+        here.parents[2] / 'tools' / QUICK_DIAG_PS1_NAME,
+        Path.cwd() / 'tools' / QUICK_DIAG_PS1_NAME,
+    ]
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def quick_diag_ps1_text() -> str:
+    """Prefer the repo script on disk; fall back to the in-app embedded copy."""
+    disk = repo_quick_diag_ps1_path()
+    if disk is not None:
+        try:
+            return disk.read_text(encoding='utf-8')
+        except OSError:
+            pass
+    return _EMBEDDED_QUICK_DIAG_PS1
+
+
+def materialize_quick_diag_ps1() -> Path:
+    """
+    Overwrite a single temp runner script for elevated PowerShell.
+
+    Reports go to Desktop\\ZubCut Diagnostics; this ``.ps1`` stays out of that
+    folder (one reused temp file, not a pile of copies).
+    """
+    from tools.diag_elevate import write_ps1_runner
+
+    dest_dir = Path(tempfile.gettempdir()) / 'ZubCut'
+    dest = dest_dir / QUICK_DIAG_PS1_NAME
+    return write_ps1_runner(dest, quick_diag_ps1_text())
+
+
+def write_capture_snippet_for_quick_check() -> Path | None:
+    """
+    Probe Npcap sniffer/L2 in-process and write SUMMARY lines for the Quick check PS1.
+
+    Path is always ``%TEMP%\\ZubCut\\quick-capture-snippet.txt`` (PS1 reads this).
+    """
+    dest_dir = Path(tempfile.gettempdir()) / 'ZubCut'
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / 'quick-capture-snippet.txt'
+    try:
+        from tools.support_capture_stack_diag import (
+            format_capture_stack_snippet,
+            probe_capture_stack,
+        )
+
+        text = format_capture_stack_snippet(probe_capture_stack())
+    except Exception as exc:
+        text = f'[WARN] Capture probe failed: {exc}\n'
+    try:
+        dest.write_text(text, encoding='utf-8', newline='\n')
+    except OSError:
+        return None
+    return dest
+
+
+def launch_quick_network_diag_elevated(*, elevate=None) -> tuple[bool, str]:
+    """
+    All-in-one Quick check: capture stack (in-app) + elevated PS1 report.
+
+    Returns ``(ok, status_message)`` for the Logs window status strip.
+    Reports land in Desktop\\ZubCut Diagnostics.
+    """
+    if not sys.platform.startswith('win'):
+        return False, 'Quick check is Windows-only.'
+    write_capture_snippet_for_quick_check()
+    try:
+        script = materialize_quick_diag_ps1()
+    except Exception as exc:
+        return False, f'Could not prepare Quick check: {exc}'
+    from tools.diag_elevate import launch_ps1_elevated
+
+    return launch_ps1_elevated(script, elevate=elevate, tool_label='Quick check')

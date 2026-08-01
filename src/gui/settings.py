@@ -705,7 +705,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         try:
             path = download_update_with_progress_dialog(
-                self, url, expected_size=expected_size
+                self,
+                url,
+                expected_size=0,
+                refresh_metadata_first=True,
             )
             if path is None:
                 return
