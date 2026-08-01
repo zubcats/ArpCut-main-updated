@@ -8,6 +8,7 @@ upload) so ``stable-latest`` CDN caches cannot serve an older installer.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import ssl
@@ -364,10 +365,23 @@ def _network_error_reason(exc: BaseException) -> BaseException | None:
     return exc if isinstance(exc, OSError) else None
 
 
+def _is_incomplete_download_error(exc: BaseException) -> bool:
+    """True when the HTTP body was cut short (common AV/proxy flakiness)."""
+    low = str(exc).lower()
+    return (
+        'size mismatch' in low
+        or 'incomplete download' in low
+        or ('truncated' in low and 'download' in low)
+        or 'incomplete read' in low
+    )
+
+
 def is_retryable_network_error(exc: BaseException) -> bool:
     if isinstance(exc, TimeoutError):
         return True
     if isinstance(exc, urllib.error.URLError):
+        return True
+    if _is_incomplete_download_error(exc):
         return True
     reason = _network_error_reason(exc)
     if isinstance(reason, OSError):
@@ -574,6 +588,9 @@ def update_is_available():
 
 
 _READ_CHUNK = 256 * 1024
+# Truncated GitHub asset downloads (often ~10 MiB then stall) are common on Windows
+# with AV HTTPS scanning — retry the same URL, then try the static release fallback.
+_DOWNLOAD_ATTEMPTS_PER_URL = 3
 
 
 def _normalize_thumbprint(value: str) -> str:
@@ -696,7 +713,7 @@ def _validate_installer_exe(tmp_path, *, expected_size: int = 0):
     if expected_size > 0 and sz != expected_size:
         raise RuntimeError(
             f'Downloaded installer size mismatch (got {sz} bytes, expected {expected_size}). '
-            'Try again in a minute or use Install Latest Build in Settings.'
+            'The download was truncated — retrying with another link if available.'
         )
     info = _authenticode_signature_info(tmp_path)
     status = str(info.get('status') or '').strip()
@@ -782,46 +799,75 @@ def download_installer(
     idx = 0
     while idx < len(candidates):
         candidate = candidates[idx]
-        try:
-            return _download_installer_once(
-                candidate,
-                progress_callback=progress_callback,
-                should_cancel=should_cancel,
-                expected_size=expected_size,
-            )
-        except RuntimeError as e:
-            if 'cancel' in str(e).lower():
-                raise
-            cause = e.__cause__
-            if (
-                isinstance(cause, urllib.error.HTTPError)
-                and int(getattr(cause, 'code', 0) or 0) == 404
-                and _is_github_release_asset_api_url(candidate)
-                and not refreshed_after_asset_404
-            ):
-                invalidate_remote_installer_cache()
-                refreshed_after_asset_404 = True
-                seen_retry: set[str] = set()
-                fresh: list[str] = []
-                for raw in installer_download_candidates(force_refresh=True):
-                    u = (raw or '').strip()
-                    if u and u not in seen_retry:
-                        seen_retry.add(u)
-                        fresh.append(u)
-                if fresh:
-                    candidates = fresh
-                    errors.clear()
-                    idx = 0
+        last_err: BaseException | None = None
+        for attempt in range(1, _DOWNLOAD_ATTEMPTS_PER_URL + 1):
+            try:
+                return _download_installer_once(
+                    candidate,
+                    progress_callback=progress_callback,
+                    should_cancel=should_cancel,
+                    expected_size=expected_size,
+                )
+            except RuntimeError as e:
+                if 'cancel' in str(e).lower():
+                    raise
+                last_err = e
+                cause = e.__cause__
+                if (
+                    isinstance(cause, urllib.error.HTTPError)
+                    and int(getattr(cause, 'code', 0) or 0) == 404
+                    and _is_github_release_asset_api_url(candidate)
+                    and not refreshed_after_asset_404
+                ):
+                    invalidate_remote_installer_cache()
+                    refreshed_after_asset_404 = True
+                    seen_retry: set[str] = set()
+                    fresh: list[str] = []
+                    for raw in installer_download_candidates(force_refresh=True):
+                        u = (raw or '').strip()
+                        if u and u not in seen_retry:
+                            seen_retry.add(u)
+                            fresh.append(u)
+                    if fresh:
+                        candidates = fresh
+                        errors.clear()
+                        idx = 0
+                        last_err = None
+                        break
+                if (
+                    is_retryable_network_error(e)
+                    and attempt < _DOWNLOAD_ATTEMPTS_PER_URL
+                ):
+                    try:
+                        from tools.updater_debug import updater_log
+
+                        updater_log(
+                            'download_installer: retry %s/%s after %s',
+                            attempt + 1,
+                            _DOWNLOAD_ATTEMPTS_PER_URL,
+                            e,
+                        )
+                    except Exception:
+                        pass
+                    time.sleep(min(1.5 * attempt, 5.0))
                     continue
-            errors.append((candidate, e))
-            idx += 1
-            if not is_retryable_network_error(e):
                 break
-        except Exception as e:
-            errors.append((candidate, e))
-            idx += 1
-            if not is_retryable_network_error(e):
+            except Exception as e:
+                last_err = e
+                if (
+                    is_retryable_network_error(e)
+                    and attempt < _DOWNLOAD_ATTEMPTS_PER_URL
+                ):
+                    time.sleep(min(1.5 * attempt, 5.0))
+                    continue
                 break
+        if last_err is None:
+            # Candidate list was refreshed after asset 404 — restart loop.
+            continue
+        errors.append((candidate, last_err))
+        idx += 1
+        if not is_retryable_network_error(last_err):
+            break
 
     if len(errors) == 1:
         raise RuntimeError(format_updater_error_message(errors[0][1])) from errors[0][1]
@@ -887,27 +933,52 @@ def _download_installer_once(
         except Exception:
             pass
         raise RuntimeError(format_updater_error_message(e)) from e
-    with resp_cm as resp:
-        cl = resp.headers.get('Content-Length')
-        if cl:
-            try:
-                total = int(cl)
-            except ValueError:
-                total = None
-        received = 0
-        cancelled = False
-        with open(tmp_path, 'wb') as fp:
-            while True:
-                if should_cancel and should_cancel():
-                    cancelled = True
-                    break
-                chunk = resp.read(_READ_CHUNK)
-                if not chunk:
-                    break
-                fp.write(chunk)
-                received += len(chunk)
-                if progress_callback:
-                    progress_callback(received, total)
+    try:
+        with resp_cm as resp:
+            cl = resp.headers.get('Content-Length')
+            if cl:
+                try:
+                    total = int(cl)
+                except ValueError:
+                    total = None
+            # Prefer GitHub API size when the redirect omits Content-Length.
+            if (total is None or total <= 0) and expected_size > 0:
+                total = int(expected_size)
+            received = 0
+            cancelled = False
+            with open(tmp_path, 'wb') as fp:
+                while True:
+                    if should_cancel and should_cancel():
+                        cancelled = True
+                        break
+                    try:
+                        chunk = resp.read(_READ_CHUNK)
+                    except (http.client.IncompleteRead, TimeoutError, ConnectionError) as e:
+                        raise RuntimeError(
+                            f'Incomplete download (got {received} bytes'
+                            + (f', expected {total}' if total else '')
+                            + f'): {e}'
+                        ) from e
+                    if not chunk:
+                        break
+                    fp.write(chunk)
+                    received += len(chunk)
+                    if progress_callback:
+                        progress_callback(received, total)
+    except RuntimeError:
+        raise
+    except Exception as e:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        if _is_incomplete_download_error(e) or isinstance(
+            e, (TimeoutError, ConnectionError, http.client.IncompleteRead)
+        ):
+            raise RuntimeError(
+                f'Incomplete download while fetching installer: {e}'
+            ) from e
+        raise RuntimeError(format_updater_error_message(e)) from e
 
     if cancelled:
         try:
@@ -915,6 +986,16 @@ def _download_installer_once(
         except OSError:
             pass
         raise RuntimeError('Download cancelled.')
+
+    if total is not None and total > 0 and received != total:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise RuntimeError(
+            f'Incomplete download (got {received} bytes, Content-Length {total}). '
+            'The connection closed early — retrying.'
+        )
 
     _validate_installer_exe(tmp_path, expected_size=expected_size)
     return tmp_path
