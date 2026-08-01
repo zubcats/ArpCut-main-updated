@@ -46,26 +46,33 @@ function Has-UninstallDisplay([string]$needle) {
 }
 
 function Format-SafeIPv4([string]$ip) {
-    # ASCII-only separators (Unicode middle-dot can mojibake in Notepad).
+    # Mask with x — keep host cues; same-subnet is reported separately as PASS/FAIL.
     if (-not $ip) { return '(ip)' }
     $ip = $ip.Trim()
     if ($ip -match '^(192)\.(168)\.(137)\.(\d+)$') {
-        return ("hotspot 137 / .{0}" -f $Matches[4])
+        return '192.168.137.x'
     }
     if ($ip -match '^(169)\.(254)\.(\d+)\.(\d+)$') {
-        return ("apipa / .{0}.{1}" -f $Matches[3], $Matches[4])
+        return '169.254.x.x'
     }
     if ($ip -match '^(127)\.(\d+)\.(\d+)\.(\d+)$') {
-        return ("loopback / .{0}" -f $Matches[4])
+        return ("127.x.x.{0}" -f $Matches[4])
     }
     if ($ip -match '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') {
         $a = [int]$Matches[1]; $b = [int]$Matches[2]; $c = [int]$Matches[3]; $d = [int]$Matches[4]
-        $private = ($a -eq 10) -or (($a -eq 172) -and ($b -ge 16) -and ($b -le 31)) -or `
-            (($a -eq 192) -and ($b -eq 168)) -or (($a -eq 100) -and ($b -ge 64) -and ($b -le 127))
-        if ($private) {
-            return ("{0}.{1}.{2}.0/24 host .{3}" -f $a, $b, $c, $d)
+        if (($a -eq 192) -and ($b -eq 168)) {
+            return ("192.168.x.{0}" -f $d)
         }
-        return ("public / .{0}" -f $d)
+        if ($a -eq 10) {
+            return ("10.x.x.{0}" -f $d)
+        }
+        if (($a -eq 172) -and ($b -ge 16) -and ($b -le 31)) {
+            return ("172.x.x.{0}" -f $d)
+        }
+        if (($a -eq 100) -and ($b -ge 64) -and ($b -le 127)) {
+            return ("100.x.x.{0}" -f $d)
+        }
+        return ("x.x.x.{0}" -f $d)
     }
     return '(ip)'
 }
@@ -208,7 +215,7 @@ $lines += ' ZubCut Quick Network Diagnostic (PowerShell)'
 $lines += '========================================================================'
 $lines += ("Generated: {0}" -f (Get-Date).ToString('u'))
 $lines += ("Administrator: {0}" -f $(if ($admin) { 'yes' } else { 'NO — approve UAC / Run as administrator' }))
-$lines += 'IPs in SUMMARY are redacted (subnet + host) for screenshot privacy.'
+$lines += 'IPs in SUMMARY are masked with x for screenshot privacy.'
 $lines += ''
 $lines += '>>> SCREENSHOT THIS SUMMARY <<<'
 $lines += '------------------------------------------------------------------------'

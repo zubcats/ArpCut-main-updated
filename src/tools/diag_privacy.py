@@ -12,13 +12,14 @@ _IPV4_RE = re.compile(
 
 def redact_ipv4(ip: str) -> str:
     """
-    Redact an IPv4 while keeping setup relationships.
+    Redact an IPv4 with ``x`` masks while keeping host/setup cues.
 
     Examples:
-      192.168.1.56      → 192.168.1.0/24 host .56
-      192.168.137.2     → hotspot 137 / .2
-      169.254.10.20     → apipa / .10.20
-      8.8.8.8           → public / .8
+      192.168.1.56      → 192.168.x.56
+      192.168.137.2     → 192.168.137.x
+      10.0.0.2          → 10.x.x.2
+      169.254.10.20     → 169.254.x.x
+      8.8.8.8           → x.x.x.8
     """
     s = str(ip or '').strip()
     m = re.fullmatch(
@@ -31,20 +32,20 @@ def redact_ipv4(ip: str) -> str:
     if not all(0 <= x <= 255 for x in (a, b, c, d)):
         return '(ip)'
     if a == 192 and b == 168 and c == 137:
-        return f'hotspot 137 / .{d}'
+        return '192.168.137.x'
     if a == 169 and b == 254:
-        return f'apipa / .{c}.{d}'
+        return '169.254.x.x'
     if a == 127:
-        return f'loopback / .{d}'
-    # Private RFC1918 / CGNAT — keep /24 identity + host
-    if (
-        a == 10
-        or (a == 172 and 16 <= b <= 31)
-        or (a == 192 and b == 168)
-        or (a == 100 and 64 <= b <= 127)
-    ):
-        return f'{a}.{b}.{c}.0/24 host .{d}'
-    return f'public / .{d}'
+        return f'127.x.x.{d}'
+    if a == 192 and b == 168:
+        return f'192.168.x.{d}'
+    if a == 10:
+        return f'10.x.x.{d}'
+    if a == 172 and 16 <= b <= 31:
+        return f'172.x.x.{d}'
+    if a == 100 and 64 <= b <= 127:
+        return f'100.x.x.{d}'
+    return f'x.x.x.{d}'
 
 
 def same_ipv4_subnet(ip_a: str, ip_b: str) -> bool | None:
