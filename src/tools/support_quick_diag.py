@@ -100,6 +100,23 @@ function Test-MobileHotspotOn {
     }
 }
 
+function Get-BandFromChannel([int]$ch) {
+    if ($ch -le 0) { return $null }
+    if ($ch -le 14) { return '2.4 GHz' }
+    if ($ch -gt 177) { return '6 GHz' }
+    return '5 GHz'
+}
+
+function Get-SecurityZubCutClass([string]$auth) {
+    $a = ($auth | Out-String).Trim().ToLowerInvariant()
+    if (-not $a) { return 'unknown' }
+    if ($a -match 'wpa3' -or $a -match 'sae') { return 'wpa3' }
+    if ($a -match 'wpa2') { return 'wpa2' }
+    if ($a -eq 'open' -or $a -eq 'none' -or $a -match 'wep') { return 'weak' }
+    if ($a -match '\bwpa\b') { return 'weak' }
+    return 'unknown'
+}
+
 $admin = Test-IsAdmin
 $npcapPath = 'C:\Windows\SysWOW64\Npcap'
 $npcapOk = Test-Path $npcapPath
@@ -149,6 +166,17 @@ $icsGw = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Select-Object -First 1
 $hasIcsGw = $null -ne $icsGw
 $hotspotReady = $hotspotOn -and $hasIcsGw
+$dhcp67 = $false
+try { $dhcp67 = [bool](Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue) } catch { $dhcp67 = $false }
+$clients137 = @(
+    Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.IPAddress -like '192.168.137.*' -and
+            $_.IPAddress -ne '192.168.137.1' -and
+            $_.State -in @('Reachable', 'Stale', 'Permanent', 'Probe', 'Delay')
+        }
+)
+$clientCount = $clients137.Count
 $gateways = [regex]::Matches(
     $ipcfg,
     '(?i)(?:Default Gateway|Passerelle par d[eé]faut|Standardgateway|Puerta de enlace predeterminada|Gateway predefinito)[^:\r\n]*:\s*(\d{1,3}(?:\.\d{1,3}){3})'
@@ -233,11 +261,12 @@ if ($pcIp -and $gwPrimary) {
 
 $lines = @()
 $lines += '========================================================================'
-$lines += ' ZubCut Quick Network Diagnostic (PowerShell)'
+$lines += ' ZubCut Quick Check (all-in-one)'
 $lines += '========================================================================'
 $lines += ("Generated: {0}" -f (Get-Date).ToString('u'))
 $lines += ("Administrator: {0}" -f $(if ($admin) { 'yes' } else { 'NO — approve UAC / Run as administrator' }))
 $lines += 'IPs in SUMMARY are masked with x for screenshot privacy.'
+$lines += 'Includes: path, Npcap/capture, Wi-Fi link, LAN Kill, Clumsy hotspot.'
 $lines += ''
 $lines += '>>> SCREENSHOT THIS SUMMARY <<<'
 $lines += '------------------------------------------------------------------------'
@@ -252,11 +281,25 @@ if ($clumsy) {
     $lines += '[INFO] Active path: LAN Kill (Clumsy OFF)'
 }
 $lines += ("[{0}] Running as Administrator" -f $(if ($admin) { 'PASS' } else { 'FAIL' }))
+
+# --- Capture stack (written by ZubCut before launch, when available) ---
+$lines += '--- Capture stack ---'
+$capSnippet = Join-Path $env:TEMP 'ZubCut\quick-capture-snippet.txt'
+if (Test-Path -LiteralPath $capSnippet) {
+    Get-Content -LiteralPath $capSnippet -ErrorAction SilentlyContinue | ForEach-Object { $lines += $_ }
+} else {
+    $lines += '[WARN] Capture stack not probed — open Quick check from ZubCut as Admin'
+}
+
+$lines += '--- Environment ---'
 $lines += ("[{0}] Npcap folder present ({1})" -f $(if ($npcapOk) { 'PASS' } else { 'FAIL' }), $npcapPath)
 $lines += ("[{0}] Npcap/NPF service running ({1})" -f $(if ($npcapSvcOk) { 'PASS' } else { 'FAIL' }), $npcapSvcName)
 $lines += ("[{0}] WinPcap uninstall key absent" -f $(if ($winpcapKey) { 'FAIL' } else { 'PASS' }))
 $lines += ("[{0}] WinPcap/Win10Pcap not in Apps list" -f $(if ($winpcapApps.Count) { 'FAIL' } else { 'PASS' }))
 $lines += ("[{0}] IP forwarding off (Kill full-cut)" -f $(if ($ipFwdOn) { 'FAIL' } else { 'PASS' }))
+$lines += ("[{0}] WinDivert bundle under ZubCut" -f $(if ($wdOk) { 'PASS' } else { 'WARN' }))
+
+$lines += '--- LAN path ---'
 $lines += ("[{0}] Gateway MAC known (MITM)" -f $(if ($gwMacOk) { 'PASS' } else { 'FAIL' }))
 if ($ifaceSaved) {
     if ($savedLive) {
@@ -275,6 +318,13 @@ if ($pcIp -and $gwPrimary) {
 } else {
     $lines += '[WARN] Could not compare PC IP vs gateway subnet'
 }
+if ($gwMacOk) { $lines += ("[INFO] Gateway MAC: {0}" -f $gwMac) }
+$gwSafe = @($gateways | ForEach-Object { Format-SafeIPv4 $_ })
+$lines += ("[INFO] Default gateways: {0}" -f ($(if ($gwSafe) { $gwSafe -join ', ' } else { '(none)' })))
+$lines += ("[INFO] Saved adapter (settings): {0}" -f ($(if ($ifaceSaved) { $ifaceSaved } else { '(not set)' })))
+$lines += ("[INFO] Clumsy mode (settings): {0}" -f ($(if ($null -eq $clumsy) { '(unknown)' } else { $clumsy })))
+
+$lines += '--- Hotspot path ---'
 if ($hotspotOn) {
     if ($hasIcsGw) {
         $lines += '[PASS] Mobile Hotspot ON (ICS 192.168.137.1)'
@@ -289,12 +339,92 @@ if ($hotspotOn) {
 if (-not $hotspotOn -and $hasIcsGw) {
     $lines += '[INFO] Leftover ICS 192.168.137.1 still present (Settings hotspot is off)'
 }
-$lines += ("[{0}] WinDivert bundle under ZubCut" -f $(if ($wdOk) { 'PASS' } else { 'WARN' }))
-$gwSafe = @($gateways | ForEach-Object { Format-SafeIPv4 $_ })
-$lines += ("[INFO] Default gateways: {0}" -f ($(if ($gwSafe) { $gwSafe -join ', ' } else { '(none)' })))
-if ($gwMacOk) { $lines += ("[INFO] Gateway MAC: {0}" -f $gwMac) }
-$lines += ("[INFO] Clumsy mode (settings): {0}" -f ($(if ($null -eq $clumsy) { '(unknown)' } else { $clumsy })))
-$lines += ("[INFO] Saved adapter (settings): {0}" -f ($(if ($ifaceSaved) { $ifaceSaved } else { '(not set)' })))
+if ($dhcp67) {
+    $lines += '[PASS] Hotspot DHCP listening (UDP 67)'
+} elseif ($clumsy -and $hotspotOn) {
+    $lines += '[WARN] Hotspot DHCP not listening (UDP 67)'
+} else {
+    $lines += '[INFO] Hotspot DHCP (UDP 67) not listening'
+}
+if ($clientCount -gt 0) {
+    $lines += ("[PASS] Hotspot client(s) seen on 192.168.137.x: {0}" -f $clientCount)
+} elseif ($clumsy -and $hotspotOn) {
+    $lines += '[WARN] No hotspot client seen — put PS5 on this PC hotspot Wi-Fi, wait, rescan'
+} else {
+    $lines += '[INFO] No hotspot client on 192.168.137.x'
+}
+
+# --- Wi-Fi link (this PC only) ---
+$lines += '--- Wi-Fi link (this PC only) ---'
+$wlanRaw = netsh wlan show interfaces | Out-String
+$wlanAdapters = @()
+$wlanCurrent = @{}
+foreach ($line in ($wlanRaw -split "`r?`n")) {
+    if ($line -match '^\s*Name\s*:\s*(.+)\s*$') {
+        if ($wlanCurrent.Count -gt 0 -and $wlanCurrent.ContainsKey('Name')) {
+            $wlanAdapters += ,([pscustomobject]$wlanCurrent)
+        }
+        $wlanCurrent = @{ Name = $Matches[1].Trim() }
+        continue
+    }
+    if ($line -match '^\s+(\S.*?)\s*:\s*(.*?)\s*$') {
+        $key = ($Matches[1] -replace '\s+', ' ').Trim()
+        $val = $Matches[2].Trim()
+        if ($key) { $wlanCurrent[$key] = $val }
+    }
+}
+if ($wlanCurrent.Count -gt 0 -and $wlanCurrent.ContainsKey('Name')) {
+    $wlanAdapters += ,([pscustomobject]$wlanCurrent)
+}
+$wlanConnected = @($wlanAdapters | Where-Object {
+        $st = [string]$_.State
+        $ssid = [string]$_.SSID
+        ($st -eq 'connected') -and ($ssid.Trim().Length -gt 0)
+    })
+if ($wlanAdapters.Count -eq 0) {
+    $lines += '[FAIL] No Wi-Fi interface info (netsh wlan returned nothing)'
+} elseif ($wlanConnected.Count -eq 0) {
+    $lines += '[WARN] No connected Wi-Fi link'
+} else {
+    foreach ($a in $wlanConnected) {
+        $ch = 0
+        if ([string]$a.Channel -match '(\d+)') { $ch = [int]$Matches[1] }
+        $band = [string]$a.Band
+        if (-not $band) { $band = Get-BandFromChannel $ch }
+        if (-not $band) { $band = '(unknown)' }
+        $auth = if ($a.Authentication) { [string]$a.Authentication } else { '(unknown)' }
+        $cipher = if ($a.Cipher) { [string]$a.Cipher } else { '(unknown)' }
+        $radio = if ($a.'Radio type') { [string]$a.'Radio type' } else { '(unknown)' }
+        $sig = if ($a.Signal) { [string]$a.Signal } else { '?' }
+        $rx = if ($a.'Receive rate (Mbps)') { [string]$a.'Receive rate (Mbps)' } else { '?' }
+        $tx = if ($a.'Transmit rate (Mbps)') { [string]$a.'Transmit rate (Mbps)' } else { '?' }
+        $ssid = [string]$a.SSID
+        $secCls = Get-SecurityZubCutClass $auth
+        $lines += ('[PASS] Connected: {0}' -f $a.Name)
+        $lines += ('[INFO] SSID: {0}' -f $ssid)
+        $lines += ('[INFO] Band: {0} (channel {1})' -f $band, $(if ($ch -gt 0) { $ch } else { '?' }))
+        $lines += ('[INFO] Security: {0} / {1}' -f $auth, $cipher)
+        if ($secCls -eq 'wpa2') {
+            $lines += '[PASS] WPA2 — OK for ZubCut'
+        } elseif ($secCls -eq 'wpa3') {
+            $lines += '[WARN] WPA3 — ZubCut Kill/MITM usually fails; set Wi-Fi to WPA2-Personal'
+        } elseif ($secCls -eq 'weak') {
+            $lines += '[WARN] Weak/open Wi-Fi security — use WPA2-Personal for ZubCut'
+        }
+        $lines += ('[INFO] Radio: {0}  Signal: {1}' -f $radio, $sig)
+        $lines += ('[INFO] Rates: rx {0} Mbps / tx {1} Mbps' -f $rx, $tx)
+        if ($a.GUID) { $lines += ('[INFO] Adapter GUID: {0}' -f $a.GUID) }
+        if ($a.BSSID) { $lines += ('[INFO] BSSID: {0}' -f $a.BSSID) }
+        $bandL = $band.ToLowerInvariant()
+        if ($bandL -match '6' -and $bandL -match 'ghz') {
+            $lines += '[WARN] PC is on 6 GHz — console on 5 GHz of same SSID can make MITM one-sided'
+        } elseif ($bandL -match '2\.4') {
+            $lines += '[INFO] PC is on 2.4 GHz'
+        } elseif ($bandL -match '5') {
+            $lines += '[INFO] PC is on 5 GHz'
+        }
+    }
+}
 $lines += '------------------------------------------------------------------------'
 $lines += ''
 $lines += '--- Related programs ---'
@@ -405,16 +535,41 @@ def materialize_quick_diag_ps1() -> Path:
     return write_ps1_runner(dest, quick_diag_ps1_text())
 
 
+def write_capture_snippet_for_quick_check() -> Path | None:
+    """
+    Probe Npcap sniffer/L2 in-process and write SUMMARY lines for the Quick check PS1.
+
+    Path is always ``%TEMP%\\ZubCut\\quick-capture-snippet.txt`` (PS1 reads this).
+    """
+    dest_dir = Path(tempfile.gettempdir()) / 'ZubCut'
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / 'quick-capture-snippet.txt'
+    try:
+        from tools.support_capture_stack_diag import (
+            format_capture_stack_snippet,
+            probe_capture_stack,
+        )
+
+        text = format_capture_stack_snippet(probe_capture_stack())
+    except Exception as exc:
+        text = f'[WARN] Capture probe failed: {exc}\n'
+    try:
+        dest.write_text(text, encoding='utf-8', newline='\n')
+    except OSError:
+        return None
+    return dest
+
+
 def launch_quick_network_diag_elevated(*, elevate=None) -> tuple[bool, str]:
     """
-    Open Admin PowerShell, run the quick network diagnostic, open the report.
+    All-in-one Quick check: capture stack (in-app) + elevated PS1 report.
 
     Returns ``(ok, status_message)`` for the Logs window status strip.
-    ``elevate`` is injectable for tests (defaults to ``spawn_windows_elevated``).
     Reports land in Desktop\\ZubCut Diagnostics.
     """
     if not sys.platform.startswith('win'):
         return False, 'Quick check is Windows-only.'
+    write_capture_snippet_for_quick_check()
     try:
         script = materialize_quick_diag_ps1()
     except Exception as exc:

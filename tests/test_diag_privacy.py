@@ -58,6 +58,8 @@ class TestQuickDiagPrivacySource(unittest.TestCase):
         self.assertIn('Mobile Hotspot OFF', src)
         self.assertIn('Active path:', src)
         self.assertIn('LAN Kill', src)
+        self.assertIn('--- Capture stack ---', src)
+        self.assertIn('--- Wi-Fi link (this PC only) ---', src)
         self.assertNotIn('Hotspot 192.168.137.x visible', src)
         self.assertNotIn('$has137 = $ipcfg', src)
 

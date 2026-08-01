@@ -47,14 +47,5 @@ class TestHotspotPathDiag(unittest.TestCase):
         elevate.assert_called_once()
 
 
-class TestLogsHotspotButton(unittest.TestCase):
-    def test_logs_window_has_hotspot_path_button(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'logs_window.py')
-        src = Path(path).read_text(encoding='utf-8')
-        self.assertIn("setObjectName('logsDiagHotspotBtn')", src)
-        self.assertIn('Hotspot path', src)
-        self.assertIn('def _run_hotspot_path_check', src)
-
-
 if __name__ == '__main__':
     unittest.main()

@@ -49,15 +49,5 @@ class TestLanPathDiag(unittest.TestCase):
         elevate.assert_called_once()
 
 
-class TestLogsLanButton(unittest.TestCase):
-    def test_logs_window_has_lan_path_button(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'logs_window.py')
-        src = Path(path).read_text(encoding='utf-8')
-        self.assertIn("setObjectName('logsDiagLanBtn')", src)
-        self.assertIn('LAN path', src)
-        self.assertIn('def _run_lan_path_check', src)
-        self.assertIn('launch_lan_path_diag', src)
-
-
 if __name__ == '__main__':
     unittest.main()

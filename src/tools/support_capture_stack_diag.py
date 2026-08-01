@@ -130,6 +130,36 @@ def probe_capture_stack(
     return out
 
 
+def format_capture_stack_snippet(probe: dict[str, Any]) -> str:
+    """Compact SUMMARY lines for embedding into all-in-one Quick check."""
+    lines: list[str] = []
+    saved = str(probe.get('saved_iface') or '(not set)')
+    label = str(probe.get('iface_label') or probe.get('iface_name') or saved)
+    if probe.get('skipped'):
+        note = str(probe.get('note') or 'skipped')
+        lines.append(f'[WARN] Capture probe skipped: {note}')
+        lines.append(f'[INFO] Settings adapter: {saved}')
+        return '\n'.join(lines) + '\n'
+    lines.append(f'[INFO] Settings adapter: {label}')
+    sniff_ok = bool(probe.get('sniffer_ok'))
+    l2_ok = bool(probe.get('l2_ok'))
+    lines.append(f"[{'PASS' if sniff_ok else 'FAIL'}] Npcap sniffer (ARP filter)")
+    lines.append(f"[{'PASS' if l2_ok else 'FAIL'}] Npcap L2 send socket")
+    if sniff_ok and probe.get('sniff_iface'):
+        lines.append(f"[INFO] Sniff bound: {probe['sniff_iface']}")
+    if l2_ok and probe.get('l2_iface'):
+        lines.append(f"[INFO] L2 bound: {probe['l2_iface']}")
+    if not sniff_ok and probe.get('sniffer_error'):
+        lines.append(f"[INFO] Sniffer error: {probe['sniffer_error']}")
+    if sniff_ok and not l2_ok:
+        lines.append(
+            '[WARN] Sniff works but L2 send failed — ARP Kill/Lag cannot inject poison'
+        )
+    if probe.get('error'):
+        lines.append(f"[FAIL] {probe['error']}")
+    return '\n'.join(lines) + '\n'
+
+
 def format_capture_stack_report(probe: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append('========================================================================')

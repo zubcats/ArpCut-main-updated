@@ -32,6 +32,12 @@ class TestSupportQuickDiag(unittest.TestCase):
             'Update src/tools/support_quick_diag.py _EMBEDDED_QUICK_DIAG_PS1 '
             'to match tools/ZubCut-Quick-Network-Diag.ps1',
         )
+        self.assertIn('all-in-one', disk)
+        self.assertIn('--- Capture stack ---', disk)
+        self.assertIn('--- Wi-Fi link (this PC only) ---', disk)
+        self.assertIn('--- LAN path ---', disk)
+        self.assertIn('--- Hotspot path ---', disk)
+        self.assertIn('WPA2 — OK for ZubCut', disk)
 
     def test_materialize_writes_script_outside_diagnostics_folder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -44,13 +50,37 @@ class TestSupportQuickDiag(unittest.TestCase):
             raw = path.read_bytes()
             self.assertTrue(raw.startswith(b'\xef\xbb\xbf'), 'runner should be UTF-8 BOM')
             body = raw.decode('utf-8-sig')
-            self.assertIn('ZubCut Quick Network Diagnostic', body)
+            self.assertIn('ZubCut Quick Check', body)
             self.assertIn('SCREENSHOT THIS SUMMARY', body)
-            self.assertIn('Npcap', body)
-            self.assertIn('ZubCut Diagnostics', body)  # report output dir inside script
-            self.assertIn('Test-MobileHotspotOn', body)
-            self.assertIn('Mobile Hotspot OFF', body)
-            self.assertNotIn('Hotspot 192.168.137.x visible', body)
+            self.assertIn('npcap', body)
+            self.assertIn('ZubCut Diagnostics', body)
+            self.assertIn('quick-capture-snippet.txt', body)
+
+    def test_write_capture_snippet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch('tools.support_quick_diag.tempfile.gettempdir', return_value=tmp),
+                mock.patch(
+                    'tools.support_capture_stack_diag.probe_capture_stack',
+                    return_value={
+                        'admin': True,
+                        'skipped': False,
+                        'saved_iface': 'Wi-Fi',
+                        'iface_label': 'Wi-Fi',
+                        'sniffer_ok': True,
+                        'l2_ok': True,
+                        'sniff_iface': 'tok',
+                        'l2_iface': 'tok',
+                        'tokens_tried': ['tok'],
+                    },
+                ),
+            ):
+                path = sqd.write_capture_snippet_for_quick_check()
+            self.assertIsNotNone(path)
+            assert path is not None
+            body = path.read_text(encoding='utf-8')
+            self.assertIn('[PASS] Npcap sniffer', body)
+            self.assertIn('[PASS] Npcap L2 send socket', body)
 
     def test_launch_non_windows(self) -> None:
         with mock.patch.object(sys, 'platform', 'linux'):
@@ -65,6 +95,7 @@ class TestSupportQuickDiag(unittest.TestCase):
             with (
                 mock.patch.object(sys, 'platform', 'win32'),
                 mock.patch('tools.support_quick_diag.tempfile.gettempdir', return_value=tmp),
+                mock.patch.object(sqd, 'write_capture_snippet_for_quick_check'),
             ):
                 ok, msg = sqd.launch_quick_network_diag_elevated(elevate=elevate)
         self.assertTrue(ok)
@@ -85,6 +116,7 @@ class TestSupportQuickDiag(unittest.TestCase):
             with (
                 mock.patch.object(sys, 'platform', 'win32'),
                 mock.patch('tools.support_quick_diag.tempfile.gettempdir', return_value=tmp),
+                mock.patch.object(sqd, 'write_capture_snippet_for_quick_check'),
             ):
                 ok, msg = sqd.launch_quick_network_diag_elevated(elevate=elevate)
         self.assertFalse(ok)
@@ -92,7 +124,7 @@ class TestSupportQuickDiag(unittest.TestCase):
 
 
 class TestLogsDiagButtonWiring(unittest.TestCase):
-    def test_logs_window_has_quick_check_button(self) -> None:
+    def test_logs_window_has_only_quick_check_button(self) -> None:
         path = os.path.join(_SRC, 'gui', 'logs_window.py')
         with open(path, encoding='utf-8') as fh:
             src = fh.read()
@@ -101,9 +133,11 @@ class TestLogsDiagButtonWiring(unittest.TestCase):
         self.assertIn('Quick check', src)
         self.assertIn('def _run_quick_check', src)
         self.assertIn('launch_quick_network_diag_elevated', src)
+        self.assertNotIn('logsDiagWifiBtn', src)
+        self.assertNotIn('logsDiagCaptureBtn', src)
+        self.assertNotIn('logsDiagLanBtn', src)
+        self.assertNotIn('logsDiagHotspotBtn', src)
         self.assertNotIn('Diagnostic tools — coming soon', src)
-        self.assertNotIn('Network diagnostic', src)
-        self.assertNotIn('General checks', src)
 
     def test_diag_button_theme_is_charcoal(self) -> None:
         path = os.path.join(_SRC, 'tools', 'utils_gui.py')
@@ -111,16 +145,14 @@ class TestLogsDiagButtonWiring(unittest.TestCase):
             src = fh.read()
         self.assertIn('QFrame#logsDiagPanel', src)
         self.assertIn('QPushButton#logsDiagQuickBtn', src)
-        self.assertIn('QPushButton#logsDiagWifiBtn', src)
         block = src[
             src.index('QFrame#logsDiagPanel') : src.index(
-                'QPushButton#logsDiagHotspotBtn:pressed'
+                'QPushButton#logsDiagQuickBtn:pressed'
             )
         ]
         self.assertNotIn('#19232D', block)
         self.assertNotIn('#1A72BB', block)
-        self.assertIn('logsDiagCaptureBtn', block)
-        self.assertIn('logsDiagLanBtn', block)
+        self.assertNotIn('logsDiagWifiBtn', block)
 
 
 if __name__ == '__main__':

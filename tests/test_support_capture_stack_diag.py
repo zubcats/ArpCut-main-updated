@@ -17,6 +17,24 @@ from tools import support_capture_stack_diag as csd  # noqa: E402
 
 
 class TestCaptureStackReport(unittest.TestCase):
+    def test_format_snippet_for_quick_check(self) -> None:
+        text = csd.format_capture_stack_snippet(
+            {
+                'admin': True,
+                'skipped': False,
+                'saved_iface': 'Wi-Fi',
+                'iface_label': 'Wi-Fi',
+                'sniffer_ok': True,
+                'l2_ok': True,
+                'sniff_iface': 'GUID',
+                'l2_iface': 'GUID',
+                'tokens_tried': ['GUID'],
+            }
+        )
+        self.assertIn('[PASS] Npcap sniffer', text)
+        self.assertIn('[PASS] Npcap L2 send socket', text)
+        self.assertNotIn('SCREENSHOT THIS SUMMARY', text)
+
     def test_format_skipped_not_admin(self) -> None:
         text = csd.format_capture_stack_report(
             {
@@ -91,28 +109,6 @@ class TestCaptureStackReport(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIsNone(path)
         self.assertIn('Windows-only', msg)
-
-
-class TestLogsCaptureButton(unittest.TestCase):
-    def test_logs_window_has_capture_stack_button(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'logs_window.py')
-        src = Path(path).read_text(encoding='utf-8')
-        self.assertIn("setObjectName('logsDiagCaptureBtn')", src)
-        self.assertIn('Capture stack', src)
-        self.assertIn('def _run_capture_stack_check', src)
-        self.assertIn('launch_capture_stack_diag', src)
-
-    def test_diag_buttons_share_charcoal_theme(self) -> None:
-        path = os.path.join(_SRC, 'tools', 'utils_gui.py')
-        src = Path(path).read_text(encoding='utf-8')
-        self.assertIn('QPushButton#logsDiagCaptureBtn', src)
-        self.assertIn('QPushButton#logsDiagLanBtn', src)
-        self.assertIn('QPushButton#logsDiagHotspotBtn', src)
-        start = src.index('QFrame#logsDiagPanel')
-        end = src.index('QPushButton#logsDiagHotspotBtn:pressed')
-        block = src[start:end]
-        self.assertNotIn('#19232D', block)
-        self.assertNotIn('#1A72BB', block)
 
 
 if __name__ == '__main__':

@@ -190,31 +190,5 @@ class TestWifiLinkElevate(unittest.TestCase):
         self.assertIn('UAC', msg)
 
 
-class TestLogsWifiButton(unittest.TestCase):
-    def test_logs_window_has_wifi_link_button(self) -> None:
-        path = os.path.join(_SRC, 'gui', 'logs_window.py')
-        with open(path, encoding='utf-8') as fh:
-            src = fh.read()
-        self.assertIn("setObjectName('logsDiagWifiBtn')", src)
-        self.assertIn('Wi-Fi link', src)
-        self.assertIn('def _run_wifi_link_check', src)
-        self.assertIn('launch_wifi_link_diag', src)
-        self.assertIn('Admin PowerShell', src)
-        self.assertIn('open Admin PowerShell', src)
-        # Still PC-only — no victim band probe wiring.
-        self.assertNotIn('victim band', src.lower())
-
-    def test_wifi_button_shares_charcoal_theme(self) -> None:
-        path = os.path.join(_SRC, 'tools', 'utils_gui.py')
-        with open(path, encoding='utf-8') as fh:
-            src = fh.read()
-        self.assertIn('QPushButton#logsDiagWifiBtn', src)
-        start = src.index('QFrame#logsDiagPanel')
-        end = src.index('QPushButton#logsDiagHotspotBtn:pressed')
-        block = src[start:end]
-        self.assertNotIn('#19232D', block)
-        self.assertNotIn('#1A72BB', block)
-
-
 if __name__ == '__main__':
     unittest.main()
