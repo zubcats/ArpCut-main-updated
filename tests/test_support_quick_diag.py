@@ -65,7 +65,6 @@ class TestSupportQuickDiag(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn('Quick check', msg)
         self.assertIn('Admin PowerShell', msg)
-        self.assertIn('ZubCut-Quick-Diag', msg)
         self.assertIn('ZubCut Diagnostics', msg)
         elevate.assert_called_once()
         exe, params = elevate.call_args.args[0], elevate.call_args.args[1]

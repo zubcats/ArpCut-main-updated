@@ -133,6 +133,45 @@ class TestWifiLinkParse(unittest.TestCase):
         self.assertIn('Windows-only', msg)
 
 
+class TestWifiLinkElevate(unittest.TestCase):
+    def test_embedded_matches_repo_ps1(self) -> None:
+        repo = _ROOT / 'tools' / 'ZubCut-Wifi-Link-Diag.ps1'
+        self.assertTrue(repo.is_file())
+        disk = repo.read_text(encoding='utf-8').replace('\r\n', '\n').replace('\r', '\n').strip() + '\n'
+        emb = wld._EMBEDDED_WIFI_LINK_PS1.replace('\r\n', '\n').replace('\r', '\n').strip() + '\n'
+        self.assertEqual(emb, disk)
+        self.assertIn('ZubCut Diagnostics', disk)
+        self.assertIn('Administrator', disk)
+
+    def test_launch_elevates_powershell(self) -> None:
+        elevate = mock.Mock(return_value=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.object(sys, 'platform', 'win32'),
+                mock.patch('tools.support_wifi_link_diag.tempfile.gettempdir', return_value=tmp),
+            ):
+                ok, msg = wld.launch_wifi_link_diag(elevate=elevate)
+        self.assertTrue(ok)
+        self.assertIn('Wi-Fi link', msg)
+        self.assertIn('Admin PowerShell', msg)
+        elevate.assert_called_once()
+        exe, params = elevate.call_args.args[0], elevate.call_args.args[1]
+        self.assertIn('powershell', exe.lower())
+        self.assertIn('ZubCut-Wifi-Link-Diag.ps1', params)
+        self.assertNotIn('ZubCut Diagnostics', params)
+
+    def test_launch_uac_cancel(self) -> None:
+        elevate = mock.Mock(return_value=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.object(sys, 'platform', 'win32'),
+                mock.patch('tools.support_wifi_link_diag.tempfile.gettempdir', return_value=tmp),
+            ):
+                ok, msg = wld.launch_wifi_link_diag(elevate=elevate)
+        self.assertFalse(ok)
+        self.assertIn('UAC', msg)
+
+
 class TestLogsWifiButton(unittest.TestCase):
     def test_logs_window_has_wifi_link_button(self) -> None:
         path = os.path.join(_SRC, 'gui', 'logs_window.py')
@@ -142,6 +181,8 @@ class TestLogsWifiButton(unittest.TestCase):
         self.assertIn('Wi-Fi link', src)
         self.assertIn('def _run_wifi_link_check', src)
         self.assertIn('launch_wifi_link_diag', src)
+        self.assertIn('Admin PowerShell', src)
+        self.assertIn('Each check opens Admin PowerShell', src)
         # Still PC-only — no victim band probe wiring.
         self.assertNotIn('victim band', src.lower())
 

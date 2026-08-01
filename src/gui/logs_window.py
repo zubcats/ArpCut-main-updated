@@ -128,9 +128,9 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         diag_heading.setObjectName('logsDiagHeading')
         diag_layout.addWidget(diag_heading)
         diag_hint = QLabel(
-            'Reports save to Desktop\\ZubCut Diagnostics (folder is created if needed). '
-            'Send the report or a SUMMARY screenshot to support. SUMMARY redacts LAN IPs. '
-            'Quick check asks for Admin (UAC); Wi-Fi link does not.',
+            'Each check opens Admin PowerShell (UAC). Finished reports save to '
+            'Desktop\\ZubCut Diagnostics (folder is created if needed). '
+            'Send the report or a SUMMARY screenshot to support. SUMMARY redacts LAN IPs.',
             diag_panel,
         )
         diag_hint.setObjectName('logsDiagHint')
@@ -150,8 +150,8 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         self._btn_wifi_link = QPushButton('Wi-Fi link', diag_panel)
         self._btn_wifi_link.setObjectName('logsDiagWifiBtn')
         self._btn_wifi_link.setToolTip(
-            'Checks this PC\'s Wi-Fi band (2.4 / 5 / 6 GHz) and security type '
-            '(WPA2 / WPA3, etc.). Does not read the console\'s Wi-Fi link. '
+            'Opens Admin PowerShell and checks this PC\'s Wi-Fi band (2.4 / 5 / 6 GHz) '
+            'and security type (WPA2 / WPA3, etc.). Does not read the console\'s Wi-Fi link. '
             'Saves ZubCut-Wifi-Link-*.txt in Desktop\\ZubCut Diagnostics and opens it in Notepad.'
         )
         self._btn_wifi_link.clicked.connect(self._run_wifi_link_check)
@@ -254,7 +254,7 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
             pass
 
     def _run_wifi_link_check(self) -> None:
-        """Report this PC's Wi-Fi band + security (no Admin, no victim probes)."""
+        """Report this PC's Wi-Fi band + security via Admin PowerShell (no victim probes)."""
         try:
             from tools.support_wifi_link_diag import launch_wifi_link_diag
 

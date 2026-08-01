@@ -355,16 +355,6 @@ def materialize_quick_diag_ps1() -> Path:
     return dest
 
 
-def _powershell_exe() -> str:
-    system_root = os.environ.get('SystemRoot') or os.environ.get('WINDIR') or r'C:\Windows'
-    candidate = os.path.join(
-        system_root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'
-    )
-    if os.path.isfile(candidate):
-        return candidate
-    return 'powershell.exe'
-
-
 def launch_quick_network_diag_elevated(*, elevate=None) -> tuple[bool, str]:
     """
     Open Admin PowerShell, run the quick network diagnostic, open the report.
@@ -379,29 +369,6 @@ def launch_quick_network_diag_elevated(*, elevate=None) -> tuple[bool, str]:
         script = materialize_quick_diag_ps1()
     except Exception as exc:
         return False, f'Could not prepare Quick check: {exc}'
+    from tools.diag_elevate import launch_ps1_elevated
 
-    # Quote path for ShellExecute params (spaces / specials).
-    script_s = str(script)
-    params = (
-        '-NoProfile -ExecutionPolicy Bypass -File '
-        + '"'
-        + script_s.replace('"', '')
-        + '"'
-    )
-    try:
-        if elevate is None:
-            from tools.utils_gui import spawn_windows_elevated as elevate
-        ok = bool(elevate(_powershell_exe(), params))
-    except Exception as exc:
-        return False, f'Could not start Admin PowerShell: {exc}'
-    if not ok:
-        return (
-            False,
-            'Quick check cancelled or failed to elevate — approve the UAC prompt.',
-        )
-    return (
-        True,
-        'Quick check started in Admin PowerShell — '
-        'screenshot the SUMMARY in Notepad '
-        '(Desktop\\ZubCut Diagnostics\\ZubCut-Quick-Diag-*.txt) and send it to support.',
-    )
+    return launch_ps1_elevated(script, elevate=elevate, tool_label='Quick check')
