@@ -128,8 +128,8 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         diag_heading.setObjectName('logsDiagHeading')
         diag_layout.addWidget(diag_heading)
         diag_hint = QLabel(
-            'Run a check, approve UAC if prompted, then send the Desktop report '
-            '(or a screenshot of the SUMMARY) to support.',
+            'Run a check, then send the Desktop report (or a SUMMARY screenshot) '
+            'to support. Quick check asks for Admin (UAC); Wi-Fi link does not.',
             diag_panel,
         )
         diag_hint.setObjectName('logsDiagHint')
@@ -146,6 +146,15 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         )
         self._btn_quick_check.clicked.connect(self._run_quick_check)
         diag_btns.addWidget(self._btn_quick_check)
+        self._btn_wifi_link = QPushButton('Wi-Fi link', diag_panel)
+        self._btn_wifi_link.setObjectName('logsDiagWifiBtn')
+        self._btn_wifi_link.setToolTip(
+            'Checks this PC\'s Wi-Fi band (2.4 / 5 / 6 GHz) and security type '
+            '(WPA2 / WPA3, etc.). Does not read the console\'s Wi-Fi link. '
+            'Saves ZubCut-Wifi-Link-*.txt on the Desktop and opens it in Notepad.'
+        )
+        self._btn_wifi_link.clicked.connect(self._run_wifi_link_check)
+        diag_btns.addWidget(self._btn_wifi_link)
         diag_btns.addStretch(1)
         diag_layout.addLayout(diag_btns)
         layout.addWidget(diag_panel)
@@ -238,6 +247,19 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
             ok, message = launch_quick_network_diag_elevated()
         except Exception as exc:
             ok, message = False, f'Quick check failed: {exc}'
+        try:
+            self._app.log(message, 'gray' if ok else 'red')
+        except Exception:
+            pass
+
+    def _run_wifi_link_check(self) -> None:
+        """Report this PC's Wi-Fi band + security (no Admin, no victim probes)."""
+        try:
+            from tools.support_wifi_link_diag import launch_wifi_link_diag
+
+            ok, message = launch_wifi_link_diag()
+        except Exception as exc:
+            ok, message = False, f'Wi-Fi link check failed: {exc}'
         try:
             self._app.log(message, 'gray' if ok else 'red')
         except Exception:

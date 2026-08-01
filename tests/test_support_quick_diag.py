@@ -102,6 +102,7 @@ class TestLogsDiagButtonWiring(unittest.TestCase):
             src = fh.read()
         self.assertIn('QFrame#logsDiagPanel', src)
         self.assertIn('QPushButton#logsDiagQuickBtn', src)
+        self.assertIn('QPushButton#logsDiagWifiBtn', src)
         block = src[
             src.index('QFrame#logsDiagPanel') : src.index(
                 'QPushButton#logsDiagQuickBtn:pressed'
