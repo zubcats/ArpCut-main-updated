@@ -1,4 +1,4 @@
-"""In-app Quick Network Diagnostic launcher (Logs → Network diagnostic)."""
+"""In-app Quick Network Diagnostic launcher (Logs → General checks)."""
 from __future__ import annotations
 
 import os
@@ -49,6 +49,7 @@ class TestSupportQuickDiag(unittest.TestCase):
             ok, msg = sqd.launch_quick_network_diag_elevated()
         self.assertFalse(ok)
         self.assertIn('Windows-only', msg)
+        self.assertIn('General checks', msg)
 
     def test_launch_elevates_powershell(self) -> None:
         elevate = mock.Mock(return_value=True)
@@ -59,6 +60,7 @@ class TestSupportQuickDiag(unittest.TestCase):
             ):
                 ok, msg = sqd.launch_quick_network_diag_elevated(elevate=elevate)
         self.assertTrue(ok)
+        self.assertIn('General checks', msg)
         self.assertIn('Admin PowerShell', msg)
         self.assertIn('ZubCut-Quick-Diag', msg)
         elevate.assert_called_once()
@@ -81,26 +83,27 @@ class TestSupportQuickDiag(unittest.TestCase):
 
 
 class TestLogsDiagButtonWiring(unittest.TestCase):
-    def test_logs_window_has_network_diag_button(self) -> None:
+    def test_logs_window_has_general_checks_button(self) -> None:
         path = os.path.join(_SRC, 'gui', 'logs_window.py')
         with open(path, encoding='utf-8') as fh:
             src = fh.read()
         self.assertIn("setObjectName('logsDiagPanel')", src)
-        self.assertIn("setObjectName('logsDiagNetworkBtn')", src)
-        self.assertIn('Network diagnostic', src)
-        self.assertIn('def _run_network_diagnostic', src)
+        self.assertIn("setObjectName('logsDiagGeneralBtn')", src)
+        self.assertIn('General checks', src)
+        self.assertIn('def _run_general_checks', src)
         self.assertIn('launch_quick_network_diag_elevated', src)
         self.assertNotIn('Diagnostic tools — coming soon', src)
+        self.assertNotIn('Network diagnostic', src)
 
     def test_diag_button_theme_is_charcoal(self) -> None:
         path = os.path.join(_SRC, 'tools', 'utils_gui.py')
         with open(path, encoding='utf-8') as fh:
             src = fh.read()
         self.assertIn('QFrame#logsDiagPanel', src)
-        self.assertIn('QPushButton#logsDiagNetworkBtn', src)
+        self.assertIn('QPushButton#logsDiagGeneralBtn', src)
         block = src[
             src.index('QFrame#logsDiagPanel') : src.index(
-                'QPushButton#logsDiagNetworkBtn:pressed'
+                'QPushButton#logsDiagGeneralBtn:pressed'
             )
         ]
         self.assertNotIn('#19232D', block)

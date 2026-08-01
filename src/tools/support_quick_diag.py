@@ -231,11 +231,11 @@ def launch_quick_network_diag_elevated(*, elevate=None) -> tuple[bool, str]:
     ``elevate`` is injectable for tests (defaults to ``spawn_windows_elevated``).
     """
     if not sys.platform.startswith('win'):
-        return False, 'Network diagnostic is Windows-only.'
+        return False, 'General checks are Windows-only.'
     try:
         script = materialize_quick_diag_ps1()
     except Exception as exc:
-        return False, f'Could not prepare network diagnostic: {exc}'
+        return False, f'Could not prepare general checks: {exc}'
 
     # Quote path for ShellExecute params (spaces / specials).
     script_s = str(script)
@@ -254,10 +254,10 @@ def launch_quick_network_diag_elevated(*, elevate=None) -> tuple[bool, str]:
     if not ok:
         return (
             False,
-            'Network diagnostic cancelled or failed to elevate — approve the UAC prompt.',
+            'General checks cancelled or failed to elevate — approve the UAC prompt.',
         )
     return (
         True,
-        'Network diagnostic started in Admin PowerShell — '
+        'General checks started in Admin PowerShell — '
         'screenshot the SUMMARY in Notepad (Desktop ZubCut-Quick-Diag-*.txt) and send it to support.',
     )

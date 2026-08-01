@@ -792,7 +792,7 @@ QMainWindow#zubcutAuxiliaryWindow QLabel#logsDiagHeading {{
     background-color: transparent;
     font-weight: 600;
 }}
-QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagNetworkBtn {{
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagGeneralBtn {{
     background-color: #2b2b2b;
     color: {tx};
     border: 1px solid {bd};
@@ -800,11 +800,11 @@ QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagNetworkBtn {{
     padding: 6px 12px;
     min-height: 24px;
 }}
-QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagNetworkBtn:hover {{
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagGeneralBtn:hover {{
     background-color: #3d3d3d;
     border: 1px solid {sel_bg};
 }}
-QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagNetworkBtn:pressed {{
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagGeneralBtn:pressed {{
     background-color: {sel_bg};
     color: {sel_fg};
 }}
