@@ -137,7 +137,84 @@ class TestCutAnalysisScoring(unittest.TestCase):
         self.assertIn('FULL CUT DEEP DIVE (victim path)', blob)
         self.assertIn('victim connection FULLY SEVERED', blob)
         self.assertIn('Victim WAN path severed', blob)
-        self.assertIn('not ZubCut blocking its own view', blob)
+
+    def test_midcut_ping_arp_fail_with_wan_drops_is_success(self) -> None:
+        """Hard-drop MITM breaks ZubCut ping/ARP view — must not false-FAIL a real cut."""
+        from tools import cut_analysis as ca
+
+        before_host = _live_host(
+            victim_ping_ok=True,
+            victim_in_arp=True,
+            victim_mac_match=True,
+            victim_on_lan=True,
+            selected_victim_ip='192.168.1.165',
+            selected_victim_mac='dc:e9:94:ab:e6:c4',
+            local_mac='e8:4e:06:ab:c4:28',
+        )
+        during_host = _live_host(
+            victim_ping_ok=False,
+            victim_in_arp=True,
+            victim_mac_match=False,
+            victim_on_lan=False,
+            victim_arp_mac='e8:4e:06:ab:c4:28',
+            victim_liveness_note=(
+                '192.168.1.165 did not answer ping — wake the PS5 (not Rest Mode), '
+                'run Arp Scan, and select the PlayStation row for that IP.'
+            ),
+            selected_victim_ip='192.168.1.165',
+            selected_victim_mac='dc:e9:94:ab:e6:c4',
+            local_mac='e8:4e:06:ab:c4:28',
+        )
+        after_host = _live_host(
+            victim_ping_ok=True,
+            victim_in_arp=True,
+            victim_mac_match=True,
+            victim_on_lan=True,
+            selected_victim_ip='192.168.1.165',
+            selected_victim_mac='dc:e9:94:ab:e6:c4',
+            local_mac='e8:4e:06:ab:c4:28',
+        )
+        report = ca.score_phases(
+            flow='Dupe',
+            victim_ip='192.168.1.165',
+            victim_mac='dc:e9:94:ab:e6:c4',
+            expect_full_cut=True,
+            before=ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(), host=before_host),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(
+                    ipv4=870,
+                    arp_victim=282,
+                    victim_wan_out_to_us=541,
+                    victim_to_us=870,
+                    poison_arp_seen=64,
+                ),
+                host=during_host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=True,
+                    forwarder_running=True,
+                    forwarder_hard_drop=True,
+                    fwd_packets_seen=2196,
+                    fwd_packets_dropped=2196,
+                    fwd_packets_forwarded=0,
+                    sample_window_ok=True,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=0, arp_victim=4),
+                host=after_host,
+                stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
+            ),
+        )
+        self.assertEqual(report.verdict, 'FULL CUT')
+        self.assertEqual(report.overall, 'SUCCESS')
+        blob = '\n'.join(report.lines)
+        self.assertIn('OVERALL RESULT:  SUCCESS', blob)
+        self.assertIn('DURING  >>>  PASS', blob)
+        self.assertIn('mid-cut ping/arp', blob.lower())
+        self.assertIn('expected under hard-drop', blob.lower())
+        self.assertNotIn('Cut verdict: NOT CUT', blob)
 
     def test_wan_bypass_is_partial_fail_even_if_stack_armed(self) -> None:
         from tools import cut_analysis as ca

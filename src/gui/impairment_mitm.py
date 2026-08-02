@@ -232,6 +232,7 @@ class ImpairmentMitmMixin:
             iface_guid=guid,
             gateway_mac=gw_mac,
             gateway_ip=gw_ip,
+            local_mac=str(getattr(iface, 'mac', None) or ''),
             l2_ready=l2_ready,
             ip_forwarding_on=ip_fwd,
             admin_ok=admin_ok,

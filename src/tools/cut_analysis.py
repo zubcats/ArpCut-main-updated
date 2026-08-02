@@ -330,6 +330,7 @@ def collect_host_health(
     iface_guid: str = '',
     gateway_mac: str = '',
     gateway_ip: str = '',
+    local_mac: str = '',
     l2_ready: Optional[bool] = None,
     ip_forwarding_on: Optional[bool] = None,
     admin_ok: Optional[bool] = None,
@@ -351,6 +352,7 @@ def collect_host_health(
         'iface_guid': str(iface_guid or ''),
         'gateway_mac': str(gateway_mac or ''),
         'gateway_ip': str(gateway_ip or ''),
+        'local_mac': str(local_mac or ''),
         'l2_ready': l2_ready,
         'ip_forwarding_on': ip_forwarding_on,
         'admin_ok': admin_ok,
@@ -427,7 +429,7 @@ def _fmt_sample(sample: dict, *, label: str) -> List[str]:
     return lines
 
 
-def _fmt_host(host: dict, *, label: str) -> List[str]:
+def _fmt_host(host: dict, *, label: str, soft_midcut_lan_probes: bool = False) -> List[str]:
     lines: List[str] = []
     name = host.get('iface_name') or '?'
     ip = host.get('iface_ip') or '?'
@@ -460,10 +462,16 @@ def _fmt_host(host: dict, *, label: str) -> List[str]:
             f'[PASS] {label} victim answers ping (LAN view intact — cut must be proven on WAN path)'
         )
     elif host.get('victim_ping_ok') is False:
-        lines.append(
-            f'[FAIL] {label} victim does not answer ping — may be offline / wrong IP '
-            '(this is NOT proof of a successful cut)'
-        )
+        if soft_midcut_lan_probes:
+            lines.append(
+                f'[INFO] {label} victim ping failed mid-cut — expected under hard-drop '
+                '(not used as offline proof)'
+            )
+        else:
+            lines.append(
+                f'[FAIL] {label} victim does not answer ping — may be offline / wrong IP '
+                '(this is NOT proof of a successful cut)'
+            )
     if host.get('victim_in_arp') is True:
         arp_m = host.get('victim_arp_mac') or ''
         lines.append(
@@ -471,29 +479,47 @@ def _fmt_host(host: dict, *, label: str) -> List[str]:
             + (f' ({arp_m})' if arp_m else '')
         )
     elif host.get('victim_in_arp') is False:
-        lines.append(f'[FAIL] {label} victim missing from ARP cache — stale row / not on LAN')
+        if soft_midcut_lan_probes:
+            lines.append(
+                f'[INFO] {label} victim ARP cache empty/unstable mid-cut — expected under poison'
+            )
+        else:
+            lines.append(f'[FAIL] {label} victim missing from ARP cache — stale row / not on LAN')
     if host.get('victim_mac_match') is True:
         lines.append(f'[PASS] {label} ARP MAC matches selected row')
     elif host.get('victim_mac_match') is False:
-        lines.append(
-            f'[FAIL] {label} ARP MAC mismatch — selected '
-            f'{sel_mac or "?"} vs live {host.get("victim_arp_mac") or "(none)"}'
-        )
+        if soft_midcut_lan_probes:
+            lines.append(
+                f'[INFO] {label} ARP MAC mismatch mid-cut '
+                f'({sel_mac or "?"} vs {host.get("victim_arp_mac") or "(none)"}) — '
+                'often ZubCut/gateway MAC during poison; ignored when WAN evidence is strong'
+            )
+        else:
+            lines.append(
+                f'[FAIL] {label} ARP MAC mismatch — selected '
+                f'{sel_mac or "?"} vs live {host.get("victim_arp_mac") or "(none)"}'
+            )
     if host.get('victim_on_lan') is True:
         lines.append(f'[PASS] {label} victim appears on LAN now')
     elif host.get('victim_on_lan') is False:
-        lines.append(
-            f'[FAIL] {label} victim NOT on LAN — do not trust FULL CUT '
-            '(rescan; pick the live PS5 IP)'
-        )
-        note = str(host.get('victim_liveness_note') or '').strip()
-        live_at = str(host.get('victim_live_ip') or '').strip()
-        if note:
-            lines.append(f'[INFO] {label} {note}')
-        elif live_at:
+        if soft_midcut_lan_probes:
             lines.append(
-                f'[INFO] {label} same MAC is online at {live_at} — select that row'
+                f'[INFO] {label} mid-cut LAN probe says offline — ignored; '
+                'using BEFORE + victim WAN→us / drops instead'
             )
+        else:
+            lines.append(
+                f'[FAIL] {label} victim NOT on LAN — do not trust FULL CUT '
+                '(rescan; pick the live PS5 IP)'
+            )
+            note = str(host.get('victim_liveness_note') or '').strip()
+            live_at = str(host.get('victim_live_ip') or '').strip()
+            if note:
+                lines.append(f'[INFO] {label} {note}')
+            elif live_at:
+                lines.append(
+                    f'[INFO] {label} same MAC is online at {live_at} — select that row'
+                )
     fwd = host.get('ip_forwarding_on')
     if fwd is True:
         lines.append(f'[FAIL] {label} Windows IP forwarding ON')
@@ -590,8 +616,27 @@ def _full_cut_checklist(
         if victim_on_lan is None:
             victim_on_lan = b_host.get('victim_on_lan')
     use_wd = bool(stack.get('use_windivert'))
+    severed = _victim_severance_evidence(stack, sample)
+    mitm_path_armed = bool(
+        stack.get('mitm_armed')
+        or (use_wd and stack.get('windivert_running') and stack.get('windivert_paused'))
+    )
+    midcut_ok = _midcut_lan_probe_expected_degraded(
+        host=host,
+        before_host=b_host,
+        stack=stack,
+        sample=sample,
+        before_live=b_host.get('victim_on_lan') is True,
+        severed=severed,
+        mitm_path_armed=mitm_path_armed,
+    )
+    # For deep dive: mid-cut probe fail with strong cut evidence counts as identity OK.
+    victim_identity_ok = victim_on_lan is True or midcut_ok
     checks: List[Tuple[str, bool]] = [
-        ('Victim on LAN (ping/ARP/MAC)', victim_on_lan is True),
+        (
+            'Victim identity OK (BEFORE live + LAN probe, or mid-cut degraded under hard-drop)',
+            victim_identity_ok,
+        ),
         ('Settings adapter live', host.get('settings_adapter_live') is not False),
         ('Gateway MAC known', bool(host.get('gateway_mac') or b_host.get('gateway_mac'))),
         ('Windows IP forwarding OFF', host.get('ip_forwarding_on') is not True),
@@ -618,11 +663,10 @@ def _full_cut_checklist(
     ipv6 = int((sample or {}).get('ipv6') or 0)
     checks.append(('No strong IPv6 bypass signal', ipv6 <= 8))
     bypass = _victim_wan_bypass(sample)
-    severed = _victim_severance_evidence(stack, sample)
     checks.append(
         (
-            'Victim still visible on LAN (not ZubCut blocking its own view)',
-            victim_on_lan is True,
+            'Victim identity held (BEFORE live / wire evidence — not ZubCut-only view)',
+            victim_identity_ok,
         )
     )
     checks.append(('No victim WAN bypass around MITM', not bypass))
@@ -753,6 +797,37 @@ def _stale_offline_victim_message(
     return True, msg, live_at
 
 
+def _midcut_lan_probe_expected_degraded(
+    *,
+    host: dict,
+    before_host: dict,
+    stack: dict,
+    sample: dict,
+    before_live: bool,
+    severed: bool,
+    mitm_path_armed: bool,
+) -> bool:
+    """
+    True when mid-cut ping/ARP failure is an expected hard-drop MITM artifact.
+
+    Successful Kill/Dupe often:
+      - drops ICMP so ZubCut's ping to the PS5 fails
+      - pollutes this PC's ARP cache (victim IP → ZubCut/gateway MAC)
+    while the wire still shows victim WAN traffic hitting us and being dropped.
+    That must not score as NOT CUT / offline victim.
+    """
+    if not before_live or not severed or not mitm_path_armed:
+        return False
+    if host.get('victim_on_lan') is True and host.get('victim_mac_match') is not False:
+        return False
+    # Strong wire proof the selected IP is still the victim in path.
+    if int((sample or {}).get('victim_wan_out_to_us') or 0) <= 0 and int(
+        stack.get('fwd_packets_dropped') or 0
+    ) <= 0:
+        return False
+    return True
+
+
 def _eval_during_full_cut(
     ps: Optional[PhaseSample],
     *,
@@ -801,6 +876,25 @@ def _eval_during_full_cut(
     victim_on_lan = host.get('victim_on_lan')
     if victim_on_lan is None:
         victim_on_lan = b_host.get('victim_on_lan')
+    before_live = b_host.get('victim_on_lan') is True
+    use_wd = bool(stack.get('use_windivert'))
+    bypass = _victim_wan_bypass(sample)
+    severed = _victim_severance_evidence(stack, sample)
+    mitm_path_armed = bool(
+        stack.get('mitm_armed')
+        or (use_wd and stack.get('windivert_running') and stack.get('windivert_paused'))
+    )
+    # Hard-drop MITM often breaks ZubCut→victim ping and pollutes this PC's ARP cache
+    # (victim IP may briefly map to ZubCut/gateway MAC). That is NOT "PS5 offline".
+    midcut_probe_degraded = _midcut_lan_probe_expected_degraded(
+        host=host,
+        before_host=b_host,
+        stack=stack,
+        sample=sample,
+        before_live=before_live,
+        severed=severed,
+        mitm_path_armed=mitm_path_armed,
+    )
 
     if host.get('settings_adapter_live') is False:
         fails.append('Settings adapter not live during cut')
@@ -808,22 +902,48 @@ def _eval_during_full_cut(
         fails.append('Windows IP forwarding ON during cut (kernel can relay = partial)')
 
     if victim_on_lan is False:
-        note = str(
-            host.get('victim_liveness_note') or b_host.get('victim_liveness_note') or ''
-        ).strip()
-        live_at = str(host.get('victim_live_ip') or b_host.get('victim_live_ip') or '').strip()
-        fails.append(
-            note
-            or (
-                'victim not on LAN during cut'
-                + (f' (same device now at {live_at})' if live_at else '')
+        if midcut_probe_degraded:
+            notes.append(
+                'mid-cut ping/ARP from ZubCut failed — expected under hard-drop MITM '
+                '(ICMP/ARP view is degraded while victim WAN is being dropped). '
+                'BEFORE was live; wire shows victim WAN→us / forwarder drops.'
             )
-        )
-        verdict = 'NOT CUT'
-        return PhaseResult(PHASE_DURING, False, fails, notes), verdict
+            arp_m = _norm_mac(str(host.get('victim_arp_mac') or ''))
+            local_m = _norm_mac(str(host.get('local_mac') or ''))
+            if arp_m and local_m and arp_m == local_m:
+                notes.append(
+                    'ARP cache lists ZubCut MAC for the victim IP during poison — '
+                    'expected pollution, not a different device'
+                )
+            elif host.get('victim_mac_match') is False:
+                notes.append(
+                    'ARP MAC mismatch during cut is unreliable under poison; '
+                    'identity taken from BEFORE + victim WAN traffic evidence'
+                )
+            victim_on_lan = True  # identity OK via BEFORE + wire, not mid-cut probes
+        else:
+            note = str(
+                host.get('victim_liveness_note') or b_host.get('victim_liveness_note') or ''
+            ).strip()
+            live_at = str(host.get('victim_live_ip') or b_host.get('victim_live_ip') or '').strip()
+            fails.append(
+                note
+                or (
+                    'victim not on LAN during cut'
+                    + (f' (same device now at {live_at})' if live_at else '')
+                )
+            )
+            verdict = 'NOT CUT'
+            return PhaseResult(PHASE_DURING, False, fails, notes), verdict
 
     if victim_on_lan is not True:
-        fails.append('victim on-LAN not confirmed during cut (ping/ARP)')
+        if midcut_probe_degraded:
+            victim_on_lan = True
+            notes.append(
+                'mid-cut LAN presence inconclusive — using BEFORE + WAN cut evidence instead'
+            )
+        else:
+            fails.append('victim on-LAN not confirmed during cut (ping/ARP)')
 
     # Missed sample window (Dupe too short / OFF before DURING settled).
     if expect_full_cut and stack.get('sample_window_ok') is False:
@@ -834,14 +954,15 @@ def _eval_during_full_cut(
         verdict = 'INCONCLUSIVE'
         return PhaseResult(PHASE_DURING, False, fails, notes), verdict
 
-    use_wd = bool(stack.get('use_windivert'))
-    bypass = _victim_wan_bypass(sample)
-    severed = _victim_severance_evidence(stack, sample)
-    # Victim must remain visible on LAN during a real MITM cut. Losing ping/ARP here
-    # usually means a ghost IP or ZubCut lost its own view — NOT proof the PS5 is offline.
-    if expect_full_cut and victim_on_lan is True:
+    # Identity for FULL CUT: BEFORE live + (mid-cut LAN OK OR degraded-but-evidenced).
+    if expect_full_cut and victim_on_lan is True and not midcut_probe_degraded:
         notes.append(
             'victim still visible on LAN during cut (ZubCut is not just blocking its own view)'
+        )
+    elif expect_full_cut and midcut_probe_degraded:
+        notes.append(
+            'victim identity held from BEFORE + live WAN cut evidence '
+            '(mid-cut ping/ARP intentionally ignored)'
         )
     elif expect_full_cut and host.get('victim_ping_ok') is False and host.get('victim_on_lan') is True:
         notes.append('victim ARP-live but ICMP silent (normal for some consoles during cut)')
@@ -1149,7 +1270,14 @@ def score_phases(
                 lines.append(f'[INFO] {ps.phase}: {n}')
         if ps.note:
             lines.append(f'[INFO] {ps.note}')
-        lines.extend(_fmt_host(ps.host or {}, label=ps.phase))
+        soft_midcut = False
+        if ps.phase == PHASE_DURING:
+            soft_midcut = any(
+                'mid-cut ping/ARP' in n or 'mid-cut LAN presence' in n for n in (pr.notes or [])
+            )
+        lines.extend(
+            _fmt_host(ps.host or {}, label=ps.phase, soft_midcut_lan_probes=soft_midcut)
+        )
         lines.extend(_fmt_sample(ps.sample or {}, label=f'{ps.phase} victim traffic'))
         if ps.phase in (PHASE_DURING, PHASE_AFTER):
             lines.extend(
