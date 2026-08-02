@@ -366,6 +366,61 @@ class ImpairmentBlocksMixin:
         self._clear_explicit_kill_for_flow(device)
 
 
+    def _seal_lan_mitm_after_instant_cut(
+        self, device, direction: str = 'both', *, action: str = 'Kill'
+    ) -> None:
+        """Post-instant LAN seal only — never call before poison/cut.
+
+        Matches Kill re-ON: disable forwarding, background full-cut reinforce,
+        firewall backstop, MITM status/forwarding warn. Keeps click-path instant.
+        """
+        if not isinstance(device, dict):
+            return
+        device = self._device_with_plan_ip(dict(device))
+        mac = str(device.get('mac') or '').strip()
+        if not mac:
+            return
+        direction = str(direction or 'both').strip().lower()
+        if direction not in ('both', 'in', 'out'):
+            direction = 'both'
+        try:
+            from networking.killer import disable_ip_forwarding
+
+            disable_ip_forwarding(
+                priority_iface=getattr(
+                    getattr(self.killer, 'iface', None), 'name', None
+                )
+                or getattr(getattr(self.scanner, 'iface', None), 'name', None)
+            )
+        except Exception:
+            pass
+        try:
+            self.killer._reinforce_full_cut_async(device)
+        except Exception:
+            pass
+        try:
+            iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
+        except Exception:
+            iface_name = 'en0'
+        _bg_block_ip(iface_name, device.get('ip'), direction)
+        try:
+            self._log_mitm_arm_status(device, action=action)
+        except Exception:
+            pass
+        try:
+            self._schedule_mitm_traffic_probe(device, flow=action)
+        except Exception:
+            pass
+        fw = getattr(self.killer, 'forwarders', {}).get(mac)
+        if not (fw and getattr(fw, 'running', False)):
+            self.log(
+                f'{action} ON (ARP+firewall) for {device.get("ip", "")} — '
+                'Npcap forwarder unavailable; cut may be partial '
+                '(no full offline / red chain). Fix Npcap on this adapter.',
+                'red',
+            )
+
+
     def _arm_victim_mitm_like_kill(self, device, direction: str, *, flow: str = 'Kill') -> bool:
         """LAN/hotspot MITM arm — same traffic-cut stack as explicit Kill ON."""
         device = self._device_with_plan_ip(dict(device))

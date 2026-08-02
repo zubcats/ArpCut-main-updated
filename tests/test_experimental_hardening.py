@@ -55,23 +55,26 @@ class TestIcsKillGhostSync(unittest.TestCase):
 
 
 class TestDupeReleaseOnGuiThread(unittest.TestCase):
-    def test_stop_dupe_releases_via_qtimer(self) -> None:
+    def test_stop_dupe_releases_sync_on_gui_stack(self) -> None:
+        """UI OFF must unkill immediately (Lag parity) — not wait a QTimer tick."""
         src = load_main_window_source()
         block = methods_through('stopDupe', '_updateDupeButtonState')
-        self.assertIn('QTimer.singleShot(0, _release_on_gui)', block)
+        self.assertIn('_release_dupe_victim_immediate(release_snap, refresh_context=False)', block)
+        self.assertNotIn('QTimer.singleShot(0, _release_on_gui)', block)
         self.assertNotIn('_dupe_net_executor.submit(_release_worker)', block)
+        self.assertIn('_dupe_start_gen', block)
 
     def test_stop_dupe_reconnects_deferred_clear_and_drops_gate(self) -> None:
         """Snap-path OFF must not leave teardown latched ('still restoring')."""
         stop = method_src('stopDupe')
-        # After disconnect on the snap path, reconnect before start(0).
-        snap_arm = stop.split('QTimer.singleShot(0, _release_on_gui)', 1)[1]
+        # Sync release then deferred firewall clear; reconnect before start(0).
+        self.assertIn('_release_dupe_victim_immediate(release_snap, refresh_context=False)', stop)
+        self.assertIn('_drop_dupe_restoring_banner()', stop)
+        snap_arm = stop.split('_release_dupe_victim_immediate(release_snap, refresh_context=False)', 1)[1]
         snap_arm = snap_arm.split('return', 1)[0]
         self.assertIn('_dupe_deferred_clear_timer.timeout.disconnect()', snap_arm)
         self.assertIn('_do_deferred_dupe_clear', snap_arm)
         self.assertIn('UniqueConnection', snap_arm)
-        release = stop[stop.index('def _release_on_gui'): stop.index('QTimer.singleShot(0, _release_on_gui)')]
-        self.assertIn('_drop_dupe_restoring_banner()', release)
 
 
 class TestPercentCutRowUi(unittest.TestCase):

@@ -45,13 +45,25 @@ class ImpairmentDupeMixin:
             return
         ip = str(device.get('ip') or '').strip()
         mac = str(device.get('mac') or '').strip()
-        still = bool(
-            mac
-            and (
-                mac in getattr(self.killer, 'killed', {})
-                or mac in getattr(self.killer, 'forwarders', {})
-            )
-        )
+        still = False
+        if mac and (
+            mac in getattr(self.killer, 'killed', {})
+            or mac in getattr(self.killer, 'forwarders', {})
+        ):
+            still = True
+        elif ip:
+            for entry in list((getattr(self.killer, 'killed', {}) or {}).values()):
+                if isinstance(entry, dict) and str(entry.get('ip') or '').strip() == ip:
+                    still = True
+                    break
+            if not still:
+                for fmac, fw in list((getattr(self.killer, 'forwarders', {}) or {}).items()):
+                    victim = (getattr(self.killer, 'killed', {}) or {}).get(fmac) or {}
+                    if str((victim or {}).get('ip') or '').strip() == ip and getattr(
+                        fw, 'running', False
+                    ):
+                        still = True
+                        break
         if still:
             self._show_dupe_status(
                 f'Dupe OFF: cut still active on {ip} — press Dupe or Kill OFF, then rescan',
@@ -460,6 +472,10 @@ class ImpairmentDupeMixin:
                             self.killer.reassert_poison(dev)
                         except Exception:
                             pass
+                        try:
+                            self.killer._apply_traffic_cut_sync(dev)
+                        except Exception:
+                            pass
                 if self._dupe_impairment_is_live(dev):
                     self._dupe_armed_ok = True
                     dev = self._device_with_plan_ip(dict(dev))
@@ -468,6 +484,11 @@ class ImpairmentDupeMixin:
                         str(dev.get('mac') or self.dupe_device_mac or '').strip() or None
                     )
                     self.dupe_device_ip = dev.get('ip') or self.dupe_device_ip
+                    # Instant cut already ran in preblock — seal after (Kill re-ON parity).
+                    if not plan.use_windivert:
+                        self._seal_lan_mitm_after_instant_cut(
+                            dev, block_dir, action='Dupe'
+                        )
                     self._start_dupe_timers_after_network_ready()
                     return
                 self.log(
@@ -773,6 +794,8 @@ class ImpairmentDupeMixin:
             gate.teardown.begin('dupe', prev_mac)
         self._show_dupe_status('Dupe OFF — restoring connection…', UI_LOG_RESTORE_FG, hold_ms=0)
         # Mark inactive after timers are stopped so _tick cannot race with teardown.
+        # Bump gen so a late arm/watchdog cannot re-poison after UI shows OFF.
+        self._dupe_start_gen = int(getattr(self, '_dupe_start_gen', 0)) + 1
         self.dupe_active = False
         self.dupe_device_mac = None
         self.dupe_device_ip = None
@@ -785,51 +808,47 @@ class ImpairmentDupeMixin:
         if snap:
             release_snap = dict(snap)
             release_mac = prev_mac
-
-            def _release_on_gui():
-                # Gate / killer / ARP teardown must stay on the GUI thread so Kill/Lag
-                # cannot race a worker-pool release (experimental hardening).
+            # Sync restore on this stack (Lag OFF parity) — do not wait for the
+            # next event-loop tick or poison can keep cutting after UI shows OFF.
+            try:
+                self._release_dupe_victim_immediate(release_snap, refresh_context=False)
+            except Exception:
                 try:
-                    self._release_dupe_victim_immediate(release_snap, refresh_context=False)
-                except Exception:
-                    try:
-                        from tools.zubcut_log import app_log
+                    from tools.zubcut_log import app_log
 
-                        app_log('dupe_release_failed', mac=str(release_mac or ''), exc_info=True)
-                    except Exception:
-                        pass
-                try:
-                    self._sync_killed_devices()
-                    refresh_mac = str(release_snap.get('mac') or release_mac or '').strip()
-                    if refresh_mac:
-                        self._refresh_table_row_for_mac(refresh_mac)
-                    self._updateKillButtonState()
-                    self._log_dupe_restore_result(release_snap)
+                    app_log('dupe_release_failed', mac=str(release_mac or ''), exc_info=True)
                 except Exception:
                     pass
-                # Clear teardown latch here — restore already finished. Waiting only on
-                # deferred firewall cleanup left Dupe stuck on "still restoring".
-                self._drop_dupe_restoring_banner()
-                if refresh_dialog:
-                    self._refresh_flow_toggle_ui(fast=True)
-                else:
-                    self._updateDupeButtonState()
-                    self._updateKillButtonState()
-                self._repaint_device_table_rows(release_snap)
-                dlg_dupe = getattr(self, 'dupe_switch_dialog', None)
-                if dlg_dupe is not None and dlg_dupe.isVisible():
-                    try:
-                        dlg_dupe.refresh_toggle_state()
-                    except Exception:
-                        pass
+            try:
+                self._sync_killed_devices()
+                refresh_mac = str(release_snap.get('mac') or release_mac or '').strip()
+                if refresh_mac:
+                    self._refresh_table_row_for_mac(refresh_mac)
+                self._updateKillButtonState()
+                self._log_dupe_restore_result(release_snap)
+            except Exception:
+                pass
+            # Clear teardown latch here — restore already finished. Waiting only on
+            # deferred firewall cleanup left Dupe stuck on "still restoring".
+            self._drop_dupe_restoring_banner()
+            if refresh_dialog:
+                self._refresh_flow_toggle_ui(fast=True)
+            else:
+                self._updateDupeButtonState()
+                self._updateKillButtonState()
+            self._repaint_device_table_rows(release_snap)
+            dlg_dupe = getattr(self, 'dupe_switch_dialog', None)
+            if dlg_dupe is not None and dlg_dupe.isVisible():
                 try:
-                    app = QApplication.instance()
-                    if app is not None:
-                        app.processEvents(QEventLoop.ExcludeUserInputEvents)
+                    dlg_dupe.refresh_toggle_state()
                 except Exception:
                     pass
-
-            QTimer.singleShot(0, _release_on_gui)
+            try:
+                app = QApplication.instance()
+                if app is not None:
+                    app.processEvents(QEventLoop.ExcludeUserInputEvents)
+            except Exception:
+                pass
             # Do not drain in-flight block_ip here — restore must not wait on netsh add.
             self._dupe_block_apply_pending = False
             self._dupe_block_ctx = None
