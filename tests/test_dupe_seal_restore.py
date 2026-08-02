@@ -32,13 +32,14 @@ class TestDupeSealRestore(unittest.TestCase):
 
     def test_preblock_live_dupe_arm_seals_after_cut(self) -> None:
         arm = method_src('_run_dupe_arm_command')
-        live = arm[arm.index('_dupe_impairment_is_live(dev)'):]
-        live = live.split("preblock did not stick", 1)[0]
-        seal_at = live.index('_seal_lan_mitm_after_instant_cut')
+        pre = arm[arm.index("if getattr(self, '_dupe_preblocked', False)"):]
+        pre = pre.split("preblock did not stick", 1)[0]
+        seal_at = pre.index('_seal_lan_mitm_after_instant_cut')
         # Instant reassert/cut stay before seal.
-        self.assertLess(live.index('reassert_poison'), seal_at)
-        self.assertLess(live.index('_apply_traffic_cut_sync'), seal_at)
-        self.assertIn("action='Dupe'", live)
+        self.assertLess(pre.index('reassert_poison'), seal_at)
+        self.assertLess(pre.index('_apply_traffic_cut_sync'), seal_at)
+        self.assertLess(pre.index('_dupe_impairment_is_live(dev)'), seal_at)
+        self.assertIn("action='Dupe'", pre)
 
     def test_start_dupe_keeps_instant_preblock_before_arm(self) -> None:
         start = methods_through('startDupe', 'dupe_remaining_ms')
