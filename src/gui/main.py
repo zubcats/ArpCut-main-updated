@@ -1071,7 +1071,8 @@ class ZubCutApp(
         self.btnDupe.setFont(dupe_font)
         self.btnDupe.setToolTip(
             'Dupe — one-shot lag for a set duration, then full stop. '
-            'Duration/direction controls are always visible below. Shortcut: P.'
+            'Duration/direction controls are always visible below. Shortcut: P. '
+            'With Logs → Analysis ON, use at least 5000 ms (5s) for a clear DURING sample.'
         )
         self.btnDupe.pressed.connect(lambda: self._shortcut_global_dupe(from_button=True))
 
@@ -1154,6 +1155,10 @@ class ZubCutApp(
         self.dupeSpinMain.setSingleStep(100)
         self.dupeSpinMain.setValue(5000)
         self.dupeSpinMain.setSuffix(' ms')
+        self.dupeSpinMain.setToolTip(
+            'Dupe burst length. Default 5000 ms. '
+            'With Logs → Analysis ON, keep ≥ 5000 ms so the DURING cut sample finishes before OFF.'
+        )
         self.dupeTimingRow.addWidget(self.dupeSpinMain)
         self.groupDupeInlineLayout.addLayout(self.dupeTimingRow)
         self.dupeDirRow = QHBoxLayout()

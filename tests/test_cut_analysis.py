@@ -276,6 +276,8 @@ class TestCutAnalysisWiring(unittest.TestCase):
         self.assertIn('BEFORE', src)
         self.assertIn('DURING', src)
         self.assertIn('AFTER', src)
+        self.assertIn('5000 ms', src)
+        self.assertIn('5s', src)
 
     def test_analysis_button_qss_no_qdark_blue(self) -> None:
         path = os.path.join(_SRC, 'tools', 'utils_gui.py')
