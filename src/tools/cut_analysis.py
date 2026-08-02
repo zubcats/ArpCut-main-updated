@@ -68,8 +68,15 @@ def _sniff_cut_sample(
     victim_ip: str,
     *,
     seconds: float = 1.5,
+    local_mac: str = '',
+    gateway_ip: str = '',
 ) -> dict[str, Any]:
-    """Capture a short sample; return packet class counts (best-effort)."""
+    """Capture a short sample; return packet class counts (best-effort).
+
+    Extra fields (when MACs/IPs known):
+      poison_arp_seen — ARP claiming gateway IP is at our MAC (poison on wire)
+      victim_to_us    — IPv4 to our MAC involving victim IP (traffic attracted)
+    """
     out: dict[str, Any] = {
         'ok': False,
         'error': '',
@@ -77,16 +84,20 @@ def _sniff_cut_sample(
         'ipv6': 0,
         'arp': 0,
         'arp_victim': 0,
+        'poison_arp_seen': 0,
+        'victim_to_us': 0,
         'total': 0,
         'seconds': float(seconds),
     }
     victim_ip = str(victim_ip or '').strip()
     iface_guid = str(iface_guid or '').strip()
+    local_mac_n = _norm_mac(local_mac)
+    gateway_ip = str(gateway_ip or '').strip()
     if not victim_ip or not iface_guid:
         out['error'] = 'missing iface or victim IP'
         return out
     try:
-        from scapy.all import ARP, IPv6, sniff  # type: ignore
+        from scapy.all import ARP, Ether, IP, IPv6, sniff  # type: ignore
     except Exception as exc:
         out['error'] = f'scapy unavailable: {exc}'
         return out
@@ -111,13 +122,28 @@ def _sniff_cut_sample(
                 arp = pkt[ARP]
                 psrc = str(getattr(arp, 'psrc', '') or '')
                 pdst = str(getattr(arp, 'pdst', '') or '')
+                hwsrc = _norm_mac(str(getattr(arp, 'hwsrc', '') or ''))
                 if vip in (psrc, pdst):
                     out['arp_victim'] += 1
+                # Poison on wire: "gateway IP is at our MAC"
+                if (
+                    gateway_ip
+                    and local_mac_n
+                    and psrc == gateway_ip
+                    and hwsrc == local_mac_n
+                ):
+                    out['poison_arp_seen'] += 1
                 continue
             if pkt.haslayer(IPv6):
                 out['ipv6'] += 1
                 continue
             out['ipv4'] += 1
+            if local_mac_n and pkt.haslayer(Ether) and pkt.haslayer(IP):
+                dst = _norm_mac(str(getattr(pkt[Ether], 'dst', '') or ''))
+                src_ip = str(getattr(pkt[IP], 'src', '') or '')
+                dst_ip = str(getattr(pkt[IP], 'dst', '') or '')
+                if dst == local_mac_n and vip in (src_ip, dst_ip):
+                    out['victim_to_us'] += 1
         except Exception:
             continue
     return out
@@ -276,6 +302,10 @@ def collect_stack_state(
     windivert_running: bool = False,
     windivert_paused: bool = False,
     cut_pct: Optional[int] = None,
+    fwd_packets_seen: Optional[int] = None,
+    fwd_packets_dropped: Optional[int] = None,
+    fwd_packets_forwarded: Optional[int] = None,
+    sample_window_ok: Optional[bool] = None,
 ) -> Dict[str, Any]:
     return {
         'mitm_armed': bool(mitm_armed),
@@ -285,6 +315,10 @@ def collect_stack_state(
         'windivert_running': bool(windivert_running),
         'windivert_paused': bool(windivert_paused),
         'cut_pct': cut_pct,
+        'fwd_packets_seen': fwd_packets_seen,
+        'fwd_packets_dropped': fwd_packets_dropped,
+        'fwd_packets_forwarded': fwd_packets_forwarded,
+        'sample_window_ok': sample_window_ok,
     }
 
 
@@ -292,10 +326,17 @@ def _fmt_sample(sample: dict, *, label: str) -> str:
     if not sample.get('ok'):
         return f'[WARN] {label}: capture failed ({sample.get("error") or "unknown"})'
     sec = sample.get('seconds', '?')
+    extra = ''
+    if int(sample.get('poison_arp_seen') or 0) or int(sample.get('victim_to_us') or 0):
+        extra = (
+            f' poisonARP={sample.get("poison_arp_seen", 0)}'
+            f' victim→us={sample.get("victim_to_us", 0)}'
+        )
     return (
         f'[INFO] {label} ({sec}s): total={sample.get("total", 0)} '
         f'ipv4≈{sample.get("ipv4", 0)} arp={sample.get("arp", 0)} '
         f'arp↔victim={sample.get("arp_victim", 0)} ipv6={sample.get("ipv6", 0)}'
+        f'{extra}'
     )
 
 
@@ -397,6 +438,27 @@ def _fmt_stack(stack: dict, *, label: str, expect_full_cut: bool) -> List[str]:
             f'[{"PASS" if stack.get("forwarder_hard_drop") else "WARN"}] '
             f'{label} forwarder hard-drop'
         )
+    seen = stack.get('fwd_packets_seen')
+    dropped = stack.get('fwd_packets_dropped')
+    forwarded = stack.get('fwd_packets_forwarded')
+    if seen is not None or dropped is not None:
+        lines.append(
+            f'[INFO] {label} forwarder stats: seen={seen if seen is not None else "?"} '
+            f'dropped={dropped if dropped is not None else "?"} '
+            f'forwarded={forwarded if forwarded is not None else "?"}'
+        )
+        if expect_full_cut and dropped is not None:
+            lines.append(
+                f'[{"PASS" if int(dropped or 0) > 0 else "WARN"}] '
+                f'{label} forwarder actually dropped packets'
+            )
+    if stack.get('sample_window_ok') is False:
+        lines.append(
+            f'[FAIL] {label} cut already OFF when sample started — increase Dupe/hold time '
+            '(Analysis needs ≥8000 ms)'
+        )
+    elif stack.get('sample_window_ok') is True:
+        lines.append(f'[PASS] {label} sample window caught cut while still armed')
     if stack.get('cut_pct') is not None:
         lines.append(f'[INFO] {label} Percent Cut target: {int(stack["cut_pct"])}% cut')
     return lines
@@ -438,6 +500,10 @@ def _full_cut_checklist(
         ('Gateway MAC known', bool(host.get('gateway_mac') or b_host.get('gateway_mac'))),
         ('Windows IP forwarding OFF', host.get('ip_forwarding_on') is not True),
     ]
+    if stack.get('sample_window_ok') is False:
+        checks.append(('Sample caught cut while still ON', False))
+    else:
+        checks.append(('Sample caught cut while still ON', stack.get('sample_window_ok') is not False))
     if use_wd:
         checks.extend(
             [
@@ -455,6 +521,8 @@ def _full_cut_checklist(
         )
     ipv6 = int((sample or {}).get('ipv6') or 0)
     checks.append(('No strong IPv6 bypass signal', ipv6 <= 8))
+    evidence = _cut_evidence(stack, sample)
+    checks.append(('Live cut evidence (drops / attracted traffic / poison ARP)', evidence))
     lines = ['--- FULL CUT DEEP DIVE ---']
     for label, ok in checks:
         lines.append(f'[{"PASS" if ok else "FAIL"}] {label}')
@@ -465,6 +533,23 @@ def _full_cut_checklist(
         else '[RESULT] Deep dive: NOT a full cut (partial / incomplete / not proven)'
     )
     return lines
+
+
+def _cut_evidence(stack: dict, sample: dict) -> bool:
+    """True when we have proof traffic hit the cut path (not just flags armed)."""
+    if int(stack.get('fwd_packets_dropped') or 0) > 0:
+        return True
+    if int(stack.get('fwd_packets_seen') or 0) > 0:
+        return True
+    if int((sample or {}).get('victim_to_us') or 0) > 0:
+        return True
+    if int((sample or {}).get('poison_arp_seen') or 0) > 0:
+        return True
+    if int((sample or {}).get('ipv4') or 0) > 0:
+        return True
+    if int((sample or {}).get('arp_victim') or 0) > 0:
+        return True
+    return False
 
 
 def _eval_before(ps: Optional[PhaseSample]) -> PhaseResult:
@@ -552,7 +637,17 @@ def _eval_during_full_cut(
     if victim_on_lan is not True:
         fails.append('victim on-LAN not confirmed during cut (ping/ARP)')
 
+    # Missed sample window (Dupe too short / OFF before DURING settled).
+    if expect_full_cut and stack.get('sample_window_ok') is False:
+        fails.append(
+            'DURING sample started after the cut already turned OFF — increase hold/Dupe '
+            'duration to at least 8000 ms (5s is often too short once arm + settle + sniff run)'
+        )
+        verdict = 'INCONCLUSIVE'
+        return PhaseResult(PHASE_DURING, False, fails, notes), verdict
+
     use_wd = bool(stack.get('use_windivert'))
+    evidence = _cut_evidence(stack, sample)
     if use_wd:
         if not stack.get('windivert_running'):
             fails.append('WinDivert gate not running')
@@ -561,8 +656,15 @@ def _eval_during_full_cut(
             fails.append('WinDivert running but not paused/blocked (not a full cut)')
             verdict = 'PARTIAL'
         elif expect_full_cut:
-            notes.append('WinDivert pause armed')
-            verdict = 'FULL CUT'
+            if not evidence:
+                fails.append(
+                    'WinDivert pause armed but no cut evidence (no victim traffic in sample) — '
+                    'keep the console online/active and use ≥8000 ms Dupe/hold for Analysis'
+                )
+                verdict = 'INCONCLUSIVE'
+            else:
+                notes.append('WinDivert pause armed + traffic evidence')
+                verdict = 'FULL CUT'
         else:
             notes.append('Percent Cut / shaping path (not full offline)')
             verdict = 'PARTIAL'
@@ -579,7 +681,7 @@ def _eval_during_full_cut(
                 verdict = 'NOT CUT'
             else:
                 notes.append(
-                    f'Percent Cut armed ({int(cut_pct) if cut_pct is not None else "?"}% cut) '
+                    f'Percent Cut / Lag armed ({int(cut_pct) if cut_pct is not None else "?"}% cut) '
                     '— not a full offline / red-chain cut'
                 )
                 verdict = 'PARTIAL'
@@ -603,29 +705,55 @@ def _eval_during_full_cut(
             if sample.get('ok') and int(sample.get('ipv6') or 0) > 8:
                 fails.append('notable IPv6 during cut — possible bypass of IPv4 MITM')
                 verdict = 'PARTIAL'
+            # Attraction gap: BEFORE had traffic, DURING saw none, and forwarder also
+            # saw nothing — poison likely failed to pull traffic to this PC.
             if (
                 b_sample.get('ok')
                 and sample.get('ok')
                 and int(b_sample.get('ipv4') or 0) > 0
-                and int(sample.get('ipv4') or 0) == 0
-                and int(sample.get('arp_victim') or 0) == 0
+                and not evidence
             ):
                 fails.append(
-                    'BEFORE saw victim IPv4 but DURING saw none — traffic not attracted '
-                    'to this PC (or console went idle)'
+                    'BEFORE saw victim IPv4 but DURING has no cut evidence '
+                    '(no attracted traffic / forwarder drops / poison ARP) — '
+                    'traffic not pulled to this PC, or console went idle'
                 )
-                if verdict == 'INCONCLUSIVE' or verdict == 'FULL CUT':
-                    verdict = 'INCONCLUSIVE'
+                if verdict in ('INCONCLUSIVE', 'FULL CUT', 'PARTIAL'):
+                    verdict = 'INCONCLUSIVE' if verdict != 'PARTIAL' else verdict
+            elif not evidence and stack.get('mitm_armed') and stack.get('forwarder_running'):
+                fails.append(
+                    'Cut stack armed but no live evidence (forwarder seen/dropped=0 and '
+                    'no victim traffic/poison ARP in sample) — not proven. Keep the console '
+                    'active (not Rest Mode) and use ≥8000 ms for Analysis'
+                )
+                verdict = 'INCONCLUSIVE'
+
+            fwd_leaks = int(stack.get('fwd_packets_forwarded') or 0)
+            fwd_drops = int(stack.get('fwd_packets_dropped') or 0)
+            if (
+                stack.get('forwarder_hard_drop')
+                and fwd_leaks > 0
+                and fwd_drops == 0
+                and fwd_leaks >= 3
+            ):
+                fails.append(
+                    f'forwarder forwarded {fwd_leaks} packets with 0 drops while hard-drop '
+                    'claimed — PARTIAL leak'
+                )
+                verdict = 'PARTIAL'
 
             if not fails and stack.get('mitm_armed') and stack.get('forwarder_running') and stack.get(
                 'forwarder_hard_drop'
-            ):
+            ) and evidence:
                 verdict = 'FULL CUT'
-                notes.append('MITM armed + hard-drop forwarder + forwarding off/ok + victim on LAN')
+                notes.append(
+                    'MITM armed + hard-drop forwarder + forwarding off/ok + victim on LAN '
+                    '+ live cut evidence'
+                )
             elif not fails and verdict == 'INCONCLUSIVE':
                 fails.append('full-cut checklist incomplete')
             elif fails and verdict == 'INCONCLUSIVE':
-                verdict = 'PARTIAL'
+                pass  # keep INCONCLUSIVE (not proven) rather than forcing PARTIAL
 
     # Any DURING failure means the cut did not fully work.
     passed = (verdict == 'FULL CUT') if expect_full_cut else (verdict in ('PARTIAL', 'FULL CUT') and not any(
@@ -642,6 +770,7 @@ def _eval_after(ps: Optional[PhaseSample]) -> PhaseResult:
     if ps is None:
         return PhaseResult(PHASE_AFTER, False, ['AFTER phase missing'])
     stack = ps.stack or {}
+    host = ps.host or {}
     fails: List[str] = []
     notes: List[str] = []
     if stack.get('use_windivert'):
@@ -658,6 +787,13 @@ def _eval_after(ps: Optional[PhaseSample]) -> PhaseResult:
             fails.append('Npcap forwarder still running after OFF')
         else:
             notes.append('forwarder cleared')
+    # Hard-drop flags left set after OFF is a restore leak (even if forwarder thread stopped).
+    if stack.get('forwarder_hard_drop'):
+        fails.append('forwarder still in hard-drop mode after OFF')
+    if host.get('victim_on_lan') is False:
+        notes.append(
+            'victim not on LAN after OFF — may still be waking; not scored as cut failure alone'
+        )
     return PhaseResult(PHASE_AFTER, not fails, fails, notes)
 
 
@@ -790,10 +926,12 @@ def score_phases(
         lines.append(f'  - {r}')
     lines.append('')
     lines.append('Full-cut requirements (DURING):')
+    lines.append('  sample window still ON (Dupe/hold ≥8000 ms recommended for Analysis)')
     lines.append('  victim on LAN (ping/ARP/MAC match)')
     lines.append('  ARP MITM armed (or WinDivert pause on hotspot)')
     lines.append('  Npcap forwarder running in hard-drop 0% (red chain)')
     lines.append('  Windows IP forwarding OFF')
+    lines.append('  live evidence: forwarder drops/seen OR attracted victim traffic OR poison ARP')
     lines.append('  no strong IPv6 bypass signal')
     lines.append('  AFTER: MITM/forwarder fully cleared on OFF')
     lines.append('=====================================')

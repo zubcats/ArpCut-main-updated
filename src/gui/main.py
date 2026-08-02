@@ -587,7 +587,7 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         self.dupeSpin.setSuffix(' ms')
         self.dupeSpin.setToolTip(
             'Dupe burst length. Default 5000 ms. '
-            'With Logs → Analysis ON, keep ≥ 5000 ms so the DURING cut sample finishes before OFF.'
+            'With Logs → Analysis ON, keep ≥ 8000 ms (5s is often too short for DURING).'
         )
         timing_layout.addRow('Lag duration (one shot)', self.dupeSpin)
         layout.addWidget(self.timing_group)
@@ -1076,7 +1076,7 @@ class ZubCutApp(
         self.btnDupe.setToolTip(
             'Dupe — one-shot lag for a set duration, then full stop. '
             'Duration/direction controls are always visible below. Shortcut: P. '
-            'With Logs → Analysis ON, use at least 5000 ms (5s) for a clear DURING sample.'
+            'With Logs → Analysis ON, use at least 8000 ms (8s); 5s is often too short for DURING.'
         )
         self.btnDupe.pressed.connect(lambda: self._shortcut_global_dupe(from_button=True))
 
@@ -1161,7 +1161,7 @@ class ZubCutApp(
         self.dupeSpinMain.setSuffix(' ms')
         self.dupeSpinMain.setToolTip(
             'Dupe burst length. Default 5000 ms. '
-            'With Logs → Analysis ON, keep ≥ 5000 ms so the DURING cut sample finishes before OFF.'
+            'With Logs → Analysis ON, keep ≥ 8000 ms (5s is often too short for DURING).'
         )
         self.dupeTimingRow.addWidget(self.dupeSpinMain)
         self.groupDupeInlineLayout.addLayout(self.dupeTimingRow)

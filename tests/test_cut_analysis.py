@@ -40,7 +40,7 @@ def _live_host(**extra):
     return ca.collect_host_health(**base)
 
 
-def _sample(ipv4=8, arp_victim=1, ipv6=0):
+def _sample(ipv4=8, arp_victim=1, ipv6=0, poison_arp_seen=0, victim_to_us=0):
     return {
         'ok': True,
         'error': '',
@@ -48,6 +48,8 @@ def _sample(ipv4=8, arp_victim=1, ipv6=0):
         'ipv6': ipv6,
         'arp': max(1, arp_victim),
         'arp_victim': arp_victim,
+        'poison_arp_seen': poison_arp_seen,
+        'victim_to_us': victim_to_us,
         'total': ipv4 + ipv6 + 2,
         'seconds': 2.0,
     }
@@ -67,6 +69,10 @@ class TestCutAnalysisScoring(unittest.TestCase):
                 mitm_armed=True,
                 forwarder_running=True,
                 forwarder_hard_drop=True,
+                fwd_packets_seen=20,
+                fwd_packets_dropped=20,
+                fwd_packets_forwarded=0,
+                sample_window_ok=True,
             ),
         )
         after = ca.PhaseSample(
@@ -98,6 +104,75 @@ class TestCutAnalysisScoring(unittest.TestCase):
         self.assertIn('THIS SECTION: PASSED', blob)
         self.assertIn('FULL CUT DEEP DIVE', blob)
         self.assertIn('Deep dive: FULL CUT proven', blob)
+        self.assertIn('Live cut evidence', blob)
+
+    def test_armed_without_evidence_is_inconclusive_fail(self) -> None:
+        from tools import cut_analysis as ca
+
+        host = _live_host()
+        report = ca.score_phases(
+            flow='Kill',
+            victim_ip='192.168.1.50',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            expect_full_cut=True,
+            before=ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(ipv4=0), host=host),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(ipv4=0, arp_victim=0),
+                host=host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=True,
+                    forwarder_running=True,
+                    forwarder_hard_drop=True,
+                    fwd_packets_seen=0,
+                    fwd_packets_dropped=0,
+                    fwd_packets_forwarded=0,
+                    sample_window_ok=True,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=0),
+                host=host,
+                stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
+            ),
+        )
+        self.assertEqual(report.verdict, 'INCONCLUSIVE')
+        self.assertEqual(report.overall, 'FAIL')
+        self.assertIn('no live evidence', '\n'.join(report.lines).lower())
+
+    def test_missed_sample_window_fails(self) -> None:
+        from tools import cut_analysis as ca
+
+        host = _live_host()
+        report = ca.score_phases(
+            flow='Dupe',
+            victim_ip='192.168.1.50',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            expect_full_cut=True,
+            before=ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(), host=host),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(ipv4=0, arp_victim=0),
+                host=host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=False,
+                    forwarder_running=False,
+                    forwarder_hard_drop=False,
+                    sample_window_ok=False,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=0),
+                host=host,
+                stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
+            ),
+        )
+        self.assertEqual(report.overall, 'FAIL')
+        blob = '\n'.join(report.lines)
+        self.assertIn('8000 ms', blob)
+        self.assertIn('already turned OFF', blob)
 
     def test_forwarder_missing_is_fail_partial(self) -> None:
         from tools import cut_analysis as ca
@@ -348,8 +423,9 @@ class TestCutAnalysisWiring(unittest.TestCase):
         self.assertIn('BEFORE', src)
         self.assertIn('DURING', src)
         self.assertIn('AFTER', src)
-        self.assertIn('5000 ms', src)
-        self.assertIn('5s', src)
+        self.assertIn('8000 ms', src)
+        self.assertIn('8s', src)
+        self.assertIn('5000 ms', src)  # still warns that 5s is often too short
 
     def test_save_report_uses_zubcut_diagnostics_folder(self) -> None:
         from tools import cut_analysis as ca

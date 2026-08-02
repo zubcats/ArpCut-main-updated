@@ -150,7 +150,8 @@ class ImpairmentMitmMixin:
         if on:
             self.log(
                 'Analysis ON — baselines the selected victim, then checks DURING cut and '
-                'AFTER restore for Kill / Lag / Dupe / Percent Cut (does not slow instant cut).',
+                'AFTER restore for Kill / Lag / Dupe / Percent Cut (does not slow instant cut). '
+                'For Dupe Analysis use ≥8000 ms (5s is often too short).',
                 UI_LOG_VICTIM_BLOCK_FG,
             )
             self._ensure_cut_analysis_baseline_timer(True)
@@ -246,7 +247,9 @@ class ImpairmentMitmMixin:
             selected_victim_mac=vmac,
         )
 
-    def _gather_cut_analysis_stack(self, device, *, cut_pct: int | None = None) -> dict:
+    def _gather_cut_analysis_stack(
+        self, device, *, cut_pct: int | None = None, sample_window_ok: bool | None = None
+    ) -> dict:
         from tools.cut_analysis import collect_stack_state
 
         mac = str((device or {}).get('mac') or '').strip() if isinstance(device, dict) else ''
@@ -285,6 +288,16 @@ class ImpairmentMitmMixin:
                 )
             except Exception:
                 fw_hard = False
+        seen = dropped = forwarded = None
+        if mac:
+            try:
+                stats = self.killer.get_forwarder_stats(mac) or {}
+                if stats:
+                    seen = int(stats.get('packets_seen') or 0)
+                    dropped = int(stats.get('packets_dropped') or 0)
+                    forwarded = int(stats.get('packets_forwarded') or 0)
+            except Exception:
+                pass
         return collect_stack_state(
             mitm_armed=mitm_armed,
             forwarder_running=fw_running,
@@ -293,6 +306,10 @@ class ImpairmentMitmMixin:
             windivert_running=wd_running,
             windivert_paused=wd_paused,
             cut_pct=cut_pct,
+            fwd_packets_seen=seen,
+            fwd_packets_dropped=dropped,
+            fwd_packets_forwarded=forwarded,
+            sample_window_ok=sample_window_ok,
         )
 
     def _refresh_cut_analysis_baseline(self, *, force: bool = False) -> None:
@@ -445,7 +462,9 @@ class ImpairmentMitmMixin:
         def _work() -> None:
             import time as _time
 
-            _time.sleep(1.0)
+            # Short settle so poison/forwarder exist, but stay inside Dupe/hold window.
+            # (1.0s sleep + 2.0s sniff often overran 5s Dupe once arm latency is included.)
+            _time.sleep(0.35)
             live = getattr(self, '_cut_analysis_session', None)
             if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
                 return
@@ -455,16 +474,64 @@ class ImpairmentMitmMixin:
 
             iface = getattr(self.scanner, 'iface', None)
             guid = str(getattr(iface, 'guid', None) or '').strip()
+            local_mac = str(getattr(iface, 'mac', None) or '').strip()
             ip = str(dev.get('ip') or '').strip()
+            mac = str(dev.get('mac') or live.get('mac') or '').strip()
+            # Snapshot stack WHILE cut should still be ON (before long sniff).
+            still_on = bool(mac and mac in getattr(self.killer, 'killed', {}))
+            if not still_on:
+                try:
+                    still_on = bool(
+                        getattr(self, 'dupe_active', False)
+                        or getattr(self, 'lag_active', False)
+                        or getattr(self, 'percent_cut_active', False)
+                        or (
+                            callable(getattr(self, '_has_explicit_kill_active', None))
+                            and bool(self._has_explicit_kill_active())
+                        )
+                    )
+                except Exception:
+                    still_on = False
             host = self._gather_cut_analysis_host(dev)
-            stack = self._gather_cut_analysis_stack(dev, cut_pct=pct)
-            sample = _sniff_cut_sample(guid, ip, seconds=2.0)
+            stack = self._gather_cut_analysis_stack(
+                dev, cut_pct=pct, sample_window_ok=still_on
+            )
+            gw_ip = str(host.get('gateway_ip') or '')
+            sample = _sniff_cut_sample(
+                guid,
+                ip,
+                seconds=2.0,
+                local_mac=local_mac,
+                gateway_ip=gw_ip,
+            )
+            # Refresh forwarder counters after sniff if still armed.
+            if mac and mac in getattr(self.killer, 'killed', {}):
+                try:
+                    stack2 = self._gather_cut_analysis_stack(
+                        dev, cut_pct=pct, sample_window_ok=True
+                    )
+                    for key in (
+                        'fwd_packets_seen',
+                        'fwd_packets_dropped',
+                        'fwd_packets_forwarded',
+                        'forwarder_running',
+                        'forwarder_hard_drop',
+                        'mitm_armed',
+                    ):
+                        if stack2.get(key) is not None:
+                            stack[key] = stack2.get(key)
+                except Exception:
+                    pass
             during = PhaseSample(
                 phase=PHASE_DURING,
                 sample=sample,
                 host=host,
                 stack=stack,
-                note='cut armed (post-instant)',
+                note=(
+                    'cut armed (post-instant)'
+                    if still_on
+                    else 'sample window missed — cut already OFF (use ≥8000 ms for Analysis)'
+                ),
             )
             live = getattr(self, '_cut_analysis_session', None)
             if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
@@ -518,10 +585,17 @@ class ImpairmentMitmMixin:
 
             iface = getattr(self.scanner, 'iface', None)
             guid = str(getattr(iface, 'guid', None) or '').strip()
+            local_mac = str(getattr(iface, 'mac', None) or '').strip()
             ip = str(dev.get('ip') or live.get('ip') or '').strip()
             host = self._gather_cut_analysis_host(dev)
             stack = self._gather_cut_analysis_stack(dev, cut_pct=pct)
-            sample = _sniff_cut_sample(guid, ip, seconds=1.8)
+            sample = _sniff_cut_sample(
+                guid,
+                ip,
+                seconds=1.8,
+                local_mac=local_mac,
+                gateway_ip=str(host.get('gateway_ip') or ''),
+            )
             after = PhaseSample(
                 phase=PHASE_AFTER,
                 sample=sample,

@@ -157,9 +157,10 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
             'cut after arm; AFTER checks restore when you turn OFF. Also verifies ZubCut '
             'host health (adapter, gateway MAC, Npcap L2, IP forwarding, ARP).\n\n'
             'For a clear Dupe Analysis: leave Analysis ON a few seconds, then set Dupe '
-            'duration to at least 5000 ms (5s) so the DURING sample finishes before Dupe '
-            'turns OFF. Shorter bursts still get an AFTER check, but DURING may be rushed.\n\n'
-            'Verdict: FULL CUT / PARTIAL / NOT CUT. Does not delay instant cut. '
+            'duration to at least 8000 ms (8s). 5000 ms (5s) is often too short once arm + '
+            'settle + sniff run — DURING can miss the cut window and falsely FAIL.\n\n'
+            'Overall SUCCESS only when BEFORE/DURING/AFTER pass and a full cut is proven '
+            '(MITM + hard-drop + live drop/traffic evidence). Does not delay instant cut. '
             'One report at the end with BEFORE + DURING + AFTER in '
             'Desktop\\ZubCut Diagnostics\\ZubCut-Analysis-*.txt (opens in Notepad).'
         )
