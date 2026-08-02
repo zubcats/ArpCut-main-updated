@@ -159,8 +159,10 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
             'For a clear Dupe Analysis: leave Analysis ON a few seconds, then set Dupe '
             'duration to at least 8000 ms (8s). 5000 ms (5s) is often too short once arm + '
             'settle + sniff run — DURING can miss the cut window and falsely FAIL.\n\n'
-            'Overall SUCCESS only when BEFORE/DURING/AFTER pass and a full cut is proven '
-            '(MITM + hard-drop + live drop/traffic evidence). Does not delay instant cut. '
+            'Overall SUCCESS only when the *victim* WAN path is severed: console still '
+            'visible on LAN (not ZubCut hiding its own view), MITM+hard-drop, victim WAN '
+            'attempts hitting this PC / forwarder drops, and no gateway bypass. '
+            'Poison ARP alone or lost ping is not enough. Does not delay instant cut. '
             'One report at the end with BEFORE + DURING + AFTER in '
             'Desktop\\ZubCut Diagnostics\\ZubCut-Analysis-*.txt (opens in Notepad).'
         )
