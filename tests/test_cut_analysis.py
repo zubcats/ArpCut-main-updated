@@ -279,6 +279,39 @@ class TestCutAnalysisWiring(unittest.TestCase):
         self.assertIn('5000 ms', src)
         self.assertIn('5s', src)
 
+    def test_save_report_uses_zubcut_diagnostics_folder(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from tools import cut_analysis as ca
+        from tools import diag_paths as dp
+        from tools.diag_paths import DIAGNOSTICS_FOLDER_NAME
+
+        report = ca.CutAnalysisReport(
+            flow='Dupe',
+            verdict='FULL CUT',
+            victim_ip='192.168.1.50',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            lines=['======== ZubCut Cut Analysis ========', '>>> VERDICT: FULL CUT'],
+        )
+        fake_dir = Path(tempfile.mkdtemp(prefix='zubcut-analysis-')) / DIAGNOSTICS_FOLDER_NAME
+
+        def _ensure():
+            fake_dir.mkdir(parents=True, exist_ok=True)
+            return fake_dir
+
+        with mock.patch.object(dp, 'ensure_zubcut_diagnostics_dir', side_effect=_ensure):
+            with mock.patch.object(ca, '_open_analysis_report') as open_np:
+                path = ca.save_cut_analysis_report(report, open_report=True)
+        self.assertIsNotNone(path)
+        self.assertEqual(path.parent.name, DIAGNOSTICS_FOLDER_NAME)
+        self.assertTrue(str(path.name).startswith('ZubCut-Analysis-'))
+        self.assertTrue(path.is_file())
+        text = path.read_text(encoding='utf-8')
+        self.assertIn('Saved to:', text)
+        self.assertIn(DIAGNOSTICS_FOLDER_NAME, text)
+        open_np.assert_called_once()
+
     def test_analysis_button_qss_no_qdark_blue(self) -> None:
         path = os.path.join(_SRC, 'tools', 'utils_gui.py')
         with open(path, encoding='utf-8') as f:
