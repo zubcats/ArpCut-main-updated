@@ -40,7 +40,17 @@ def _live_host(**extra):
     return ca.collect_host_health(**base)
 
 
-def _sample(ipv4=8, arp_victim=1, ipv6=0, poison_arp_seen=0, victim_to_us=0):
+def _sample(
+    ipv4=8,
+    arp_victim=1,
+    ipv6=0,
+    poison_arp_seen=0,
+    victim_to_us=0,
+    victim_wan_out_to_us=0,
+    victim_wan_bypass_gw=0,
+    wan_return_bypass=0,
+    victim_lan_ipv4=0,
+):
     return {
         'ok': True,
         'error': '',
@@ -50,9 +60,25 @@ def _sample(ipv4=8, arp_victim=1, ipv6=0, poison_arp_seen=0, victim_to_us=0):
         'arp_victim': arp_victim,
         'poison_arp_seen': poison_arp_seen,
         'victim_to_us': victim_to_us,
+        'victim_wan_out_to_us': victim_wan_out_to_us,
+        'victim_wan_bypass_gw': victim_wan_bypass_gw,
+        'wan_return_bypass': wan_return_bypass,
+        'victim_lan_ipv4': victim_lan_ipv4,
         'total': ipv4 + ipv6 + 2,
         'seconds': 2.0,
     }
+
+
+class TestLanWanHelpers(unittest.TestCase):
+    def test_wan_vs_lan_classification(self) -> None:
+        from tools.cut_analysis import _is_lan_ipv4, _is_wan_ipv4
+
+        self.assertTrue(_is_lan_ipv4('192.168.1.50'))
+        self.assertTrue(_is_lan_ipv4('10.0.0.2'))
+        self.assertTrue(_is_lan_ipv4('172.16.5.1'))
+        self.assertFalse(_is_wan_ipv4('192.168.1.50'))
+        self.assertTrue(_is_wan_ipv4('1.1.1.1'))
+        self.assertTrue(_is_wan_ipv4('8.8.8.8'))
 
 
 class TestCutAnalysisScoring(unittest.TestCase):
@@ -63,7 +89,13 @@ class TestCutAnalysisScoring(unittest.TestCase):
         before = ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(), host=host)
         during = ca.PhaseSample(
             phase=ca.PHASE_DURING,
-            sample=_sample(ipv4=12),
+            sample=_sample(
+                ipv4=12,
+                victim_wan_out_to_us=10,
+                victim_to_us=12,
+                victim_wan_bypass_gw=0,
+                wan_return_bypass=0,
+            ),
             host=host,
             stack=ca.collect_stack_state(
                 mitm_armed=True,
@@ -102,9 +134,91 @@ class TestCutAnalysisScoring(unittest.TestCase):
         self.assertIn('DURING  >>>  PASS', blob)
         self.assertIn('AFTER  >>>  PASS', blob)
         self.assertIn('THIS SECTION: PASSED', blob)
-        self.assertIn('FULL CUT DEEP DIVE', blob)
-        self.assertIn('Deep dive: FULL CUT proven', blob)
-        self.assertIn('Live cut evidence', blob)
+        self.assertIn('FULL CUT DEEP DIVE (victim path)', blob)
+        self.assertIn('victim connection FULLY SEVERED', blob)
+        self.assertIn('Victim WAN path severed', blob)
+        self.assertIn('not ZubCut blocking its own view', blob)
+
+    def test_wan_bypass_is_partial_fail_even_if_stack_armed(self) -> None:
+        from tools import cut_analysis as ca
+
+        host = _live_host()
+        report = ca.score_phases(
+            flow='Kill',
+            victim_ip='192.168.1.50',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            expect_full_cut=True,
+            before=ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(), host=host),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(
+                    ipv4=10,
+                    victim_wan_out_to_us=0,
+                    victim_wan_bypass_gw=8,
+                    wan_return_bypass=2,
+                ),
+                host=host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=True,
+                    forwarder_running=True,
+                    forwarder_hard_drop=True,
+                    fwd_packets_seen=0,
+                    fwd_packets_dropped=0,
+                    sample_window_ok=True,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=0),
+                host=host,
+                stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
+            ),
+        )
+        self.assertEqual(report.verdict, 'PARTIAL')
+        self.assertEqual(report.overall, 'FAIL')
+        blob = '\n'.join(report.lines)
+        self.assertIn('NOT severed', blob)
+        self.assertIn('bypass', blob.lower())
+
+    def test_poison_arp_alone_is_not_victim_severance(self) -> None:
+        from tools import cut_analysis as ca
+
+        host = _live_host()
+        report = ca.score_phases(
+            flow='Kill',
+            victim_ip='192.168.1.50',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            expect_full_cut=True,
+            before=ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(ipv4=0), host=host),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(
+                    ipv4=0,
+                    arp_victim=2,
+                    poison_arp_seen=5,
+                    victim_wan_out_to_us=0,
+                    victim_to_us=0,
+                ),
+                host=host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=True,
+                    forwarder_running=True,
+                    forwarder_hard_drop=True,
+                    fwd_packets_seen=0,
+                    fwd_packets_dropped=0,
+                    sample_window_ok=True,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=0),
+                host=host,
+                stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
+            ),
+        )
+        self.assertEqual(report.verdict, 'INCONCLUSIVE')
+        self.assertEqual(report.overall, 'FAIL')
+        self.assertIn('poison ARP alone', '\n'.join(report.lines))
 
     def test_armed_without_evidence_is_inconclusive_fail(self) -> None:
         from tools import cut_analysis as ca
@@ -139,7 +253,7 @@ class TestCutAnalysisScoring(unittest.TestCase):
         )
         self.assertEqual(report.verdict, 'INCONCLUSIVE')
         self.assertEqual(report.overall, 'FAIL')
-        self.assertIn('no live evidence', '\n'.join(report.lines).lower())
+        self.assertIn('not proven severed', '\n'.join(report.lines).lower())
 
     def test_missed_sample_window_fails(self) -> None:
         from tools import cut_analysis as ca
@@ -207,8 +321,7 @@ class TestCutAnalysisScoring(unittest.TestCase):
         self.assertIn('OVERALL RESULT:  FAIL', blob)
         self.assertIn('DURING  >>>  FAIL', blob)
         self.assertIn('THIS SECTION: FAILED', blob)
-        self.assertIn('cut DID NOT fully work', blob)
-        self.assertIn('Deep dive: NOT a full cut', blob)
+        self.assertIn('NOT proven severed', blob)
         self.assertIn('forwarder', blob.lower())
 
     def test_stale_offline_victim_is_fail(self) -> None:

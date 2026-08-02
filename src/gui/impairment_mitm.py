@@ -357,7 +357,16 @@ class ImpairmentMitmMixin:
         def _work() -> None:
             from tools.cut_analysis import PHASE_BEFORE, PhaseSample, _sniff_cut_sample
 
-            sample = _sniff_cut_sample(guid, ip, seconds=1.2)
+            iface_now = getattr(self.scanner, 'iface', None)
+            sample = _sniff_cut_sample(
+                guid,
+                ip,
+                seconds=1.2,
+                local_mac=str(getattr(iface_now, 'mac', None) or ''),
+                gateway_ip=str(host_snap.get('gateway_ip') or ''),
+                gateway_mac=str(host_snap.get('gateway_mac') or ''),
+                victim_mac=mac,
+            )
             if int(getattr(self, '_cut_analysis_baseline_gen', 0)) != gen:
                 return
             if getattr(self, '_cut_analysis_session', None):
@@ -497,12 +506,15 @@ class ImpairmentMitmMixin:
                 dev, cut_pct=pct, sample_window_ok=still_on
             )
             gw_ip = str(host.get('gateway_ip') or '')
+            gw_mac = str(host.get('gateway_mac') or '')
             sample = _sniff_cut_sample(
                 guid,
                 ip,
                 seconds=2.0,
                 local_mac=local_mac,
                 gateway_ip=gw_ip,
+                gateway_mac=gw_mac,
+                victim_mac=mac,
             )
             # Refresh forwarder counters after sniff if still armed.
             if mac and mac in getattr(self.killer, 'killed', {}):
@@ -595,6 +607,8 @@ class ImpairmentMitmMixin:
                 seconds=1.8,
                 local_mac=local_mac,
                 gateway_ip=str(host.get('gateway_ip') or ''),
+                gateway_mac=str(host.get('gateway_mac') or ''),
+                victim_mac=str(dev.get('mac') or live.get('mac') or ''),
             )
             after = PhaseSample(
                 phase=PHASE_AFTER,
