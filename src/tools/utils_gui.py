@@ -792,7 +792,8 @@ QMainWindow#zubcutAuxiliaryWindow QLabel#logsDiagHeading {{
     background-color: transparent;
     font-weight: 600;
 }}
-QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn {{
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn,
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagAnalysisBtn {{
     background-color: #2b2b2b;
     color: {tx};
     border: 1px solid {bd};
@@ -800,13 +801,25 @@ QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn {{
     padding: 6px 12px;
     min-height: 24px;
 }}
-QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn:hover {{
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn:hover,
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagAnalysisBtn:hover {{
     background-color: #3d3d3d;
     border: 1px solid {sel_bg};
 }}
-QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn:pressed {{
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn:pressed,
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagAnalysisBtn:pressed {{
     background-color: {sel_bg};
     color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagAnalysisBtn:checked {{
+    background-color: {sel_bg};
+    color: {sel_fg};
+    border: 1px solid {sel_bg};
+    font-weight: 600;
+}}
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagAnalysisBtn:checked:hover {{
+    background-color: {sel_bg};
+    border: 1px solid {tx};
 }}
 """
 

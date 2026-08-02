@@ -358,6 +358,10 @@ class ImpairmentKillMixin:
         src = source
         if on:
             try:
+                self._begin_cut_analysis_session(dev, flow='Kill')
+            except Exception:
+                pass
+            try:
                 plan = self._impairment_plan_for(dev)
                 if clumsy_mode_enabled() and plan.is_ics_downstream:
                     dev = self._prepare_victim_for_impairment(dev, fast=True)
@@ -500,6 +504,7 @@ class ImpairmentKillMixin:
                         _mark('windivert_done')
                         if kill_applied:
                             self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                            self._schedule_cut_analysis_if_enabled(device, flow='Kill')
                         elif turn_on:
                             self._ics_emergency_release(device, heal=False)
                             ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
@@ -541,6 +546,7 @@ class ImpairmentKillMixin:
                             'Kill ON for ' + str(device.get('ip') or ''),
                             UI_LOG_VICTIM_BLOCK_FG,
                         )
+                        self._schedule_mitm_traffic_probe(device, flow='Kill')
                     else:
                         _mark('lan_start')
                         self._reconcile_network_adapter(log=True)
@@ -662,6 +668,10 @@ class ImpairmentKillMixin:
                     # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
                     self._schedule_kill_off_reinforce(mac, my_seq, 25)
                     self._schedule_kill_off_reinforce(mac, my_seq, 100)
+                    try:
+                        self._schedule_cut_analysis_after_off(victim, flow='Kill')
+                    except Exception:
+                        pass
 
             if turn_on and kill_applied and _superseded():
                 try:

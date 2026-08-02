@@ -135,6 +135,10 @@ class ImpairmentLagMixin:
 
         self._lag_ics_preblocked = False
         self._lag_lan_preblocked = False
+        try:
+            self._begin_cut_analysis_session(snap, flow='Lag')
+        except Exception:
+            pass
         preblocked = False
         try:
             preblocked = bool(self._lag_instant_preblock(snap))
@@ -264,6 +268,7 @@ class ImpairmentLagMixin:
                 self._lag_phase_begin_block(cur)
             else:
                 self._schedule_lag_start_reassert(work_mac)
+            self._schedule_cut_analysis_if_enabled(cur or work_snap, flow='Lag')
             self._refresh_flow_toggle_ui(fast=True)
             self._repaint_device_table_rows(cur)
 
@@ -740,6 +745,10 @@ class ImpairmentLagMixin:
                     app_log('lag_release_stack_failed', mac=str(prev_mac or ''), exc_info=True)
                 except Exception:
                     pass
+            try:
+                self._schedule_cut_analysis_after_off(device, flow='Lag')
+            except Exception:
+                pass
 
         self.lag_active = False
         self.lag_device_mac = None

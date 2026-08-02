@@ -947,6 +947,12 @@ class ZubCutApp(
         self._dupe_net_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='dupe_net')
         self._dupe_end_mono = None  # wall deadline for countdown (set when block_ip finishes)
         self._mitm_probe_retried_macs: set[str] = set()
+        self._cut_analysis_enabled = False
+        self._cut_analysis_gen = 0
+        self._cut_analysis_baseline_gen = 0
+        self._cut_analysis_baseline = None
+        self._cut_analysis_session = None
+        self._cut_analysis_baseline_timer = None
         self._idle_mitm_reconcile_timer = QTimer(self)
         self._idle_mitm_reconcile_timer.setInterval(20000)
         self._idle_mitm_reconcile_timer.timeout.connect(
@@ -1065,7 +1071,8 @@ class ZubCutApp(
         self.btnDupe.setFont(dupe_font)
         self.btnDupe.setToolTip(
             'Dupe — one-shot lag for a set duration, then full stop. '
-            'Duration/direction controls are always visible below. Shortcut: P.'
+            'Duration/direction controls are always visible below. Shortcut: P. '
+            'With Logs → Analysis ON, use at least 5000 ms (5s) for a clear DURING sample.'
         )
         self.btnDupe.pressed.connect(lambda: self._shortcut_global_dupe(from_button=True))
 
@@ -1148,6 +1155,10 @@ class ZubCutApp(
         self.dupeSpinMain.setSingleStep(100)
         self.dupeSpinMain.setValue(5000)
         self.dupeSpinMain.setSuffix(' ms')
+        self.dupeSpinMain.setToolTip(
+            'Dupe burst length. Default 5000 ms. '
+            'With Logs → Analysis ON, keep ≥ 5000 ms so the DURING cut sample finishes before OFF.'
+        )
         self.dupeTimingRow.addWidget(self.dupeSpinMain)
         self.groupDupeInlineLayout.addLayout(self.dupeTimingRow)
         self.dupeDirRow = QHBoxLayout()
