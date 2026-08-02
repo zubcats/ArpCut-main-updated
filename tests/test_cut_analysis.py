@@ -309,12 +309,21 @@ class TestCutAnalysisWiring(unittest.TestCase):
         after = method_src('_schedule_cut_analysis_after_off')
         self.assertIn('PHASE_AFTER', after)
 
-    def test_interim_does_not_write_desktop_report(self) -> None:
-        """Only the final AFTER finalize may save ZubCut-Analysis-*.txt."""
-        interim = method_src('_emit_cut_analysis_interim')
-        self.assertNotIn('save_cut_analysis_report', interim)
+    def test_single_final_report_requires_all_phases(self) -> None:
+        """One Desktop file only, after BEFORE+DURING+AFTER are all present."""
+        src = load_main_window_source()
+        self.assertNotIn('def _emit_cut_analysis_interim', src)
         finalize = method_src('_finalize_cut_analysis_session')
+        self.assertIn("live.get('before') is None", finalize)
+        self.assertIn("live.get('during') is None", finalize)
+        self.assertIn("live.get('after') is None", finalize)
         self.assertIn('save_cut_analysis_report(report, open_report=True)', finalize)
+        self.assertIn('report_saved', finalize)
+        after = method_src('_schedule_cut_analysis_after_off')
+        # Must not start a second session after the report was already written.
+        self.assertIn("sess.get('report_saved')", after)
+        during = method_src('_schedule_cut_analysis_if_enabled')
+        self.assertNotIn('save_cut_analysis_report', during)
 
     def test_flows_begin_before_instant_cut(self) -> None:
         kill = method_src('toggleKill')

@@ -411,7 +411,18 @@ def score_phases(
     lines.append(f'Generated: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")}Z')
     lines.append(f'Flow: {flow}')
     lines.append(f'Victim: {victim_ip or "?"} ({victim_mac or "no MAC"})')
-    lines.append('Phases: BEFORE (baseline) → DURING (cut armed) → AFTER (restore)')
+    present = []
+    if before is not None:
+        present.append('BEFORE')
+    if during is not None:
+        present.append('DURING')
+    if after is not None:
+        present.append('AFTER')
+    lines.append(
+        'Phases in this report: '
+        + (' → '.join(present) if present else '(none)')
+        + ' (single end-of-run file)'
+    )
     lines.append('')
 
     phases: Dict[str, PhaseSample] = {}

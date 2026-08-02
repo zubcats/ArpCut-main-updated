@@ -160,8 +160,8 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
             'duration to at least 5000 ms (5s) so the DURING sample finishes before Dupe '
             'turns OFF. Shorter bursts still get an AFTER check, but DURING may be rushed.\n\n'
             'Verdict: FULL CUT / PARTIAL / NOT CUT. Does not delay instant cut. '
-            'Final report saves to Desktop\\ZubCut Diagnostics\\ZubCut-Analysis-*.txt '
-            'and opens in Notepad (same folder as Quick check).'
+            'One report at the end with BEFORE + DURING + AFTER in '
+            'Desktop\\ZubCut Diagnostics\\ZubCut-Analysis-*.txt (opens in Notepad).'
         )
         try:
             self._btn_analysis.setChecked(bool(getattr(app, 'cut_analysis_enabled', lambda: False)()))
