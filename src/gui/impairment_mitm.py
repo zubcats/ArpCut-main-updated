@@ -655,21 +655,51 @@ class ImpairmentMitmMixin:
         if live.get('before') is None or live.get('during') is None or live.get('after') is None:
             return
         live['finalized'] = True
-        from tools.cut_analysis import save_cut_analysis_report, score_phases
+        from tools.cut_analysis import (
+            inactive_victim_skip_reason,
+            save_cut_analysis_report,
+            score_phases,
+        )
 
         flow_s = str(live.get('flow') or 'Cut')
         dev = dict(live.get('device') or {})
         ip = str(live.get('ip') or dev.get('ip') or '').strip()
         mac = str(live.get('mac') or dev.get('mac') or '').strip()
+        before = live.get('before')
+        during = live.get('during')
+        after = live.get('after')
+        skip_reason = inactive_victim_skip_reason(
+            before=before, during=during, after=after, victim_ip=ip
+        )
+        if skip_reason:
+            live['report_saved'] = False
+            live['report_skipped'] = True
+
+            def _on_skip() -> None:
+                self.log(
+                    f'Analysis [{flow_s}]: skipped report — {skip_reason}',
+                    'red',
+                )
+                if getattr(self, '_cut_analysis_session', None) and int(
+                    (self._cut_analysis_session or {}).get('gen') or 0
+                ) == gen:
+                    self._cut_analysis_session = None
+
+            try:
+                QTimer.singleShot(0, _on_skip)
+            except Exception:
+                pass
+            return
+
         try:
             report = score_phases(
                 flow=flow_s,
                 victim_ip=ip,
                 victim_mac=mac,
                 expect_full_cut=self._cut_analysis_expect_full(flow_s),
-                before=live.get('before'),
-                during=live.get('during'),
-                after=live.get('after'),
+                before=before,
+                during=during,
+                after=after,
                 cut_pct=live.get('cut_pct'),
             )
             # Single file: Desktop\ZubCut Diagnostics + Notepad.

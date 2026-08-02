@@ -1205,6 +1205,41 @@ def _open_analysis_report(path: Path) -> None:
         pass
 
 
+def inactive_victim_skip_reason(
+    *,
+    before: Optional[PhaseSample] = None,
+    during: Optional[PhaseSample] = None,
+    after: Optional[PhaseSample] = None,
+    victim_ip: str = '',
+) -> str:
+    """
+    Return a reason to skip Desktop/Notepad when the selected IP is not a live victim.
+
+    Stale rows (e.g. old .248 while the PS5 is on .165) must not produce a report —
+    there is no real cut to analyze on a ghost address.
+    """
+    for ps in (before, during, after):
+        if ps is None:
+            continue
+        host = ps.host or {}
+        if host.get('victim_on_lan') is not False:
+            continue
+        note = str(host.get('victim_liveness_note') or '').strip()
+        live_at = str(host.get('victim_live_ip') or '').strip()
+        sel = str(host.get('selected_victim_ip') or victim_ip or '').strip()
+        if note:
+            return note
+        if live_at and sel and live_at != sel:
+            return (
+                f'{sel} is offline — this device is now at {live_at}. '
+                'Rescan and use that row (no Analysis report).'
+            )
+        if sel:
+            return f'{sel} is not on LAN — no Analysis report (pick the live PS5 IP).'
+        return 'selected victim is not on LAN — no Analysis report'
+    return ''
+
+
 def save_cut_analysis_report(
     report: CutAnalysisReport, *, open_report: bool = False
 ) -> Optional[Path]:
