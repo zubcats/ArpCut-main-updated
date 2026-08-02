@@ -155,7 +155,10 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         self._btn_analysis.setToolTip(
             'When ON: BEFORE baselines the selected victim while idle; DURING checks the '
             'cut after arm; AFTER checks restore when you turn OFF. Also verifies ZubCut '
-            'host health (adapter, gateway MAC, Npcap L2, IP forwarding, ARP). '
+            'host health (adapter, gateway MAC, Npcap L2, IP forwarding, ARP).\n\n'
+            'For a clear Dupe Analysis: leave Analysis ON a few seconds, then set Dupe '
+            'duration to at least 5000 ms (5s) so the DURING sample finishes before Dupe '
+            'turns OFF. Shorter bursts still get an AFTER check, but DURING may be rushed.\n\n'
             'Verdict: FULL CUT / PARTIAL / NOT CUT. Does not delay instant cut. '
             'Saves ZubCut-Analysis-*.txt under Desktop\\ZubCut Diagnostics.'
         )
