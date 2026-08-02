@@ -129,9 +129,10 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         diag_layout.addWidget(diag_heading)
         diag_hint = QLabel(
             'Quick check runs all diagnostics (Npcap/capture, Wi-Fi link, LAN Kill, '
-            'Clumsy hotspot). Turn Analysis ON to deeply verify the next Kill / Lag / '
-            'Dupe / Percent Cut against the selected victim (after arm — does not slow '
-            'instant cut). Reports save to Desktop\\ZubCut Diagnostics.',
+            'Clumsy hotspot). Turn Analysis ON to baseline the selected victim, then '
+            'check DURING the cut and AFTER restore (ZubCut host + victim) for Kill / '
+            'Lag / Dupe / Percent Cut — never delays instant cut. Reports save to '
+            'Desktop\\ZubCut Diagnostics.',
             diag_panel,
         )
         diag_hint.setObjectName('logsDiagHint')
@@ -152,9 +153,10 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         self._btn_analysis.setObjectName('logsDiagAnalysisBtn')
         self._btn_analysis.setCheckable(True)
         self._btn_analysis.setToolTip(
-            'When ON, the next Kill / Lag Switch / Dupe / Percent Cut runs a deep cut '
-            'check on the victim (Npcap sample + MITM/forwarder/WinDivert/IP-forwarding '
-            'state). Verdict: FULL CUT / PARTIAL / NOT CUT. Does not delay the instant cut. '
+            'When ON: BEFORE baselines the selected victim while idle; DURING checks the '
+            'cut after arm; AFTER checks restore when you turn OFF. Also verifies ZubCut '
+            'host health (adapter, gateway MAC, Npcap L2, IP forwarding, ARP). '
+            'Verdict: FULL CUT / PARTIAL / NOT CUT. Does not delay instant cut. '
             'Saves ZubCut-Analysis-*.txt under Desktop\\ZubCut Diagnostics.'
         )
         try:

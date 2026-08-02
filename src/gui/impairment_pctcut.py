@@ -241,6 +241,10 @@ class ImpairmentPctCutMixin:
         # Cut traffic on this click (Lag/Kill/Dupe instant-preblock parity).
         self._pctcut_preapplied = False
         try:
+            self._begin_cut_analysis_session(dict(device), flow='Percent Cut', cut_pct=pct)
+        except Exception:
+            pass
+        try:
             self._pctcut_instant_apply(dict(device), pct)
         except Exception:
             self._pctcut_preapplied = False
@@ -494,6 +498,11 @@ class ImpairmentPctCutMixin:
         # reinforce/stack sweep runs in _finish_off so OFF is not a 3–5s stall.
         try:
             self._pctcut_instant_resume(snap_mac or prev_mac, snap_ip or prev_ip)
+        except Exception:
+            pass
+        try:
+            if isinstance(snap, dict):
+                self._schedule_cut_analysis_after_off(snap, flow='Percent Cut')
         except Exception:
             pass
 

@@ -664,6 +664,10 @@ class ImpairmentDupeMixin:
 
         self._dupe_preblocked = False
         try:
+            self._begin_cut_analysis_session(device, flow='Dupe')
+        except Exception:
+            pass
+        try:
             self._flow_instant_preblock(device, direction, flow='Dupe')
         except Exception:
             pass
@@ -819,6 +823,10 @@ class ImpairmentDupeMixin:
                     app_log('dupe_release_failed', mac=str(release_mac or ''), exc_info=True)
                 except Exception:
                     pass
+            try:
+                self._schedule_cut_analysis_after_off(release_snap, flow='Dupe')
+            except Exception:
+                pass
             try:
                 self._sync_killed_devices()
                 refresh_mac = str(release_snap.get('mac') or release_mac or '').strip()
