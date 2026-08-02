@@ -30,6 +30,7 @@ class TestDupeArmingFix(unittest.TestCase):
         pre = fn[fn.index("if getattr(self, '_dupe_preblocked', False)"):]
         self.assertIn('_dupe_impairment_is_live(dev)', pre)
         self.assertIn('preblock did not stick', pre.lower())
+        self.assertIn('_seal_lan_mitm_after_instant_cut', pre)
 
     def test_deferred_start_does_not_stop_dupe_mid_arm(self) -> None:
         src = self._main_py()
