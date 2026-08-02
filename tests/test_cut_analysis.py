@@ -52,6 +52,12 @@ class TestCutAnalysisScoring(unittest.TestCase):
                     gateway_mac='11:22:33:44:55:66',
                     settings_adapter_live=True,
                     ip_forwarding_on=False,
+                    victim_ping_ok=True,
+                    victim_in_arp=True,
+                    victim_mac_match=True,
+                    victim_on_lan=True,
+                    selected_victim_ip='192.168.1.50',
+                    selected_victim_mac='aa:bb:cc:dd:ee:ff',
                 ),
             )
         self.assertEqual(report.verdict, 'FULL CUT')
@@ -187,6 +193,73 @@ class TestCutAnalysisScoring(unittest.TestCase):
         self.assertTrue(any('AFTER' in r and 'still armed' in r for r in report.lines) or any(
             'still armed' in r for r in report.lines
         ))
+
+    def test_stale_offline_victim_never_full_cut(self) -> None:
+        """Armed stack against a ghost IP (e.g. old wired .248) must be NOT CUT."""
+        from tools import cut_analysis as ca
+
+        host = ca.collect_host_health(
+            iface_name='Wi-Fi',
+            iface_ip='192.168.1.26',
+            gateway_mac='11:22:33:44:55:66',
+            settings_adapter_live=True,
+            ip_forwarding_on=False,
+            victim_ping_ok=False,
+            victim_in_arp=False,
+            victim_mac_match=False,
+            victim_on_lan=False,
+            victim_live_ip='192.168.1.165',
+            victim_liveness_note=(
+                '192.168.1.248 is offline — this device is now at 192.168.1.165. '
+                'Rescan and use that row.'
+            ),
+            selected_victim_ip='192.168.1.248',
+            selected_victim_mac='aa:bb:cc:dd:ee:ff',
+        )
+        before = ca.PhaseSample(
+            phase=ca.PHASE_BEFORE,
+            sample={
+                'ok': True,
+                'ipv4': 0,
+                'ipv6': 0,
+                'arp': 0,
+                'arp_victim': 0,
+                'total': 0,
+                'seconds': 1.2,
+            },
+            host=host,
+        )
+        during = ca.PhaseSample(
+            phase=ca.PHASE_DURING,
+            sample={
+                'ok': True,
+                'ipv4': 0,
+                'ipv6': 0,
+                'arp': 0,
+                'arp_victim': 0,
+                'total': 0,
+                'seconds': 2.0,
+            },
+            host=host,
+            stack=ca.collect_stack_state(
+                mitm_armed=True,
+                forwarder_running=True,
+                forwarder_hard_drop=True,
+            ),
+        )
+        report = ca.score_phases(
+            flow='Dupe',
+            victim_ip='192.168.1.248',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            expect_full_cut=True,
+            before=before,
+            during=during,
+            after=None,
+        )
+        self.assertEqual(report.verdict, 'NOT CUT')
+        blob = '\n'.join(report.lines)
+        self.assertIn('NOT on LAN', blob)
+        self.assertIn('192.168.1.165', blob)
 
     def test_percent_cut_is_not_full_offline(self) -> None:
         from tools import cut_analysis as ca
