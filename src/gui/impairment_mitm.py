@@ -626,7 +626,7 @@ class ImpairmentMitmMixin:
         self, device, *, flow: str = 'Kill', cut_pct: int | None = None
     ):
         """Legacy single-shot DURING helper (tests / fallback)."""
-        from tools.cut_analysis import analyze_victim_cut, save_cut_analysis_report
+        from tools.cut_analysis import analyze_victim_cut
 
         if not isinstance(device, dict):
             return None
