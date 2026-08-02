@@ -947,6 +947,8 @@ class ZubCutApp(
         self._dupe_net_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='dupe_net')
         self._dupe_end_mono = None  # wall deadline for countdown (set when block_ip finishes)
         self._mitm_probe_retried_macs: set[str] = set()
+        self._cut_analysis_enabled = False
+        self._cut_analysis_gen = 0
         self._idle_mitm_reconcile_timer = QTimer(self)
         self._idle_mitm_reconcile_timer.setInterval(20000)
         self._idle_mitm_reconcile_timer.timeout.connect(

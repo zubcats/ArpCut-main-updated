@@ -129,9 +129,9 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         diag_layout.addWidget(diag_heading)
         diag_hint = QLabel(
             'Quick check runs all diagnostics (Npcap/capture, Wi-Fi link, LAN Kill, '
-            'Clumsy hotspot). Approve UAC if prompted. Report saves to '
-            'Desktop\\ZubCut Diagnostics — send the SUMMARY screenshot to support '
-            '(LAN IPs masked with x).',
+            'Clumsy hotspot). Turn Analysis ON to deeply verify the next Kill / Lag / '
+            'Dupe / Percent Cut against the selected victim (after arm — does not slow '
+            'instant cut). Reports save to Desktop\\ZubCut Diagnostics.',
             diag_panel,
         )
         diag_hint.setObjectName('logsDiagHint')
@@ -148,6 +148,21 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         )
         self._btn_quick_check.clicked.connect(self._run_quick_check)
         diag_btns.addWidget(self._btn_quick_check)
+        self._btn_analysis = QPushButton('Analysis', diag_panel)
+        self._btn_analysis.setObjectName('logsDiagAnalysisBtn')
+        self._btn_analysis.setCheckable(True)
+        self._btn_analysis.setToolTip(
+            'When ON, the next Kill / Lag Switch / Dupe / Percent Cut runs a deep cut '
+            'check on the victim (Npcap sample + MITM/forwarder/WinDivert/IP-forwarding '
+            'state). Verdict: FULL CUT / PARTIAL / NOT CUT. Does not delay the instant cut. '
+            'Saves ZubCut-Analysis-*.txt under Desktop\\ZubCut Diagnostics.'
+        )
+        try:
+            self._btn_analysis.setChecked(bool(getattr(app, 'cut_analysis_enabled', lambda: False)()))
+        except Exception:
+            self._btn_analysis.setChecked(False)
+        self._btn_analysis.toggled.connect(self._on_analysis_toggled)
+        diag_btns.addWidget(self._btn_analysis)
         diag_btns.addStretch(1)
         diag_layout.addLayout(diag_btns)
         layout.addWidget(diag_panel)
@@ -194,6 +209,14 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         super().showEvent(event)
         try:
             self.sync_entries(self._app.log_entries())
+        except Exception:
+            pass
+        try:
+            enabled = bool(self._app.cut_analysis_enabled())
+            if self._btn_analysis.isChecked() != enabled:
+                self._btn_analysis.blockSignals(True)
+                self._btn_analysis.setChecked(enabled)
+                self._btn_analysis.blockSignals(False)
         except Exception:
             pass
 
@@ -244,3 +267,13 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
             self._app.log(message, 'gray' if ok else 'red')
         except Exception:
             pass
+
+    def _on_analysis_toggled(self, checked: bool) -> None:
+        """Enable/disable deep cut Analysis after Kill/Lag/Dupe/Percent Cut arm."""
+        try:
+            self._app.set_cut_analysis_enabled(bool(checked))
+        except Exception as exc:
+            try:
+                self._app.log(f'Analysis toggle failed: {exc}', 'red')
+            except Exception:
+                pass
