@@ -5,15 +5,16 @@ Phases (never on the instant-cut hot path):
   DURING  — after Kill/Lag/Dupe/% Cut arm
   AFTER   — after flow OFF / restore
 
-Scores FULL CUT / PARTIAL / NOT CUT / INCONCLUSIVE and writes a privacy-masked
-report under Desktop\\ZubCut Diagnostics.
+Overall SUCCESS only when the intended full cut is proven; any phase failure
+or PARTIAL cut marks the run FAIL. Writes one privacy-masked report under
+Desktop\\ZubCut Diagnostics.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 PHASE_BEFORE = 'BEFORE'
@@ -31,19 +32,29 @@ class PhaseSample:
 
 
 @dataclass
+class PhaseResult:
+    phase: str
+    passed: bool
+    failures: List[str] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+
+
+@dataclass
 class CutAnalysisReport:
     flow: str
-    verdict: str
+    verdict: str  # FULL CUT | PARTIAL | NOT CUT | INCONCLUSIVE
+    overall: str  # SUCCESS | FAIL
     victim_ip: str
     victim_mac: str
     lines: List[str] = field(default_factory=list)
     report_path: Optional[str] = None
     phases: Dict[str, PhaseSample] = field(default_factory=dict)
+    phase_results: Dict[str, PhaseResult] = field(default_factory=dict)
 
     @property
     def summary_line(self) -> str:
         return (
-            f'Analysis [{self.flow}]: {self.verdict} — '
+            f'Analysis [{self.flow}]: {self.overall} ({self.verdict}) — '
             f'{self.victim_ip or "?"} ({self.victim_mac or "no MAC"})'
         )
 
@@ -391,6 +402,265 @@ def _fmt_stack(stack: dict, *, label: str, expect_full_cut: bool) -> List[str]:
     return lines
 
 
+def _phase_banner(phase: str, passed: bool) -> List[str]:
+    mark = 'PASS' if passed else 'FAIL'
+    bar = '=' * 64
+    return [
+        bar,
+        f'  {phase}  >>>  {mark}',
+        bar,
+        f'  >>> THIS SECTION: {"PASSED" if passed else "FAILED"} <<<',
+        bar,
+    ]
+
+
+def _full_cut_checklist(
+    *,
+    host: dict,
+    stack: dict,
+    sample: dict,
+    before: Optional[PhaseSample],
+    expect_full_cut: bool,
+) -> List[str]:
+    """Explicit PASS/FAIL deep-dive lines for full cut vs partial."""
+    if not expect_full_cut:
+        return [
+            'Full-cut deep dive: skipped (this flow is Percent Cut / Lag allow — not a red-chain offline cut).',
+        ]
+    b_host = (before.host if before else {}) or {}
+    victim_on_lan = host.get('victim_on_lan')
+    if victim_on_lan is None:
+        victim_on_lan = b_host.get('victim_on_lan')
+    use_wd = bool(stack.get('use_windivert'))
+    checks: List[Tuple[str, bool]] = [
+        ('Victim on LAN (ping/ARP/MAC)', victim_on_lan is True),
+        ('Settings adapter live', host.get('settings_adapter_live') is not False),
+        ('Gateway MAC known', bool(host.get('gateway_mac') or b_host.get('gateway_mac'))),
+        ('Windows IP forwarding OFF', host.get('ip_forwarding_on') is not True),
+    ]
+    if use_wd:
+        checks.extend(
+            [
+                ('WinDivert gate running', bool(stack.get('windivert_running'))),
+                ('WinDivert pause/block armed', bool(stack.get('windivert_paused'))),
+            ]
+        )
+    else:
+        checks.extend(
+            [
+                ('ARP MITM armed', bool(stack.get('mitm_armed'))),
+                ('Npcap forwarder running', bool(stack.get('forwarder_running'))),
+                ('Forwarder hard-drop 0% (red chain)', bool(stack.get('forwarder_hard_drop'))),
+            ]
+        )
+    ipv6 = int((sample or {}).get('ipv6') or 0)
+    checks.append(('No strong IPv6 bypass signal', ipv6 <= 8))
+    lines = ['--- FULL CUT DEEP DIVE ---']
+    for label, ok in checks:
+        lines.append(f'[{"PASS" if ok else "FAIL"}] {label}')
+    all_ok = all(ok for _, ok in checks)
+    lines.append(
+        '[RESULT] Deep dive: FULL CUT proven'
+        if all_ok
+        else '[RESULT] Deep dive: NOT a full cut (partial / incomplete / not proven)'
+    )
+    return lines
+
+
+def _eval_before(ps: Optional[PhaseSample]) -> PhaseResult:
+    if ps is None:
+        return PhaseResult(PHASE_BEFORE, False, ['BEFORE phase missing'])
+    host = ps.host or {}
+    fails: List[str] = []
+    notes: List[str] = []
+    if host.get('settings_adapter_live') is False:
+        fails.append('Settings adapter not live on ZubCut PC')
+    if not host.get('gateway_mac'):
+        fails.append('gateway MAC unknown — MITM cannot arm cleanly')
+    if host.get('l2_ready') is False:
+        fails.append('Npcap L2 socket not ready')
+    if host.get('victim_on_lan') is False:
+        note = str(host.get('victim_liveness_note') or '').strip()
+        live_at = str(host.get('victim_live_ip') or '').strip()
+        fails.append(
+            note
+            or (
+                'selected victim not on LAN'
+                + (f' (device now at {live_at})' if live_at else '')
+            )
+        )
+    elif host.get('victim_on_lan') is True:
+        notes.append('victim confirmed on LAN (ping/ARP)')
+    else:
+        fails.append('victim LAN presence not confirmed before cut')
+    if host.get('victim_mac_match') is False:
+        fails.append('ARP MAC does not match selected row (stale/ghost identity)')
+    if not (ps.sample or {}).get('ok'):
+        notes.append('BEFORE traffic sample failed (host checks still apply)')
+    return PhaseResult(PHASE_BEFORE, not fails, fails, notes)
+
+
+def _eval_during_full_cut(
+    ps: Optional[PhaseSample],
+    *,
+    before: Optional[PhaseSample],
+    expect_full_cut: bool,
+    cut_pct: Optional[int],
+) -> Tuple[PhaseResult, str]:
+    """
+    Deep full-cut check for DURING.
+
+    Returns (phase_result, cut_verdict) where cut_verdict is
+    FULL CUT / PARTIAL / NOT CUT / INCONCLUSIVE.
+    """
+    if ps is None:
+        return PhaseResult(PHASE_DURING, False, ['DURING phase missing']), 'INCONCLUSIVE'
+
+    host = ps.host or {}
+    stack = ps.stack or {}
+    sample = ps.sample or {}
+    b_host = (before.host if before else {}) or {}
+    b_sample = (before.sample if before else {}) or {}
+    fails: List[str] = []
+    notes: List[str] = []
+    verdict = 'INCONCLUSIVE'
+
+    victim_on_lan = host.get('victim_on_lan')
+    if victim_on_lan is None:
+        victim_on_lan = b_host.get('victim_on_lan')
+
+    if host.get('settings_adapter_live') is False:
+        fails.append('Settings adapter not live during cut')
+    if host.get('ip_forwarding_on') is True and expect_full_cut and not stack.get('use_windivert'):
+        fails.append('Windows IP forwarding ON during cut (kernel can relay = partial)')
+
+    if victim_on_lan is False:
+        note = str(
+            host.get('victim_liveness_note') or b_host.get('victim_liveness_note') or ''
+        ).strip()
+        live_at = str(host.get('victim_live_ip') or b_host.get('victim_live_ip') or '').strip()
+        fails.append(
+            note
+            or (
+                'victim not on LAN during cut'
+                + (f' (same device now at {live_at})' if live_at else '')
+            )
+        )
+        verdict = 'NOT CUT'
+        return PhaseResult(PHASE_DURING, False, fails, notes), verdict
+
+    if victim_on_lan is not True:
+        fails.append('victim on-LAN not confirmed during cut (ping/ARP)')
+
+    use_wd = bool(stack.get('use_windivert'))
+    if use_wd:
+        if not stack.get('windivert_running'):
+            fails.append('WinDivert gate not running')
+            verdict = 'NOT CUT'
+        elif expect_full_cut and not stack.get('windivert_paused'):
+            fails.append('WinDivert running but not paused/blocked (not a full cut)')
+            verdict = 'PARTIAL'
+        elif expect_full_cut:
+            notes.append('WinDivert pause armed')
+            verdict = 'FULL CUT'
+        else:
+            notes.append('Percent Cut / shaping path (not full offline)')
+            verdict = 'PARTIAL'
+            if expect_full_cut is False:
+                # Percent Cut: DURING "pass" means armed as intended, not full offline.
+                return PhaseResult(PHASE_DURING, not fails, fails, notes), verdict
+    else:
+        if not stack.get('mitm_armed'):
+            fails.append('ARP MITM not armed during cut')
+            verdict = 'NOT CUT'
+        elif not expect_full_cut:
+            if not stack.get('forwarder_running') and not stack.get('mitm_armed'):
+                fails.append('Percent Cut stack not armed')
+                verdict = 'NOT CUT'
+            else:
+                notes.append(
+                    f'Percent Cut armed ({int(cut_pct) if cut_pct is not None else "?"}% cut) '
+                    '— not a full offline / red-chain cut'
+                )
+                verdict = 'PARTIAL'
+        else:
+            # Deep full-cut checklist (all required).
+            if not stack.get('forwarder_running'):
+                fails.append(
+                    'Npcap forwarder not running — ARP-only is PARTIAL '
+                    '(kick/lag without red chain)'
+                )
+                verdict = 'PARTIAL'
+            if stack.get('forwarder_running') and not stack.get('forwarder_hard_drop'):
+                fails.append('forwarder not in hard-drop 0% mode — PARTIAL cut')
+                verdict = 'PARTIAL'
+            if host.get('ip_forwarding_on') is True:
+                fails.append('IP forwarding ON — traffic can leak past MITM')
+                verdict = 'PARTIAL'
+            if not host.get('gateway_mac'):
+                fails.append('gateway MAC unknown during cut')
+                verdict = 'PARTIAL' if verdict != 'NOT CUT' else verdict
+            if sample.get('ok') and int(sample.get('ipv6') or 0) > 8:
+                fails.append('notable IPv6 during cut — possible bypass of IPv4 MITM')
+                verdict = 'PARTIAL'
+            if (
+                b_sample.get('ok')
+                and sample.get('ok')
+                and int(b_sample.get('ipv4') or 0) > 0
+                and int(sample.get('ipv4') or 0) == 0
+                and int(sample.get('arp_victim') or 0) == 0
+            ):
+                fails.append(
+                    'BEFORE saw victim IPv4 but DURING saw none — traffic not attracted '
+                    'to this PC (or console went idle)'
+                )
+                if verdict == 'INCONCLUSIVE' or verdict == 'FULL CUT':
+                    verdict = 'INCONCLUSIVE'
+
+            if not fails and stack.get('mitm_armed') and stack.get('forwarder_running') and stack.get(
+                'forwarder_hard_drop'
+            ):
+                verdict = 'FULL CUT'
+                notes.append('MITM armed + hard-drop forwarder + forwarding off/ok + victim on LAN')
+            elif not fails and verdict == 'INCONCLUSIVE':
+                fails.append('full-cut checklist incomplete')
+            elif fails and verdict == 'INCONCLUSIVE':
+                verdict = 'PARTIAL'
+
+    # Any DURING failure means the cut did not fully work.
+    passed = (verdict == 'FULL CUT') if expect_full_cut else (verdict in ('PARTIAL', 'FULL CUT') and not any(
+        'not armed' in f.lower() or 'not running' in f.lower() for f in fails
+    ) and victim_on_lan is True)
+    if expect_full_cut and verdict != 'FULL CUT':
+        passed = False
+        if not fails:
+            fails.append(f'cut verdict is {verdict}, not FULL CUT')
+    return PhaseResult(PHASE_DURING, passed, fails, notes), verdict
+
+
+def _eval_after(ps: Optional[PhaseSample]) -> PhaseResult:
+    if ps is None:
+        return PhaseResult(PHASE_AFTER, False, ['AFTER phase missing'])
+    stack = ps.stack or {}
+    fails: List[str] = []
+    notes: List[str] = []
+    if stack.get('use_windivert'):
+        if stack.get('windivert_paused'):
+            fails.append('WinDivert still paused after OFF — victim may stay cut')
+        else:
+            notes.append('WinDivert not paused after OFF')
+    else:
+        if stack.get('mitm_armed'):
+            fails.append('ARP MITM still armed after OFF — victim may stay cut')
+        else:
+            notes.append('ARP MITM cleared')
+        if stack.get('forwarder_running'):
+            fails.append('Npcap forwarder still running after OFF')
+        else:
+            notes.append('forwarder cleared')
+    return PhaseResult(PHASE_AFTER, not fails, fails, notes)
+
+
 def score_phases(
     *,
     flow: str,
@@ -402,35 +672,89 @@ def score_phases(
     after: Optional[PhaseSample] = None,
     cut_pct: Optional[int] = None,
 ) -> CutAnalysisReport:
-    """Build the full before/during/after report and verdict."""
+    """Build one BEFORE/DURING/AFTER report with PASS/FAIL headers + overall SUCCESS/FAIL."""
     flow = str(flow or 'Cut').strip() or 'Cut'
     victim_ip = str(victim_ip or '').strip()
     victim_mac = str(victim_mac or '').strip()
+
+    before_r = _eval_before(before)
+    during_r, verdict = _eval_during_full_cut(
+        during, before=before, expect_full_cut=expect_full_cut, cut_pct=cut_pct
+    )
+    after_r = _eval_after(after)
+
+    phase_results = {
+        PHASE_BEFORE: before_r,
+        PHASE_DURING: during_r,
+        PHASE_AFTER: after_r,
+    }
+
+    # Overall: SUCCESS only when every phase passes AND (for full-cut flows) verdict is FULL CUT.
+    any_phase_fail = not (before_r.passed and during_r.passed and after_r.passed)
+    if expect_full_cut:
+        overall = 'SUCCESS' if (not any_phase_fail and verdict == 'FULL CUT') else 'FAIL'
+    else:
+        # Percent Cut: success = armed + restore clean (not a red-chain full cut).
+        overall = 'SUCCESS' if not any_phase_fail else 'FAIL'
+
+    if any_phase_fail and verdict == 'FULL CUT':
+        # Phase failure always means the cut run failed, even if DURING looked armed.
+        verdict = 'PARTIAL'
+
+    reasons: List[str] = []
+    for pr in (before_r, during_r, after_r):
+        for f in pr.failures:
+            reasons.append(f'{pr.phase}: {f}')
+        for n in pr.notes:
+            reasons.append(f'{pr.phase}: {n}')
+
     lines: List[str] = []
     lines.append('======== ZubCut Cut Analysis ========')
+    lines.append('')
+    lines.append('#' * 64)
+    if overall == 'SUCCESS':
+        lines.append('  OVERALL RESULT:  SUCCESS')
+        lines.append('  The cut worked as intended (full cut proven).' if expect_full_cut else '  Percent Cut path armed and restored cleanly.')
+    else:
+        lines.append('  OVERALL RESULT:  FAIL')
+        lines.append('  The cut DID NOT fully work — see FAIL sections below.')
+    lines.append('#' * 64)
+    lines.append('')
     lines.append(f'Generated: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")}Z')
     lines.append(f'Flow: {flow}')
     lines.append(f'Victim: {victim_ip or "?"} ({victim_mac or "no MAC"})')
-    present = []
-    if before is not None:
-        present.append('BEFORE')
-    if during is not None:
-        present.append('DURING')
-    if after is not None:
-        present.append('AFTER')
+    lines.append(f'Cut verdict: {verdict}')
     lines.append(
-        'Phases in this report: '
-        + (' → '.join(present) if present else '(none)')
-        + ' (single end-of-run file)'
+        f'Phase results: BEFORE={"PASS" if before_r.passed else "FAIL"} | '
+        f'DURING={"PASS" if during_r.passed else "FAIL"} | '
+        f'AFTER={"PASS" if after_r.passed else "FAIL"}'
     )
     lines.append('')
 
     phases: Dict[str, PhaseSample] = {}
-    for ps in (before, during, after):
+    for ps, pr in (
+        (before, before_r),
+        (during, during_r),
+        (after, after_r),
+    ):
+        if ps is None and pr.phase:
+            lines.extend(_phase_banner(pr.phase, False))
+            lines.append(f'[FAIL] {pr.phase} data missing from this run')
+            lines.append('')
+            continue
         if ps is None:
             continue
         phases[ps.phase] = ps
-        lines.append(f'--- {ps.phase} ---')
+        lines.extend(_phase_banner(ps.phase, pr.passed))
+        lines.append(
+            f'[RESULT] {ps.phase}: {"PASS" if pr.passed else "FAIL"}'
+        )
+        if pr.failures:
+            for f in pr.failures:
+                lines.append(f'[FAIL] {ps.phase}: {f}')
+        if pr.notes:
+            for n in pr.notes:
+                lines.append(f'[INFO] {ps.phase}: {n}')
         if ps.note:
             lines.append(f'[INFO] {ps.note}')
         lines.extend(_fmt_host(ps.host or {}, label=ps.phase))
@@ -443,188 +767,46 @@ def score_phases(
                     expect_full_cut=expect_full_cut if ps.phase == PHASE_DURING else False,
                 )
             )
+        if ps.phase == PHASE_DURING:
+            lines.extend(
+                _full_cut_checklist(
+                    host=ps.host or {},
+                    stack=ps.stack or {},
+                    sample=ps.sample or {},
+                    before=before,
+                    expect_full_cut=expect_full_cut,
+                )
+            )
         lines.append('')
 
-    reasons: List[str] = []
-    verdict = 'INCONCLUSIVE'
-    d_stack = (during.stack if during else {}) or {}
-    d_sample = (during.sample if during else {}) or {}
-    b_sample = (before.sample if before else {}) or {}
-    a_sample = (after.sample if after else {}) or {}
-    a_stack = (after.stack if after else {}) or {}
-    d_host = (during.host if during else {}) or {}
-
-    use_wd = bool(d_stack.get('use_windivert'))
-    b_host = (before.host if before else {}) or {}
-    # Prefer DURING liveness; fall back to BEFORE baseline.
-    victim_on_lan = d_host.get('victim_on_lan')
-    if victim_on_lan is None:
-        victim_on_lan = b_host.get('victim_on_lan')
-
-    # Host failures can cap the verdict.
-    if d_host.get('settings_adapter_live') is False:
-        reasons.append('Settings adapter not live on ZubCut PC')
-    if d_host.get('gateway_mac') in ('', None) and not use_wd:
-        reasons.append('gateway MAC unknown on ZubCut PC')
-    if d_host.get('ip_forwarding_on') is True and expect_full_cut and not use_wd:
-        reasons.append('IP forwarding ON during cut')
-
-    # Stale IP / offline console: stack may still arm, but that is not a real cut.
-    if victim_on_lan is False:
-        note = str(
-            d_host.get('victim_liveness_note')
-            or b_host.get('victim_liveness_note')
-            or ''
-        ).strip()
-        live_at = str(
-            d_host.get('victim_live_ip') or b_host.get('victim_live_ip') or ''
-        ).strip()
-        reasons.append(
-            note
-            or (
-                f'victim not on LAN'
-                + (f' (same device now at {live_at})' if live_at else '')
-                + ' — stale row / offline IP'
-            )
-        )
-
-    if victim_on_lan is False:
-        # Armed MITM against a ghost must never read as FULL CUT.
-        verdict = 'NOT CUT'
-        if d_stack.get('mitm_armed') or d_stack.get('windivert_running'):
-            reasons.append(
-                'ZubCut stack armed, but selected IP/MAC is not live on the LAN'
-            )
-    elif during is None:
-        verdict = 'INCONCLUSIVE'
-        reasons.append('no DURING sample (cut may have ended too fast)')
-    elif use_wd:
-        if not d_stack.get('windivert_running'):
-            verdict = 'NOT CUT'
-            reasons.append('WinDivert gate not running')
-        elif expect_full_cut and not d_stack.get('windivert_paused'):
-            verdict = 'PARTIAL'
-            reasons.append('WinDivert running but not paused/blocked')
-        else:
-            verdict = 'FULL CUT' if expect_full_cut else 'PARTIAL'
-            reasons.append(
-                'WinDivert pause armed'
-                if expect_full_cut
-                else 'Percent Cut / shaping path (not full offline)'
-            )
+    lines.append('>>> SUMMARY')
+    lines.append(f'  OVERALL: {overall}')
+    lines.append(f'  CUT:     {verdict}')
+    if overall == 'FAIL':
+        lines.append('  Meaning: cut did not work (or was only partial / not proven).')
     else:
-        if not d_stack.get('mitm_armed'):
-            verdict = 'NOT CUT'
-            reasons.append('ARP MITM not armed during cut')
-        elif expect_full_cut:
-            if not d_stack.get('forwarder_running'):
-                verdict = 'PARTIAL'
-                reasons.append('Npcap forwarder not running (ARP-only — often no red chain)')
-            elif not d_stack.get('forwarder_hard_drop'):
-                verdict = 'PARTIAL'
-                reasons.append('forwarder not in hard-drop mode')
-            elif d_host.get('ip_forwarding_on') is True:
-                verdict = 'PARTIAL'
-                reasons.append('kernel IP forwarding still ON')
-            else:
-                verdict = 'FULL CUT'
-                reasons.append('MITM armed + hard-drop forwarder during cut')
-            if d_sample.get('ok') and int(d_sample.get('ipv6') or 0) > 8:
-                verdict = 'PARTIAL'
-                reasons.append('notable IPv6 during cut (possible bypass)')
-            # Before→during traffic attraction signal
-            if (
-                b_sample.get('ok')
-                and d_sample.get('ok')
-                and int(b_sample.get('ipv4') or 0) > 0
-                and int(d_sample.get('ipv4') or 0) == 0
-                and int(d_sample.get('arp_victim') or 0) == 0
-            ):
-                if verdict == 'FULL CUT':
-                    verdict = 'INCONCLUSIVE'
-                reasons.append(
-                    'BEFORE saw victim IPv4 but DURING saw none — idle console or '
-                    'traffic not attracted to this PC'
-                )
-            # FULL CUT requires evidence the victim was live (ping/ARP/MAC match).
-            if verdict == 'FULL CUT' and victim_on_lan is not True:
-                verdict = 'INCONCLUSIVE'
-                reasons.append(
-                    'stack looks armed but victim LAN presence was not confirmed '
-                    '(ping/ARP) — rescan if this IP may be stale'
-                )
-        else:
-            if not d_stack.get('forwarder_running') and not d_stack.get('mitm_armed'):
-                verdict = 'NOT CUT'
-                reasons.append('Percent Cut stack not armed')
-            else:
-                verdict = 'PARTIAL'
-                reasons.append(
-                    f'Percent Cut armed ({int(cut_pct) if cut_pct is not None else "?"}% cut) '
-                    '— not a full offline / red-chain cut'
-                )
-
-    # AFTER restore checks
-    if after is not None:
-        if a_stack.get('use_windivert'):
-            if a_stack.get('windivert_paused'):
-                verdict = 'PARTIAL' if verdict == 'FULL CUT' else verdict
-                reasons.append('AFTER: WinDivert still paused after OFF')
-            else:
-                reasons.append('AFTER: WinDivert not paused (restore look OK)')
-        else:
-            if a_stack.get('mitm_armed'):
-                verdict = 'PARTIAL' if verdict in ('FULL CUT', 'INCONCLUSIVE') else verdict
-                if verdict == 'NOT CUT':
-                    pass
-                else:
-                    verdict = 'PARTIAL'
-                reasons.append('AFTER: ARP MITM still armed — victim may stay cut')
-            else:
-                reasons.append('AFTER: ARP MITM cleared')
-            if a_stack.get('forwarder_running'):
-                verdict = 'PARTIAL'
-                reasons.append('AFTER: forwarder still running')
-            else:
-                reasons.append('AFTER: forwarder cleared')
-        if (
-            a_sample.get('ok')
-            and b_sample.get('ok')
-            and int(b_sample.get('ipv4') or 0) >= 3
-            and int(a_sample.get('ipv4') or 0) == 0
-            and int(a_sample.get('arp_victim') or 0) == 0
-        ):
-            # Traffic may stay quiet if console kicked from game — warn only.
-            reasons.append(
-                'AFTER: no victim IPv4 vs BEFORE baseline (console idle/kicked, or still cut)'
-            )
-
-    # Cap verdict if host adapter was dead during cut.
-    if d_host.get('settings_adapter_live') is False and verdict == 'FULL CUT':
-        verdict = 'PARTIAL'
-        reasons.append('cannot trust FULL CUT with dead Settings adapter')
-    if victim_on_lan is False and verdict == 'FULL CUT':
-        verdict = 'NOT CUT'
-        reasons.append('cannot report FULL CUT for a victim that is not on the LAN')
-
-    lines.append(f'>>> VERDICT: {verdict}')
+        lines.append('  Meaning: full cut proven end-to-end.' if expect_full_cut else '  Meaning: intended % cut path OK.')
     for r in reasons:
         lines.append(f'  - {r}')
     lines.append('')
-    lines.append('Notes:')
-    lines.append('  BEFORE = baseline on ZubCut NIC (Analysis ON keeps this fresh).')
-    lines.append('  DURING = cut armed; victim IPv4 on this PC means MITM attracted traffic.')
-    lines.append('  AFTER  = flow OFF; MITM/forwarder must clear so the victim recovers.')
-    lines.append('  Instant Kill/Dupe/Lag is never delayed — Analysis runs around it.')
+    lines.append('Full-cut requirements (DURING):')
+    lines.append('  victim on LAN (ping/ARP/MAC match)')
+    lines.append('  ARP MITM armed (or WinDivert pause on hotspot)')
+    lines.append('  Npcap forwarder running in hard-drop 0% (red chain)')
+    lines.append('  Windows IP forwarding OFF')
+    lines.append('  no strong IPv6 bypass signal')
+    lines.append('  AFTER: MITM/forwarder fully cleared on OFF')
     lines.append('=====================================')
 
     return CutAnalysisReport(
         flow=flow,
         verdict=verdict,
+        overall=overall,
         victim_ip=victim_ip,
         victim_mac=victim_mac,
         lines=lines,
         phases=phases,
+        phase_results=phase_results,
     )
 
 

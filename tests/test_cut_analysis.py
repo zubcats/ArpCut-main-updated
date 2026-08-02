@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -17,145 +19,50 @@ if _TESTS not in sys.path:
 from _gui_source import load_main_window_source, method_src
 
 
+def _live_host(**extra):
+    from tools import cut_analysis as ca
+
+    base = dict(
+        iface_name='Wi-Fi',
+        iface_ip='192.168.1.26',
+        gateway_mac='11:22:33:44:55:66',
+        settings_adapter_live=True,
+        ip_forwarding_on=False,
+        l2_ready=True,
+        victim_ping_ok=True,
+        victim_in_arp=True,
+        victim_mac_match=True,
+        victim_on_lan=True,
+        selected_victim_ip='192.168.1.50',
+        selected_victim_mac='aa:bb:cc:dd:ee:ff',
+    )
+    base.update(extra)
+    return ca.collect_host_health(**base)
+
+
+def _sample(ipv4=8, arp_victim=1, ipv6=0):
+    return {
+        'ok': True,
+        'error': '',
+        'ipv4': ipv4,
+        'ipv6': ipv6,
+        'arp': max(1, arp_victim),
+        'arp_victim': arp_victim,
+        'total': ipv4 + ipv6 + 2,
+        'seconds': 2.0,
+    }
+
+
 class TestCutAnalysisScoring(unittest.TestCase):
-    def test_full_cut_when_mitm_hard_drop_forwarding_off(self) -> None:
+    def test_success_full_cut_all_phases_pass(self) -> None:
         from tools import cut_analysis as ca
 
-        with mock.patch.object(
-            ca,
-            '_sniff_cut_sample',
-            return_value={
-                'ok': True,
-                'error': '',
-                'ipv4': 12,
-                'ipv6': 0,
-                'arp': 2,
-                'arp_victim': 1,
-                'total': 15,
-                'seconds': 2.0,
-            },
-        ):
-            report = ca.analyze_victim_cut(
-                flow='Dupe',
-                victim_ip='192.168.1.50',
-                victim_mac='aa:bb:cc:dd:ee:ff',
-                iface_guid='guid',
-                iface_name='Wi-Fi',
-                expect_full_cut=True,
-                mitm_armed=True,
-                forwarder_running=True,
-                forwarder_hard_drop=True,
-                ip_forwarding_on=False,
-                host=ca.collect_host_health(
-                    iface_name='Wi-Fi',
-                    iface_ip='192.168.1.26',
-                    gateway_mac='11:22:33:44:55:66',
-                    settings_adapter_live=True,
-                    ip_forwarding_on=False,
-                    victim_ping_ok=True,
-                    victim_in_arp=True,
-                    victim_mac_match=True,
-                    victim_on_lan=True,
-                    selected_victim_ip='192.168.1.50',
-                    selected_victim_mac='aa:bb:cc:dd:ee:ff',
-                ),
-            )
-        self.assertEqual(report.verdict, 'FULL CUT')
-        self.assertIn('BEFORE', '\n'.join(report.lines) + 'DURING')
-        self.assertIn('--- DURING ---', '\n'.join(report.lines))
-
-    def test_partial_when_forwarder_missing(self) -> None:
-        from tools import cut_analysis as ca
-
-        with mock.patch.object(
-            ca,
-            '_sniff_cut_sample',
-            return_value={
-                'ok': True,
-                'error': '',
-                'ipv4': 3,
-                'ipv6': 0,
-                'arp': 1,
-                'arp_victim': 1,
-                'total': 4,
-                'seconds': 2.0,
-            },
-        ):
-            report = ca.analyze_victim_cut(
-                flow='Kill',
-                victim_ip='192.168.1.50',
-                victim_mac='aa:bb:cc:dd:ee:ff',
-                iface_guid='guid',
-                expect_full_cut=True,
-                mitm_armed=True,
-                forwarder_running=False,
-                forwarder_hard_drop=False,
-                ip_forwarding_on=False,
-            )
-        self.assertEqual(report.verdict, 'PARTIAL')
-        self.assertTrue(any('forwarder' in ln.lower() for ln in report.lines))
-
-    def test_not_cut_when_mitm_not_armed(self) -> None:
-        from tools import cut_analysis as ca
-
-        with mock.patch.object(
-            ca,
-            '_sniff_cut_sample',
-            return_value={
-                'ok': True,
-                'error': '',
-                'ipv4': 0,
-                'ipv6': 0,
-                'arp': 0,
-                'arp_victim': 0,
-                'total': 0,
-                'seconds': 2.0,
-            },
-        ):
-            report = ca.analyze_victim_cut(
-                flow='Kill',
-                victim_ip='192.168.1.50',
-                victim_mac='aa:bb:cc:dd:ee:ff',
-                iface_guid='guid',
-                expect_full_cut=True,
-                mitm_armed=False,
-            )
-        self.assertEqual(report.verdict, 'NOT CUT')
-
-    def test_after_mitm_still_armed_is_partial(self) -> None:
-        from tools import cut_analysis as ca
-
-        before = ca.PhaseSample(
-            phase=ca.PHASE_BEFORE,
-            sample={
-                'ok': True,
-                'ipv4': 8,
-                'ipv6': 0,
-                'arp': 1,
-                'arp_victim': 1,
-                'total': 9,
-                'seconds': 1.2,
-            },
-            host=ca.collect_host_health(
-                iface_name='Wi-Fi',
-                iface_ip='192.168.1.26',
-                gateway_mac='11:22:33:44:55:66',
-                settings_adapter_live=True,
-                ip_forwarding_on=False,
-            ),
-        )
+        host = _live_host()
+        before = ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(), host=host)
         during = ca.PhaseSample(
             phase=ca.PHASE_DURING,
-            sample={
-                'ok': True,
-                'ipv4': 10,
-                'ipv6': 0,
-                'arp': 2,
-                'arp_victim': 2,
-                'total': 12,
-                'seconds': 2.0,
-            },
-            host=before.host,
+            sample=_sample(ipv4=12),
+            host=host,
             stack=ca.collect_stack_state(
                 mitm_armed=True,
                 forwarder_running=True,
@@ -164,18 +71,10 @@ class TestCutAnalysisScoring(unittest.TestCase):
         )
         after = ca.PhaseSample(
             phase=ca.PHASE_AFTER,
-            sample={
-                'ok': True,
-                'ipv4': 0,
-                'ipv6': 0,
-                'arp': 0,
-                'arp_victim': 0,
-                'total': 0,
-                'seconds': 1.8,
-            },
-            host=before.host,
+            sample=_sample(ipv4=2, arp_victim=0),
+            host=host,
             stack=ca.collect_stack_state(
-                mitm_armed=True,
+                mitm_armed=False,
                 forwarder_running=False,
                 forwarder_hard_drop=False,
             ),
@@ -189,21 +88,58 @@ class TestCutAnalysisScoring(unittest.TestCase):
             during=during,
             after=after,
         )
-        self.assertEqual(report.verdict, 'PARTIAL')
-        self.assertTrue(any('AFTER' in r and 'still armed' in r for r in report.lines) or any(
-            'still armed' in r for r in report.lines
-        ))
+        self.assertEqual(report.verdict, 'FULL CUT')
+        self.assertEqual(report.overall, 'SUCCESS')
+        blob = '\n'.join(report.lines)
+        self.assertIn('OVERALL RESULT:  SUCCESS', blob)
+        self.assertIn('BEFORE  >>>  PASS', blob)
+        self.assertIn('DURING  >>>  PASS', blob)
+        self.assertIn('AFTER  >>>  PASS', blob)
+        self.assertIn('THIS SECTION: PASSED', blob)
+        self.assertIn('FULL CUT DEEP DIVE', blob)
+        self.assertIn('Deep dive: FULL CUT proven', blob)
 
-    def test_stale_offline_victim_never_full_cut(self) -> None:
-        """Armed stack against a ghost IP (e.g. old wired .248) must be NOT CUT."""
+    def test_forwarder_missing_is_fail_partial(self) -> None:
         from tools import cut_analysis as ca
 
-        host = ca.collect_host_health(
-            iface_name='Wi-Fi',
-            iface_ip='192.168.1.26',
-            gateway_mac='11:22:33:44:55:66',
-            settings_adapter_live=True,
-            ip_forwarding_on=False,
+        host = _live_host()
+        report = ca.score_phases(
+            flow='Kill',
+            victim_ip='192.168.1.50',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            expect_full_cut=True,
+            before=ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(), host=host),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(),
+                host=host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=True,
+                    forwarder_running=False,
+                    forwarder_hard_drop=False,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=0, arp_victim=0),
+                host=host,
+                stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
+            ),
+        )
+        self.assertEqual(report.verdict, 'PARTIAL')
+        self.assertEqual(report.overall, 'FAIL')
+        blob = '\n'.join(report.lines)
+        self.assertIn('OVERALL RESULT:  FAIL', blob)
+        self.assertIn('DURING  >>>  FAIL', blob)
+        self.assertIn('THIS SECTION: FAILED', blob)
+        self.assertIn('cut DID NOT fully work', blob)
+        self.assertIn('Deep dive: NOT a full cut', blob)
+        self.assertIn('forwarder', blob.lower())
+
+    def test_stale_offline_victim_is_fail(self) -> None:
+        from tools import cut_analysis as ca
+
+        host = _live_host(
             victim_ping_ok=False,
             victim_in_arp=False,
             victim_mac_match=False,
@@ -214,83 +150,133 @@ class TestCutAnalysisScoring(unittest.TestCase):
                 'Rescan and use that row.'
             ),
             selected_victim_ip='192.168.1.248',
-            selected_victim_mac='aa:bb:cc:dd:ee:ff',
-        )
-        before = ca.PhaseSample(
-            phase=ca.PHASE_BEFORE,
-            sample={
-                'ok': True,
-                'ipv4': 0,
-                'ipv6': 0,
-                'arp': 0,
-                'arp_victim': 0,
-                'total': 0,
-                'seconds': 1.2,
-            },
-            host=host,
-        )
-        during = ca.PhaseSample(
-            phase=ca.PHASE_DURING,
-            sample={
-                'ok': True,
-                'ipv4': 0,
-                'ipv6': 0,
-                'arp': 0,
-                'arp_victim': 0,
-                'total': 0,
-                'seconds': 2.0,
-            },
-            host=host,
-            stack=ca.collect_stack_state(
-                mitm_armed=True,
-                forwarder_running=True,
-                forwarder_hard_drop=True,
-            ),
         )
         report = ca.score_phases(
             flow='Dupe',
             victim_ip='192.168.1.248',
             victim_mac='aa:bb:cc:dd:ee:ff',
             expect_full_cut=True,
-            before=before,
-            during=during,
-            after=None,
+            before=ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(ipv4=0), host=host),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(ipv4=0, arp_victim=0),
+                host=host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=True,
+                    forwarder_running=True,
+                    forwarder_hard_drop=True,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=0, arp_victim=0),
+                host=host,
+                stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
+            ),
         )
         self.assertEqual(report.verdict, 'NOT CUT')
+        self.assertEqual(report.overall, 'FAIL')
         blob = '\n'.join(report.lines)
-        self.assertIn('NOT on LAN', blob)
+        self.assertIn('OVERALL RESULT:  FAIL', blob)
+        self.assertIn('BEFORE  >>>  FAIL', blob)
         self.assertIn('192.168.1.165', blob)
 
-    def test_percent_cut_is_not_full_offline(self) -> None:
+    def test_after_mitm_still_armed_fails_overall(self) -> None:
         from tools import cut_analysis as ca
 
-        with mock.patch.object(
-            ca,
-            '_sniff_cut_sample',
-            return_value={
-                'ok': True,
-                'error': '',
-                'ipv4': 5,
-                'ipv6': 0,
-                'arp': 0,
-                'arp_victim': 0,
-                'total': 5,
-                'seconds': 2.0,
-            },
-        ):
-            report = ca.analyze_victim_cut(
-                flow='Percent Cut',
-                victim_ip='192.168.1.50',
-                victim_mac='aa:bb:cc:dd:ee:ff',
-                iface_guid='guid',
-                expect_full_cut=False,
-                cut_pct=40,
-                mitm_armed=True,
-                forwarder_running=True,
-                forwarder_hard_drop=False,
-            )
+        host = _live_host()
+        report = ca.score_phases(
+            flow='Dupe',
+            victim_ip='192.168.1.50',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            expect_full_cut=True,
+            before=ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(), host=host),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(ipv4=10),
+                host=host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=True,
+                    forwarder_running=True,
+                    forwarder_hard_drop=True,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=0, arp_victim=0),
+                host=host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=True,
+                    forwarder_running=False,
+                    forwarder_hard_drop=False,
+                ),
+            ),
+        )
+        self.assertEqual(report.overall, 'FAIL')
+        self.assertIn('AFTER  >>>  FAIL', '\n'.join(report.lines))
+        self.assertIn('still armed', '\n'.join(report.lines).lower())
+
+    def test_percent_cut_success_without_full_cut(self) -> None:
+        from tools import cut_analysis as ca
+
+        host = _live_host()
+        report = ca.score_phases(
+            flow='Percent Cut',
+            victim_ip='192.168.1.50',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            expect_full_cut=False,
+            cut_pct=40,
+            before=ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(), host=host),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(),
+                host=host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=True,
+                    forwarder_running=True,
+                    forwarder_hard_drop=False,
+                    cut_pct=40,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=1),
+                host=host,
+                stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
+            ),
+        )
+        self.assertEqual(report.overall, 'SUCCESS')
+        self.assertIn('OVERALL RESULT:  SUCCESS', '\n'.join(report.lines))
+
+    def test_ip_forwarding_on_is_partial_fail(self) -> None:
+        from tools import cut_analysis as ca
+
+        host = _live_host(ip_forwarding_on=True)
+        report = ca.score_phases(
+            flow='Kill',
+            victim_ip='192.168.1.50',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            expect_full_cut=True,
+            before=ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(), host=_live_host()),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(),
+                host=host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=True,
+                    forwarder_running=True,
+                    forwarder_hard_drop=True,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=0),
+                host=_live_host(),
+                stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
+            ),
+        )
         self.assertEqual(report.verdict, 'PARTIAL')
-        self.assertNotEqual(report.verdict, 'FULL CUT')
+        self.assertEqual(report.overall, 'FAIL')
 
 
 class TestCutAnalysisWiring(unittest.TestCase):
@@ -310,7 +296,6 @@ class TestCutAnalysisWiring(unittest.TestCase):
         self.assertIn('PHASE_AFTER', after)
 
     def test_single_final_report_requires_all_phases(self) -> None:
-        """One Desktop file only, after BEFORE+DURING+AFTER are all present."""
         src = load_main_window_source()
         self.assertNotIn('def _emit_cut_analysis_interim', src)
         finalize = method_src('_finalize_cut_analysis_session')
@@ -320,14 +305,12 @@ class TestCutAnalysisWiring(unittest.TestCase):
         self.assertIn('save_cut_analysis_report(report, open_report=True)', finalize)
         self.assertIn('report_saved', finalize)
         after = method_src('_schedule_cut_analysis_after_off')
-        # Must not start a second session after the report was already written.
         self.assertIn("sess.get('report_saved')", after)
         during = method_src('_schedule_cut_analysis_if_enabled')
         self.assertNotIn('save_cut_analysis_report', during)
 
     def test_flows_begin_before_instant_cut(self) -> None:
         kill = method_src('toggleKill')
-        # begin must appear before preblock in ON path
         self.assertIn('_begin_cut_analysis_session', kill)
         self.assertLess(
             kill.index('_begin_cut_analysis_session'),
@@ -369,9 +352,6 @@ class TestCutAnalysisWiring(unittest.TestCase):
         self.assertIn('5s', src)
 
     def test_save_report_uses_zubcut_diagnostics_folder(self) -> None:
-        import tempfile
-        from pathlib import Path
-
         from tools import cut_analysis as ca
         from tools import diag_paths as dp
         from tools.diag_paths import DIAGNOSTICS_FOLDER_NAME
@@ -379,6 +359,7 @@ class TestCutAnalysisWiring(unittest.TestCase):
         report = ca.CutAnalysisReport(
             flow='Dupe',
             verdict='FULL CUT',
+            overall='SUCCESS',
             victim_ip='192.168.1.50',
             victim_mac='aa:bb:cc:dd:ee:ff',
             lines=['======== ZubCut Cut Analysis ========', '>>> VERDICT: FULL CUT'],

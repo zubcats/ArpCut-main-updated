@@ -551,11 +551,11 @@ class ImpairmentMitmMixin:
             pass
 
     def _cut_analysis_expect_full(self, flow_s: str) -> bool:
+        """Kill/Dupe require a proven full cut; Percent Cut / Lag do not."""
         flow_l = str(flow_s or '').lower()
-        expect_full = not flow_l.startswith('percent')
-        if flow_l.startswith('lag') and bool(getattr(self, '_lag_in_allow_phase', False)):
-            expect_full = False
-        return expect_full
+        if flow_l.startswith('percent') or flow_l.startswith('lag'):
+            return False
+        return True
 
     def _finalize_cut_analysis_session(self, gen: int) -> None:
         """Write one Desktop report with BEFORE + DURING + AFTER — never mid-run."""
@@ -592,20 +592,16 @@ class ImpairmentMitmMixin:
             return
 
         def _on_main() -> None:
-            color = {
-                'FULL CUT': UI_LOG_VICTIM_BLOCK_FG,
-                'PARTIAL': 'red',
-                'NOT CUT': 'red',
-                'INCONCLUSIVE': 'gray',
-            }.get(report.verdict, 'gray')
+            overall = str(getattr(report, 'overall', '') or '')
+            color = UI_LOG_VICTIM_BLOCK_FG if overall == 'SUCCESS' else 'red'
             self.log(report.summary_line, color)
             for line in report.lines:
-                if line.startswith('[FAIL]') or (
-                    line.startswith('[WARN]') and 'baseline' not in line.lower()
+                if 'OVERALL RESULT' in line or line.startswith('[FAIL]') or line.startswith(
+                    '[RESULT]'
                 ):
                     self.log(
-                        f'Analysis: {line}',
-                        'red' if line.startswith('[FAIL]') else 'gray',
+                        f'Analysis: {line.strip()}',
+                        'red' if ('FAIL' in line or overall != 'SUCCESS') and 'SUCCESS' not in line else color,
                     )
             if report.report_path:
                 self.log(
@@ -637,10 +633,6 @@ class ImpairmentMitmMixin:
         iface_name = str(getattr(iface, 'name', None) or '')
         host = self._gather_cut_analysis_host(device)
         stack = self._gather_cut_analysis_stack(device, cut_pct=cut_pct)
-        flow_l = str(flow or '').lower()
-        expect_full = not flow_l.startswith('percent')
-        if flow_l.startswith('lag') and bool(getattr(self, '_lag_in_allow_phase', False)):
-            expect_full = False
         before = None
         baseline = getattr(self, '_cut_analysis_baseline', None) or {}
         if baseline.get('ip') == ip:
@@ -654,7 +646,7 @@ class ImpairmentMitmMixin:
             iface_guid=guid,
             iface_name=iface_name,
             seconds=2.0,
-            expect_full_cut=expect_full,
+            expect_full_cut=self._cut_analysis_expect_full(str(flow or 'Cut')),
             cut_pct=cut_pct,
             mitm_armed=bool(stack.get('mitm_armed')),
             forwarder_running=bool(stack.get('forwarder_running')),
