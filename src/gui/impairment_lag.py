@@ -264,6 +264,7 @@ class ImpairmentLagMixin:
                 self._lag_phase_begin_block(cur)
             else:
                 self._schedule_lag_start_reassert(work_mac)
+            self._schedule_cut_analysis_if_enabled(cur or work_snap, flow='Lag')
             self._refresh_flow_toggle_ui(fast=True)
             self._repaint_device_table_rows(cur)
 

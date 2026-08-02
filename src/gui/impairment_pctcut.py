@@ -420,6 +420,9 @@ class ImpairmentPctCutMixin:
                     f'Percent Cut ON for {resolved_ip or ip}: {pct}% cut ({allow_pct}% pass)',
                     UI_LOG_VICTIM_BLOCK_FG,
                 )
+                self._schedule_cut_analysis_if_enabled(
+                    device, flow='Percent Cut', cut_pct=pct
+                )
                 self._refresh_flow_toggle_ui()
             except Exception as exc:
                 if self._pctcut_start_cancelled(pct_gen):

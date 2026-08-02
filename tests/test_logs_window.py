@@ -52,6 +52,8 @@ class TestLogsWindowWiring(unittest.TestCase):
         self.assertIn('All-in-one support diagnostic', src)
         self.assertIn("setObjectName('logsDiagPanel')", src)
         self.assertIn("setObjectName('logsDiagQuickBtn')", src)
+        self.assertIn("setObjectName('logsDiagAnalysisBtn')", src)
+        self.assertIn('Analysis', src)
         self.assertNotIn("setObjectName('logsDiagWifiBtn')", src)
         self.assertIn("setObjectName('centralwidget')", src)
         self.assertIn("setObjectName('logsHistoryList')", src)

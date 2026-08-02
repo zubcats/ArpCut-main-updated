@@ -500,6 +500,7 @@ class ImpairmentKillMixin:
                         _mark('windivert_done')
                         if kill_applied:
                             self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+                            self._schedule_cut_analysis_if_enabled(device, flow='Kill')
                         elif turn_on:
                             self._ics_emergency_release(device, heal=False)
                             ip = clumsy_ics_resolve_victim_ip(device, self.scanner)
@@ -541,6 +542,7 @@ class ImpairmentKillMixin:
                             'Kill ON for ' + str(device.get('ip') or ''),
                             UI_LOG_VICTIM_BLOCK_FG,
                         )
+                        self._schedule_mitm_traffic_probe(device, flow='Kill')
                     else:
                         _mark('lan_start')
                         self._reconcile_network_adapter(log=True)

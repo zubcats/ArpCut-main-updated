@@ -137,6 +137,190 @@ class ImpairmentMitmMixin:
             pass
 
 
+    def cut_analysis_enabled(self) -> bool:
+        return bool(getattr(self, '_cut_analysis_enabled', False))
+
+    def set_cut_analysis_enabled(self, enabled: bool) -> None:
+        """Logs → Analysis toggle: deep cut check after Kill/Lag/Dupe/% Cut arm."""
+        on = bool(enabled)
+        prev = bool(getattr(self, '_cut_analysis_enabled', False))
+        self._cut_analysis_enabled = on
+        if on == prev:
+            return
+        if on:
+            self.log(
+                'Analysis ON — next Kill / Lag / Dupe / Percent Cut will run a deep '
+                'victim cut check (does not slow the instant cut).',
+                UI_LOG_VICTIM_BLOCK_FG,
+            )
+        else:
+            self.log('Analysis OFF', UI_LOG_RESTORE_FG)
+
+    def _schedule_cut_analysis_if_enabled(
+        self, device, *, flow: str = 'Kill', cut_pct: int | None = None
+    ) -> None:
+        """After arm only — never call before poison/cut. No-op when Analysis toggle is off."""
+        if not self.cut_analysis_enabled():
+            return
+        if not isinstance(device, dict):
+            return
+        dev = dict(device)
+        try:
+            dev = self._device_with_plan_ip(dev)
+        except Exception:
+            pass
+        mac = str(dev.get('mac') or '').strip()
+        ip = str(dev.get('ip') or '').strip()
+        if not mac and not ip:
+            return
+        flow_s = str(flow or 'Cut')
+        pct = cut_pct
+        if pct is None and flow_s.lower().startswith('percent'):
+            try:
+                pct = int(getattr(self, 'percent_cut_value', 0) or 0)
+            except Exception:
+                pct = None
+        gen = int(getattr(self, '_cut_analysis_gen', 0)) + 1
+        self._cut_analysis_gen = gen
+
+        def _work() -> None:
+            import time as _time
+
+            # Yield so instant arm / UI paint finish first.
+            _time.sleep(1.1)
+            if int(getattr(self, '_cut_analysis_gen', 0)) != gen:
+                return
+            if not self.cut_analysis_enabled():
+                return
+            try:
+                report = self._run_cut_analysis_now(dev, flow=flow_s, cut_pct=pct)
+            except Exception:
+                return
+            if report is None:
+                return
+
+            def _on_main() -> None:
+                if not self.cut_analysis_enabled():
+                    return
+                color = {
+                    'FULL CUT': UI_LOG_VICTIM_BLOCK_FG,
+                    'PARTIAL': 'red',
+                    'NOT CUT': 'red',
+                    'INCONCLUSIVE': 'gray',
+                }.get(report.verdict, 'gray')
+                self.log(report.summary_line, color)
+                for line in report.lines:
+                    if line.startswith('[FAIL]') or line.startswith('[WARN]'):
+                        self.log(f'Analysis: {line}', 'red' if line.startswith('[FAIL]') else 'gray')
+                if report.report_path:
+                    self.log(f'Analysis report: {report.report_path}', 'gray')
+
+            try:
+                QTimer.singleShot(0, _on_main)
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-cut-analysis',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    def _run_cut_analysis_now(
+        self, device, *, flow: str = 'Kill', cut_pct: int | None = None
+    ):
+        """Gather live stack state + short sniff; return CutAnalysisReport or None."""
+        from tools.cut_analysis import analyze_victim_cut, save_cut_analysis_report
+
+        if not isinstance(device, dict):
+            return None
+        mac = str(device.get('mac') or '').strip()
+        ip = str(device.get('ip') or '').strip()
+        iface = getattr(self.scanner, 'iface', None)
+        guid = str(getattr(iface, 'guid', None) or '').strip()
+        iface_name = str(getattr(iface, 'name', None) or '')
+        router = getattr(self.killer, 'router', None) or getattr(self.scanner, 'router', None) or {}
+        gw_mac = str((router or {}).get('mac') or getattr(self.scanner, 'router_mac', '') or '')
+        local_mac = str(getattr(iface, 'mac', None) or '')
+
+        plan = None
+        try:
+            plan = self._impairment_plan_for(device)
+        except Exception:
+            plan = None
+        use_wd = bool(getattr(plan, 'use_windivert', False)) if plan is not None else False
+        gate = getattr(self, '_ics_lag_gate', None)
+        wd_running = bool(gate is not None and gate.is_running())
+        wd_paused = False
+        if gate is not None:
+            try:
+                if hasattr(gate, 'is_paused'):
+                    wd_paused = bool(gate.is_paused())
+                elif hasattr(gate, 'blocking'):
+                    wd_paused = bool(gate.blocking)
+                else:
+                    wd_paused = bool(getattr(gate, '_paused', False) or getattr(gate, '_blocking', False))
+            except Exception:
+                wd_paused = False
+
+        mitm_armed = bool(mac and mac in getattr(self.killer, 'killed', {}))
+        fw = getattr(self.killer, 'forwarders', {}).get(mac) if mac else None
+        fw_running = bool(fw and getattr(fw, 'running', False))
+        fw_hard = False
+        if fw_running:
+            try:
+                fw_hard = bool(
+                    getattr(fw, 'drop_from_victim', False)
+                    and getattr(fw, 'drop_to_victim', False)
+                    and int(getattr(fw, 'pass_from_victim_pct', 100) or 0) == 0
+                    and int(getattr(fw, 'pass_to_victim_pct', 100) or 0) == 0
+                )
+            except Exception:
+                fw_hard = False
+
+        ip_fwd = None
+        if sys.platform.startswith('win') and not use_wd:
+            try:
+                from networking.killer import is_ip_forwarding_enabled
+
+                ip_fwd = bool(is_ip_forwarding_enabled())
+            except Exception:
+                ip_fwd = None
+
+        flow_l = str(flow or '').lower()
+        expect_full = not flow_l.startswith('percent')
+        # Lag allow-phase is not a full cut — if lag is in allow, expect partial.
+        if flow_l.startswith('lag') and bool(getattr(self, '_lag_in_allow_phase', False)):
+            expect_full = False
+
+        report = analyze_victim_cut(
+            flow=str(flow or 'Cut'),
+            victim_ip=ip,
+            victim_mac=mac,
+            gateway_mac=gw_mac,
+            iface_guid=guid,
+            iface_name=iface_name,
+            seconds=2.5,
+            expect_full_cut=expect_full,
+            cut_pct=cut_pct,
+            mitm_armed=mitm_armed,
+            forwarder_running=fw_running,
+            forwarder_hard_drop=fw_hard,
+            ip_forwarding_on=ip_fwd,
+            use_windivert=use_wd,
+            windivert_paused=wd_paused,
+            windivert_running=wd_running,
+            local_mac=local_mac,
+        )
+        try:
+            save_cut_analysis_report(report)
+        except Exception:
+            pass
+        return report
+
     def _schedule_mitm_traffic_probe(self, device, *, flow: str = 'Kill') -> None:
         """After MITM arms, warn if no victim IP traffic reaches this NIC (common on Wi‑Fi → Ethernet)."""
         if not isinstance(device, dict):
@@ -146,6 +330,7 @@ class ImpairmentMitmMixin:
         iface = getattr(self.scanner, 'iface', None)
         guid = str(getattr(iface, 'guid', None) or '').strip()
         if not mac or not ip or not guid:
+            self._schedule_cut_analysis_if_enabled(device, flow=flow)
             return
 
         def _probe() -> None:
@@ -182,6 +367,8 @@ class ImpairmentMitmMixin:
             ).start()
         except Exception:
             pass
+        # Deep Analysis (Logs toggle) — after arm only; never before instant cut.
+        self._schedule_cut_analysis_if_enabled(device, flow=flow)
 
 
     def _retry_mitm_on_arp_iface(self, device, mac: str, ip: str, flow: str) -> bool:
