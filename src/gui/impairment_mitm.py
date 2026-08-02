@@ -141,7 +141,7 @@ class ImpairmentMitmMixin:
         return bool(getattr(self, '_cut_analysis_enabled', False))
 
     def set_cut_analysis_enabled(self, enabled: bool) -> None:
-        """Logs → Analysis toggle: deep cut check after Kill/Lag/Dupe/% Cut arm."""
+        """Logs → Analysis toggle: before/during/after cut checks (never delays instant cut)."""
         on = bool(enabled)
         prev = bool(getattr(self, '_cut_analysis_enabled', False))
         self._cut_analysis_enabled = on
@@ -149,106 +149,103 @@ class ImpairmentMitmMixin:
             return
         if on:
             self.log(
-                'Analysis ON — next Kill / Lag / Dupe / Percent Cut will run a deep '
-                'victim cut check (does not slow the instant cut).',
+                'Analysis ON — baselines the selected victim, then checks DURING cut and '
+                'AFTER restore for Kill / Lag / Dupe / Percent Cut (does not slow instant cut).',
                 UI_LOG_VICTIM_BLOCK_FG,
             )
+            self._ensure_cut_analysis_baseline_timer(True)
+            self._refresh_cut_analysis_baseline(force=True)
         else:
             self.log('Analysis OFF', UI_LOG_RESTORE_FG)
+            self._ensure_cut_analysis_baseline_timer(False)
+            self._cut_analysis_session = None
+            self._cut_analysis_baseline = None
 
-    def _schedule_cut_analysis_if_enabled(
-        self, device, *, flow: str = 'Kill', cut_pct: int | None = None
-    ) -> None:
-        """After arm only — never call before poison/cut. No-op when Analysis toggle is off."""
-        if not self.cut_analysis_enabled():
-            return
-        if not isinstance(device, dict):
-            return
-        dev = dict(device)
+    def _ensure_cut_analysis_baseline_timer(self, on: bool) -> None:
+        timer = getattr(self, '_cut_analysis_baseline_timer', None)
+        if on:
+            if timer is None:
+                timer = QTimer(self)
+                timer.setInterval(4500)
+                timer.timeout.connect(lambda: self._refresh_cut_analysis_baseline(force=False))
+                self._cut_analysis_baseline_timer = timer
+            if not timer.isActive():
+                timer.start()
+        elif timer is not None:
+            timer.stop()
+
+    def _cut_analysis_selected_device(self):
         try:
-            dev = self._device_with_plan_ip(dev)
+            dev = self._get_selected_device()
         except Exception:
-            pass
-        mac = str(dev.get('mac') or '').strip()
-        ip = str(dev.get('ip') or '').strip()
-        if not mac and not ip:
-            return
-        flow_s = str(flow or 'Cut')
-        pct = cut_pct
-        if pct is None and flow_s.lower().startswith('percent'):
-            try:
-                pct = int(getattr(self, 'percent_cut_value', 0) or 0)
-            except Exception:
-                pct = None
-        gen = int(getattr(self, '_cut_analysis_gen', 0)) + 1
-        self._cut_analysis_gen = gen
+            dev = None
+        if isinstance(dev, dict) and not dev.get('admin'):
+            return dict(dev)
+        return None
 
-        def _work() -> None:
-            import time as _time
+    def _gather_cut_analysis_host(self, device) -> dict:
+        from tools.cut_analysis import collect_host_health
 
-            # Yield so instant arm / UI paint finish first.
-            _time.sleep(1.1)
-            if int(getattr(self, '_cut_analysis_gen', 0)) != gen:
-                return
-            if not self.cut_analysis_enabled():
-                return
-            try:
-                report = self._run_cut_analysis_now(dev, flow=flow_s, cut_pct=pct)
-            except Exception:
-                return
-            if report is None:
-                return
-
-            def _on_main() -> None:
-                if not self.cut_analysis_enabled():
-                    return
-                color = {
-                    'FULL CUT': UI_LOG_VICTIM_BLOCK_FG,
-                    'PARTIAL': 'red',
-                    'NOT CUT': 'red',
-                    'INCONCLUSIVE': 'gray',
-                }.get(report.verdict, 'gray')
-                self.log(report.summary_line, color)
-                for line in report.lines:
-                    if line.startswith('[FAIL]') or line.startswith('[WARN]'):
-                        self.log(f'Analysis: {line}', 'red' if line.startswith('[FAIL]') else 'gray')
-                if report.report_path:
-                    self.log(f'Analysis report: {report.report_path}', 'gray')
-
-            try:
-                QTimer.singleShot(0, _on_main)
-            except Exception:
-                pass
-
-        try:
-            threading.Thread(
-                target=safe_daemon_target(_work),
-                name='zubcut-cut-analysis',
-                daemon=True,
-            ).start()
-        except Exception:
-            pass
-
-    def _run_cut_analysis_now(
-        self, device, *, flow: str = 'Kill', cut_pct: int | None = None
-    ):
-        """Gather live stack state + short sniff; return CutAnalysisReport or None."""
-        from tools.cut_analysis import analyze_victim_cut, save_cut_analysis_report
-
-        if not isinstance(device, dict):
-            return None
-        mac = str(device.get('mac') or '').strip()
-        ip = str(device.get('ip') or '').strip()
         iface = getattr(self.scanner, 'iface', None)
-        guid = str(getattr(iface, 'guid', None) or '').strip()
         iface_name = str(getattr(iface, 'name', None) or '')
+        iface_ip = str(getattr(iface, 'ip', None) or '')
+        guid = str(getattr(iface, 'guid', None) or '').strip()
         router = getattr(self.killer, 'router', None) or getattr(self.scanner, 'router', None) or {}
         gw_mac = str((router or {}).get('mac') or getattr(self.scanner, 'router_mac', '') or '')
-        local_mac = str(getattr(iface, 'mac', None) or '')
+        gw_ip = str((router or {}).get('ip') or getattr(self.scanner, 'gateway', '') or '')
+        l2_ready = None
+        try:
+            if hasattr(self.killer, 'l2_socket_ready'):
+                l2_ready = bool(self.killer.l2_socket_ready())
+        except Exception:
+            l2_ready = None
+        ip_fwd = None
+        if sys.platform.startswith('win'):
+            try:
+                from networking.killer import is_ip_forwarding_enabled
 
+                ip_fwd = bool(is_ip_forwarding_enabled())
+            except Exception:
+                ip_fwd = None
+        victim_in_arp = None
+        vip = str((device or {}).get('ip') or '').strip() if isinstance(device, dict) else ''
+        if vip and sys.platform.startswith('win'):
+            try:
+                from tools.utils import lookup_mac_from_arp_table
+
+                victim_in_arp = bool(lookup_mac_from_arp_table(vip))
+            except Exception:
+                victim_in_arp = None
+        settings_live = None
+        if iface_ip:
+            settings_live = not str(iface_ip).startswith('169.254.')
+        admin_ok = None
+        try:
+            import ctypes
+
+            admin_ok = bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            admin_ok = None
+        return collect_host_health(
+            iface_name=iface_name,
+            iface_ip=iface_ip,
+            iface_guid=guid,
+            gateway_mac=gw_mac,
+            gateway_ip=gw_ip,
+            l2_ready=l2_ready,
+            ip_forwarding_on=ip_fwd,
+            admin_ok=admin_ok,
+            victim_in_arp=victim_in_arp,
+            settings_adapter_live=settings_live,
+        )
+
+    def _gather_cut_analysis_stack(self, device, *, cut_pct: int | None = None) -> dict:
+        from tools.cut_analysis import collect_stack_state
+
+        mac = str((device or {}).get('mac') or '').strip() if isinstance(device, dict) else ''
         plan = None
         try:
-            plan = self._impairment_plan_for(device)
+            plan = self._impairment_plan_for(device) if isinstance(device, dict) else None
         except Exception:
             plan = None
         use_wd = bool(getattr(plan, 'use_windivert', False)) if plan is not None else False
@@ -262,10 +259,11 @@ class ImpairmentMitmMixin:
                 elif hasattr(gate, 'blocking'):
                     wd_paused = bool(gate.blocking)
                 else:
-                    wd_paused = bool(getattr(gate, '_paused', False) or getattr(gate, '_blocking', False))
+                    wd_paused = bool(
+                        getattr(gate, '_paused', False) or getattr(gate, '_blocking', False)
+                    )
             except Exception:
                 wd_paused = False
-
         mitm_armed = bool(mac and mac in getattr(self.killer, 'killed', {}))
         fw = getattr(self.killer, 'forwarders', {}).get(mac) if mac else None
         fw_running = bool(fw and getattr(fw, 'running', False))
@@ -280,40 +278,435 @@ class ImpairmentMitmMixin:
                 )
             except Exception:
                 fw_hard = False
+        return collect_stack_state(
+            mitm_armed=mitm_armed,
+            forwarder_running=fw_running,
+            forwarder_hard_drop=fw_hard,
+            use_windivert=use_wd,
+            windivert_running=wd_running,
+            windivert_paused=wd_paused,
+            cut_pct=cut_pct,
+        )
 
-        ip_fwd = None
-        if sys.platform.startswith('win') and not use_wd:
+    def _refresh_cut_analysis_baseline(self, *, force: bool = False) -> None:
+        """Rolling BEFORE sample while Analysis is ON (selected victim). Never blocks UI."""
+        if not self.cut_analysis_enabled():
+            return
+        # Skip refreshing mid-flow so BEFORE stays pre-cut.
+        if getattr(self, '_cut_analysis_session', None):
+            return
+        if any(
+            (
+                getattr(self, 'dupe_active', False),
+                getattr(self, 'lag_active', False),
+                getattr(self, 'percent_cut_active', False),
+            )
+        ):
+            return
+        # Skip while any ARP MITM victim is live (Kill ON).
+        try:
+            if getattr(self.killer, 'killed', None):
+                return
+        except Exception:
+            pass
+        device = self._cut_analysis_selected_device()
+        if not isinstance(device, dict):
+            return
+        ip = str(device.get('ip') or '').strip()
+        mac = str(device.get('mac') or '').strip()
+        if not ip:
+            return
+        prev = getattr(self, '_cut_analysis_baseline', None) or {}
+        if (
+            not force
+            and prev.get('ip') == ip
+            and prev.get('mac') == mac
+            and (time.monotonic() - float(prev.get('mono') or 0.0)) < 3.5
+        ):
+            return
+        gen = int(getattr(self, '_cut_analysis_baseline_gen', 0)) + 1
+        self._cut_analysis_baseline_gen = gen
+        iface = getattr(self.scanner, 'iface', None)
+        guid = str(getattr(iface, 'guid', None) or '').strip()
+        host_snap = self._gather_cut_analysis_host(device)
+
+        def _work() -> None:
+            from tools.cut_analysis import PHASE_BEFORE, PhaseSample, _sniff_cut_sample
+
+            sample = _sniff_cut_sample(guid, ip, seconds=1.2)
+            if int(getattr(self, '_cut_analysis_baseline_gen', 0)) != gen:
+                return
+            if getattr(self, '_cut_analysis_session', None):
+                return
+            phase = PhaseSample(
+                phase=PHASE_BEFORE,
+                sample=sample,
+                host=host_snap,
+                stack={},
+                note='rolling baseline while Analysis ON (pre-cut)',
+            )
+            self._cut_analysis_baseline = {
+                'mono': time.monotonic(),
+                'ip': ip,
+                'mac': mac,
+                'phase': phase,
+            }
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-cut-analysis-before',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    def _begin_cut_analysis_session(
+        self, device, *, flow: str = 'Kill', cut_pct: int | None = None
+    ) -> None:
+        """Freeze BEFORE baseline at flow start (instant cut must not wait)."""
+        if not self.cut_analysis_enabled():
+            return
+        if not isinstance(device, dict):
+            return
+        dev = dict(device)
+        try:
+            dev = self._device_with_plan_ip(dev)
+        except Exception:
+            pass
+        ip = str(dev.get('ip') or '').strip()
+        mac = str(dev.get('mac') or '').strip()
+        flow_s = str(flow or 'Cut')
+        baseline = getattr(self, '_cut_analysis_baseline', None) or {}
+        before = baseline.get('phase') if baseline.get('ip') == ip else None
+        # If no fresh baseline, capture a tiny non-blocking note — do not sniff here
+        # (would race/delay the cut). DURING/AFTER still run.
+        if before is None:
+            from tools.cut_analysis import PHASE_BEFORE, PhaseSample
+
+            before = PhaseSample(
+                phase=PHASE_BEFORE,
+                sample={'ok': False, 'error': 'no pre-cut baseline yet — keep Analysis ON a few seconds', 'ipv4': 0, 'ipv6': 0, 'arp': 0, 'arp_victim': 0, 'total': 0, 'seconds': 0},
+                host=self._gather_cut_analysis_host(dev),
+                stack={},
+                note='no rolling baseline frozen — Analysis needs a few idle seconds before the click',
+            )
+        sess_gen = int(getattr(self, '_cut_analysis_gen', 0)) + 1
+        self._cut_analysis_gen = sess_gen
+        self._cut_analysis_session = {
+            'gen': sess_gen,
+            'flow': flow_s,
+            'device': dev,
+            'ip': ip,
+            'mac': mac,
+            'cut_pct': cut_pct,
+            'before': before,
+            'during': None,
+            'after': None,
+            'finalized': False,
+        }
+        try:
+            self.log(
+                f'Analysis [{flow_s}]: BEFORE frozen for {ip or "?"} — will check DURING + AFTER',
+                'gray',
+            )
+        except Exception:
+            pass
+
+    def _schedule_cut_analysis_if_enabled(
+        self, device, *, flow: str = 'Kill', cut_pct: int | None = None
+    ) -> None:
+        """DURING phase after arm — never before poison/cut."""
+        if not self.cut_analysis_enabled():
+            return
+        if not isinstance(device, dict):
+            return
+        # Ensure a session exists (Kill re-ON / paths that skipped begin).
+        sess = getattr(self, '_cut_analysis_session', None)
+        if not isinstance(sess, dict) or sess.get('finalized'):
+            self._begin_cut_analysis_session(device, flow=flow, cut_pct=cut_pct)
+            sess = getattr(self, '_cut_analysis_session', None)
+        if not isinstance(sess, dict):
+            return
+        gen = int(sess.get('gen') or 0)
+        flow_s = str(sess.get('flow') or flow or 'Cut')
+        pct = cut_pct if cut_pct is not None else sess.get('cut_pct')
+        dev = dict(sess.get('device') or device)
+
+        def _work() -> None:
+            import time as _time
+
+            _time.sleep(1.0)
+            live = getattr(self, '_cut_analysis_session', None)
+            if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
+                return
+            if not self.cut_analysis_enabled():
+                return
+            from tools.cut_analysis import PHASE_DURING, PhaseSample, _sniff_cut_sample
+
+            iface = getattr(self.scanner, 'iface', None)
+            guid = str(getattr(iface, 'guid', None) or '').strip()
+            ip = str(dev.get('ip') or '').strip()
+            host = self._gather_cut_analysis_host(dev)
+            stack = self._gather_cut_analysis_stack(dev, cut_pct=pct)
+            sample = _sniff_cut_sample(guid, ip, seconds=2.0)
+            during = PhaseSample(
+                phase=PHASE_DURING,
+                sample=sample,
+                host=host,
+                stack=stack,
+                note='cut armed (post-instant)',
+            )
+            live = getattr(self, '_cut_analysis_session', None)
+            if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
+                return
+            live['during'] = during
+            # Dupe may already be OFF before DURING finishes — finalize if AFTER waiting.
+            if live.get('after') is not None or live.get('finalize_when_during'):
+                self._finalize_cut_analysis_session(gen)
+            else:
+                # Kill/Lag still ON — emit interim BEFORE+DURING verdict; AFTER later.
+                self._emit_cut_analysis_interim(gen)
+
+            def _on_main() -> None:
+                if not self.cut_analysis_enabled():
+                    return
+                self.log(
+                    f'Analysis [{flow_s}]: DURING captured for {ip or "?"} '
+                    f'(ipv4≈{sample.get("ipv4", 0)}, mitm='
+                    f'{"yes" if stack.get("mitm_armed") else "no"})',
+                    UI_LOG_VICTIM_BLOCK_FG,
+                )
+
             try:
-                from networking.killer import is_ip_forwarding_enabled
-
-                ip_fwd = bool(is_ip_forwarding_enabled())
+                QTimer.singleShot(0, _on_main)
             except Exception:
-                ip_fwd = None
+                pass
 
-        flow_l = str(flow or '').lower()
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-cut-analysis-during',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    def _schedule_cut_analysis_after_off(
+        self, device, *, flow: str = 'Kill'
+    ) -> None:
+        """AFTER phase once UI turns OFF — verify victim + ZubCut stack restored."""
+        if not self.cut_analysis_enabled():
+            return
+        sess = getattr(self, '_cut_analysis_session', None)
+        if not isinstance(sess, dict) or sess.get('finalized'):
+            # No session (Analysis toggled mid-flight) — still run a restore check.
+            if isinstance(device, dict):
+                self._begin_cut_analysis_session(device, flow=flow)
+                sess = getattr(self, '_cut_analysis_session', None)
+        if not isinstance(sess, dict):
+            return
+        gen = int(sess.get('gen') or 0)
+        flow_s = str(sess.get('flow') or flow or 'Cut')
+        pct = sess.get('cut_pct')
+        dev = dict(device) if isinstance(device, dict) else dict(sess.get('device') or {})
+
+        def _work() -> None:
+            import time as _time
+
+            # Let unkill / reinforce_restore settle.
+            _time.sleep(0.85)
+            live = getattr(self, '_cut_analysis_session', None)
+            if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
+                return
+            from tools.cut_analysis import PHASE_AFTER, PhaseSample, _sniff_cut_sample
+
+            iface = getattr(self.scanner, 'iface', None)
+            guid = str(getattr(iface, 'guid', None) or '').strip()
+            ip = str(dev.get('ip') or live.get('ip') or '').strip()
+            host = self._gather_cut_analysis_host(dev)
+            stack = self._gather_cut_analysis_stack(dev, cut_pct=pct)
+            sample = _sniff_cut_sample(guid, ip, seconds=1.8)
+            after = PhaseSample(
+                phase=PHASE_AFTER,
+                sample=sample,
+                host=host,
+                stack=stack,
+                note='flow OFF — restore check',
+            )
+            live = getattr(self, '_cut_analysis_session', None)
+            if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
+                return
+            live['after'] = after
+            if live.get('during') is None:
+                # DURING still running (short Dupe) — finalize when it lands.
+                live['finalize_when_during'] = True
+                return
+            self._finalize_cut_analysis_session(gen)
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-cut-analysis-after',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    def _cut_analysis_expect_full(self, flow_s: str) -> bool:
+        flow_l = str(flow_s or '').lower()
         expect_full = not flow_l.startswith('percent')
-        # Lag allow-phase is not a full cut — if lag is in allow, expect partial.
         if flow_l.startswith('lag') and bool(getattr(self, '_lag_in_allow_phase', False)):
             expect_full = False
+        return expect_full
 
+    def _emit_cut_analysis_interim(self, gen: int) -> None:
+        """Log/save BEFORE+DURING while the flow is still ON (AFTER comes on OFF)."""
+        live = getattr(self, '_cut_analysis_session', None)
+        if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
+            return
+        if live.get('during') is None or live.get('interim_emitted'):
+            return
+        live['interim_emitted'] = True
+        from tools.cut_analysis import save_cut_analysis_report, score_phases
+
+        flow_s = str(live.get('flow') or 'Cut')
+        dev = dict(live.get('device') or {})
+        ip = str(live.get('ip') or dev.get('ip') or '').strip()
+        mac = str(live.get('mac') or dev.get('mac') or '').strip()
+        try:
+            report = score_phases(
+                flow=f'{flow_s} (during)',
+                victim_ip=ip,
+                victim_mac=mac,
+                expect_full_cut=self._cut_analysis_expect_full(flow_s),
+                before=live.get('before'),
+                during=live.get('during'),
+                after=None,
+                cut_pct=live.get('cut_pct'),
+            )
+            save_cut_analysis_report(report)
+        except Exception:
+            return
+
+        def _on_main() -> None:
+            color = {
+                'FULL CUT': UI_LOG_VICTIM_BLOCK_FG,
+                'PARTIAL': 'red',
+                'NOT CUT': 'red',
+                'INCONCLUSIVE': 'gray',
+            }.get(report.verdict, 'gray')
+            self.log(report.summary_line + ' — waiting for AFTER (turn OFF)', color)
+            if report.report_path:
+                self.log(f'Analysis interim report: {report.report_path}', 'gray')
+
+        try:
+            QTimer.singleShot(0, _on_main)
+        except Exception:
+            pass
+
+    def _finalize_cut_analysis_session(self, gen: int) -> None:
+        """Compose BEFORE/DURING/AFTER report once phases are ready."""
+        live = getattr(self, '_cut_analysis_session', None)
+        if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
+            return
+        if live.get('finalized'):
+            return
+        if live.get('during') is None or live.get('after') is None:
+            return
+        live['finalized'] = True
+        from tools.cut_analysis import save_cut_analysis_report, score_phases
+
+        flow_s = str(live.get('flow') or 'Cut')
+        dev = dict(live.get('device') or {})
+        ip = str(live.get('ip') or dev.get('ip') or '').strip()
+        mac = str(live.get('mac') or dev.get('mac') or '').strip()
+        try:
+            report = score_phases(
+                flow=flow_s,
+                victim_ip=ip,
+                victim_mac=mac,
+                expect_full_cut=self._cut_analysis_expect_full(flow_s),
+                before=live.get('before'),
+                during=live.get('during'),
+                after=live.get('after'),
+                cut_pct=live.get('cut_pct'),
+            )
+            save_cut_analysis_report(report)
+        except Exception:
+            self._cut_analysis_session = None
+            return
+
+        def _on_main() -> None:
+            color = {
+                'FULL CUT': UI_LOG_VICTIM_BLOCK_FG,
+                'PARTIAL': 'red',
+                'NOT CUT': 'red',
+                'INCONCLUSIVE': 'gray',
+            }.get(report.verdict, 'gray')
+            self.log(report.summary_line, color)
+            for line in report.lines:
+                if line.startswith('[FAIL]') or (
+                    line.startswith('[WARN]') and 'baseline' not in line.lower()
+                ):
+                    self.log(
+                        f'Analysis: {line}',
+                        'red' if line.startswith('[FAIL]') else 'gray',
+                    )
+            if report.report_path:
+                self.log(f'Analysis report: {report.report_path}', 'gray')
+            if getattr(self, '_cut_analysis_session', None) and int(
+                (self._cut_analysis_session or {}).get('gen') or 0
+            ) == gen:
+                self._cut_analysis_session = None
+
+        try:
+            QTimer.singleShot(0, _on_main)
+        except Exception:
+            pass
+
+    def _run_cut_analysis_now(
+        self, device, *, flow: str = 'Kill', cut_pct: int | None = None
+    ):
+        """Legacy single-shot DURING helper (tests / fallback)."""
+        from tools.cut_analysis import analyze_victim_cut, save_cut_analysis_report
+
+        if not isinstance(device, dict):
+            return None
+        mac = str(device.get('mac') or '').strip()
+        ip = str(device.get('ip') or '').strip()
+        iface = getattr(self.scanner, 'iface', None)
+        guid = str(getattr(iface, 'guid', None) or '').strip()
+        iface_name = str(getattr(iface, 'name', None) or '')
+        host = self._gather_cut_analysis_host(device)
+        stack = self._gather_cut_analysis_stack(device, cut_pct=cut_pct)
+        flow_l = str(flow or '').lower()
+        expect_full = not flow_l.startswith('percent')
+        if flow_l.startswith('lag') and bool(getattr(self, '_lag_in_allow_phase', False)):
+            expect_full = False
+        before = None
+        baseline = getattr(self, '_cut_analysis_baseline', None) or {}
+        if baseline.get('ip') == ip:
+            before = baseline.get('phase')
         report = analyze_victim_cut(
             flow=str(flow or 'Cut'),
             victim_ip=ip,
             victim_mac=mac,
-            gateway_mac=gw_mac,
+            gateway_mac=str(host.get('gateway_mac') or ''),
             iface_guid=guid,
             iface_name=iface_name,
-            seconds=2.5,
+            seconds=2.0,
             expect_full_cut=expect_full,
             cut_pct=cut_pct,
-            mitm_armed=mitm_armed,
-            forwarder_running=fw_running,
-            forwarder_hard_drop=fw_hard,
-            ip_forwarding_on=ip_fwd,
-            use_windivert=use_wd,
-            windivert_paused=wd_paused,
-            windivert_running=wd_running,
-            local_mac=local_mac,
+            mitm_armed=bool(stack.get('mitm_armed')),
+            forwarder_running=bool(stack.get('forwarder_running')),
+            forwarder_hard_drop=bool(stack.get('forwarder_hard_drop')),
+            ip_forwarding_on=host.get('ip_forwarding_on'),
+            use_windivert=bool(stack.get('use_windivert')),
+            windivert_paused=bool(stack.get('windivert_paused')),
+            windivert_running=bool(stack.get('windivert_running')),
+            before=before,
+            host=host,
         )
         try:
             save_cut_analysis_report(report)

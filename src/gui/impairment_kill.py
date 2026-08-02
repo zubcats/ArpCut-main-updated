@@ -358,6 +358,10 @@ class ImpairmentKillMixin:
         src = source
         if on:
             try:
+                self._begin_cut_analysis_session(dev, flow='Kill')
+            except Exception:
+                pass
+            try:
                 plan = self._impairment_plan_for(dev)
                 if clumsy_mode_enabled() and plan.is_ics_downstream:
                     dev = self._prepare_victim_for_impairment(dev, fast=True)
@@ -664,6 +668,10 @@ class ImpairmentKillMixin:
                     # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
                     self._schedule_kill_off_reinforce(mac, my_seq, 25)
                     self._schedule_kill_off_reinforce(mac, my_seq, 100)
+                    try:
+                        self._schedule_cut_analysis_after_off(victim, flow='Kill')
+                    except Exception:
+                        pass
 
             if turn_on and kill_applied and _superseded():
                 try:

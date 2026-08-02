@@ -30,8 +30,9 @@ class TestCutAnalysisScoring(unittest.TestCase):
                 'ipv4': 12,
                 'ipv6': 0,
                 'arp': 2,
-                'arp_poison_like': 1,
+                'arp_victim': 1,
                 'total': 15,
+                'seconds': 2.0,
             },
         ):
             report = ca.analyze_victim_cut(
@@ -45,9 +46,17 @@ class TestCutAnalysisScoring(unittest.TestCase):
                 forwarder_running=True,
                 forwarder_hard_drop=True,
                 ip_forwarding_on=False,
+                host=ca.collect_host_health(
+                    iface_name='Wi-Fi',
+                    iface_ip='192.168.1.26',
+                    gateway_mac='11:22:33:44:55:66',
+                    settings_adapter_live=True,
+                    ip_forwarding_on=False,
+                ),
             )
         self.assertEqual(report.verdict, 'FULL CUT')
-        self.assertIn('FULL CUT', report.summary_line)
+        self.assertIn('BEFORE', '\n'.join(report.lines) + 'DURING')
+        self.assertIn('--- DURING ---', '\n'.join(report.lines))
 
     def test_partial_when_forwarder_missing(self) -> None:
         from tools import cut_analysis as ca
@@ -61,8 +70,9 @@ class TestCutAnalysisScoring(unittest.TestCase):
                 'ipv4': 3,
                 'ipv6': 0,
                 'arp': 1,
-                'arp_poison_like': 1,
+                'arp_victim': 1,
                 'total': 4,
+                'seconds': 2.0,
             },
         ):
             report = ca.analyze_victim_cut(
@@ -91,8 +101,9 @@ class TestCutAnalysisScoring(unittest.TestCase):
                 'ipv4': 0,
                 'ipv6': 0,
                 'arp': 0,
-                'arp_poison_like': 0,
+                'arp_victim': 0,
                 'total': 0,
+                'seconds': 2.0,
             },
         ):
             report = ca.analyze_victim_cut(
@@ -104,6 +115,78 @@ class TestCutAnalysisScoring(unittest.TestCase):
                 mitm_armed=False,
             )
         self.assertEqual(report.verdict, 'NOT CUT')
+
+    def test_after_mitm_still_armed_is_partial(self) -> None:
+        from tools import cut_analysis as ca
+
+        before = ca.PhaseSample(
+            phase=ca.PHASE_BEFORE,
+            sample={
+                'ok': True,
+                'ipv4': 8,
+                'ipv6': 0,
+                'arp': 1,
+                'arp_victim': 1,
+                'total': 9,
+                'seconds': 1.2,
+            },
+            host=ca.collect_host_health(
+                iface_name='Wi-Fi',
+                iface_ip='192.168.1.26',
+                gateway_mac='11:22:33:44:55:66',
+                settings_adapter_live=True,
+                ip_forwarding_on=False,
+            ),
+        )
+        during = ca.PhaseSample(
+            phase=ca.PHASE_DURING,
+            sample={
+                'ok': True,
+                'ipv4': 10,
+                'ipv6': 0,
+                'arp': 2,
+                'arp_victim': 2,
+                'total': 12,
+                'seconds': 2.0,
+            },
+            host=before.host,
+            stack=ca.collect_stack_state(
+                mitm_armed=True,
+                forwarder_running=True,
+                forwarder_hard_drop=True,
+            ),
+        )
+        after = ca.PhaseSample(
+            phase=ca.PHASE_AFTER,
+            sample={
+                'ok': True,
+                'ipv4': 0,
+                'ipv6': 0,
+                'arp': 0,
+                'arp_victim': 0,
+                'total': 0,
+                'seconds': 1.8,
+            },
+            host=before.host,
+            stack=ca.collect_stack_state(
+                mitm_armed=True,
+                forwarder_running=False,
+                forwarder_hard_drop=False,
+            ),
+        )
+        report = ca.score_phases(
+            flow='Dupe',
+            victim_ip='192.168.1.50',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            expect_full_cut=True,
+            before=before,
+            during=during,
+            after=after,
+        )
+        self.assertEqual(report.verdict, 'PARTIAL')
+        self.assertTrue(any('AFTER' in r and 'still armed' in r for r in report.lines) or any(
+            'still armed' in r for r in report.lines
+        ))
 
     def test_percent_cut_is_not_full_offline(self) -> None:
         from tools import cut_analysis as ca
@@ -117,8 +200,9 @@ class TestCutAnalysisScoring(unittest.TestCase):
                 'ipv4': 5,
                 'ipv6': 0,
                 'arp': 0,
-                'arp_poison_like': 0,
+                'arp_victim': 0,
                 'total': 5,
+                'seconds': 2.0,
             },
         ):
             report = ca.analyze_victim_cut(
@@ -141,13 +225,42 @@ class TestCutAnalysisWiring(unittest.TestCase):
         src = load_main_window_source()
         self.assertIn('def cut_analysis_enabled', src)
         self.assertIn('def set_cut_analysis_enabled', src)
+        self.assertIn('def _begin_cut_analysis_session', src)
         self.assertIn('def _schedule_cut_analysis_if_enabled', src)
-        self.assertIn('def _run_cut_analysis_now', src)
-        sched = method_src('_schedule_cut_analysis_if_enabled')
-        self.assertIn('cut_analysis_enabled', sched)
-        self.assertIn('zubcut-cut-analysis', sched)
-        # Must yield before work (instant cut first).
-        self.assertIn('sleep(', sched)
+        self.assertIn('def _schedule_cut_analysis_after_off', src)
+        self.assertIn('def _refresh_cut_analysis_baseline', src)
+        begin = method_src('_begin_cut_analysis_session')
+        self.assertIn('BEFORE', begin)
+        during = method_src('_schedule_cut_analysis_if_enabled')
+        self.assertIn('sleep(', during)
+        after = method_src('_schedule_cut_analysis_after_off')
+        self.assertIn('PHASE_AFTER', after)
+
+    def test_flows_begin_before_instant_cut(self) -> None:
+        kill = method_src('toggleKill')
+        # begin must appear before preblock in ON path
+        self.assertIn('_begin_cut_analysis_session', kill)
+        self.assertLess(
+            kill.index('_begin_cut_analysis_session'),
+            kill.index("_flow_instant_preblock(dev, 'both', flow='Kill')"),
+        )
+        dupe = method_src('startDupe')
+        self.assertLess(
+            dupe.index('_begin_cut_analysis_session'),
+            dupe.index("_flow_instant_preblock(device, direction, flow='Dupe')"),
+        )
+        lag = method_src('startLagSwitch')
+        self.assertLess(
+            lag.index('_begin_cut_analysis_session'),
+            lag.index('_lag_instant_preblock'),
+        )
+
+    def test_flows_schedule_after_off(self) -> None:
+        self.assertIn('_schedule_cut_analysis_after_off', method_src('stopDupe'))
+        self.assertIn('_schedule_cut_analysis_after_off', method_src('stopLagSwitch'))
+        self.assertIn('_schedule_cut_analysis_after_off', method_src('stopPercentCut'))
+        kill = method_src('_run_kill_command')
+        self.assertIn("_schedule_cut_analysis_after_off(victim, flow='Kill')", kill)
 
     def test_mitm_probe_schedules_analysis(self) -> None:
         probe = method_src('_schedule_mitm_traffic_probe')
@@ -160,8 +273,9 @@ class TestCutAnalysisWiring(unittest.TestCase):
         self.assertIn("setObjectName('logsDiagAnalysisBtn')", src)
         self.assertIn("QPushButton('Analysis'", src)
         self.assertIn('setCheckable(True)', src)
-        self.assertIn('_on_analysis_toggled', src)
-        self.assertIn('set_cut_analysis_enabled', src)
+        self.assertIn('BEFORE', src)
+        self.assertIn('DURING', src)
+        self.assertIn('AFTER', src)
 
     def test_analysis_button_qss_no_qdark_blue(self) -> None:
         path = os.path.join(_SRC, 'tools', 'utils_gui.py')

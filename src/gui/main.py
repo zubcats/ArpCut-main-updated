@@ -949,6 +949,10 @@ class ZubCutApp(
         self._mitm_probe_retried_macs: set[str] = set()
         self._cut_analysis_enabled = False
         self._cut_analysis_gen = 0
+        self._cut_analysis_baseline_gen = 0
+        self._cut_analysis_baseline = None
+        self._cut_analysis_session = None
+        self._cut_analysis_baseline_timer = None
         self._idle_mitm_reconcile_timer = QTimer(self)
         self._idle_mitm_reconcile_timer.setInterval(20000)
         self._idle_mitm_reconcile_timer.timeout.connect(
