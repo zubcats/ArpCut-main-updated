@@ -309,6 +309,13 @@ class TestCutAnalysisWiring(unittest.TestCase):
         after = method_src('_schedule_cut_analysis_after_off')
         self.assertIn('PHASE_AFTER', after)
 
+    def test_interim_does_not_write_desktop_report(self) -> None:
+        """Only the final AFTER finalize may save ZubCut-Analysis-*.txt."""
+        interim = method_src('_emit_cut_analysis_interim')
+        self.assertNotIn('save_cut_analysis_report', interim)
+        finalize = method_src('_finalize_cut_analysis_session')
+        self.assertIn('save_cut_analysis_report(report, open_report=True)', finalize)
+
     def test_flows_begin_before_instant_cut(self) -> None:
         kill = method_src('toggleKill')
         # begin must appear before preblock in ON path

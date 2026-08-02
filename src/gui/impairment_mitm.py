@@ -568,14 +568,14 @@ class ImpairmentMitmMixin:
         return expect_full
 
     def _emit_cut_analysis_interim(self, gen: int) -> None:
-        """Log/save BEFORE+DURING while the flow is still ON (AFTER comes on OFF)."""
+        """Log DURING progress only — one Notepad file is written on AFTER finalize."""
         live = getattr(self, '_cut_analysis_session', None)
         if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
             return
         if live.get('during') is None or live.get('interim_emitted'):
             return
         live['interim_emitted'] = True
-        from tools.cut_analysis import save_cut_analysis_report, score_phases
+        from tools.cut_analysis import score_phases
 
         flow_s = str(live.get('flow') or 'Cut')
         dev = dict(live.get('device') or {})
@@ -583,7 +583,7 @@ class ImpairmentMitmMixin:
         mac = str(live.get('mac') or dev.get('mac') or '').strip()
         try:
             report = score_phases(
-                flow=f'{flow_s} (during)',
+                flow=flow_s,
                 victim_ip=ip,
                 victim_mac=mac,
                 expect_full_cut=self._cut_analysis_expect_full(flow_s),
@@ -592,8 +592,6 @@ class ImpairmentMitmMixin:
                 after=None,
                 cut_pct=live.get('cut_pct'),
             )
-            # Interim file only — open Notepad on the final AFTER report.
-            save_cut_analysis_report(report, open_report=False)
         except Exception:
             return
 
@@ -604,9 +602,11 @@ class ImpairmentMitmMixin:
                 'NOT CUT': 'red',
                 'INCONCLUSIVE': 'gray',
             }.get(report.verdict, 'gray')
-            self.log(report.summary_line + ' — waiting for AFTER (turn OFF)', color)
-            if report.report_path:
-                self.log(f'Analysis interim report: {report.report_path}', 'gray')
+            # Status only — do not write a second Desktop report / open Notepad here.
+            self.log(
+                report.summary_line + ' — waiting for OFF to save the full report',
+                color,
+            )
 
         try:
             QTimer.singleShot(0, _on_main)
