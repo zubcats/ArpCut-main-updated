@@ -411,10 +411,12 @@ class ImpairmentMitmMixin:
             'during': None,
             'after': None,
             'finalized': False,
+            'report_saved': False,
         }
         try:
             self.log(
-                f'Analysis [{flow_s}]: BEFORE frozen for {ip or "?"} — will check DURING + AFTER',
+                f'Analysis [{flow_s}]: collecting BEFORE/DURING/AFTER for {ip or "?"} '
+                '(one report when finished)',
                 'gray',
             )
         except Exception:
@@ -468,27 +470,9 @@ class ImpairmentMitmMixin:
             if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
                 return
             live['during'] = during
-            # Dupe may already be OFF before DURING finishes — finalize if AFTER waiting.
+            # Only write the Desktop report when BEFORE+DURING+AFTER are all ready.
             if live.get('after') is not None or live.get('finalize_when_during'):
                 self._finalize_cut_analysis_session(gen)
-            else:
-                # Kill/Lag still ON — emit interim BEFORE+DURING verdict; AFTER later.
-                self._emit_cut_analysis_interim(gen)
-
-            def _on_main() -> None:
-                if not self.cut_analysis_enabled():
-                    return
-                self.log(
-                    f'Analysis [{flow_s}]: DURING captured for {ip or "?"} '
-                    f'(ipv4≈{sample.get("ipv4", 0)}, mitm='
-                    f'{"yes" if stack.get("mitm_armed") else "no"})',
-                    UI_LOG_VICTIM_BLOCK_FG,
-                )
-
-            try:
-                QTimer.singleShot(0, _on_main)
-            except Exception:
-                pass
 
         try:
             threading.Thread(
@@ -502,19 +486,21 @@ class ImpairmentMitmMixin:
     def _schedule_cut_analysis_after_off(
         self, device, *, flow: str = 'Kill'
     ) -> None:
-        """AFTER phase once UI turns OFF — verify victim + ZubCut stack restored."""
+        """AFTER phase once UI turns OFF — complete the single full report."""
         if not self.cut_analysis_enabled():
             return
         sess = getattr(self, '_cut_analysis_session', None)
-        if not isinstance(sess, dict) or sess.get('finalized'):
-            # No session (Analysis toggled mid-flight) — still run a restore check.
+        # Already wrote the one report for this run — never start a second session.
+        if isinstance(sess, dict) and (sess.get('finalized') or sess.get('report_saved')):
+            return
+        if not isinstance(sess, dict):
+            # No session (Analysis toggled mid-flight) — still collect a full cycle.
             if isinstance(device, dict):
                 self._begin_cut_analysis_session(device, flow=flow)
                 sess = getattr(self, '_cut_analysis_session', None)
         if not isinstance(sess, dict):
             return
         gen = int(sess.get('gen') or 0)
-        flow_s = str(sess.get('flow') or flow or 'Cut')
         pct = sess.get('cut_pct')
         dev = dict(device) if isinstance(device, dict) else dict(sess.get('device') or {})
 
@@ -525,6 +511,8 @@ class ImpairmentMitmMixin:
             _time.sleep(0.85)
             live = getattr(self, '_cut_analysis_session', None)
             if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
+                return
+            if live.get('finalized') or live.get('report_saved'):
                 return
             from tools.cut_analysis import PHASE_AFTER, PhaseSample, _sniff_cut_sample
 
@@ -543,6 +531,8 @@ class ImpairmentMitmMixin:
             )
             live = getattr(self, '_cut_analysis_session', None)
             if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
+                return
+            if live.get('finalized') or live.get('report_saved'):
                 return
             live['after'] = after
             if live.get('during') is None:
@@ -567,60 +557,14 @@ class ImpairmentMitmMixin:
             expect_full = False
         return expect_full
 
-    def _emit_cut_analysis_interim(self, gen: int) -> None:
-        """Log DURING progress only — one Notepad file is written on AFTER finalize."""
-        live = getattr(self, '_cut_analysis_session', None)
-        if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
-            return
-        if live.get('during') is None or live.get('interim_emitted'):
-            return
-        live['interim_emitted'] = True
-        from tools.cut_analysis import score_phases
-
-        flow_s = str(live.get('flow') or 'Cut')
-        dev = dict(live.get('device') or {})
-        ip = str(live.get('ip') or dev.get('ip') or '').strip()
-        mac = str(live.get('mac') or dev.get('mac') or '').strip()
-        try:
-            report = score_phases(
-                flow=flow_s,
-                victim_ip=ip,
-                victim_mac=mac,
-                expect_full_cut=self._cut_analysis_expect_full(flow_s),
-                before=live.get('before'),
-                during=live.get('during'),
-                after=None,
-                cut_pct=live.get('cut_pct'),
-            )
-        except Exception:
-            return
-
-        def _on_main() -> None:
-            color = {
-                'FULL CUT': UI_LOG_VICTIM_BLOCK_FG,
-                'PARTIAL': 'red',
-                'NOT CUT': 'red',
-                'INCONCLUSIVE': 'gray',
-            }.get(report.verdict, 'gray')
-            # Status only — do not write a second Desktop report / open Notepad here.
-            self.log(
-                report.summary_line + ' — waiting for OFF to save the full report',
-                color,
-            )
-
-        try:
-            QTimer.singleShot(0, _on_main)
-        except Exception:
-            pass
-
     def _finalize_cut_analysis_session(self, gen: int) -> None:
-        """Compose BEFORE/DURING/AFTER report once phases are ready."""
+        """Write one Desktop report with BEFORE + DURING + AFTER — never mid-run."""
         live = getattr(self, '_cut_analysis_session', None)
         if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
             return
-        if live.get('finalized'):
+        if live.get('finalized') or live.get('report_saved'):
             return
-        if live.get('during') is None or live.get('after') is None:
+        if live.get('before') is None or live.get('during') is None or live.get('after') is None:
             return
         live['finalized'] = True
         from tools.cut_analysis import save_cut_analysis_report, score_phases
@@ -640,8 +584,9 @@ class ImpairmentMitmMixin:
                 after=live.get('after'),
                 cut_pct=live.get('cut_pct'),
             )
-            # Final report → Desktop\ZubCut Diagnostics + Notepad (Quick check parity).
-            save_cut_analysis_report(report, open_report=True)
+            # Single file: Desktop\ZubCut Diagnostics + Notepad.
+            path = save_cut_analysis_report(report, open_report=True)
+            live['report_saved'] = bool(path)
         except Exception:
             self._cut_analysis_session = None
             return
@@ -664,7 +609,7 @@ class ImpairmentMitmMixin:
                     )
             if report.report_path:
                 self.log(
-                    f'Analysis report saved (Desktop\\ZubCut Diagnostics): {report.report_path}',
+                    f'Analysis report (BEFORE+DURING+AFTER) saved: {report.report_path}',
                     'gray',
                 )
             if getattr(self, '_cut_analysis_session', None) and int(
@@ -700,7 +645,8 @@ class ImpairmentMitmMixin:
         baseline = getattr(self, '_cut_analysis_baseline', None) or {}
         if baseline.get('ip') == ip:
             before = baseline.get('phase')
-        report = analyze_victim_cut(
+        # Fallback helper for tests — session finalize is the only save/Notepad path.
+        return analyze_victim_cut(
             flow=str(flow or 'Cut'),
             victim_ip=ip,
             victim_mac=mac,
@@ -720,11 +666,6 @@ class ImpairmentMitmMixin:
             before=before,
             host=host,
         )
-        try:
-            save_cut_analysis_report(report)
-        except Exception:
-            pass
-        return report
 
     def _schedule_mitm_traffic_probe(self, device, *, flow: str = 'Kill') -> None:
         """After MITM arms, warn if no victim IP traffic reaches this NIC (common on Wi‑Fi → Ethernet)."""
