@@ -1,12 +1,12 @@
 """Deep cut Analysis — before / during / after victim + ZubCut-host checks.
 
-Phases (never on the instant-cut hot path):
-  BEFORE  — baseline while Analysis is ON (rolling) or frozen at flow start
-  DURING  — after Kill/Lag/Dupe/% Cut arm
-  AFTER   — after flow OFF / restore
+Intended model (Kill/Dupe full-cut flows):
+  BEFORE  — good connection (victim live on LAN)
+  DURING  — full cut (victim WAN path severed; FAIL if connection still good)
+  AFTER   — good connection restored after OFF
 
-Overall SUCCESS only when the intended full cut is proven; any phase failure
-or PARTIAL cut marks the run FAIL. Writes one privacy-masked report under
+Never runs on the instant-cut hot path. Overall SUCCESS only when all three
+phases match that model. Writes one privacy-masked report under
 Desktop\\ZubCut Diagnostics.
 """
 from __future__ import annotations
@@ -739,9 +739,11 @@ def _eval_before(ps: Optional[PhaseSample]) -> PhaseResult:
             )
         )
     elif host.get('victim_on_lan') is True:
-        notes.append('victim confirmed on LAN (ping/ARP)')
+        notes.append('BEFORE expects good connection — victim confirmed on LAN (ping/ARP)')
     else:
-        fails.append('victim LAN presence not confirmed before cut')
+        fails.append(
+            'BEFORE expects good connection — victim LAN presence not confirmed before cut'
+        )
     if host.get('victim_mac_match') is False:
         fails.append('ARP MAC does not match selected row (stale/ghost identity)')
     if not (ps.sample or {}).get('ok'):
@@ -1032,10 +1034,10 @@ def _eval_during_full_cut(
 
             if bypass:
                 fails.append(
-                    'Victim still exchanges WAN traffic via the real gateway MAC '
+                    'DURING expects full cut — connection still GOOD via real gateway '
                     f'(bypass={int(sample.get("victim_wan_bypass_gw") or 0)}, '
                     f'returnBypass={int(sample.get("wan_return_bypass") or 0)}) — '
-                    'connection NOT severed (poison incomplete / wrong NIC)'
+                    'FAIL (poison incomplete / wrong NIC)'
                 )
                 verdict = 'PARTIAL'
 
@@ -1062,9 +1064,9 @@ def _eval_during_full_cut(
                 'forwarder_running'
             ):
                 fails.append(
-                    'Cut stack armed but victim WAN path not proven severed '
-                    '(need victim wan→us packets and/or forwarder drops; poison ARP alone '
-                    'or losing ping to the PS5 does NOT count). Keep the console in a game '
+                    'DURING expects full cut — connection still looks GOOD / unproven '
+                    '(need victim wan→us packets being dropped and/or forwarder drops; '
+                    'poison ARP alone does NOT prove a cut). Keep the console in a game '
                     'with network activity and use ≥8000 ms for Analysis'
                 )
                 verdict = 'INCONCLUSIVE'
@@ -1094,8 +1096,8 @@ def _eval_during_full_cut(
             ):
                 verdict = 'FULL CUT'
                 notes.append(
-                    'Victim WAN path severed: still on LAN, MITM+hard-drop armed, '
-                    'WAN attempts hitting this PC / forwarder drops, no gateway bypass'
+                    'DURING full cut OK — victim WAN path severed (wan→us / forwarder drops), '
+                    'no gateway bypass; connection is NOT good during the cut (as required)'
                 )
             elif not fails and verdict == 'INCONCLUSIVE':
                 fails.append('victim-path full-cut checklist incomplete')
@@ -1113,33 +1115,54 @@ def _eval_during_full_cut(
     return PhaseResult(PHASE_DURING, passed, fails, notes), verdict
 
 
-def _eval_after(ps: Optional[PhaseSample]) -> PhaseResult:
+def _eval_after(
+    ps: Optional[PhaseSample],
+    *,
+    before: Optional[PhaseSample] = None,
+    expect_full_cut: bool = True,
+) -> PhaseResult:
+    """AFTER must restore a good connection (inverse of DURING full cut)."""
     if ps is None:
         return PhaseResult(PHASE_AFTER, False, ['AFTER phase missing'])
     stack = ps.stack or {}
     host = ps.host or {}
+    b_host = (before.host if before else {}) or {}
     fails: List[str] = []
     notes: List[str] = []
     if stack.get('use_windivert'):
         if stack.get('windivert_paused'):
-            fails.append('WinDivert still paused after OFF — victim may stay cut')
+            fails.append('WinDivert still paused after OFF — connection not restored')
         else:
             notes.append('WinDivert not paused after OFF')
     else:
         if stack.get('mitm_armed'):
-            fails.append('ARP MITM still armed after OFF — victim may stay cut')
+            fails.append('ARP MITM still armed after OFF — connection not restored')
         else:
             notes.append('ARP MITM cleared')
         if stack.get('forwarder_running'):
-            fails.append('Npcap forwarder still running after OFF')
+            fails.append('Npcap forwarder still running after OFF — connection not restored')
         else:
             notes.append('forwarder cleared')
     # Hard-drop flags left set after OFF is a restore leak (even if forwarder thread stopped).
     if stack.get('forwarder_hard_drop'):
-        fails.append('forwarder still in hard-drop mode after OFF')
-    if host.get('victim_on_lan') is False:
-        notes.append(
-            'victim not on LAN after OFF — may still be waking; not scored as cut failure alone'
+        fails.append('forwarder still in hard-drop mode after OFF — connection not restored')
+
+    # AFTER expects good connection again (especially when BEFORE had one).
+    if host.get('victim_on_lan') is True:
+        notes.append('AFTER expects good connection — victim reachable on LAN again')
+    elif host.get('victim_on_lan') is False:
+        if expect_full_cut and b_host.get('victim_on_lan') is True:
+            fails.append(
+                'AFTER expects good connection — victim still unreachable after OFF '
+                '(restore failed / cut stuck)'
+            )
+        else:
+            fails.append(
+                'AFTER expects good connection — victim not on LAN after OFF'
+            )
+    elif expect_full_cut and b_host.get('victim_on_lan') is True:
+        fails.append(
+            'AFTER expects good connection — victim LAN presence not confirmed after OFF'
         )
     return PhaseResult(PHASE_AFTER, not fails, fails, notes)
 
@@ -1164,7 +1187,7 @@ def score_phases(
     during_r, verdict = _eval_during_full_cut(
         during, before=before, expect_full_cut=expect_full_cut, cut_pct=cut_pct
     )
-    after_r = _eval_after(after)
+    after_r = _eval_after(after, before=before, expect_full_cut=expect_full_cut)
 
     phase_results = {
         PHASE_BEFORE: before_r,
@@ -1211,7 +1234,7 @@ def score_phases(
     if overall == 'SUCCESS':
         lines.append('  OVERALL RESULT:  SUCCESS')
         lines.append(
-            '  Victim WAN path severed (not just ZubCut blocking its own view of the PS5).'
+            '  BEFORE good connection → DURING full cut → AFTER good connection.'
             if expect_full_cut
             else '  Percent Cut path armed and restored cleanly.'
         )
@@ -1225,7 +1248,7 @@ def score_phases(
     else:
         lines.append('  OVERALL RESULT:  FAIL')
         lines.append(
-            '  Victim connection NOT proven severed — see FAIL sections below.'
+            '  Did not match BEFORE=good / DURING=full cut / AFTER=good — see FAIL sections.'
             if expect_full_cut
             else '  The cut DID NOT fully work — see FAIL sections below.'
         )
@@ -1236,6 +1259,10 @@ def score_phases(
     lines.append(f'Victim: {victim_ip or "?"} ({victim_mac or "no MAC"})')
     if live_at and live_at != victim_ip:
         lines.append(f'Live IP for this MAC (if known): {live_at}')
+    if expect_full_cut:
+        lines.append(
+            'Expected: BEFORE=good connection | DURING=full cut | AFTER=good connection'
+        )
     lines.append(f'Cut verdict: {verdict}')
     lines.append(
         f'Phase results: BEFORE={"PASS" if before_r.passed else "FAIL"} | '
@@ -1310,29 +1337,31 @@ def score_phases(
         )
     elif overall == 'FAIL':
         lines.append(
-            '  Meaning: victim WAN path not severed (bypass, partial, or only local-view signals).'
+            '  Meaning: need BEFORE good connection, DURING full cut (fail if still connected), '
+            'AFTER good connection restored.'
             if expect_full_cut
             else '  Meaning: cut did not work (or was only partial / not proven).'
         )
     else:
         lines.append(
-            '  Meaning: victim still on LAN + WAN path through ZubCut hard-dropped + no gateway bypass.'
+            '  Meaning: BEFORE good → DURING full cut (WAN severed) → AFTER good again.'
             if expect_full_cut
             else '  Meaning: intended % cut path OK.'
         )
     for r in reasons:
         lines.append(f'  - {r}')
     lines.append('')
-    lines.append('Full-cut requirements (DURING) — victim path, not ZubCut-local view:')
+    lines.append('Phase model (Kill/Dupe):')
+    lines.append('  BEFORE — good connection (victim live on LAN)')
+    lines.append('  DURING — full cut (FAIL if connection still good / bypass / no drops)')
+    lines.append('  AFTER  — good connection restored (victim reachable; MITM cleared)')
+    lines.append('DURING full-cut proof:')
     lines.append('  sample window still ON (Dupe/hold ≥8000 ms recommended for Analysis)')
-    lines.append('  victim STILL visible on LAN (ping/ARP) — proves we are not just hiding the PS5 from this PC')
     lines.append('  ARP MITM armed + Npcap forwarder hard-drop 0% (red chain)')
     lines.append('  Windows IP forwarding OFF')
     lines.append('  victim WAN attempts hit this PC (wan→us) and/or forwarder drops > 0')
     lines.append('  NO victim WAN bypass via real gateway MAC (out or return)')
-    lines.append('  no strong IPv6 bypass signal')
-    lines.append('  AFTER: MITM/forwarder fully cleared on OFF')
-    lines.append('  NOTE: poison ARP alone or "cannot ping PS5" is NOT proof the console lost internet')
+    lines.append('  mid-cut ZubCut ping/ARP fail is OK (hard-drop noise) — not used as "offline"')
     lines.append('=====================================')
 
     return CutAnalysisReport(
