@@ -1205,39 +1205,36 @@ def _open_analysis_report(path: Path) -> None:
         pass
 
 
-def inactive_victim_skip_reason(
+def missing_during_phase_sample(
     *,
-    before: Optional[PhaseSample] = None,
-    during: Optional[PhaseSample] = None,
-    after: Optional[PhaseSample] = None,
-    victim_ip: str = '',
-) -> str:
-    """
-    Return a reason to skip Desktop/Notepad when the selected IP is not a live victim.
-
-    Stale rows (e.g. old .248 while the PS5 is on .165) must not produce a report —
-    there is no real cut to analyze on a ghost address.
-    """
-    for ps in (before, during, after):
-        if ps is None:
-            continue
-        host = ps.host or {}
-        if host.get('victim_on_lan') is not False:
-            continue
-        note = str(host.get('victim_liveness_note') or '').strip()
-        live_at = str(host.get('victim_live_ip') or '').strip()
-        sel = str(host.get('selected_victim_ip') or victim_ip or '').strip()
-        if note:
-            return note
-        if live_at and sel and live_at != sel:
-            return (
-                f'{sel} is offline — this device is now at {live_at}. '
-                'Rescan and use that row (no Analysis report).'
-            )
-        if sel:
-            return f'{sel} is not on LAN — no Analysis report (pick the live PS5 IP).'
-        return 'selected victim is not on LAN — no Analysis report'
-    return ''
+    host: Optional[Dict[str, Any]] = None,
+    stack: Optional[Dict[str, Any]] = None,
+    note: str = '',
+) -> PhaseSample:
+    """Placeholder DURING when MITM never armed (stale IP) so a report can still save."""
+    return PhaseSample(
+        phase=PHASE_DURING,
+        sample={
+            'ok': False,
+            'error': 'DURING sample missing — cut may not have armed on this IP',
+            'ipv4': 0,
+            'ipv6': 0,
+            'arp': 0,
+            'arp_victim': 0,
+            'poison_arp_seen': 0,
+            'victim_to_us': 0,
+            'victim_wan_out_to_us': 0,
+            'victim_wan_bypass_gw': 0,
+            'wan_return_bypass': 0,
+            'victim_lan_ipv4': 0,
+            'total': 0,
+            'seconds': 0,
+        },
+        host=dict(host or {}),
+        stack=dict(stack or {}),
+        note=note
+        or 'DURING missing — flow ended without an armed cut sample (stale/offline IP?)',
+    )
 
 
 def save_cut_analysis_report(

@@ -447,6 +447,49 @@ class ImpairmentMitmMixin:
             )
         except Exception:
             pass
+        # Fallback DURING: if MITM never arms (stale/offline IP), post-arm scheduling
+        # never runs and the report would never save. Sample anyway after a short wait.
+        try:
+            self._schedule_cut_analysis_during_fallback(
+                sess_gen, dev, flow=flow_s, cut_pct=cut_pct
+            )
+        except Exception:
+            pass
+
+    def _schedule_cut_analysis_during_fallback(
+        self, gen: int, device, *, flow: str = 'Kill', cut_pct: int | None = None
+    ) -> None:
+        """Ensure DURING is collected even when post-arm hooks never fire."""
+
+        def _work() -> None:
+            import time as _time
+
+            _time.sleep(1.6)
+            live = getattr(self, '_cut_analysis_session', None)
+            if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
+                return
+            if live.get('finalized') or live.get('report_saved'):
+                return
+            if live.get('during') is not None:
+                return
+            if not self.cut_analysis_enabled():
+                return
+            # Prefer the normal post-arm sampler if a later arm schedules it first.
+            try:
+                self._schedule_cut_analysis_if_enabled(
+                    device, flow=flow, cut_pct=cut_pct
+                )
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-cut-analysis-during-fallback',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
 
     def _schedule_cut_analysis_if_enabled(
         self, device, *, flow: str = 'Kill', cut_pct: int | None = None
@@ -624,8 +667,47 @@ class ImpairmentMitmMixin:
                 return
             live['after'] = after
             if live.get('during') is None:
-                # DURING still running (short Dupe) — finalize when it lands.
+                # Prefer waiting briefly for an in-flight DURING sampler, but never
+                # drop the report if MITM never armed (stale .248 / offline IP).
                 live['finalize_when_during'] = True
+
+                def _finalize_if_still_missing() -> None:
+                    import time as _time
+
+                    _time.sleep(2.2)
+                    cur = getattr(self, '_cut_analysis_session', None)
+                    if not isinstance(cur, dict) or int(cur.get('gen') or 0) != gen:
+                        return
+                    if cur.get('finalized') or cur.get('report_saved'):
+                        return
+                    if cur.get('during') is None:
+                        from tools.cut_analysis import missing_during_phase_sample
+
+                        cur['during'] = missing_during_phase_sample(
+                            host=host,
+                            stack=stack,
+                            note=(
+                                'DURING missing — cut never armed on this IP '
+                                '(stale/offline row?). Report still saved.'
+                            ),
+                        )
+                    self._finalize_cut_analysis_session(gen)
+
+                try:
+                    threading.Thread(
+                        target=safe_daemon_target(_finalize_if_still_missing),
+                        name='zubcut-cut-analysis-during-wait',
+                        daemon=True,
+                    ).start()
+                except Exception:
+                    from tools.cut_analysis import missing_during_phase_sample
+
+                    live['during'] = missing_during_phase_sample(
+                        host=host,
+                        stack=stack,
+                        note='DURING missing — cut never armed; report still saved.',
+                    )
+                    self._finalize_cut_analysis_session(gen)
                 return
             self._finalize_cut_analysis_session(gen)
 
@@ -655,54 +737,25 @@ class ImpairmentMitmMixin:
         if live.get('before') is None or live.get('during') is None or live.get('after') is None:
             return
         live['finalized'] = True
-        from tools.cut_analysis import (
-            inactive_victim_skip_reason,
-            save_cut_analysis_report,
-            score_phases,
-        )
+        from tools.cut_analysis import save_cut_analysis_report, score_phases
 
         flow_s = str(live.get('flow') or 'Cut')
         dev = dict(live.get('device') or {})
         ip = str(live.get('ip') or dev.get('ip') or '').strip()
         mac = str(live.get('mac') or dev.get('mac') or '').strip()
-        before = live.get('before')
-        during = live.get('during')
-        after = live.get('after')
-        skip_reason = inactive_victim_skip_reason(
-            before=before, during=during, after=after, victim_ip=ip
-        )
-        if skip_reason:
-            live['report_saved'] = False
-            live['report_skipped'] = True
-
-            def _on_skip() -> None:
-                self.log(
-                    f'Analysis [{flow_s}]: skipped report — {skip_reason}',
-                    'red',
-                )
-                if getattr(self, '_cut_analysis_session', None) and int(
-                    (self._cut_analysis_session or {}).get('gen') or 0
-                ) == gen:
-                    self._cut_analysis_session = None
-
-            try:
-                QTimer.singleShot(0, _on_skip)
-            except Exception:
-                pass
-            return
-
         try:
             report = score_phases(
                 flow=flow_s,
                 victim_ip=ip,
                 victim_mac=mac,
                 expect_full_cut=self._cut_analysis_expect_full(flow_s),
-                before=before,
-                during=during,
-                after=after,
+                before=live.get('before'),
+                during=live.get('during'),
+                after=live.get('after'),
                 cut_pct=live.get('cut_pct'),
             )
             # Single file: Desktop\ZubCut Diagnostics + Notepad.
+            # Always attempt save/open — including stale/offline IPs (FAIL report).
             path = save_cut_analysis_report(report, open_report=True)
             live['report_saved'] = bool(path)
         except Exception:
@@ -725,6 +778,11 @@ class ImpairmentMitmMixin:
                 self.log(
                     f'Analysis report (BEFORE+DURING+AFTER) saved: {report.report_path}',
                     'gray',
+                )
+            elif not path:
+                self.log(
+                    f'Analysis [{flow_s}]: report failed to save for {ip or "?"}',
+                    'red',
                 )
             if getattr(self, '_cut_analysis_session', None) and int(
                 (self._cut_analysis_session or {}).get('gen') or 0

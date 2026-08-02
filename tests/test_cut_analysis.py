@@ -371,41 +371,34 @@ class TestCutAnalysisScoring(unittest.TestCase):
         self.assertIn('OVERALL RESULT:  FAIL', blob)
         self.assertIn('BEFORE  >>>  FAIL', blob)
         self.assertIn('192.168.1.165', blob)
-        skip = ca.inactive_victim_skip_reason(
-            before=before, during=during, after=after, victim_ip='192.168.1.248'
-        )
-        self.assertTrue(skip)
-        self.assertIn('192.168.1.165', skip)
 
-    def test_live_victim_does_not_skip_report(self) -> None:
+    def test_missing_during_placeholder_still_scores(self) -> None:
         from tools import cut_analysis as ca
 
-        host = _live_host()
-        before = ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(), host=host)
-        during = ca.PhaseSample(
-            phase=ca.PHASE_DURING,
-            sample=_sample(victim_wan_out_to_us=3),
-            host=host,
-            stack=ca.collect_stack_state(
-                mitm_armed=True,
-                forwarder_running=True,
-                forwarder_hard_drop=True,
-                fwd_packets_dropped=3,
-                sample_window_ok=True,
+        host = _live_host(
+            victim_on_lan=False,
+            victim_ping_ok=False,
+            victim_in_arp=False,
+            selected_victim_ip='192.168.1.248',
+            victim_live_ip='192.168.1.165',
+        )
+        during = ca.missing_during_phase_sample(host=host)
+        report = ca.score_phases(
+            flow='Kill',
+            victim_ip='192.168.1.248',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            expect_full_cut=True,
+            before=ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(ipv4=0), host=host),
+            during=during,
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=0),
+                host=host,
+                stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
             ),
         )
-        after = ca.PhaseSample(
-            phase=ca.PHASE_AFTER,
-            sample=_sample(ipv4=0),
-            host=host,
-            stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
-        )
-        self.assertEqual(
-            ca.inactive_victim_skip_reason(
-                before=before, during=during, after=after, victim_ip='192.168.1.50'
-            ),
-            '',
-        )
+        self.assertEqual(report.overall, 'FAIL')
+        self.assertIn('OVERALL RESULT:  FAIL', '\n'.join(report.lines))
 
     def test_after_mitm_still_armed_fails_overall(self) -> None:
         from tools import cut_analysis as ca
@@ -528,12 +521,15 @@ class TestCutAnalysisWiring(unittest.TestCase):
         self.assertIn("live.get('before') is None", finalize)
         self.assertIn("live.get('during') is None", finalize)
         self.assertIn("live.get('after') is None", finalize)
-        self.assertIn('inactive_victim_skip_reason', finalize)
-        self.assertIn('skipped report', finalize)
+        self.assertNotIn('inactive_victim_skip_reason', finalize)
+        self.assertNotIn('skipped report', finalize)
         self.assertIn('save_cut_analysis_report(report, open_report=True)', finalize)
         self.assertIn('report_saved', finalize)
+        begin = method_src('_begin_cut_analysis_session')
+        self.assertIn('_schedule_cut_analysis_during_fallback', begin)
         after = method_src('_schedule_cut_analysis_after_off')
         self.assertIn("sess.get('report_saved')", after)
+        self.assertIn('missing_during_phase_sample', after)
         during = method_src('_schedule_cut_analysis_if_enabled')
         self.assertNotIn('save_cut_analysis_report', during)
 
