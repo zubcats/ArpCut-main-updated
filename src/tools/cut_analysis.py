@@ -582,9 +582,13 @@ def _full_cut_checklist(
             'Full-cut deep dive: skipped (this flow is Percent Cut / Lag allow — not a red-chain offline cut).',
         ]
     b_host = (before.host if before else {}) or {}
-    victim_on_lan = host.get('victim_on_lan')
-    if victim_on_lan is None:
-        victim_on_lan = b_host.get('victim_on_lan')
+    # BEFORE offline wins over mid-cut ARP pollution on a ghost IP.
+    if b_host.get('victim_on_lan') is False:
+        victim_on_lan = False
+    else:
+        victim_on_lan = host.get('victim_on_lan')
+        if victim_on_lan is None:
+            victim_on_lan = b_host.get('victim_on_lan')
     use_wd = bool(stack.get('use_windivert'))
     checks: List[Tuple[str, bool]] = [
         ('Victim on LAN (ping/ARP/MAC)', victim_on_lan is True),
@@ -701,6 +705,54 @@ def _eval_before(ps: Optional[PhaseSample]) -> PhaseResult:
     return PhaseResult(PHASE_BEFORE, not fails, fails, notes)
 
 
+def _stale_offline_victim_message(
+    *hosts: dict, victim_ip: str = ''
+) -> Tuple[bool, str, str]:
+    """
+    Detect selected IP was not a live LAN victim (ghost/stale row).
+
+    Returns (is_stale, message, live_at_ip).
+    """
+    live_at = ''
+    note = ''
+    sel = str(victim_ip or '').strip()
+    saw_offline = False
+    for host in hosts:
+        if not host:
+            continue
+        if host.get('victim_on_lan') is False:
+            saw_offline = True
+        if not live_at:
+            live_at = str(host.get('victim_live_ip') or '').strip()
+        if not note:
+            note = str(host.get('victim_liveness_note') or '').strip()
+        if not sel:
+            sel = str(host.get('selected_victim_ip') or '').strip()
+        # Pre-cut MAC mismatch with empty ARP is classic stale table row.
+        if host.get('victim_mac_match') is False and host.get('victim_in_arp') is False:
+            saw_offline = True
+    if not saw_offline:
+        return False, '', live_at
+    if note:
+        msg = note
+    elif live_at and sel and live_at != sel:
+        msg = (
+            f'{sel} is offline / not the live PS5 — this device is now at {live_at}. '
+            'Rescan and select that row (not a valid cut test on the stale IP).'
+        )
+    elif sel:
+        msg = (
+            f'{sel} was not on LAN before the cut — stale/ghost IP, not a live PS5. '
+            'Rescan and pick the active PlayStation row.'
+        )
+    else:
+        msg = (
+            'Selected victim was not on LAN before the cut — stale/ghost IP, '
+            'not a valid cut test.'
+        )
+    return True, msg, live_at
+
+
 def _eval_during_full_cut(
     ps: Optional[PhaseSample],
     *,
@@ -725,6 +777,26 @@ def _eval_during_full_cut(
     fails: List[str] = []
     notes: List[str] = []
     verdict = 'INCONCLUSIVE'
+
+    # Prefer BEFORE liveness. Mid-cut ARP for a BEFORE-offline IP is often poison/cache
+    # pollution — do not treat that as proof the selected row is the live PS5.
+    stale, stale_msg, _live_at = _stale_offline_victim_message(
+        b_host, host, victim_ip=str(b_host.get('selected_victim_ip') or '')
+    )
+    if stale and b_host.get('victim_on_lan') is False:
+        fails.append(stale_msg)
+        if stack.get('sample_window_ok') is False:
+            notes.append(
+                'DURING window also missed (cut already OFF) — secondary; '
+                'primary issue is stale/offline selected IP, not Dupe timing'
+            )
+        if host.get('victim_on_lan') is True:
+            notes.append(
+                'ARP appeared during/after the attempt — do not trust that as the live PS5 '
+                'when BEFORE already showed this IP offline'
+            )
+        verdict = 'NOT CUT'
+        return PhaseResult(PHASE_DURING, False, fails, notes), verdict
 
     victim_on_lan = host.get('victim_on_lan')
     if victim_on_lan is None:
@@ -979,6 +1051,16 @@ def score_phases(
         PHASE_AFTER: after_r,
     }
 
+    b_host = (before.host if before else {}) or {}
+    d_host = (during.host if during else {}) or {}
+    a_host = (after.host if after else {}) or {}
+    stale, stale_msg, live_at = _stale_offline_victim_message(
+        b_host, d_host, a_host, victim_ip=victim_ip
+    )
+    # Stale/ghost IP dominates: this was never a valid cut test.
+    if stale and b_host.get('victim_on_lan') is False:
+        verdict = 'NOT CUT'
+
     # Overall: SUCCESS only when every phase passes AND (for full-cut flows) verdict is FULL CUT.
     any_phase_fail = not (before_r.passed and during_r.passed and after_r.passed)
     if expect_full_cut:
@@ -990,6 +1072,9 @@ def score_phases(
     if any_phase_fail and verdict == 'FULL CUT':
         # Phase failure always means the cut run failed, even if DURING looked armed.
         verdict = 'PARTIAL'
+    if stale and b_host.get('victim_on_lan') is False:
+        overall = 'FAIL'
+        verdict = 'NOT CUT'
 
     reasons: List[str] = []
     for pr in (before_r, during_r, after_r):
@@ -1009,6 +1094,13 @@ def score_phases(
             if expect_full_cut
             else '  Percent Cut path armed and restored cleanly.'
         )
+    elif stale and b_host.get('victim_on_lan') is False:
+        lines.append('  OVERALL RESULT:  FAIL')
+        lines.append('  Selected IP is NOT a live PS5 on LAN — not a valid cut test.')
+        if live_at and live_at != victim_ip:
+            lines.append(f'  Same device appears live at {live_at} — rescan and use that row.')
+        elif stale_msg:
+            lines.append(f'  {stale_msg}')
     else:
         lines.append('  OVERALL RESULT:  FAIL')
         lines.append(
@@ -1021,6 +1113,8 @@ def score_phases(
     lines.append(f'Generated: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")}Z')
     lines.append(f'Flow: {flow}')
     lines.append(f'Victim: {victim_ip or "?"} ({victim_mac or "no MAC"})')
+    if live_at and live_at != victim_ip:
+        lines.append(f'Live IP for this MAC (if known): {live_at}')
     lines.append(f'Cut verdict: {verdict}')
     lines.append(
         f'Phase results: BEFORE={"PASS" if before_r.passed else "FAIL"} | '
@@ -1080,7 +1174,13 @@ def score_phases(
     lines.append('>>> SUMMARY')
     lines.append(f'  OVERALL: {overall}')
     lines.append(f'  CUT:     {verdict}')
-    if overall == 'FAIL':
+    if stale and b_host.get('victim_on_lan') is False:
+        lines.append(
+            '  Meaning: selected IP was not a live PS5 — rescan and cut the active row'
+            + (f' ({live_at})' if live_at and live_at != victim_ip else '')
+            + '.'
+        )
+    elif overall == 'FAIL':
         lines.append(
             '  Meaning: victim WAN path not severed (bypass, partial, or only local-view signals).'
             if expect_full_cut

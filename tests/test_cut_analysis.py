@@ -369,8 +369,68 @@ class TestCutAnalysisScoring(unittest.TestCase):
         self.assertEqual(report.overall, 'FAIL')
         blob = '\n'.join(report.lines)
         self.assertIn('OVERALL RESULT:  FAIL', blob)
+        self.assertIn('NOT a live PS5 on LAN', blob)
         self.assertIn('BEFORE  >>>  FAIL', blob)
         self.assertIn('192.168.1.165', blob)
+        self.assertIn('Live IP for this MAC', blob)
+
+    def test_stale_ip_dominates_over_missed_during_window(self) -> None:
+        """Ghost .248 must not be blamed on Dupe timing when BEFORE already offline."""
+        from tools import cut_analysis as ca
+
+        host_before = _live_host(
+            victim_ping_ok=False,
+            victim_in_arp=False,
+            victim_mac_match=False,
+            victim_on_lan=False,
+            victim_live_ip='192.168.1.165',
+            victim_liveness_note=(
+                '192.168.1.248 is offline — this device is now at 192.168.1.165. '
+                'Rescan and use that row.'
+            ),
+            selected_victim_ip='192.168.1.248',
+        )
+        # Mid-cut ARP pollution can look "on LAN" — must not override BEFORE offline.
+        host_during = _live_host(
+            victim_ping_ok=False,
+            victim_in_arp=True,
+            victim_mac_match=True,
+            victim_on_lan=True,
+            victim_arp_mac='aa:bb:cc:dd:ee:ff',
+            selected_victim_ip='192.168.1.248',
+        )
+        report = ca.score_phases(
+            flow='Dupe',
+            victim_ip='192.168.1.248',
+            victim_mac='aa:bb:cc:dd:ee:ff',
+            expect_full_cut=True,
+            before=ca.PhaseSample(
+                phase=ca.PHASE_BEFORE, sample=_sample(ipv4=0), host=host_before
+            ),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(ipv4=0, arp_victim=4),
+                host=host_during,
+                stack=ca.collect_stack_state(
+                    mitm_armed=False,
+                    forwarder_running=False,
+                    sample_window_ok=False,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=0),
+                host=host_during,
+                stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
+            ),
+        )
+        self.assertEqual(report.verdict, 'NOT CUT')
+        self.assertEqual(report.overall, 'FAIL')
+        blob = '\n'.join(report.lines)
+        self.assertIn('NOT a live PS5 on LAN', blob)
+        self.assertIn('192.168.1.165', blob)
+        self.assertIn('stale/offline selected ip', blob.lower())
+        self.assertNotIn('Cut verdict: INCONCLUSIVE', blob)
 
     def test_missing_during_placeholder_still_scores(self) -> None:
         from tools import cut_analysis as ca
