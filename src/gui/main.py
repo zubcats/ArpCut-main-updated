@@ -585,6 +585,10 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         self.dupeSpin.setSingleStep(100)
         self.dupeSpin.setValue(5000)
         self.dupeSpin.setSuffix(' ms')
+        self.dupeSpin.setToolTip(
+            'Dupe burst length. Default 5000 ms. '
+            'With Logs → Analysis ON, keep ≥ 5000 ms so the DURING cut sample finishes before OFF.'
+        )
         timing_layout.addRow('Lag duration (one shot)', self.dupeSpin)
         layout.addWidget(self.timing_group)
 
