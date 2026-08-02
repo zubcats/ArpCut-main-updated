@@ -487,25 +487,72 @@ def analyze_victim_cut(
     )
 
 
-def save_cut_analysis_report(report: CutAnalysisReport) -> Optional[Path]:
-    """Write report under Desktop\\ZubCut Diagnostics. Returns path or None."""
+def _open_analysis_report(path: Path) -> None:
+    """Open the saved Analysis .txt in Notepad (same as Quick check / Capture stack)."""
+    import os
+    import subprocess
+    import sys
+
     try:
-        from tools.diag_paths import ensure_zubcut_diagnostics_dir
+        if sys.platform.startswith('win'):
+            os.startfile(str(path))  # type: ignore[attr-defined]
+            return
+    except Exception:
+        pass
+    try:
+        subprocess.Popen(
+            ['notepad.exe', str(path)],
+            shell=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
+def save_cut_analysis_report(
+    report: CutAnalysisReport, *, open_report: bool = False
+) -> Optional[Path]:
+    """
+    Write report under ``Desktop\\ZubCut Diagnostics`` (same folder as Quick check).
+
+    Uses ``diag_paths.ensure_zubcut_diagnostics_dir`` so OneDrive Desktop redirect
+    matches elevated PS1 diagnostics. Optionally opens Notepad.
+    """
+    try:
+        from tools.diag_paths import DIAGNOSTICS_FOLDER_NAME, ensure_zubcut_diagnostics_dir
         from tools.diag_privacy import redact_ipv4s_in_text
     except Exception:
         return None
     try:
-        folder = ensure_zubcut_diagnostics_dir()
+        folder = ensure_zubcut_diagnostics_dir().resolve()
+        # Guard: never write outside Desktop\ZubCut Diagnostics.
+        if folder.name != DIAGNOSTICS_FOLDER_NAME:
+            folder = folder / DIAGNOSTICS_FOLDER_NAME
+            folder.mkdir(parents=True, exist_ok=True)
+            folder = folder.resolve()
         stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
         flow_slug = ''.join(ch if ch.isalnum() else '-' for ch in report.flow).strip('-') or 'cut'
+        # Avoid characters that break Windows paths in flow labels like "Kill (during)".
+        flow_slug = flow_slug.replace('(', '').replace(')', '').strip('-') or 'cut'
         path = folder / f'ZubCut-Analysis-{flow_slug}-{stamp}.txt'
-        body = '\n'.join(report.lines) + '\n'
+        lines = list(report.lines)
+        # Stamp the real save location at the top (OneDrive Desktop etc.).
+        loc_line = f'Saved to: {path}'
+        if lines and lines[0].startswith('========'):
+            lines.insert(1, loc_line)
+        else:
+            lines.insert(0, loc_line)
+        body = '\n'.join(lines) + '\n'
         try:
             body = redact_ipv4s_in_text(body)
         except Exception:
             pass
-        path.write_text(body, encoding='utf-8')
+        path.write_text(body, encoding='utf-8', newline='\r\n')
         report.report_path = str(path)
+        report.lines = lines
+        if open_report:
+            _open_analysis_report(path)
         return path
     except Exception:
         return None

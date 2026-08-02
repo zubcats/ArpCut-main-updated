@@ -585,7 +585,8 @@ class ImpairmentMitmMixin:
                 after=None,
                 cut_pct=live.get('cut_pct'),
             )
-            save_cut_analysis_report(report)
+            # Interim file only — open Notepad on the final AFTER report.
+            save_cut_analysis_report(report, open_report=False)
         except Exception:
             return
 
@@ -632,7 +633,8 @@ class ImpairmentMitmMixin:
                 after=live.get('after'),
                 cut_pct=live.get('cut_pct'),
             )
-            save_cut_analysis_report(report)
+            # Final report → Desktop\ZubCut Diagnostics + Notepad (Quick check parity).
+            save_cut_analysis_report(report, open_report=True)
         except Exception:
             self._cut_analysis_session = None
             return
@@ -654,7 +656,10 @@ class ImpairmentMitmMixin:
                         'red' if line.startswith('[FAIL]') else 'gray',
                     )
             if report.report_path:
-                self.log(f'Analysis report: {report.report_path}', 'gray')
+                self.log(
+                    f'Analysis report saved (Desktop\\ZubCut Diagnostics): {report.report_path}',
+                    'gray',
+                )
             if getattr(self, '_cut_analysis_session', None) and int(
                 (self._cut_analysis_session or {}).get('gen') or 0
             ) == gen:
