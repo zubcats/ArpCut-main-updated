@@ -112,6 +112,106 @@ def _sniff_cut_sample(
     return out
 
 
+def probe_victim_on_lan(
+    victim_ip: str,
+    victim_mac: str = '',
+    *,
+    iface_ip: str = '',
+    arp_probe_iface: str = '',
+) -> Dict[str, Any]:
+    """
+    Prove the selected victim is actually on the LAN right now.
+
+    Stale table rows (old wired IP while PS5 is on Wi‑Fi) must not score as FULL CUT
+    just because ZubCut armed MITM/forwarder against a ghost address.
+    Uses the same live-endpoint checks as Kill MITM (`victim_endpoint_live_for_mitm`).
+    """
+    out: Dict[str, Any] = {
+        'victim_ping_ok': None,
+        'victim_in_arp': None,
+        'victim_arp_mac': '',
+        'victim_mac_match': None,
+        'victim_on_lan': None,
+        'victim_live_ip': '',
+        'victim_liveness_note': '',
+    }
+    vip = str(victim_ip or '').strip()
+    want_mac = _norm_mac(victim_mac)
+    if not vip:
+        out['victim_on_lan'] = False
+        out['victim_liveness_note'] = 'no victim IP'
+        return out
+
+    ping_ok = None
+    try:
+        from tools.utils import ipv4_ping_reachable
+
+        ping_ok = bool(ipv4_ping_reachable(vip, timeout_ms=600, attempts=1))
+    except Exception:
+        ping_ok = None
+    out['victim_ping_ok'] = ping_ok
+
+    arp_mac = ''
+    try:
+        from tools.utils import GLOBAL_MAC, lookup_mac_from_arp_table
+
+        raw = lookup_mac_from_arp_table(vip, iface_ip or None)
+        if raw and str(raw) != str(GLOBAL_MAC):
+            arp_mac = _norm_mac(raw)
+    except Exception:
+        arp_mac = ''
+    out['victim_arp_mac'] = arp_mac
+    out['victim_in_arp'] = bool(arp_mac)
+    if want_mac and arp_mac:
+        out['victim_mac_match'] = want_mac == arp_mac
+    elif want_mac and not arp_mac:
+        out['victim_mac_match'] = False
+
+    live_ip = ''
+    if want_mac:
+        try:
+            from tools.utils import lookup_ip_from_arp_table
+
+            live_ip = str(lookup_ip_from_arp_table(want_mac, iface_ip or None) or '').strip()
+        except Exception:
+            live_ip = ''
+    out['victim_live_ip'] = live_ip
+
+    live_ok = None
+    live_note = ''
+    try:
+        from tools.utils import victim_endpoint_live_for_mitm
+
+        live_ok, live_note = victim_endpoint_live_for_mitm(
+            vip,
+            victim_mac,
+            iface_ip or None,
+            ping_attempts=1,
+            arp_probe_iface=arp_probe_iface or None,
+        )
+    except Exception as exc:
+        live_ok = None
+        live_note = str(exc)
+    out['victim_liveness_note'] = str(live_note or '')
+
+    if live_ok is True:
+        out['victim_on_lan'] = True
+    elif live_ip and live_ip != vip:
+        # Same console MAC is online at another IP (classic Wi‑Fi vs Ethernet row).
+        out['victim_on_lan'] = False
+        if not out['victim_liveness_note']:
+            out['victim_liveness_note'] = (
+                f'{vip} offline — this device is now at {live_ip}. Rescan and use that row.'
+            )
+    elif live_ok is False:
+        out['victim_on_lan'] = False
+    elif ping_ok is False and not arp_mac:
+        out['victim_on_lan'] = False
+    else:
+        out['victim_on_lan'] = None
+    return out
+
+
 def collect_host_health(
     *,
     iface_name: str = '',
@@ -124,8 +224,16 @@ def collect_host_health(
     admin_ok: Optional[bool] = None,
     victim_in_arp: Optional[bool] = None,
     settings_adapter_live: Optional[bool] = None,
+    victim_ping_ok: Optional[bool] = None,
+    victim_arp_mac: str = '',
+    victim_mac_match: Optional[bool] = None,
+    victim_on_lan: Optional[bool] = None,
+    victim_live_ip: str = '',
+    victim_liveness_note: str = '',
+    selected_victim_ip: str = '',
+    selected_victim_mac: str = '',
 ) -> Dict[str, Any]:
-    """ZubCut-machine health for Analysis (adapter / gateway / forwarding / L2)."""
+    """ZubCut-machine health + selected-victim liveness for Analysis."""
     return {
         'iface_name': str(iface_name or ''),
         'iface_ip': str(iface_ip or ''),
@@ -137,6 +245,14 @@ def collect_host_health(
         'admin_ok': admin_ok,
         'victim_in_arp': victim_in_arp,
         'settings_adapter_live': settings_adapter_live,
+        'victim_ping_ok': victim_ping_ok,
+        'victim_arp_mac': str(victim_arp_mac or ''),
+        'victim_mac_match': victim_mac_match,
+        'victim_on_lan': victim_on_lan,
+        'victim_live_ip': str(victim_live_ip or ''),
+        'victim_liveness_note': str(victim_liveness_note or ''),
+        'selected_victim_ip': str(selected_victim_ip or ''),
+        'selected_victim_mac': str(selected_victim_mac or ''),
     }
 
 
@@ -194,10 +310,46 @@ def _fmt_host(host: dict, *, label: str) -> List[str]:
         lines.append(f'[PASS] {label} Npcap L2 socket ready')
     elif host.get('l2_ready') is False:
         lines.append(f'[WARN] {label} Npcap L2 socket not ready')
+    sel_ip = host.get('selected_victim_ip') or ''
+    sel_mac = host.get('selected_victim_mac') or ''
+    if sel_ip or sel_mac:
+        lines.append(
+            f'[INFO] {label} selected victim: {sel_ip or "?"} ({sel_mac or "no MAC"})'
+        )
+    if host.get('victim_ping_ok') is True:
+        lines.append(f'[PASS] {label} victim answers ping')
+    elif host.get('victim_ping_ok') is False:
+        lines.append(f'[FAIL] {label} victim does not answer ping — may be offline / wrong IP')
     if host.get('victim_in_arp') is True:
-        lines.append(f'[PASS] {label} victim present in ARP cache')
+        arp_m = host.get('victim_arp_mac') or ''
+        lines.append(
+            f'[PASS] {label} victim present in ARP cache'
+            + (f' ({arp_m})' if arp_m else '')
+        )
     elif host.get('victim_in_arp') is False:
-        lines.append(f'[WARN] {label} victim missing from ARP cache')
+        lines.append(f'[FAIL] {label} victim missing from ARP cache — stale row / not on LAN')
+    if host.get('victim_mac_match') is True:
+        lines.append(f'[PASS] {label} ARP MAC matches selected row')
+    elif host.get('victim_mac_match') is False:
+        lines.append(
+            f'[FAIL] {label} ARP MAC mismatch — selected '
+            f'{sel_mac or "?"} vs live {host.get("victim_arp_mac") or "(none)"}'
+        )
+    if host.get('victim_on_lan') is True:
+        lines.append(f'[PASS] {label} victim appears on LAN now')
+    elif host.get('victim_on_lan') is False:
+        lines.append(
+            f'[FAIL] {label} victim NOT on LAN — do not trust FULL CUT '
+            '(rescan; pick the live PS5 IP)'
+        )
+        note = str(host.get('victim_liveness_note') or '').strip()
+        live_at = str(host.get('victim_live_ip') or '').strip()
+        if note:
+            lines.append(f'[INFO] {label} {note}')
+        elif live_at:
+            lines.append(
+                f'[INFO] {label} same MAC is online at {live_at} — select that row'
+            )
     fwd = host.get('ip_forwarding_on')
     if fwd is True:
         lines.append(f'[FAIL] {label} Windows IP forwarding ON')
@@ -292,6 +444,11 @@ def score_phases(
     d_host = (during.host if during else {}) or {}
 
     use_wd = bool(d_stack.get('use_windivert'))
+    b_host = (before.host if before else {}) or {}
+    # Prefer DURING liveness; fall back to BEFORE baseline.
+    victim_on_lan = d_host.get('victim_on_lan')
+    if victim_on_lan is None:
+        victim_on_lan = b_host.get('victim_on_lan')
 
     # Host failures can cap the verdict.
     if d_host.get('settings_adapter_live') is False:
@@ -301,7 +458,33 @@ def score_phases(
     if d_host.get('ip_forwarding_on') is True and expect_full_cut and not use_wd:
         reasons.append('IP forwarding ON during cut')
 
-    if during is None:
+    # Stale IP / offline console: stack may still arm, but that is not a real cut.
+    if victim_on_lan is False:
+        note = str(
+            d_host.get('victim_liveness_note')
+            or b_host.get('victim_liveness_note')
+            or ''
+        ).strip()
+        live_at = str(
+            d_host.get('victim_live_ip') or b_host.get('victim_live_ip') or ''
+        ).strip()
+        reasons.append(
+            note
+            or (
+                f'victim not on LAN'
+                + (f' (same device now at {live_at})' if live_at else '')
+                + ' — stale row / offline IP'
+            )
+        )
+
+    if victim_on_lan is False:
+        # Armed MITM against a ghost must never read as FULL CUT.
+        verdict = 'NOT CUT'
+        if d_stack.get('mitm_armed') or d_stack.get('windivert_running'):
+            reasons.append(
+                'ZubCut stack armed, but selected IP/MAC is not live on the LAN'
+            )
+    elif during is None:
         verdict = 'INCONCLUSIVE'
         reasons.append('no DURING sample (cut may have ended too fast)')
     elif use_wd:
@@ -351,6 +534,13 @@ def score_phases(
                 reasons.append(
                     'BEFORE saw victim IPv4 but DURING saw none — idle console or '
                     'traffic not attracted to this PC'
+                )
+            # FULL CUT requires evidence the victim was live (ping/ARP/MAC match).
+            if verdict == 'FULL CUT' and victim_on_lan is not True:
+                verdict = 'INCONCLUSIVE'
+                reasons.append(
+                    'stack looks armed but victim LAN presence was not confirmed '
+                    '(ping/ARP) — rescan if this IP may be stale'
                 )
         else:
             if not d_stack.get('forwarder_running') and not d_stack.get('mitm_armed'):
@@ -402,6 +592,9 @@ def score_phases(
     if d_host.get('settings_adapter_live') is False and verdict == 'FULL CUT':
         verdict = 'PARTIAL'
         reasons.append('cannot trust FULL CUT with dead Settings adapter')
+    if victim_on_lan is False and verdict == 'FULL CUT':
+        verdict = 'NOT CUT'
+        reasons.append('cannot report FULL CUT for a victim that is not on the LAN')
 
     lines.append(f'>>> VERDICT: {verdict}')
     for r in reasons:

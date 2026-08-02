@@ -184,7 +184,7 @@ class ImpairmentMitmMixin:
         return None
 
     def _gather_cut_analysis_host(self, device) -> dict:
-        from tools.cut_analysis import collect_host_health
+        from tools.cut_analysis import collect_host_health, probe_victim_on_lan
 
         iface = getattr(self.scanner, 'iface', None)
         iface_name = str(getattr(iface, 'name', None) or '')
@@ -207,15 +207,14 @@ class ImpairmentMitmMixin:
                 ip_fwd = bool(is_ip_forwarding_enabled())
             except Exception:
                 ip_fwd = None
-        victim_in_arp = None
         vip = str((device or {}).get('ip') or '').strip() if isinstance(device, dict) else ''
-        if vip and sys.platform.startswith('win'):
-            try:
-                from tools.utils import lookup_mac_from_arp_table
-
-                victim_in_arp = bool(lookup_mac_from_arp_table(vip))
-            except Exception:
-                victim_in_arp = None
+        vmac = str((device or {}).get('mac') or '').strip() if isinstance(device, dict) else ''
+        live = probe_victim_on_lan(
+            vip,
+            vmac,
+            iface_ip=iface_ip,
+            arp_probe_iface=guid,
+        )
         settings_live = None
         if iface_ip:
             settings_live = not str(iface_ip).startswith('169.254.')
@@ -235,8 +234,16 @@ class ImpairmentMitmMixin:
             l2_ready=l2_ready,
             ip_forwarding_on=ip_fwd,
             admin_ok=admin_ok,
-            victim_in_arp=victim_in_arp,
+            victim_in_arp=live.get('victim_in_arp'),
             settings_adapter_live=settings_live,
+            victim_ping_ok=live.get('victim_ping_ok'),
+            victim_arp_mac=str(live.get('victim_arp_mac') or ''),
+            victim_mac_match=live.get('victim_mac_match'),
+            victim_on_lan=live.get('victim_on_lan'),
+            victim_live_ip=str(live.get('victim_live_ip') or ''),
+            victim_liveness_note=str(live.get('victim_liveness_note') or ''),
+            selected_victim_ip=vip,
+            selected_victim_mac=vmac,
         )
 
     def _gather_cut_analysis_stack(self, device, *, cut_pct: int | None = None) -> dict:
