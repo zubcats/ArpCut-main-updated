@@ -554,8 +554,8 @@ function Test-ClumsyHotspotPathReady($pair) {
 }
 function Set-HotspotDhcpRegistry {
   # Full ICS uses ScopeAddress 192.168.137.1; Hosted Network standalone DHCP uses
-  # StandaloneDhcpAddress 192.168.173.1 (Microsoft Native Wi‑Fi docs). Do not
-  # overwrite StandaloneDhcpAddress with 137.1 — that confuses SoftAP cold-start.
+  # StandaloneDhcpAddress 192.168.173.1 (Microsoft Native Wi-Fi docs). Do not
+  # overwrite StandaloneDhcpAddress with 137.1 - that confuses SoftAP cold-start.
   $saParams = 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters'
   foreach ($name in @('ScopeAddress', 'ScopeAddressBackup')) {
     try {

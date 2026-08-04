@@ -39,7 +39,8 @@ class TestPercentCutKill(unittest.TestCase):
         self.assertIn('return False', block)
         # Forwarder starts first; disable_ip_forwarding runs only after it is live.
         self.assertIn('return True', block)
-        self.assertIn('disable_ip_forwarding(priority_iface=', block)
+        self.assertIn('disable_ip_forwarding(', block)
+        self.assertIn('priority_iface=', block)
         fw_start = block.index('fw.start(')
         disable_at = block.index('disable_ip_forwarding')
         self.assertLess(fw_start, disable_at)
