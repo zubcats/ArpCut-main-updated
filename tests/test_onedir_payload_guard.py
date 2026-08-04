@@ -117,6 +117,12 @@ class TestInnoSetupGuards(unittest.TestCase):
             'Type: filesandordirs; Name: "{app}\\_internal"',
             iss,
         )
+        # Post-install must stay elevated (Npcap AdminOnly).
+        self.assertIn('runascurrentuser', iss)
+        self.assertRegex(
+            iss,
+            r'Flags:\s*nowait postinstall shellexec runascurrentuser',
+        )
 
 
 if __name__ == '__main__':
