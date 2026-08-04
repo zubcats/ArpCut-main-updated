@@ -2129,12 +2129,20 @@ class ZubCutApp(
             if not mac or mac not in remembered:
                 continue
             if should_restore_remembered_kill(rem_device, self.scanner):
-                # Post-scan restore runs on the GUI thread — never pay ping_attempts=3.
-                self._apply_victim_block(rem_device, 'both', fast_arm=True)
+                # Cold post-scan ARP/router context — use full arm validation so
+                # remembered kills do not silently fail after rescan (fast_arm is
+                # for instant UI click paths).
+                if not self._apply_victim_block(rem_device, 'both', fast_arm=False):
+                    self.log(
+                        f"Remembered kill restore failed for "
+                        f"{rem_device.get('ip') or mac}.",
+                        'red',
+                    )
             elif self._is_ics_downstream(rem_device) and self._kill_ui_shows_on(
                 mac, rem_device.get('ip'), rem_device
             ):
-                self._apply_victim_block(rem_device, 'both', fast_arm=True)
+                # WinDivert path — do not pass fast_arm (not accepted by ICS apply).
+                self._apply_victim_block(rem_device, 'both')
 
         # Killer holds ARP for lag/dupe on LAN; explicit Kill uses killed_devices / ICS profiles.
         for mac, victim in self.killer.killed.items():

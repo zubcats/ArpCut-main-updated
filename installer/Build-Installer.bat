@@ -10,6 +10,14 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo === Verify onedir payload (_internal\python311.dll^) ===
+python tools\verify_onedir_payload.py --dist-dir ZubCut
+if errorlevel 1 (
+  echo.
+  echo Frozen build is missing the Python runtime. Refusing to compile installer.
+  exit /b 1
+)
+
 set "ISCC="
 if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
 if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"

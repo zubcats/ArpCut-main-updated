@@ -253,7 +253,8 @@ class ImpairmentBlocksMixin:
         mac = str(device.get('mac') or '').strip()
         for_lag = bool(ics_block_kw.get('for_lag'))
         for_dupe = bool(ics_block_kw.get('for_dupe'))
-        # Remembered-kill restore / Lag / Dupe must stay fast on the GUI thread.
+        # Lag / Dupe (and explicit fast_arm=True click paths) stay fast on the GUI thread.
+        # Remembered post-scan restore passes fast_arm=False for full validation.
         fast_arm = bool(ics_block_kw.get('fast_arm')) or for_lag or for_dupe
         warm_lag = for_lag and self._lag_lan_mitm_warm(device)
         if warm_lag:

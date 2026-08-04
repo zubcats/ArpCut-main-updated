@@ -670,6 +670,7 @@ class Killer:
         cache_mac = (
             lookup_mac_from_arp_table(victim_ip, iface_ip) if victim_ip else ''
         )
+        recent_probe_mac = ''
         # Scapy arping can cost ~2s per iface token — skip when OS ARP already has the IP.
         # Device-table MAC alone is not enough: PS5 often has a scan MAC while ARP is cold.
         if victim_ip and not mac_address_is_usable(cache_mac):
@@ -679,6 +680,7 @@ class Killer:
             if mac_address_is_usable(probed):
                 victim['mac'] = probed
                 cache_mac = probed
+                recent_probe_mac = probed
         elif mac_address_is_usable(cache_mac):
             victim['mac'] = cache_mac
         if not mac_address_is_usable(victim.get('mac')):
@@ -689,7 +691,10 @@ class Killer:
             iface_ip or None,
             ping_attempts=max(1, int(ping_attempts)),
             # Already probed above when cache was cold — do not pay a second arping.
+            # Pass the probed MAC so liveness still succeeds when ICMP is blocked and
+            # the OS ARP cache has not absorbed the who-has reply yet.
             arp_probe_iface=None,
+            recent_arp_mac=recent_probe_mac or None,
         )
         if not live_ok:
             return False, live_reason

@@ -41,6 +41,19 @@ class TestRememberKillFilter(unittest.TestCase):
         self.assertIn('should_restore_remembered_kill', block)
         self.assertNotIn("list(self.killer.killed.keys())", block)
 
+    def test_process_devices_remembered_restore_uses_full_arm(self) -> None:
+        """Cold post-scan restore must not use fast_arm (silent re-arm failures)."""
+        block = method_src('processDevices')
+        self.assertIn('should_restore_remembered_kill', block)
+        self.assertIn("fast_arm=False", block)
+        # LAN remember path must not force instant arm.
+        remember_chunk = block.split('should_restore_remembered_kill', 1)[1].split(
+            'elif self._is_ics_downstream', 1
+        )[0]
+        self.assertIn('fast_arm=False', remember_chunk)
+        self.assertNotIn('fast_arm=True', remember_chunk)
+        self.assertIn('Remembered kill restore failed', remember_chunk)
+
 
 class TestIcsKillGhostSync(unittest.TestCase):
     def test_sync_clears_ics_profiles_without_backend(self) -> None:

@@ -535,11 +535,15 @@ def victim_endpoint_live_for_mitm(
     *,
     ping_attempts: int = 3,
     arp_probe_iface: str | None = None,
+    recent_arp_mac: str | None = None,
 ) -> tuple[bool, str]:
     """
     PS5 Ethernet vs Wi‑Fi rows use different MACs — do not MITM a ghost favorite IP.
     Pings up to ``ping_attempts`` times; if ICMP is silent but ARP still maps this IP
     to ``expected_mac`` (and the MAC has not moved to another IP), treat as live.
+
+    ``recent_arp_mac`` is a MAC just learned via Scapy who-has in the caller (OS ARP
+    cache may still be empty). Treated like a fresh probe without a second arping.
     """
     ip = str(ip or '').strip()
     expected_mac = good_mac(str(expected_mac or '').strip())
@@ -568,12 +572,25 @@ def victim_endpoint_live_for_mitm(
     ):
         return True, ''
 
+    hint_mac = good_mac(str(recent_arp_mac or '').strip())
+    if (
+        expected_mac
+        and mac_address_is_usable(hint_mac)
+        and hint_mac == expected_mac
+        and not mac_address_is_usable(arp_mac_now)
+    ):
+        # Caller already resolved L2; accept before paying ICMP (PS5 often blocks ping).
+        return True, ''
+
     ping_tries = max(1, int(ping_attempts))
     ping_wait = 500 if ping_tries <= 1 else 600
     if not ipv4_ping_reachable(ip, attempts=ping_tries, timeout_ms=ping_wait):
         arp_mac = arp_mac_now or lookup_mac_from_arp_table(ip, iface_ip)
         from_probe = False
-        if not mac_address_is_usable(arp_mac) and arp_probe_iface:
+        if not mac_address_is_usable(arp_mac) and mac_address_is_usable(hint_mac):
+            arp_mac = hint_mac
+            from_probe = True
+        elif not mac_address_is_usable(arp_mac) and arp_probe_iface:
             probed = _lan_neighbor_mac_via_arp_probe(ip, arp_probe_iface)
             if mac_address_is_usable(probed):
                 arp_mac = probed
