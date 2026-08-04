@@ -230,10 +230,33 @@ class ImpairmentLagMixin:
                     except Exception:
                         iface_name = 'en0'
                     _bg_block_ip(iface_name, work_snap.get('ip'), self.lag_direction)
+                    try:
+                        self._log_mitm_arm_status(work_snap, action='Lag')
+                        self._schedule_mitm_traffic_probe(work_snap, flow='Lag')
+                    except Exception:
+                        pass
                 else:
                     mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(work_snap, ping_attempts=1)
                     if not mitm_ok:
-                        self._lag_abort_start(f'Lag failed: {mitm_reason}')
+                        try:
+                            from tools.user_errors import format_error_code
+
+                            reason = str(mitm_reason or '').lower()
+                            if 'router mac' in reason or 'gateway' in reason:
+                                code = 'ZC-GWMAC'
+                            elif 'victim mac' in reason:
+                                code = 'ZC-VMAC'
+                            elif 'no network adapter' in reason or 'adapter mac' in reason:
+                                code = 'ZC-IFACE'
+                            elif 'isolation' in reason:
+                                code = 'ZC-ISOLATION'
+                            else:
+                                code = 'ZC-ROUTE'
+                            self._lag_abort_start(
+                                f'Lag failed: {format_error_code(code, mitm_reason)}'
+                            )
+                        except Exception:
+                            self._lag_abort_start(f'Lag failed: {mitm_reason}')
                         return
                     if not self._arm_victim_mitm_like_kill(
                         work_snap, self.lag_direction, flow='Lag'

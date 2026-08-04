@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import threading
 import time
 from typing import TYPE_CHECKING, List, Optional
 
@@ -22,9 +23,15 @@ if TYPE_CHECKING:
 
 CLUMSY_BUNDLE_FLAG_NAME = 'clumsy_mode_bundle.flag'
 _ICS_SUBNET_PREFIX = '192.168.137.'
+# Windows Hosted Network standalone DHCP uses 192.168.173.0/24 (not full ICS 137.x).
+# See MS "Using Hosted Network and Internet Connection Sharing".
+_ICS_KNOWN_PREFIXES = ('192.168.137.', '192.168.173.')
 _LAST_ICS_PING_SWEEP_MONO = 0.0
 _ICS_PING_SWEEP_COOLDOWN_SEC = 22.0
 _ICS_PING_SWEEP_LAST_OCTET_MAX = 32
+_LIVE_HOTSPOT_PREFIX_CACHE: tuple[str, float] = ('', 0.0)
+_LIVE_HOTSPOT_PREFIX_TTL_SEC = 5.0
+_LIVE_HOTSPOT_PREFIX_REFRESHING = False
 
 
 def clumsy_bundle_flag_path() -> str:
@@ -111,14 +118,121 @@ def clumsy_mode_enabled() -> bool:
         return False
 
 
+def _detect_live_hotspot_prefix(*, force: bool = False) -> str:
+    """Return ``192.168.137.`` / ``192.168.173.`` when a live .1 gateway exists.
+
+    Uses netsh only — never ``get_ifaces_cached`` / Scapy. Scapy.arch can hang when
+    Npcap is AdminOnly or wedged, and this helper is on Kill/scan hot paths.
+    """
+    global _LIVE_HOTSPOT_PREFIX_CACHE
+    if not sys.platform.startswith('win'):
+        return ''
+    now = time.monotonic()
+    cached, ts = _LIVE_HOTSPOT_PREFIX_CACHE
+    if not force and (now - ts) < _LIVE_HOTSPOT_PREFIX_TTL_SEC:
+        return cached
+    found = ''
+    try:
+        from tools.utils import run_command
+
+        proc = run_command(
+            ['netsh', 'interface', 'ipv4', 'show', 'addresses'],
+            shell=False,
+            timeout=2,
+        )
+        text = str(getattr(proc, 'stdout', None) or '')
+        # Prefer full ICS SoftAP when both are present.
+        for prefix in _ICS_KNOWN_PREFIXES:
+            if (prefix + '1') in text:
+                found = prefix
+                break
+    except Exception:
+        found = ''
+    prev, _prev_ts = _LIVE_HOTSPOT_PREFIX_CACHE
+    _LIVE_HOTSPOT_PREFIX_CACHE = (found, time.monotonic())
+    # SoftAP NIC can move (137↔173 / different ifIdx) — drop sticky ifIdx cache.
+    if found != prev and hasattr(clumsy_ics_downstream_ifidx, '_cached_idx'):
+        try:
+            delattr(clumsy_ics_downstream_ifidx, '_cached_idx')
+        except Exception:
+            pass
+    return found
+
+
+def _schedule_live_hotspot_prefix_refresh() -> None:
+    """Background netsh SoftAP probe so Kill/scan never wait on a 2s refresh."""
+    global _LIVE_HOTSPOT_PREFIX_REFRESHING
+    if _LIVE_HOTSPOT_PREFIX_REFRESHING:
+        return
+    _LIVE_HOTSPOT_PREFIX_REFRESHING = True
+
+    def _run() -> None:
+        global _LIVE_HOTSPOT_PREFIX_REFRESHING
+        try:
+            _detect_live_hotspot_prefix(force=True)
+        except Exception:
+            pass
+        finally:
+            _LIVE_HOTSPOT_PREFIX_REFRESHING = False
+
+    threading.Thread(target=_run, name='zubcut-softap-prefix', daemon=True).start()
+
+
+def ics_prefix_for_ip(ip: str) -> str:
+    """Return ``192.168.137.`` / ``192.168.173.`` when *ip* is on a known SoftAP subnet."""
+    s = str(ip or '').strip()
+    if not s:
+        return ''
+    for prefix in _ICS_KNOWN_PREFIXES:
+        if s.startswith(prefix):
+            return prefix
+    return ''
+
+
+def resolve_ics_downstream_prefix(victim_ip: str = '') -> str:
+    """Best SoftAP prefix for WinDivert/Kill: victim IP → live SoftAP → state → default."""
+    from_victim = ics_prefix_for_ip(victim_ip)
+    if from_victim:
+        return from_victim
+    return clumsy_ics_downstream_prefix()
+
+
+def _normalize_ics_prefix(prefix: str) -> str:
+    p = str(prefix or '').strip()
+    if not p:
+        return ''
+    return p if p.endswith('.') else (p + '.')
+
+
 def clumsy_ics_downstream_prefix() -> str:
+    """SoftAP IPv4 prefix. Live SoftAP wins over stale ICS state (137 vs 173 mismatch).
+
+    Uses stale-while-revalidate so Kill/scan hot paths do not block on netsh every
+    few seconds after the first probe in-process.
+    """
     state = read_clumsy_ics_state()
-    prefix = str(state.get('downstream_prefix') or '').strip()
-    if not prefix:
-        prefix = _ICS_SUBNET_PREFIX
-    if not prefix.endswith('.'):
-        prefix += '.'
-    return prefix
+    state_prefix = _normalize_ics_prefix(str(state.get('downstream_prefix') or '').strip())
+    cached, ts = _LIVE_HOTSPOT_PREFIX_CACHE
+    now = time.monotonic()
+    fresh = ts > 0.0 and (now - ts) < _LIVE_HOTSPOT_PREFIX_TTL_SEC
+
+    if fresh:
+        if cached:
+            return _normalize_ics_prefix(cached)
+        return state_prefix or _ICS_SUBNET_PREFIX
+
+    if ts > 0.0:
+        # Cache expired: keep last live SoftAP (or state) while refreshing off-thread.
+        _schedule_live_hotspot_prefix_refresh()
+        if cached:
+            return _normalize_ics_prefix(cached)
+        return state_prefix or _ICS_SUBNET_PREFIX
+
+    # First probe this process — may take up to ~2s once; then cached.
+    live = _detect_live_hotspot_prefix(force=True)
+    if live:
+        return _normalize_ics_prefix(live)
+    return state_prefix or _ICS_SUBNET_PREFIX
 
 
 def clumsy_ics_downstream_ifidx_from_arp() -> int:
@@ -174,12 +288,13 @@ def clumsy_ics_downstream_ifidx() -> int:
 
             state = read_clumsy_ics_state()
             name = str(state.get('downstream_name') or '').strip()
-            if name:
-                listing = terminal('netsh interface ipv4 show interfaces') or ''
-                name_low = name.lower()
-                from tools.user_errors import safe_text_lines
+            listing = terminal('netsh interface ipv4 show interfaces') or ''
+            from tools.user_errors import safe_text_lines
 
-                for line in safe_text_lines(listing):
+            lines = list(safe_text_lines(listing))
+            if name:
+                name_low = name.lower()
+                for line in lines:
                     if name_low not in line.lower():
                         continue
                     parts = line.split()
@@ -188,6 +303,65 @@ def clumsy_ics_downstream_ifidx() -> int:
                         break
         except Exception:
             idx = 0
+    if idx <= 0:
+        # Last resort: iface that owns 192.168.137.1 / 192.168.173.1 (netsh addresses).
+        # Avoid guessing from SoftAP display names alone — too many false matches.
+        try:
+            from tools.utils import run_command, terminal
+            from tools.user_errors import safe_text_lines
+
+            proc = run_command(
+                ['netsh', 'interface', 'ipv4', 'show', 'addresses'],
+                shell=False,
+                timeout=2,
+            )
+            text = str(getattr(proc, 'stdout', None) or '')
+            current_name = ''
+            want_name = ''
+            # Locale headers: EN/DE/ES/FR all quote the iface name; labels vary.
+            # EN: Configuration for interface "X"
+            # DE: Konfiguration für Schnittstelle "X"
+            # ES: Configuración para la interfaz "X"
+            # FR: Configuration pour l'interface "X"
+            hdr_hint = (
+                'interface',
+                'schnittstelle',
+                'interfaz',
+                'configuration',
+                'konfiguration',
+                'configuraci',
+            )
+            for raw in text.splitlines():
+                line = raw.strip()
+                low = line.lower()
+                if '"' in line and any(h in low for h in hdr_hint):
+                    q1 = line.find('"')
+                    q2 = line.rfind('"')
+                    if q1 >= 0 and q2 > q1:
+                        current_name = line[q1 + 1 : q2]
+                    continue
+                if not current_name:
+                    continue
+                # Gateway IP on the address line is enough (skip locale IP-label words).
+                for prefix in _ICS_KNOWN_PREFIXES:
+                    gw = prefix + '1'
+                    if re.search(rf'(?<![\d.]){re.escape(gw)}(?![\d.])', line):
+                        want_name = current_name
+                        break
+                if want_name:
+                    break
+            if want_name:
+                listing = terminal('netsh interface ipv4 show interfaces') or ''
+                want_low = want_name.lower()
+                for line in safe_text_lines(listing):
+                    if want_low not in line.lower():
+                        continue
+                    parts = line.split()
+                    if parts and parts[0].isdigit():
+                        idx = int(parts[0])
+                        break
+        except Exception:
+            pass
     if idx > 0:
         clumsy_ics_downstream_ifidx._cached_idx = idx
     return idx if idx > 0 else 0
@@ -233,7 +407,20 @@ def victim_on_clumsy_ics_subnet(victim_ip: str) -> bool:
     ip = str(victim_ip or '').strip()
     if not ip:
         return False
-    return ip.startswith(clumsy_ics_downstream_prefix())
+    # Cheap first: both SoftAP ranges (no netsh / Scapy). Hot path for scan + Kill.
+    if any(ip.startswith(p) for p in _ICS_KNOWN_PREFIXES):
+        return True
+    # Non-standard SoftAP prefix from ICS state only (never live detect here).
+    try:
+        state = read_clumsy_ics_state()
+        prefix = str(state.get('downstream_prefix') or '').strip()
+        if prefix:
+            if not prefix.endswith('.'):
+                prefix += '.'
+            return ip.startswith(prefix)
+    except Exception:
+        pass
+    return False
 
 
 def hotspot_arp_cache_sensitive(scanner: Optional['Scanner'] = None) -> bool:
@@ -269,7 +456,8 @@ def clumsy_hotspot_session_active() -> bool:
     try:
         state = read_clumsy_ics_state()
         gw = str(state.get('downstream_ipv4') or '').strip()
-        if gw.startswith('192.168.137.'):
+        # Full ICS SoftAP uses 137.x; Hosted Network standalone DHCP uses 173.x.
+        if any(gw.startswith(p) for p in _ICS_KNOWN_PREFIXES):
             return True
     except Exception:
         pass
@@ -404,27 +592,66 @@ def _process_is_elevated() -> bool:
         return False
 
 
+def _windows_memory_integrity_enabled() -> bool:
+    """True when Hypervisor-enforced Code Integrity / Memory Integrity looks ON."""
+    if not sys.platform.startswith('win'):
+        return False
+    try:
+        import winreg
+
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r'SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios'
+            r'\HypervisorEnforcedCodeIntegrity',
+        )
+        try:
+            val, _ = winreg.QueryValueEx(key, 'Enabled')
+            return int(val or 0) != 0
+        finally:
+            winreg.CloseKey(key)
+    except Exception:
+        return False
+
+
 def clumsy_windivert_unavailable_reason(device) -> str:
     """Short reason WinDivert ICS lag is unavailable (for logs / settings)."""
+    try:
+        from tools.user_errors import format_error_code
+    except Exception:
+        format_error_code = None  # type: ignore
+
+    def _zc(code: str, detail: str = '') -> str:
+        if format_error_code:
+            try:
+                return format_error_code(code, detail)
+            except Exception:
+                pass
+        return detail or code
+
     if not sys.platform.startswith('win'):
         return 'Windows only'
     if not clumsy_mode_enabled():
-        return 'enable Clumsy mode in Settings and restart ZubCut'
+        return _zc('ZC-WD', 'enable Clumsy mode in Settings and restart ZubCut')
     if not _process_is_elevated():
-        return 'run ZubCut as Administrator'
+        return _zc('ZC-ADMIN')
     if getattr(sys, 'frozen', False) and not clumsy_bundle_offered():
-        return 'reinstall with Clumsy mode checked (WinDivert bundle)'
+        return _zc('ZC-WD', 'reinstall with Clumsy mode checked (WinDivert bundle)')
     if not windivert_bundle_complete():
-        return 'WinDivert.dll + WinDivert64.sys missing in ZubCut\\windivert (reinstall Clumsy mode)'
+        return _zc(
+            'ZC-WD',
+            'WinDivert.dll + WinDivert64.sys missing in ZubCut\\windivert (reinstall Clumsy mode)',
+        )
     if not isinstance(device, dict):
         return 'no device selected'
     ip = clumsy_ics_resolve_victim_ip(device)
     if not ip:
-        return 'target has no IP yet'
+        return _zc('ZC-ICS', 'target has no IP yet')
     if not victim_on_clumsy_ics_subnet(ip):
-        prefix = clumsy_ics_downstream_prefix()
-        return f'target {ip} is not on hotspot subnet {prefix}x'
-    return 'WinDivert could not start (run as Administrator)'
+        prefix = resolve_ics_downstream_prefix(ip)
+        return _zc('ZC-ICS', f'target {ip} is not on hotspot subnet {prefix}x')
+    if _windows_memory_integrity_enabled():
+        return _zc('ZC-WD-HVCI')
+    return _zc('ZC-WD', 'WinDivert could not start (run as Administrator)')
 
 
 def clumsy_windivert_probe_detail(victim_ip: str) -> str:
@@ -579,7 +806,8 @@ def apply_clumsy_ics_router_context(scanner: Scanner, killer, victim_ip: str) ->
         return False
     if not victim_on_clumsy_ics_subnet(victim_ip):
         return False
-    prefix = clumsy_ics_downstream_prefix()
+    # Prefer victim's SoftAP subnet (173 vs 137) over stale ICS state / leftover .1.
+    prefix = resolve_ics_downstream_prefix(victim_ip)
     gw = str(read_clumsy_ics_state().get('downstream_ipv4') or '').strip()
     if not gw or not gw.startswith(prefix.rstrip('.')):
         gw = prefix.rstrip('.') + '.1'

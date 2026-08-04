@@ -2031,7 +2031,8 @@ class ZubCutApp(
         """
         # Ensure "Me" and "Router" are always shown even if scan hasn't run
         try:
-            self.scanner.refresh_local_topology()
+            # Paint path: ARP table only — never scapy getmacbyip (~4s GUI freeze).
+            self.scanner.refresh_local_topology(allow_scapy_probe=False)
             self.scanner.add_me()
             self.scanner.add_router()
         except Exception:
@@ -2128,11 +2129,12 @@ class ZubCutApp(
             if not mac or mac not in remembered:
                 continue
             if should_restore_remembered_kill(rem_device, self.scanner):
-                self._apply_victim_block(rem_device, 'both')
+                # Post-scan restore runs on the GUI thread — never pay ping_attempts=3.
+                self._apply_victim_block(rem_device, 'both', fast_arm=True)
             elif self._is_ics_downstream(rem_device) and self._kill_ui_shows_on(
                 mac, rem_device.get('ip'), rem_device
             ):
-                self._apply_victim_block(rem_device, 'both')
+                self._apply_victim_block(rem_device, 'both', fast_arm=True)
 
         # Killer holds ARP for lag/dupe on LAN; explicit Kill uses killed_devices / ICS profiles.
         for mac, victim in self.killer.killed.items():
@@ -2307,6 +2309,35 @@ class ZubCutApp(
             force=reason in ('startup', 'settings', 'post_init'),
             prewarm=self.killer.prewarm_l2_socket,
         )
+        # Keep the L2 socket warm while the app is open — cold Npcap opens cost 0.5–2s
+        # and make first Kill feel delayed even after a successful startup prewarm.
+        if reason != 'keepalive':
+            self._ensure_npcap_keepalive_timer()
+
+    def _ensure_npcap_keepalive_timer(self) -> None:
+        """Re-prewarm the cached L2 socket every ~90s so instant cut stays hot."""
+        if getattr(self, '_npcap_keepalive_timer', None) is not None:
+            return
+        if getattr(self, '_shutting_down', False):
+            return
+        try:
+            timer = QTimer(self)
+            timer.setInterval(90_000)
+
+            def _keepalive() -> None:
+                if getattr(self, '_shutting_down', False):
+                    return
+                try:
+                    if not self.killer.l2_socket_ready():
+                        self.killer.prewarm_l2_socket(join_ms=0)
+                except Exception:
+                    pass
+
+            timer.timeout.connect(_keepalive)
+            timer.start()
+            self._npcap_keepalive_timer = timer
+        except Exception:
+            self._npcap_keepalive_timer = None
 
     def _should_poll_update_availability(self):
         import sys
@@ -2662,7 +2693,7 @@ class ZubCutApp(
                     run_command(
                         ['ping', '-n', '1', '-w', '500', router_ip],
                         shell=False,
-                        timeout=2,
+                        timeout=1,
                     )
                 except Exception:
                     pass

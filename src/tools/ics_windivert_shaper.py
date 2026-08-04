@@ -208,8 +208,8 @@ def _windivert_sc_stop_and_delete() -> None:
 
 def _windivert_repair_stale_service(sys_path: str) -> tuple[bool, str]:
     """
-    WinDivertOpen error 3 often means the WinDivert kernel service still points at a
-    deleted .sys path (e.g. an old WinRAR temp folder). Remove the stale service so
+    WinDivertOpen error 3 / access-denied often means the WinDivert kernel service
+    still points at a deleted or temp-extracted .sys path. Remove the stale service so
     the next WinDivertOpen registers WinDivert64.sys next to our DLL.
     """
     want = _windivert_normalized_path(sys_path)
@@ -221,7 +221,18 @@ def _windivert_repair_stale_service(sys_path: str) -> tuple[bool, str]:
     if current == want:
         return True, 'service path ok'
     if os.path.isfile(current):
-        return True, 'service uses another valid driver path'
+        # Keep a different *stable* install; delete temp/extract leftovers that break
+        # Open after updates (Hyper-V / WinRAR / %TEMP% ImagePath reports).
+        low = current.lower().replace('/', '\\')
+        stale_hints = (
+            '\\temp\\',
+            '\\tmp\\',
+            '\\winrar\\',
+            '\\appdata\\local\\temp\\',
+            '\\appdata\\local\\tmp\\',
+        )
+        if not any(h in low for h in stale_hints):
+            return True, 'service uses another valid driver path'
     _windivert_sc_stop_and_delete()
     return True, f'removed stale WinDivert service (was {current})'
 
@@ -325,7 +336,9 @@ def _ics_hotspot_forward_filter(downstream_prefix: str = '') -> str:
     if quad:
         gw = f'{quad}.1'
         return f'ip and !(ip.SrcAddr == {gw} and ip.DstAddr == {gw})'
-    return 'ip'
+    # Never fall back to bare ``ip`` — that intercepts the whole PC and can drop
+    # the host's own WAN + other LAN clients when SoftAP ifIdx detection fails.
+    return ''
 
 
 def _ics_windivert_filter(victim_ip: str, downstream_prefix: str = '') -> str:
@@ -415,6 +428,10 @@ def _ipv4_packet_sig(pkt: bytes) -> int:
         return 0
     src, dst = parsed
     ip_id = int.from_bytes(pkt[off + 4 : off + 6], 'big')
+    # Many stacks set Identification=0 with DF set — hashing that would force-pass
+    # distinct keepalives as "duplicates" and weaken percent/shape.
+    if ip_id == 0:
+        return 0
     return hash((src, dst, ip_id, len(pkt)))
 
 
@@ -562,10 +579,15 @@ def _ics_windivert_open_candidates(
     if on_subnet or hotspot_capture:
         for filt, desc in _ics_hotspot_ifidx_filters(downstream_prefix):
             out.append((filt, desc))
-        out.append((_ics_hotspot_forward_filter(downstream_prefix), 'forward'))
-        out.append(('ip or ipv6', 'broad'))
+        fwd = _ics_hotspot_forward_filter(downstream_prefix)
+        if fwd:
+            out.append((fwd, 'forward'))
+        # Do not open system-wide ``ip or ipv6`` — when ifIdx/prefix is unknown it
+        # pauses the host PC and every other client during Kill. Prefer victim filter.
         if on_subnet and vip:
             out.append((_ics_windivert_filter(vip, downstream_prefix), 'subnet'))
+            out.append((_ics_clumsy_victim_filter(vip), 'victim'))
+        elif hotspot_capture and vip:
             out.append((_ics_clumsy_victim_filter(vip), 'victim'))
     elif vip:
         out.append((_ics_clumsy_victim_filter(vip), 'victim'))
@@ -598,6 +620,8 @@ def _open_windivert_handles(
     for filt, desc in _ics_windivert_open_candidates(
         victim_ip, downstream_prefix, hotspot_capture=hotspot_capture
     ):
+        if not str(filt or '').strip():
+            continue
         for layer in _layers_for_capture_desc(desc):
             key = (filt, layer)
             if key in seen:
@@ -656,11 +680,17 @@ def probe_windivert_for_victim(
     except OSError as exc:
         return False, f'failed to load WinDivert.dll: {exc}'
     try:
-        from tools.clumsy_inline import clumsy_ics_downstream_prefix
+        from tools.clumsy_inline import resolve_ics_downstream_prefix
 
-        prefix = clumsy_ics_downstream_prefix()
+        prefix = resolve_ics_downstream_prefix(vip)
     except Exception:
         prefix = '192.168.137.'
+        try:
+            from tools.clumsy_inline import ics_prefix_for_ip
+
+            prefix = ics_prefix_for_ip(vip) or prefix
+        except Exception:
+            pass
     if hotspot_capture is None:
         try:
             from tools.clumsy_inline import clumsy_hotspot_session_active
@@ -853,11 +883,17 @@ class IcsWinDivertLagGate:
         _bind_windivert_api(self._dll)
         vip = self._victim
         try:
-            from tools.clumsy_inline import clumsy_ics_downstream_prefix
+            from tools.clumsy_inline import resolve_ics_downstream_prefix
 
-            prefix = clumsy_ics_downstream_prefix()
+            prefix = resolve_ics_downstream_prefix(vip)
         except Exception:
             prefix = '192.168.137.'
+            try:
+                from tools.clumsy_inline import ics_prefix_for_ip
+
+                prefix = ics_prefix_for_ip(vip) or prefix
+            except Exception:
+                pass
         self._downstream_prefix = prefix
         try:
             from tools.clumsy_inline import clumsy_ics_downstream_ifidx

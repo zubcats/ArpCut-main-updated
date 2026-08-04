@@ -24,15 +24,19 @@ def _stdout_lines(res) -> list[str]:
     return safe_text_lines(getattr(res, 'stdout', None))
 
 
-def _exec(cmd):
+def _exec(cmd, *, timeout: int | None = 45):
+    """Run a shell command. Windows netsh enumerations get a timeout so OFF never hangs."""
     if sys.platform.startswith('win'):
         from tools.utils import run_command
 
-        return run_command(cmd, shell=True)
+        return run_command(cmd, shell=True, timeout=timeout)
     from subprocess import run
     from tools.utils import subprocess_text_kwargs
 
-    return run(cmd, shell=True, stdout=PIPE, stderr=PIPE, **subprocess_text_kwargs())
+    kw = subprocess_text_kwargs()
+    if timeout is not None:
+        kw['timeout'] = timeout
+    return run(cmd, shell=True, stdout=PIPE, stderr=PIPE, **kw)
 
 
 def _set_err(msg: str):
@@ -42,6 +46,16 @@ def _set_err(msg: str):
 
 def last_error() -> str:
     return _LAST_ERR
+
+
+def _windows_admin_ok_for_firewall() -> bool:
+    """False when we know the process is not elevated (netsh advfirewall will fail)."""
+    try:
+        from tools.utils_gui import is_admin
+
+        return bool(is_admin())
+    except Exception:
+        return True
 
 
 def _is_valid_pf_rule(rule: str) -> bool:
@@ -230,6 +244,9 @@ def block_dst(iface: str, victim_ip: str, dst_ip: str, port: int | None = None, 
     if sys.platform != 'darwin':
         # Windows: use netsh advfirewall (simplified - block destination IP)
         if sys.platform.startswith('win'):
+            if not _windows_admin_ok_for_firewall():
+                _set_err('Administrator required for Windows Firewall block')
+                return False
             if not _is_valid_ip(victim_ip) or not _is_valid_ip(dst_ip):
                 _set_err('block_dst: invalid IPv4')
                 return False
@@ -258,7 +275,11 @@ def block_dst(iface: str, victim_ip: str, dst_ip: str, port: int | None = None, 
             if port_i:
                 cmd += f' protocol={proto_n.lower()} localport={port_i}'
             res = _exec(cmd)
-            return res.returncode == 0
+            if res.returncode != 0:
+                _set_err((res.stderr or res.stdout or 'netsh block_dst failed'))
+                return False
+            _set_err('')
+            return True
         return False
     if not _is_valid_ip(victim_ip) or not _is_valid_ip(dst_ip):
         _set_err('block_dst: invalid IPv4')
@@ -341,7 +362,8 @@ def pf_self_check() -> bool:
         # Windows: check if firewall is accessible
         if sys.platform.startswith('win'):
             res = _exec('netsh advfirewall show allprofiles state')
-            return res.returncode == 0 and 'ON' in res.stdout
+            text = str(getattr(res, 'stdout', None) or '')
+            return res.returncode == 0 and 'ON' in text
         return True
     if not ensure_pf_enabled():
         return False
@@ -352,10 +374,19 @@ def block_all_for(iface: str, victim_ip: str) -> bool:
     if sys.platform != 'darwin':
         # Windows: use netsh advfirewall
         if sys.platform.startswith('win'):
+            if not _windows_admin_ok_for_firewall():
+                _set_err('Administrator required for Windows Firewall block')
+                return False
             rule_name = f'zubcut_block_{victim_ip.replace(".", "_")}'
             cmd = f'netsh advfirewall firewall add rule name="{rule_name}" dir=out action=block remoteip={victim_ip} enable=yes'
             res = _exec(cmd)
-            return res.returncode == 0
+            if int(getattr(res, 'returncode', 1) or 1) != 0:
+                _set_err(
+                    str(getattr(res, 'stderr', None) or getattr(res, 'stdout', None) or 'netsh failed')
+                )
+                return False
+            _set_err('')
+            return True
         return False
     # macOS anchors don't support 'in'/'out' - omit direction
     rule = f'block drop quick on {iface} from {victim_ip} to any'
@@ -590,6 +621,9 @@ def block_ip(iface: str, ip: str, direction: str = 'both') -> bool:
         ]
         return _write_pf_rules(rules, replace=False)
     elif sys.platform.startswith('win'):
+        if not _windows_admin_ok_for_firewall():
+            _set_err('Administrator required for Windows Firewall block')
+            return False
         # Replace any prior rules for this IP so re-apply (Lag/Kill) stays idempotent.
         windows_delete_zubcut_ip_rules(ip)
         rule_base = _win_ip_block_rule_base(ip)
@@ -685,14 +719,24 @@ def list_blocked_ips() -> list:
                 r'zubcut_ip_([0-9]{1,3}(?:_[0-9]{1,3}){3})_(in|out)(?:_(udp|tcp|icmp))?',
                 re.IGNORECASE,
             )
+            block_all_re = re.compile(
+                r'zubcut_block_([0-9]{1,3}(?:_[0-9]{1,3}){3})\b',
+                re.IGNORECASE,
+            )
             for line in _stdout_lines(res):
                 line = line.strip()
-                if 'zubcut_ip_' in line.lower():
+                low = line.lower()
+                if 'zubcut_ip_' in low:
                     m = regex.search(line)
                     if m:
                         ip = m.group(1).replace('_', '.')
                         direction = m.group(2)
                         blocked.append((ip, direction))
+                elif 'zubcut_block_' in low:
+                    m = block_all_re.search(line)
+                    if m:
+                        ip = m.group(1).replace('_', '.')
+                        blocked.append((ip, 'out'))
     return blocked
 
 
@@ -714,16 +758,35 @@ def block_port(iface: str, port: int, proto: str = 'tcp', direction: str = 'both
             rule = f'block drop quick on {iface} proto {proto} from any to any port {port}'
         return _write_pf_rules([rule], replace=False)
     elif sys.platform.startswith('win'):
+        if not _windows_admin_ok_for_firewall():
+            _set_err('Administrator required for firewall port block')
+            return False
         rule_name = f'zubcut_port_{port}_{proto}'
+        remote = ''
+        if target_ip:
+            tip = str(target_ip).strip()
+            if not _is_valid_ip(tip):
+                _set_err(f'invalid target_ip for port block: {target_ip!r}')
+                return False
+            remote = f' remoteip={tip}'
+            # Scope rule name so multi-device port blocks do not collide.
+            rule_name = f'zubcut_port_{port}_{proto}_{tip.replace(".", "_")}'
         ok = True
+        res = None
         if direction in ('in', 'both'):
-            res = _exec(f'netsh advfirewall firewall add rule name="{rule_name}_in" dir=in action=block protocol={proto} localport={port} enable=yes')
+            res = _exec(
+                f'netsh advfirewall firewall add rule name="{rule_name}_in" '
+                f'dir=in action=block protocol={proto} localport={port}{remote} enable=yes'
+            )
             ok = ok and res.returncode == 0
         if direction in ('out', 'both'):
-            res = _exec(f'netsh advfirewall firewall add rule name="{rule_name}_out" dir=out action=block protocol={proto} localport={port} enable=yes')
+            res = _exec(
+                f'netsh advfirewall firewall add rule name="{rule_name}_out" '
+                f'dir=out action=block protocol={proto} localport={port}{remote} enable=yes'
+            )
             ok = ok and res.returncode == 0
         if not ok:
-            _set_err((res.stderr or res.stdout or 'netsh failed'))
+            _set_err(((res.stderr if res else '') or (res.stdout if res else '') or 'netsh failed'))
         else:
             _set_err('')
         return ok
@@ -793,7 +856,12 @@ def list_blocked_ports() -> list:
         import re
         res = _exec('netsh advfirewall firewall show rule name=all')
         if res.returncode == 0:
-            regex = re.compile(r'zubcut_port_([0-9]+)_([a-z]+)_(in|out)', re.IGNORECASE)
+            # Unscoped: zubcut_port_443_tcp_in
+            # Scoped:    zubcut_port_443_tcp_192_168_1_50_in
+            regex = re.compile(
+                r'zubcut_port_([0-9]+)_([a-z]+)(?:_\d+(?:_\d+){3})?_(in|out)',
+                re.IGNORECASE,
+            )
             for line in _stdout_lines(res):
                 line = line.strip()
                 if 'zubcut_port_' in line.lower():

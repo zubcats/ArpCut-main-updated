@@ -41,16 +41,229 @@ class ImpairmentMitmMixin:
             iface = getattr(self.scanner, 'iface', None)
             if iface is not None and getattr(iface, 'name', None) not in (None, '', 'NULL'):
                 self.killer.iface = iface
-            self.scanner.refresh_local_topology()
+            # GUI-thread warm (QTimer) — skip getmacbyip; router MAC refreshed below.
+            self.scanner.refresh_local_topology(allow_scapy_probe=False)
             self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
             refresh_router = getattr(self.killer, '_refresh_router_mac_for_mitm', None)
             if callable(refresh_router):
                 refresh_router()
             self._lan_impairment_warmed_at = time.monotonic()
             self._schedule_npcap_prewarm('lan_warm')
+            # Seal kernel forwarding during warm-up (non-blocking) so Kill's first
+            # click does not race a multi-second per-iface netsh drain.
+            # Skip when Clumsy/ICS is on — hotspot path may need forwarding enabled.
+            if sys.platform.startswith('win'):
+                try:
+                    from tools.clumsy_inline import clumsy_mode_enabled
+
+                    if not clumsy_mode_enabled():
+                        from networking.killer import disable_ip_forwarding
+
+                        disable_ip_forwarding(
+                            priority_iface=str(
+                                getattr(self.scanner.iface, 'name', None) or ''
+                            )
+                        )
+                except Exception:
+                    pass
+                self._schedule_lan_ipv6_probe()
+                self._schedule_wifi_link_probe()
+                self._warn_vpn_iface_if_selected()
+                self._warn_controlled_folder_access_once()
+        except Exception as exc:
+            try:
+                from tools.zubcut_log import app_log
+
+                app_log('lan_mitm_warm_failed', error=repr(exc), exc_info=True)
+            except Exception:
+                pass
+
+    def _warn_vpn_iface_if_selected(self) -> None:
+        """Surface VPN/TAP/Wintun selection once — these break ARP MITM for many users."""
+        try:
+            if getattr(self, '_vpn_iface_warned', False):
+                return
+            name = str(getattr(self.scanner.iface, 'name', None) or '').lower()
+            guid = str(getattr(self.scanner.iface, 'guid', None) or '').lower()
+            blob = f'{name} {guid}'
+            needles = (
+                'vpn', 'wintun', 'wireguard', 'tap-windows', 'tap0901', 'tap adapter',
+                'nordlynx', 'proton', 'mullvad', 'openvpn', 'fortinet',
+                'anyconnect', 'globalprotect', 'hyper-v', 'vethernet',
+                'default switch', 'vmware', 'virtualbox', 'vboxnet',
+                'tailscale', 'zerotier', 'hamachi', 'wsl', 'docker',
+            )
+            if not any(n in blob for n in needles):
+                return
+            self._vpn_iface_warned = True
+            self.log(
+                'Selected adapter looks like VPN/virtual — LAN Kill usually fails. '
+                'Pick your real Wi‑Fi/Ethernet in Settings.',
+                'orange',
+            )
         except Exception:
             pass
 
+    def _warn_controlled_folder_access_once(self) -> None:
+        """Soft warn once when Windows CFA may block Npcap/WinDivert drivers."""
+        if getattr(self, '_cfa_warned', False):
+            return
+        if not sys.platform.startswith('win'):
+            return
+
+        def _work() -> None:
+            enabled = False
+            try:
+                import winreg
+
+                key = winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r'SOFTWARE\Microsoft\Windows Defender\Windows Defender Exploit Guard'
+                    r'\Controlled Folder Access',
+                )
+                try:
+                    val, _ = winreg.QueryValueEx(key, 'EnableControlledFolderAccess')
+                    enabled = int(val or 0) != 0
+                finally:
+                    winreg.CloseKey(key)
+            except Exception:
+                enabled = False
+            if not enabled:
+                return
+            self._cfa_warned = True
+
+            def _ui() -> None:
+                try:
+                    from tools.user_errors import format_error_code
+
+                    self.log(format_error_code('ZC-AV'), 'orange')
+                except Exception:
+                    self.log(
+                        'Controlled Folder Access may block Npcap/WinDivert — allow ZubCut.',
+                        'orange',
+                    )
+
+            try:
+                QTimer.singleShot(0, _ui)
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-cfa-probe',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    def _schedule_lan_ipv6_probe(self) -> None:
+        """Cache whether the LAN NIC has IPv6 enabled (background; never on Kill click)."""
+        if getattr(self, '_lan_ipv6_probe_in_flight', False):
+            return
+        self._lan_ipv6_probe_in_flight = True
+
+        def _work() -> None:
+            enabled = None
+            try:
+                name = str(getattr(self.scanner.iface, 'name', None) or '').strip()
+                if not name or name == 'NULL':
+                    return
+                from tools.utils import run_command
+
+                safe = name.replace("'", '')
+                proc = run_command(
+                    [
+                        'powershell',
+                        '-NoProfile',
+                        '-Command',
+                        f"(Get-NetAdapterBinding -Name '{safe}' "
+                        f"-ComponentID ms_tcpip6 -ErrorAction SilentlyContinue).Enabled",
+                    ],
+                    shell=False,
+                    timeout=4,
+                )
+                text = str(getattr(proc, 'stdout', None) or '').strip().lower()
+                enabled = text.startswith('true')
+            except Exception:
+                enabled = None
+            finally:
+                self._lan_ipv6_probe_in_flight = False
+            if enabled is not None:
+                self._lan_ipv6_enabled_cached = bool(enabled)
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-lan-ipv6-probe',
+                daemon=True,
+            ).start()
+        except Exception:
+            self._lan_ipv6_probe_in_flight = False
+
+    def _schedule_wifi_link_probe(self) -> None:
+        """Cache WPA3 / Wi‑Fi 7 MLO hints from netsh (background; never on Kill click)."""
+        if not sys.platform.startswith('win'):
+            return
+        if getattr(self, '_wifi_link_probe_in_flight', False):
+            return
+        self._wifi_link_probe_in_flight = True
+
+        def _work() -> None:
+            hints: list[str] = []
+            try:
+                from tools.utils import run_command
+                from tools.support_wifi_link_diag import (
+                    parse_wlan_interfaces,
+                    security_zubcut_class,
+                )
+
+                proc = run_command(
+                    ['netsh', 'wlan', 'show', 'interfaces'],
+                    shell=False,
+                    timeout=5,
+                )
+                raw = str(getattr(proc, 'stdout', None) or '')
+                adapters = parse_wlan_interfaces(raw)
+                for a in adapters:
+                    if not bool(a.get('connected')):
+                        continue
+                    auth = str(a.get('authentication') or '')
+                    sec = security_zubcut_class(auth)
+                    if sec == 'wpa3':
+                        hints.append('ZC-WPA3')
+                    radio = str(a.get('radio_type') or '').lower()
+                    band = str(a.get('band') or '').lower()
+                    if (
+                        '802.11be' in radio
+                        or 'wi-fi 7' in radio
+                        or 'wifi 7' in radio
+                        or 'mlo' in radio
+                        or 'multi-link' in radio
+                        or ('6' in band and 'ghz' in band)
+                    ):
+                        hints.append('ZC-MLO')
+            except Exception:
+                hints = []
+            finally:
+                self._wifi_link_probe_in_flight = False
+            # Dedupe while preserving order.
+            seen: set[str] = set()
+            ordered: list[str] = []
+            for h in hints:
+                if h not in seen:
+                    seen.add(h)
+                    ordered.append(h)
+            self._wifi_link_hints_cached = ordered
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-wifi-link-probe',
+                daemon=True,
+            ).start()
+        except Exception:
+            self._wifi_link_probe_in_flight = False
 
     def _log_mitm_arm_status(self, device, *, action: str = 'Kill') -> None:
         """Surface silent MITM failures (stale MAC / bad router) in the log box."""
@@ -95,6 +308,20 @@ class ImpairmentMitmMixin:
                     )
                 except Exception:
                     pass
+                # IPv6 / WPA3 / Wi‑Fi 7 — warn from warm-up cache only (never block click).
+                try:
+                    from tools.user_errors import format_error_code
+
+                    if bool(getattr(self, '_lan_ipv6_enabled_cached', False)):
+                        self.log(format_error_code('ZC-IPV6'), 'orange')
+                    for code in list(getattr(self, '_wifi_link_hints_cached', None) or []):
+                        self.log(format_error_code(code), 'orange')
+                except Exception:
+                    if bool(getattr(self, '_lan_ipv6_enabled_cached', False)):
+                        self.log(
+                            f'{action}: IPv6 may bypass IPv4 ARP Kill on {iface}.',
+                            'orange',
+                        )
         except Exception:
             pass
 
@@ -104,23 +331,32 @@ class ImpairmentMitmMixin:
         def _work() -> None:
             try:
                 from networking.killer import (
+                    _lan_kill_priority_only,
                     disable_ip_forwarding,
                     is_ip_forwarding_enabled,
                 )
 
-                disable_ip_forwarding(priority_iface=str(iface or ''))
+                disable_ip_forwarding(
+                    priority_iface=str(iface or ''),
+                    priority_only=_lan_kill_priority_only(),
+                )
                 if not is_ip_forwarding_enabled():
                     return
             except Exception:
                 return
 
             def _warn() -> None:
-                self.log(
-                    f'{action}: Windows IP forwarding is still ON — '
-                    'PS5 may lag but stay online (no full cut). '
-                    'Run ZubCut as Administrator, then Kill OFF and ON again.',
-                    'red',
-                )
+                try:
+                    from tools.user_errors import format_error_code
+
+                    self.log(format_error_code('ZC-FWD'), 'red')
+                except Exception:
+                    self.log(
+                        f'{action}: Windows IP forwarding is still ON — '
+                        'PS5 may lag but stay online (no full cut). '
+                        'Run ZubCut as Administrator, then Kill OFF and ON again.',
+                        'red',
+                    )
 
             try:
                 QTimer.singleShot(0, _warn)
@@ -353,10 +589,12 @@ class ImpairmentMitmMixin:
         self._cut_analysis_baseline_gen = gen
         iface = getattr(self.scanner, 'iface', None)
         guid = str(getattr(iface, 'guid', None) or '').strip()
-        host_snap = self._gather_cut_analysis_host(device)
+        device_snap = dict(device)
 
         def _work() -> None:
             from tools.cut_analysis import PHASE_BEFORE, PhaseSample, _sniff_cut_sample
+
+            host_snap = self._gather_cut_analysis_host(device_snap)
 
             iface_now = getattr(self.scanner, 'iface', None)
             sample = _sniff_cut_sample(

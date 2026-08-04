@@ -70,7 +70,19 @@ class ImpairmentBlocksMixin:
                 elif flow == 'Dupe':
                     self._dupe_preblocked = True
                 return True
-            except Exception:
+            except Exception as exc:
+                try:
+                    from tools.zubcut_log import app_log
+
+                    app_log(
+                        'instant_preblock_ics_failed',
+                        flow=flow,
+                        ip=ip,
+                        error=repr(exc),
+                        exc_info=True,
+                    )
+                except Exception:
+                    pass
                 if flow == 'Lag':
                     self._lag_ics_preblocked = False
                 elif flow == 'Dupe':
@@ -98,7 +110,20 @@ class ImpairmentBlocksMixin:
                 elif flow == 'Dupe':
                     self._dupe_preblocked = True
                 return True
-            except Exception:
+            except Exception as exc:
+                try:
+                    from tools.zubcut_log import app_log
+
+                    app_log(
+                        'instant_preblock_lan_failed',
+                        flow=flow,
+                        ip=ip,
+                        mac=mac,
+                        error=repr(exc),
+                        exc_info=True,
+                    )
+                except Exception:
+                    pass
                 if flow == 'Lag':
                     self._lag_lan_preblocked = False
                 elif flow == 'Dupe':
@@ -228,7 +253,8 @@ class ImpairmentBlocksMixin:
         mac = str(device.get('mac') or '').strip()
         for_lag = bool(ics_block_kw.get('for_lag'))
         for_dupe = bool(ics_block_kw.get('for_dupe'))
-        fast_arm = for_lag or for_dupe
+        # Remembered-kill restore / Lag / Dupe must stay fast on the GUI thread.
+        fast_arm = bool(ics_block_kw.get('fast_arm')) or for_lag or for_dupe
         warm_lag = for_lag and self._lag_lan_mitm_warm(device)
         if warm_lag:
             return self._lag_apply_block_warm(device)
@@ -384,13 +410,17 @@ class ImpairmentBlocksMixin:
         if direction not in ('both', 'in', 'out'):
             direction = 'both'
         try:
-            from networking.killer import disable_ip_forwarding
+            from networking.killer import (
+                _lan_kill_priority_only,
+                disable_ip_forwarding,
+            )
 
             disable_ip_forwarding(
                 priority_iface=getattr(
                     getattr(self.killer, 'iface', None), 'name', None
                 )
-                or getattr(getattr(self.scanner, 'iface', None), 'name', None)
+                or getattr(getattr(self.scanner, 'iface', None), 'name', None),
+                priority_only=_lan_kill_priority_only(),
             )
         except Exception:
             pass

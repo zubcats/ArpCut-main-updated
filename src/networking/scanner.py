@@ -72,7 +72,10 @@ class Scanner():
 
         # Use iface.guid (Scapy/pcap name) for network operations, not iface.name
         self.router_ip = get_gateway_ip(self.iface.guid)
-        self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
+        # Startup init — skip getmacbyip; warm/Kill paths refresh router MAC from ARP.
+        self.router_mac = get_gateway_mac(
+            self.iface.ip, self.router_ip, allow_scapy_probe=False
+        )
 
         self.my_ip = resolve_iface_my_ip(self.iface)
         self.my_mac = good_mac(self.iface.mac)
@@ -97,7 +100,10 @@ class Scanner():
         self.iface = target
         refresh_netface_live_ip(self.iface)
         self.router_ip = get_gateway_ip(self.iface.guid)
-        self.router_mac = get_gateway_mac(self.iface.ip, self.router_ip)
+        # GUI/Kill paths call this — never fall through to getmacbyip (~4s).
+        self.router_mac = get_gateway_mac(
+            self.iface.ip, self.router_ip, allow_scapy_probe=False
+        )
         self.my_ip = resolve_iface_my_ip(self.iface)
         self.my_mac = good_mac(self.iface.mac)
         if self.my_ip:
@@ -135,10 +141,12 @@ class Scanner():
                 row['vendor'] = get_vendor(self.my_mac)
         return True
 
-    def refresh_local_topology(self) -> None:
+    def refresh_local_topology(self, *, allow_scapy_probe: bool = True) -> None:
         """
         Re-read gateway and local addresses on the current iface without changing NIC.
         Clumsy enable/repair + restart do this implicitly; Kill/Lag need it on every arm.
+
+        ``allow_scapy_probe=False`` skips getmacbyip (~4s) — use on GUI paint paths.
         """
         guid = getattr(self.iface, 'guid', None) or getattr(self.iface, 'name', None)
         if not guid or guid == 'NULL':
@@ -149,7 +157,11 @@ class Scanner():
         if self.my_ip:
             self.iface.ip = self.my_ip
         self.router_ip = get_gateway_ip(guid)
-        self.router_mac = get_gateway_mac(self.my_ip or self.iface.ip, self.router_ip)
+        self.router_mac = get_gateway_mac(
+            self.my_ip or self.iface.ip,
+            self.router_ip,
+            allow_scapy_probe=allow_scapy_probe,
+        )
         try:
             self.perfix = self.my_ip.rsplit('.', 1)[0]
         except Exception:
@@ -359,7 +371,13 @@ class Scanner():
 
             ics_prefix = _ics_prefix()
         except Exception:
-            ics_prefix = '192.168.137.'
+            # Prefer live SoftAP when device_table import fails mid-scan.
+            try:
+                from tools.clumsy_inline import clumsy_ics_downstream_prefix
+
+                ics_prefix = clumsy_ics_downstream_prefix()
+            except Exception:
+                ics_prefix = '192.168.137.'
             _home_lan_ip_for_row = None
             _is_ics_ip = None
         for d in existing:
@@ -455,8 +473,26 @@ class Scanner():
             try:
                 if clumsy_mode_enabled():
                     restrict_subnet = False
+                else:
+                    # SoftAP up (137.x / 173.x) even when Clumsy mode is off — do not
+                    # hide home-LAN ARP rows just because my_ip is the hotspot GW.
+                    from tools.clumsy_inline import victim_on_clumsy_ics_subnet
+
+                    if victim_on_clumsy_ics_subnet(my):
+                        restrict_subnet = False
             except Exception:
                 pass
+        # Prefer live prefix length over hard /24 (perfix) so /23–/22 LANs
+        # still surface devices when Scapy arping falls back to the OS ARP table.
+        prefix_len = 24
+        if restrict_subnet:
+            try:
+                from tools.utils import iface_ipv4_prefix_len, ipv4_same_link
+
+                prefix_len = int(iface_ipv4_prefix_len(getattr(self, 'iface', None), default=24))
+                prefix_len = max(16, min(30, prefix_len))
+            except Exception:
+                prefix_len = 24
         for raw in text.split('\n'):
             line = (raw or '').strip()
             if not line:
@@ -483,8 +519,15 @@ class Scanner():
             mac = good_mac(m_mac.group(0))
             if not mac or mac == GLOBAL_MAC:
                 continue
-            if restrict_subnet and not ip.startswith(pf + '.'):
-                continue
+            if restrict_subnet:
+                try:
+                    from tools.utils import ipv4_same_link
+
+                    if not ipv4_same_link(my, ip, prefix_len=prefix_len):
+                        continue
+                except Exception:
+                    if not ip.startswith(pf + '.'):
+                        continue
             key = (ip, mac)
             if key in seen:
                 continue
@@ -500,12 +543,17 @@ class Scanner():
         if sys.platform.startswith('win'):
             scan_result = self._windows_arp_raw_text()
             if scan_result:
-                lines_en = [
-                    l for l in scan_result.split('\n')
-                    if 'dynamic' in l.lower() or 'static' in l.lower()
+                # Locale type labels: EN dynamic/static, DE dynamisch, FR dynamique/statique,
+                # ES dinámico/estático — prefer IP+MAC rows over English-only filters.
+                row_re = re.compile(
+                    r'\b(?:\d{1,3}\.){3}\d{1,3}\b.+(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}',
+                    re.I,
+                )
+                lines_keep = [
+                    l for l in scan_result.split('\n') if row_re.search(l or '')
                 ]
-                if lines_en:
-                    scan_result = '\n'.join(lines_en)
+                if lines_keep:
+                    scan_result = '\n'.join(lines_keep)
         else:
             scan_result = terminal('arp -an')
         
@@ -537,23 +585,53 @@ class Scanner():
         self.init()
 
         self.generate_ips()
-        # "0.0.0.0/24" breaks discovery; fall back to the host subnet from our own IP.
-        target = f"{self.router_ip}/24"
-        if not self.router_ip or self.router_ip in ('0.0.0.0', '127.0.0.1'):
-            target = f"{self.perfix}.0/24"
+        # Prefer the live interface prefix (not hard-coded /24) so /23+/22 LANs
+        # still discover hosts. Cap arping breadth at /22 to avoid huge sweeps.
+        try:
+            from tools.utils import iface_ipv4_prefix_len
+
+            plen = int(iface_ipv4_prefix_len(self.iface, default=24))
+        except Exception:
+            plen = 24
+        plen = max(8, min(30, plen))
+        # Cap breadth: prefixlen < 22 means a *wider* net (/16 etc.) — clamp to /22.
+        # Ordinary /24 keeps plen=24 (not widened).
+        if plen < 22:
+            plen = 22
+        # "0.0.0.0/xx" breaks discovery; fall back to the host subnet from our own IP.
+        if self.router_ip and self.router_ip not in ('0.0.0.0', '127.0.0.1'):
+            target = f"{self.router_ip}/{plen}"
+        else:
+            base = f"{self.perfix}.0" if self.perfix else (self.my_ip or '0.0.0.0')
+            target = f"{base}/{plen}"
         try:
             scan_result = arping(
                 target,
                 iface=self.iface.guid,  # Use guid (Scapy/pcap name), not name
                 verbose=0,
-                timeout=1
+                timeout=2,
             )
             clean_result = [(i[1].psrc, i[1].src) for i in scan_result[0]]
         except Exception as e:
             print('arp_scan: arping failed:', e)
             clean_result = []
 
-        # If Scapy found nothing (Npcap permissions, wrong iface, etc.), fall back to OS ARP table.
+        # Always merge Windows ARP cache — sleepy PS5/consoles often miss a single
+        # arping burst but already appear in `arp -a`. Previously we only fell back
+        # when Scapy returned *zero* hits (router alone answers → fallback never ran).
+        if sys.platform.startswith('win'):
+            try:
+                arp_text = self._windows_arp_raw_text() or ''
+                arp_hits = self._windows_parse_arp_table(arp_text) if arp_text else []
+                if arp_hits:
+                    seen = set(clean_result)
+                    for hit in arp_hits:
+                        if hit not in seen:
+                            clean_result.append(hit)
+                            seen.add(hit)
+            except Exception as e:
+                print('arp_scan: ARP table merge failed:', e)
+
         if not clean_result and sys.platform.startswith('win'):
             try:
                 self.arping_cache()

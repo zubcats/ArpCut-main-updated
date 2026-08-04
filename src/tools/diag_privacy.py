@@ -48,8 +48,18 @@ def redact_ipv4(ip: str) -> str:
     return f'x.x.x.{d}'
 
 
-def same_ipv4_subnet(ip_a: str, ip_b: str) -> bool | None:
-    """True when both IPv4s share a /24 (common home LAN check)."""
+def same_ipv4_subnet(
+    ip_a: str,
+    ip_b: str,
+    *,
+    prefix_len: int = 24,
+) -> bool | None:
+    """
+    True when both IPv4s share a network of ``prefix_len``.
+
+    Default remains /24 (common home LAN). Pass the live interface prefix
+    (e.g. 23/22/16) when known so non-/24 LANs are not false-failed.
+    """
     def _parts(ip: str) -> tuple[int, int, int, int] | None:
         m = re.fullmatch(
             r'(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})',
@@ -65,7 +75,30 @@ def same_ipv4_subnet(ip_a: str, ip_b: str) -> bool | None:
     pa, pb = _parts(ip_a), _parts(ip_b)
     if not pa or not pb:
         return None
-    return pa[:3] == pb[:3]
+    try:
+        plen = int(prefix_len)
+    except Exception:
+        plen = 24
+    if plen < 0 or plen > 32:
+        plen = 24
+    # Fast path for the historical /24 check.
+    if plen == 24:
+        return pa[:3] == pb[:3]
+    try:
+        import ipaddress
+
+        net = ipaddress.IPv4Network(
+            f'{pa[0]}.{pa[1]}.{pa[2]}.{pa[3]}/{plen}',
+            strict=False,
+        )
+        other = ipaddress.IPv4Address(f'{pb[0]}.{pb[1]}.{pb[2]}.{pb[3]}')
+        return other in net
+    except Exception:
+        # Masked integer compare fallback.
+        mask = (0xFFFFFFFF << (32 - plen)) & 0xFFFFFFFF if plen else 0
+        a = (pa[0] << 24) | (pa[1] << 16) | (pa[2] << 8) | pa[3]
+        b = (pb[0] << 24) | (pb[1] << 16) | (pb[2] << 8) | pb[3]
+        return (a & mask) == (b & mask)
 
 
 def redact_ipv4s_in_text(text: str) -> str:

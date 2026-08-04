@@ -105,8 +105,15 @@ def _ics_prefix() -> str:
 
 
 def _is_ics_ip(ip: str, ics_prefix: str) -> bool:
+    """True for SoftAP client/gateway IPv4 (full ICS 137.x or Hosted Network 173.x)."""
     ip = (ip or '').strip()
-    return bool(ip and ics_prefix and ip.startswith(ics_prefix))
+    if not ip:
+        return False
+    if ics_prefix and ip.startswith(ics_prefix):
+        return True
+    # Live detect may return only one prefix while a client is still on the other
+    # during SoftAP cold-start / ICS promote — treat both as hotspot.
+    return ip.startswith('192.168.137.') or ip.startswith('192.168.173.')
 
 
 def _maybe_record_nickname_last_ip(mac: str, ip: str, ics_prefix: str) -> None:

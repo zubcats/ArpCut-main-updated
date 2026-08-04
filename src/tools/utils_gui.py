@@ -1428,12 +1428,163 @@ def restart_zubcut(main_window=None) -> bool:
 
 def npcap_exists():
     """
-    Check for Npcap driver (Windows only)
+    Check for Npcap install (Windows only).
+
+    Npcap always places DLLs under ``%SystemRoot%\\System32\\npcap`` (and the
+    SysWOW64 copy for 32-bit apps). Older ZubCut only checked SysWOW64, which
+    false-negatives on some 64-bit / ARM64 layouts and false-positives when the
+    folder exists but the ``npcap`` service is missing.
     """
-    if sys.platform.startswith('win'):
-        return path.exists(NPCAP_PATH)
-    # macOS/Linux uses libpcap (bundled); always True
-    return True
+    if not sys.platform.startswith('win'):
+        # macOS/Linux uses libpcap (bundled); always True
+        return True
+    candidates = ()
+    try:
+        from constants import NPCAP_CANDIDATE_PATHS
+
+        candidates = tuple(NPCAP_CANDIDATE_PATHS)
+    except Exception:
+        candidates = ()
+    if not candidates:
+        candidates = (NPCAP_PATH, r'C:\Windows\System32\npcap')
+    for candidate in candidates:
+        try:
+            if path.isdir(candidate) and (
+                path.exists(path.join(candidate, 'wpcap.dll'))
+                or path.exists(path.join(candidate, 'Packet.dll'))
+            ):
+                return True
+        except Exception:
+            continue
+    # Folder-only fallback (older installs / odd layouts).
+    for candidate in candidates:
+        try:
+            if path.exists(candidate):
+                return True
+        except Exception:
+            continue
+    # Registry / service — last resort when DLLs live under a non-default root.
+    try:
+        import winreg
+
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r'SOFTWARE\WOW6432Node\Npcap',
+        )
+        winreg.CloseKey(key)
+        return True
+    except Exception:
+        pass
+    try:
+        import winreg
+
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Npcap')
+        winreg.CloseKey(key)
+        return True
+    except Exception:
+        pass
+    try:
+        import ctypes
+
+        scm = ctypes.windll.advapi32.OpenSCManagerW(None, None, 0x0001)  # SC_MANAGER_CONNECT
+        if scm:
+            try:
+                svc = ctypes.windll.advapi32.OpenServiceW(scm, 'npcap', 0x0001)  # SERVICE_QUERY_STATUS
+                if svc:
+                    ctypes.windll.advapi32.CloseServiceHandle(svc)
+                    return True
+            finally:
+                ctypes.windll.advapi32.CloseServiceHandle(scm)
+    except Exception:
+        pass
+    return False
+
+
+def npcap_admin_only_enabled() -> bool:
+    """True when Npcap was installed with AdminOnly (restrict driver to Administrators)."""
+    if not sys.platform.startswith('win') or winreg is None:
+        return False
+    for path_key in (
+        r'SYSTEM\CurrentControlSet\Services\Npcap\Parameters',
+        r'SYSTEM\CurrentControlSet\Services\npf\Parameters',
+    ):
+        try:
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path_key)
+            try:
+                val, _ = winreg.QueryValueEx(key, 'AdminOnly')
+                if int(val or 0) != 0:
+                    return True
+            finally:
+                winreg.CloseKey(key)
+        except Exception:
+            continue
+    return False
+
+
+def ensure_npcap_service_running() -> bool:
+    """
+    Best-effort start of the ``npcap`` (or legacy ``npf``) driver service.
+
+    Returns True when the service is already running or was started. Never raises.
+    Safe no-op on non-Windows. Keeps first Kill from paying a cold driver-load cost.
+    """
+    if not sys.platform.startswith('win'):
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi = ctypes.windll.advapi32
+        SC_MANAGER_CONNECT = 0x0001
+        SERVICE_QUERY_STATUS = 0x0004
+        SERVICE_START = 0x0010
+        SERVICE_RUNNING = 0x00000004
+
+        class SERVICE_STATUS(ctypes.Structure):
+            _fields_ = [
+                ('dwServiceType', wintypes.DWORD),
+                ('dwCurrentState', wintypes.DWORD),
+                ('dwControlsAccepted', wintypes.DWORD),
+                ('dwWin32ExitCode', wintypes.DWORD),
+                ('dwServiceSpecificExitCode', wintypes.DWORD),
+                ('dwCheckPoint', wintypes.DWORD),
+                ('dwWaitHint', wintypes.DWORD),
+            ]
+
+        scm = advapi.OpenSCManagerW(None, None, SC_MANAGER_CONNECT)
+        if not scm:
+            return False
+        try:
+            for name in ('npcap', 'npf'):
+                svc = advapi.OpenServiceW(
+                    scm, name, SERVICE_QUERY_STATUS | SERVICE_START
+                )
+                if not svc:
+                    continue
+                try:
+                    status = SERVICE_STATUS()
+                    if advapi.QueryServiceStatus(svc, ctypes.byref(status)):
+                        if int(status.dwCurrentState) == SERVICE_RUNNING:
+                            return True
+                    # Non-blocking start request; do not wait long on startup path.
+                    advapi.StartServiceW(svc, 0, None)
+                    import time as _time
+
+                    for _ in range(4):  # ~200ms max — never stall app launch
+                        _time.sleep(0.05)
+                        if advapi.QueryServiceStatus(svc, ctypes.byref(status)):
+                            if int(status.dwCurrentState) == SERVICE_RUNNING:
+                                return True
+                    # Start was requested; driver may finish loading during Npcap prewarm.
+                    return True
+                finally:
+                    advapi.CloseServiceHandle(svc)
+        finally:
+            advapi.CloseServiceHandle(scm)
+    except Exception:
+        return False
+    return False
+
 
 _SINGLE_INSTANCE_MUTEX = None
 

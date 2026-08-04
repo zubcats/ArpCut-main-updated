@@ -52,6 +52,7 @@ def log_color_to_hex(color: str) -> str:
         'grey': '#9a9a9a',
         'green': '#43b581',
         'yellow': '#f0c040',
+        'orange': '#e09a40',
         'aqua': '#5ec4c4',
         'ui_log_victim_block_fg': UI_LOG_VICTIM_BLOCK_FG.lower(),
         'ui_log_restore_fg': UI_LOG_RESTORE_FG.lower(),
@@ -80,8 +81,19 @@ class LogsWindow(FramelessResizableMixin, QMainWindow):
         layout.setContentsMargins(12, 10, 12, 12)
         layout.setSpacing(8)
 
+        try:
+            from tools.zubcut_log import app_log_path, logging_enabled
+
+            disk_hint = (
+                f' Disk log (experimental): {app_log_path()}'
+                if logging_enabled()
+                else ' Disk log: off (set ZUBCUT_APP_LOG=1 to enable).'
+            )
+        except Exception:
+            disk_hint = ''
         hint = QLabel(
-            'Status messages from the main window. Select a line to read the full text.',
+            'Status messages from the main window. Select a line to read the full text.'
+            + disk_hint,
             root,
         )
         hint.setObjectName('logsHintLabel')

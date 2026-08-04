@@ -1,3 +1,7 @@
+---
+alwaysApply: true
+---
+
 # Release Workflow
 
 - Maintain separate update paths for `experimental` (testing) and `main` (stable / production ZubCut releases).

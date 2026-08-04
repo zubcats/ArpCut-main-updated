@@ -77,13 +77,22 @@ function Format-SafeIPv4([string]$ip) {
     return '(ip)'
 }
 
-function Test-SameSlash24([string]$ipA, [string]$ipB) {
+function Test-SameSubnet([string]$ipA, [string]$ipB, [int]$prefixLen = 24) {
     if ($ipA -notmatch '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') { return $false }
-    $a1 = $Matches[1]; $a2 = $Matches[2]; $a3 = $Matches[3]
+    $a = @([int]$Matches[1], [int]$Matches[2], [int]$Matches[3], [int]$Matches[4])
     if ($ipB -notmatch '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') { return $false }
-    $b1 = $Matches[1]; $b2 = $Matches[2]; $b3 = $Matches[3]
-    return ($a1 -eq $b1 -and $a2 -eq $b2 -and $a3 -eq $b3)
+    $b = @([int]$Matches[1], [int]$Matches[2], [int]$Matches[3], [int]$Matches[4])
+    if ($prefixLen -lt 0 -or $prefixLen -gt 32) { $prefixLen = 24 }
+    if ($prefixLen -eq 24) {
+        return ($a[0] -eq $b[0] -and $a[1] -eq $b[1] -and $a[2] -eq $b[2])
+    }
+    if ($prefixLen -eq 0) { return $true }
+    $ai = [int64](($a[0] -shl 24) -bor ($a[1] -shl 16) -bor ($a[2] -shl 8) -bor $a[3])
+    $bi = [int64](($b[0] -shl 24) -bor ($b[1] -shl 16) -bor ($b[2] -shl 8) -bor $b[3])
+    $mask = [int64](([int64]0xFFFFFFFF -shl (32 - $prefixLen)) -band [int64]0xFFFFFFFF)
+    return (($ai -band $mask) -eq ($bi -band $mask))
 }
+function Test-SameSlash24([string]$ipA, [string]$ipB) { return Test-SameSubnet $ipA $ipB 24 }
 
 function Test-MobileHotspotOn {
     # Match Windows Settings → Mobile Hotspot toggle (not leftover 192.168.137.x).
@@ -118,13 +127,30 @@ function Get-SecurityZubCutClass([string]$auth) {
 }
 
 $admin = Test-IsAdmin
-$npcapPath = 'C:\Windows\SysWOW64\Npcap'
+$npcapCandidates = @(
+    'C:\Windows\System32\npcap',
+    'C:\Windows\SysWOW64\npcap'
+)
+$npcapPath = $null
+foreach ($cand in $npcapCandidates) {
+    if (Test-Path $cand) { $npcapPath = $cand; break }
+}
+if (-not $npcapPath) { $npcapPath = $npcapCandidates[0] }
 $npcapOk = Test-Path $npcapPath
 $npcapSvc = Get-Service -Name 'npcap', 'npf' -ErrorAction SilentlyContinue |
     Where-Object { $_.Status -eq 'Running' } |
     Select-Object -First 1
 $npcapSvcOk = $null -ne $npcapSvc
 $npcapSvcName = if ($npcapSvc) { $npcapSvc.Name } else { '(none running)' }
+$npcapAdminOnly = $false
+$npcapWinPcapCompat = $true
+try {
+    $npcapParams = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\npcap\Parameters' -ErrorAction SilentlyContinue
+    if ($npcapParams) {
+        if ($null -ne $npcapParams.AdminOnly) { $npcapAdminOnly = ([int]$npcapParams.AdminOnly -ne 0) }
+        if ($null -ne $npcapParams.WinPcapCompatible) { $npcapWinPcapCompat = ([int]$npcapParams.WinPcapCompatible -ne 0) }
+    }
+} catch {}
 
 $winpcapKey = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\WinPcapInst'
 if (-not $winpcapKey) {
@@ -161,8 +187,9 @@ $ipcfg = ipconfig | Out-String
 # Mobile Hotspot ON/OFF from Windows tethering API — do not treat any leftover
 # 192.168.137.x (ICS / SoftAP) as "hotspot on" when the Settings toggle is off.
 $hotspotOn = Test-MobileHotspotOn
+# Full ICS uses 192.168.137.1; Hosted Network standalone DHCP uses 192.168.173.1.
 $icsGw = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Where-Object { $_.IPAddress -eq '192.168.137.1' } |
+    Where-Object { $_.IPAddress -in @('192.168.137.1', '192.168.173.1') } |
     Select-Object -First 1
 $hasIcsGw = $null -ne $icsGw
 $hotspotReady = $hotspotOn -and $hasIcsGw
@@ -171,8 +198,10 @@ try { $dhcp67 = [bool](Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyCon
 $clients137 = @(
     Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
         Where-Object {
-            $_.IPAddress -like '192.168.137.*' -and
-            $_.IPAddress -ne '192.168.137.1' -and
+            (
+                ($_.IPAddress -like '192.168.137.*' -and $_.IPAddress -ne '192.168.137.1') -or
+                ($_.IPAddress -like '192.168.173.*' -and $_.IPAddress -ne '192.168.173.1')
+            ) -and
             $_.State -in @('Reachable', 'Stale', 'Permanent', 'Probe', 'Delay')
         }
 )
@@ -245,18 +274,26 @@ if ($gwPrimary) {
     }
 }
 
-# PC vs gateway same /24 (using first non-APIPA adapter IP if possible)
+# PC vs gateway same subnet (prefix from adapter; default /24)
 $pcIp = $null
 foreach ($a in $adapters) {
-    if ($a.IPAddress -and ($a.IPAddress -notlike '169.254.*') -and ($a.IPAddress -notlike '192.168.137.*')) {
+    if ($a.IPAddress -and ($a.IPAddress -notlike '169.254.*') -and ($a.IPAddress -notlike '192.168.137.*') -and ($a.IPAddress -notlike '192.168.173.*')) {
         $pcIp = [string]$a.IPAddress
         break
     }
 }
 if (-not $pcIp -and $savedIp) { $pcIp = $savedIp }
 $pcGwSame = $false
+$pcPrefix = 24
+try {
+    if ($pcIp) {
+        $pcAddr = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $pcIp -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($pcAddr -and $pcAddr.PrefixLength) { $pcPrefix = [int]$pcAddr.PrefixLength }
+    }
+} catch { $pcPrefix = 24 }
 if ($pcIp -and $gwPrimary) {
-    $pcGwSame = Test-SameSlash24 $pcIp $gwPrimary
+    $pcGwSame = Test-SameSubnet $pcIp $gwPrimary $pcPrefix
 }
 
 $lines = @()
@@ -294,6 +331,8 @@ if (Test-Path -LiteralPath $capSnippet) {
 $lines += '--- Environment ---'
 $lines += ("[{0}] Npcap folder present ({1})" -f $(if ($npcapOk) { 'PASS' } else { 'FAIL' }), $npcapPath)
 $lines += ("[{0}] Npcap/NPF service running ({1})" -f $(if ($npcapSvcOk) { 'PASS' } else { 'FAIL' }), $npcapSvcName)
+$lines += ("[{0}] Npcap AdminOnly off (or ZubCut elevated)" -f $(if ($npcapAdminOnly -and -not $admin) { 'FAIL' } else { 'PASS' }))
+$lines += ("[{0}] Npcap WinPcap-compatible mode (or System32/npcap DLLs)" -f $(if ($npcapWinPcapCompat -or $npcapOk) { 'PASS' } else { 'WARN' }))
 $lines += ("[{0}] WinPcap uninstall key absent" -f $(if ($winpcapKey) { 'FAIL' } else { 'PASS' }))
 $lines += ("[{0}] WinPcap/Win10Pcap not in Apps list" -f $(if ($winpcapApps.Count) { 'FAIL' } else { 'PASS' }))
 $lines += ("[{0}] IP forwarding off (Kill full-cut)" -f $(if ($ipFwdOn) { 'FAIL' } else { 'PASS' }))
@@ -313,7 +352,7 @@ if ($ifaceSaved) {
     $lines += '[WARN] Settings adapter not set'
 }
 if ($pcIp -and $gwPrimary) {
-    $lines += ("[{0}] PC and gateway on same /24" -f $(if ($pcGwSame) { 'PASS' } else { 'FAIL' }))
+    $lines += ("[{0}] PC and gateway on same subnet (/{1})" -f $(if ($pcGwSame) { 'PASS' } else { 'FAIL' }), $pcPrefix)
     $lines += ("[INFO] PC {0}  GW {1}" -f (Format-SafeIPv4 $pcIp), (Format-SafeIPv4 $gwPrimary))
 } else {
     $lines += '[WARN] Could not compare PC IP vs gateway subnet'
@@ -327,9 +366,10 @@ $lines += ("[INFO] Clumsy mode (settings): {0}" -f ($(if ($null -eq $clumsy) { '
 $lines += '--- Hotspot path ---'
 if ($hotspotOn) {
     if ($hasIcsGw) {
-        $lines += '[PASS] Mobile Hotspot ON (ICS 192.168.137.1)'
+        $gwShown = if ($icsGw) { [string]$icsGw.IPAddress } else { '192.168.137.1' }
+        $lines += ("[PASS] Mobile Hotspot ON (ICS/hosted GW {0})" -f $gwShown)
     } else {
-        $lines += '[WARN] Mobile Hotspot ON but ICS 192.168.137.1 missing — wait or toggle hotspot'
+        $lines += '[WARN] Mobile Hotspot ON but no 192.168.137.1 / 192.168.173.1 — wait or toggle hotspot'
     }
 } elseif ($clumsy) {
     $lines += '[WARN] Mobile Hotspot OFF (Clumsy ON — turn Mobile Hotspot on in Settings)'
@@ -337,7 +377,7 @@ if ($hotspotOn) {
     $lines += '[INFO] Mobile Hotspot OFF (OK when Clumsy is off)'
 }
 if (-not $hotspotOn -and $hasIcsGw) {
-    $lines += '[INFO] Leftover ICS 192.168.137.1 still present (Settings hotspot is off)'
+    $lines += '[INFO] Leftover ICS/hosted gateway still present (Settings hotspot is off)'
 }
 if ($dhcp67) {
     $lines += '[PASS] Hotspot DHCP listening (UDP 67)'
@@ -347,11 +387,11 @@ if ($dhcp67) {
     $lines += '[INFO] Hotspot DHCP (UDP 67) not listening'
 }
 if ($clientCount -gt 0) {
-    $lines += ("[PASS] Hotspot client(s) seen on 192.168.137.x: {0}" -f $clientCount)
+    $lines += ("[PASS] Hotspot client(s) seen on 192.168.137.x / 173.x: {0}" -f $clientCount)
 } elseif ($clumsy -and $hotspotOn) {
     $lines += '[WARN] No hotspot client seen — put PS5 on this PC hotspot Wi-Fi, wait, rescan'
 } else {
-    $lines += '[INFO] No hotspot client on 192.168.137.x'
+    $lines += '[INFO] No hotspot client on 192.168.137.x / 173.x'
 }
 
 # --- Wi-Fi link (this PC only) ---
@@ -413,6 +453,9 @@ if ($wlanAdapters.Count -eq 0) {
         }
         $lines += ('[INFO] Radio: {0}  Signal: {1}' -f $radio, $sig)
         $lines += ('[INFO] Rates: rx {0} Mbps / tx {1} Mbps' -f $rx, $tx)
+        if ($radio -match '802\.11be|Wi-?Fi\s*7|\bbe\b') {
+            $lines += '[WARN] Wi-Fi 7 / 802.11be — MLO can drop ARP between clients (ZC-MLO); disable MLO or use Mobile Hotspot / Ethernet'
+        }
         if ($a.GUID) { $lines += ('[INFO] Adapter GUID: {0}' -f $a.GUID) }
         if ($a.BSSID) { $lines += ('[INFO] BSSID: {0}' -f $a.BSSID) }
         $bandL = $band.ToLowerInvariant()
@@ -455,8 +498,9 @@ foreach ($l in $arp) {
 $lines += ''
 $lines += '--- Recommended next steps ---'
 if (-not $admin) { $lines += '  1. Re-run this script as Administrator (Quick check button / UAC).' }
-if (-not $npcapOk) { $lines += '  2. Install Npcap from https://npcap.com/ (enable Wi-Fi adapter).' }
+if (-not $npcapOk) { $lines += '  2. Install Npcap from https://npcap.com/ (WinPcap API-compatible mode ON; enable Wi-Fi).' }
 if (-not $npcapSvcOk) { $lines += '  3. Start Npcap service (or reboot after Npcap install).' }
+if ($npcapAdminOnly -and -not $admin) { $lines += '  3b. Npcap AdminOnly is ON — run ZubCut as Administrator (or reinstall Npcap without AdminOnly).' }
 if ($winpcapKey -or $winpcapApps.Count) {
     $lines += '  4. Uninstall WinPcap/Win10Pcap, reboot, keep Npcap only.'
 }
@@ -473,14 +517,21 @@ if ($pcIp -and $gwPrimary -and -not $pcGwSame) {
     $lines += '  8. PC and gateway on different subnets — pick the LAN router adapter (not modem/VPN).'
 }
 if ($clumsy -and -not $hotspotReady) {
-    $lines += '  9. Clumsy ON but Mobile Hotspot not ready — turn Mobile Hotspot ON in Settings, wait for 192.168.137.1, put PS5 on it, rescan.'
+    $lines += '  9. Clumsy ON but Mobile Hotspot not ready — turn Mobile Hotspot ON in Settings, wait for 192.168.137.1 or 192.168.173.1, put PS5 on it, rescan.'
+}
+if ($clumsy -and $hotspotOn -and -not $dhcp67) {
+    $lines += '  9b. Hotspot DHCP (UDP 67) down — known Win11 24H2/25H2 ICS bug on some builds; install latest Windows Update, restart services SharedAccess + icssvc, or set a static 192.168.137.x / 173.x on the console.'
+    $lines += '  9c. Still no DHCP after 9b — some 24H2/25H2 builds break WcmSvc: in regedit HKLM\SYSTEM\CurrentControlSet\Services\WcmSvc remove WinHTTPAutoProxySvc from DependOnService, then restart WcmSvc + WlanSvc (community workaround; reboot if needed).'
+    $lines += '  9d. icssvc crash / error 0x80070002 on 25H2 — install latest Windows Update; static console IP 192.168.137.x or 173.x (gw .1) can confirm routing until then.'
 }
 if ($clumsy -and -not $wdOk) {
     $lines += ' 10. Reinstall ZubCut with "Clumsy mode" checked (WinDivert missing).'
+    $lines += ' 10b. If WinDivert.dll is present but driver fails — turn off Core Isolation Memory Integrity and/or Smart App Control, reboot, retry.'
 }
 if ($gateways.Count -gt 1) {
     $lines += ' 11. Multiple gateways (modem+router?) — pick the LAN router adapter in ZubCut Settings.'
 }
+$lines += ' 12. Wi-Fi 7 MLO — if LAN Kill fails while devices reach the router, disable MLO on the AP, prefer WPA2, or use Mobile Hotspot / Ethernet (ZC-MLO).'
 $lines += '  Send this .txt screenshot / file to ZubCut support.'
 $lines += '========================================================================'
 

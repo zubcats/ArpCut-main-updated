@@ -32,15 +32,37 @@ class MitmPrereqsTests(unittest.TestCase):
         k = self._killer()
         victim = {'ip': '192.168.1.50', 'mac': ''}
         with patch(
+            'networking.killer.lookup_mac_from_arp_table',
+            return_value='',
+        ), patch(
             'networking.killer._lan_neighbor_mac_via_arp_probe',
             return_value='DE:AD:BE:EF:00:01',
-        ), patch(
+        ) as probe, patch(
             'networking.killer.victim_endpoint_live_for_mitm',
             return_value=(True, ''),
         ):
             ok, reason = k.mitm_prereqs_ok(victim, ping_attempts=1)
         self.assertTrue(ok, reason)
         self.assertEqual(victim['mac'], 'DE:AD:BE:EF:00:01')
+        probe.assert_called_once()
+
+    def test_skips_scapy_arp_probe_when_os_cache_warm(self) -> None:
+        k = self._killer()
+        victim = {'ip': '192.168.1.50', 'mac': 'AA:AA:AA:AA:AA:AA'}
+        with patch(
+            'networking.killer.lookup_mac_from_arp_table',
+            return_value='DE:AD:BE:EF:00:01',
+        ), patch(
+            'networking.killer._lan_neighbor_mac_via_arp_probe',
+            return_value='FF:FF:FF:FF:FF:FF',
+        ) as probe, patch(
+            'networking.killer.victim_endpoint_live_for_mitm',
+            return_value=(True, ''),
+        ):
+            ok, reason = k.mitm_prereqs_ok(victim, ping_attempts=1)
+        self.assertTrue(ok, reason)
+        self.assertEqual(victim['mac'], 'DE:AD:BE:EF:00:01')
+        probe.assert_not_called()
 
     def test_refreshes_router_mac_when_missing(self) -> None:
         k = self._killer()
@@ -50,6 +72,9 @@ class MitmPrereqsTests(unittest.TestCase):
             k, '_refresh_router_mac_for_mitm', side_effect=lambda: k.router.update(
                 {'mac': '11:22:33:44:55:66'}
             )
+        ), patch(
+            'networking.killer.lookup_mac_from_arp_table',
+            return_value='DE:AD:BE:EF:00:01',
         ), patch(
             'networking.killer._lan_neighbor_mac_via_arp_probe',
             return_value='DE:AD:BE:EF:00:01',

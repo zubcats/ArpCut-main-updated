@@ -4,6 +4,54 @@ import sys as _sys, os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 
 
+def _prefer_npcap_dll_directory() -> None:
+    """
+    Ensure Npcap's wpcap/Packet DLLs load when WinPcap-compatible mode is OFF.
+
+    Npcap docs recommend SetDllDirectory(System32\\Npcap) before loading wpcap.
+    Leaving that directory set for the whole process breaks WinDivert (its .sys must
+    load beside WinDivert.dll). So we temporarily set the directory, LoadLibrary the
+    Npcap DLLs, then restore the default search order with SetDllDirectory(NULL).
+    """
+    if not _sys.platform.startswith('win'):
+        return
+    try:
+        import ctypes
+
+        roots = (
+            _os.path.join(_os.environ.get('SystemRoot', r'C:\Windows'), 'System32', 'npcap'),
+            _os.path.join(_os.environ.get('SystemRoot', r'C:\Windows'), 'SysWOW64', 'npcap'),
+        )
+        set_dll = ctypes.windll.kernel32.SetDllDirectoryW
+        load_lib = ctypes.windll.kernel32.LoadLibraryW
+        for root in roots:
+            wpcap = _os.path.join(root, 'wpcap.dll')
+            if not (_os.path.isdir(root) and _os.path.isfile(wpcap)):
+                continue
+            set_dll(root)
+            try:
+                # Pin Npcap into the process while the search path is correct.
+                load_lib(wpcap)
+                packet = _os.path.join(root, 'Packet.dll')
+                if _os.path.isfile(packet):
+                    load_lib(packet)
+            except Exception:
+                pass
+            # Restore default DLL order so WinDivert64.sys resolves next to its DLL.
+            set_dll(None)
+            return
+    except Exception:
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetDllDirectoryW(None)
+        except Exception:
+            pass
+
+
+_prefer_npcap_dll_directory()
+
+
 def _run_license_crypto_self_test_and_exit() -> None:
     """CI / support: verify Ed25519 in frozen builds without loading PyQt or Scapy."""
     import tempfile
@@ -314,16 +362,65 @@ if __name__ == "__main__":
     if _fusion is not None:
         app.setStyle(_fusion)
     install_crash_feedback()
+    try:
+        import faulthandler
+
+        faulthandler.enable(all_threads=True)
+    except Exception:
+        pass
     schedule_pending_crash_upload()
     icon = _load_window_icon()
     app.setWindowIcon(icon)
 
     # Check if Npcap is installed (Windows only)
     if not npcap_exists():
-        if msg_box(APP_DISPLAY_NAME, 'Npcap is not installed\n\nClick OK to download',
-                    MsgIcon.CRITICAL, icon, Buttons.OK | Buttons.CANCEL) == Buttons.OK:
+        try:
+            from tools.user_errors import format_error_code
+
+            npcap_msg = format_error_code(
+                'ZC-NPCAP', 'Click OK to download Npcap (WinPcap API-compatible mode).'
+            )
+        except Exception:
+            npcap_msg = 'Npcap is not installed\n\nClick OK to download'
+        if msg_box(
+            APP_DISPLAY_NAME,
+            npcap_msg,
+            MsgIcon.CRITICAL,
+            icon,
+            Buttons.OK | Buttons.CANCEL,
+        ) == Buttons.OK:
             goto(NPCAP_URL)
         exit(1)
+    # Folder present is not enough — cold service means first Kill waits on driver load.
+    try:
+        from tools.utils_gui import ensure_npcap_service_running
+        from tools.user_errors import format_error_code
+
+        if not ensure_npcap_service_running():
+            msg_box(
+                APP_DISPLAY_NAME,
+                format_error_code('ZC-NPCAP-SVC'),
+                MsgIcon.WARN,
+                icon,
+                Buttons.OK,
+            )
+    except Exception:
+        pass
+    # AdminOnly + non-elevated → silent capture failures for many users (Npcap #813 family).
+    try:
+        from tools.utils_gui import is_admin, npcap_admin_only_enabled
+        from tools.user_errors import format_error_code
+
+        if npcap_admin_only_enabled() and not is_admin():
+            msg_box(
+                APP_DISPLAY_NAME,
+                format_error_code('ZC-NPCAP-ADMIN'),
+                MsgIcon.WARN,
+                icon,
+                Buttons.OK,
+            )
+    except Exception:
+        pass
 
     # Check if another instance is running
     if duplicate_zubcut():
@@ -377,7 +474,8 @@ if __name__ == "__main__":
         # Do NOT re-enable kernel IP forwarding here. Startup already called
         # ensure_home_lan_mitm_forwarding_off(); turning forwarding back on lets
         # Windows relay MITM'd frames and makes Kill only a partial cut.
-        GUI.scanner.refresh_local_topology()
+        # Skip getmacbyip on startup (can stall ~4s on cold ARP); warm path fills MAC.
+        GUI.scanner.refresh_local_topology(allow_scapy_probe=False)
     except Exception:
         pass
     try:
