@@ -308,20 +308,23 @@ class ImpairmentMitmMixin:
                     )
                 except Exception:
                     pass
-                # IPv6 / WPA3 / Wi‑Fi 7 — warn from warm-up cache only (never block click).
+                # WPA3 / Wi‑Fi 7 — UI hint from warm-up cache only (never block click).
+                # IPv6 dual-stack is common and noisy in the UI log — keep it in app_log only.
                 try:
                     from tools.user_errors import format_error_code
+                    from tools.zubcut_log import app_log
 
                     if bool(getattr(self, '_lan_ipv6_enabled_cached', False)):
-                        self.log(format_error_code('ZC-IPV6'), 'orange')
+                        app_log(
+                            'lan_ipv6_enabled',
+                            action=str(action),
+                            iface=str(iface),
+                            code='ZC-IPV6',
+                        )
                     for code in list(getattr(self, '_wifi_link_hints_cached', None) or []):
                         self.log(format_error_code(code), 'orange')
                 except Exception:
-                    if bool(getattr(self, '_lan_ipv6_enabled_cached', False)):
-                        self.log(
-                            f'{action}: IPv6 may bypass IPv4 ARP Kill on {iface}.',
-                            'orange',
-                        )
+                    pass
         except Exception:
             pass
 

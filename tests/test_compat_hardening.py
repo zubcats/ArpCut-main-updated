@@ -89,6 +89,13 @@ class TestErrorCodes(unittest.TestCase):
         self.assertIn('ZC-NPCAP', msg)
         self.assertNotIn('github', msg.lower())
 
+    def test_ipv6_hint_not_userfacing_ui_log(self) -> None:
+        """ZC-IPV6 stays in durable logs; do not spam the main window log."""
+        mitm = (_ROOT / 'src' / 'gui' / 'impairment_mitm.py').read_text(encoding='utf-8')
+        self.assertIn("app_log(\n                            'lan_ipv6_enabled'", mitm)
+        self.assertNotIn("self.log(format_error_code('ZC-IPV6')", mitm)
+        self.assertNotIn('IPv6 may bypass IPv4 ARP Kill', mitm)
+
 
 class TestVpnIfaceDeprioritize(unittest.TestCase):
     def test_vpn_name_detected(self) -> None:
