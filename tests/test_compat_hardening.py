@@ -174,6 +174,57 @@ class TestZubcutNpcapDllBootstrap(unittest.TestCase):
         self.assertIn('ensure_npcap_service_running', zubcut)
         self.assertIn('faulthandler.enable', zubcut)
 
+    def test_ensure_npcap_queries_without_requiring_start_rights(self) -> None:
+        """Non-admin OpenService(QUERY|START) fails even when driver is RUNNING."""
+        import ctypes
+        from ctypes import wintypes
+        from tools import utils_gui
+
+        if not sys.platform.startswith('win'):
+            self.skipTest('Windows-only')
+
+        SERVICE_QUERY_STATUS = 0x0004
+        SERVICE_START = 0x0010
+        SERVICE_RUNNING = 0x00000004
+        handles = {'scm': 0x100, 'svc_query': 0x200}
+
+        class FakeAdvapi:
+            def OpenSCManagerW(self, *_a):
+                return handles['scm']
+
+            def OpenServiceW(self, _scm, name, access):
+                if name not in ('npcap', 'npf'):
+                    return 0
+                # Old bug: QUERY|START denied → false ZC-NPCAP-SVC while running.
+                if access == (SERVICE_QUERY_STATUS | SERVICE_START):
+                    return 0
+                if access == SERVICE_QUERY_STATUS:
+                    return handles['svc_query']
+                return 0
+
+            def QueryServiceStatus(self, _svc, status_ptr):
+                # status_ptr is byref(SERVICE_STATUS); write RUNNING into dwCurrentState.
+                try:
+                    status = status_ptr._obj
+                    status.dwCurrentState = SERVICE_RUNNING
+                except Exception:
+                    cast = ctypes.cast(status_ptr, ctypes.POINTER(ctypes.c_ulong * 7))
+                    cast.contents[1] = SERVICE_RUNNING
+                return 1
+
+            def StartServiceW(self, *_a):
+                raise AssertionError('StartService should not run when QUERY shows RUNNING')
+
+            def CloseServiceHandle(self, *_a):
+                return 1
+
+        fake = FakeAdvapi()
+        with patch.object(ctypes, 'windll') as windll:
+            windll.advapi32 = fake
+            # Ensure win path even if helper short-circuits elsewhere.
+            with patch.object(utils_gui.sys, 'platform', 'win32'):
+                self.assertTrue(utils_gui.ensure_npcap_service_running())
+
 
 class TestWindivertStaleServiceRepair(unittest.TestCase):
     def test_deletes_temp_image_path_even_if_file_exists(self) -> None:

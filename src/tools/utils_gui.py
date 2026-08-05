@@ -1527,11 +1527,16 @@ def ensure_npcap_service_running() -> bool:
 
     Returns True when the service is already running or was started. Never raises.
     Safe no-op on non-Windows. Keeps first Kill from paying a cold driver-load cost.
+
+    Important: open with QUERY rights first. Requesting SERVICE_START in the same
+    OpenService call fails for non-elevated users even when the driver is already
+    RUNNING, which falsely triggered ZC-NPCAP-SVC on first launch.
     """
     if not sys.platform.startswith('win'):
         return True
     try:
         import ctypes
+        import time as _time
         from ctypes import wintypes
 
         advapi = ctypes.windll.advapi32
@@ -1539,6 +1544,7 @@ def ensure_npcap_service_running() -> bool:
         SERVICE_QUERY_STATUS = 0x0004
         SERVICE_START = 0x0010
         SERVICE_RUNNING = 0x00000004
+        ERROR_SERVICE_ALREADY_RUNNING = 1056
 
         class SERVICE_STATUS(ctypes.Structure):
             _fields_ = [
@@ -1551,39 +1557,61 @@ def ensure_npcap_service_running() -> bool:
                 ('dwWaitHint', wintypes.DWORD),
             ]
 
+        def _is_running(svc_handle) -> bool:
+            status = SERVICE_STATUS()
+            if not advapi.QueryServiceStatus(svc_handle, ctypes.byref(status)):
+                return False
+            return int(status.dwCurrentState) == SERVICE_RUNNING
+
         scm = advapi.OpenSCManagerW(None, None, SC_MANAGER_CONNECT)
         if not scm:
-            return False
+            # Cannot talk to SCM — only alarm when Npcap files are also missing.
+            return bool(npcap_exists())
         try:
+            queried_stopped = False
             for name in ('npcap', 'npf'):
+                # Query-only — works without admin when AdminOnly Npcap is installed.
+                svc = advapi.OpenServiceW(scm, name, SERVICE_QUERY_STATUS)
+                if not svc:
+                    continue
+                try:
+                    if _is_running(svc):
+                        return True
+                    queried_stopped = True
+                finally:
+                    advapi.CloseServiceHandle(svc)
+
+                # Not running — need START rights (usually requires elevation).
                 svc = advapi.OpenServiceW(
                     scm, name, SERVICE_QUERY_STATUS | SERVICE_START
                 )
                 if not svc:
                     continue
                 try:
-                    status = SERVICE_STATUS()
-                    if advapi.QueryServiceStatus(svc, ctypes.byref(status)):
-                        if int(status.dwCurrentState) == SERVICE_RUNNING:
+                    if _is_running(svc):
+                        return True
+                    if not advapi.StartServiceW(svc, 0, None):
+                        if ctypes.GetLastError() == ERROR_SERVICE_ALREADY_RUNNING:
                             return True
-                    # Non-blocking start request; do not wait long on startup path.
-                    advapi.StartServiceW(svc, 0, None)
-                    import time as _time
-
-                    for _ in range(4):  # ~200ms max — never stall app launch
+                    for _ in range(10):  # ~500ms - SYSTEM_START drivers can lag at login
                         _time.sleep(0.05)
-                        if advapi.QueryServiceStatus(svc, ctypes.byref(status)):
-                            if int(status.dwCurrentState) == SERVICE_RUNNING:
-                                return True
-                    # Start was requested; driver may finish loading during Npcap prewarm.
+                        if _is_running(svc):
+                            return True
+                    # Start accepted; prewarm may finish load. Avoid false ZC-NPCAP-SVC.
                     return True
                 finally:
                     advapi.CloseServiceHandle(svc)
+            if queried_stopped:
+                return False
+            # Service name not openable but DLLs present — avoid false ZC-NPCAP-SVC.
+            return bool(npcap_exists())
         finally:
             advapi.CloseServiceHandle(scm)
     except Exception:
-        return False
-    return False
+        try:
+            return bool(npcap_exists())
+        except Exception:
+            return False
 
 
 _SINGLE_INSTANCE_MUTEX = None
