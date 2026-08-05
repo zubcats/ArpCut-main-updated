@@ -1023,30 +1023,38 @@ def install_payload_ok(app_dir: str | None = None) -> bool:
         return False
 
 
-def _write_update_waiter_ps1(
-    *,
-    installer_path: str,
-    app_dir: str,
-    flags: list[str],
-) -> str:
-    """Detached watcher: wait for Inno, alert if _internal\\python311.dll is still missing."""
+def _write_update_verify_ps1(*, installer_path: str, app_dir: str) -> str:
+    """
+    Post-update verifier only — does not start Setup.
+
+    Starting Inno from a detached/non-elevated PowerShell broke UAC after quit_all
+    (download finished → app closed → setup never installed). Setup must be launched
+    directly from the elevated ZubCut process so admin rights inherit.
+    """
     ps1 = os.path.join(
         tempfile.gettempdir(), f'{APP_BUNDLE_NAME.lower()}-update-waiter.ps1'
     )
-    # PowerShell single-quoted strings — escape embedded single quotes.
+
     def _sq(s: str) -> str:
         return "'" + str(s).replace("'", "''") + "'"
 
-    flag_list = ','.join(_sq(f) for f in flags)
     dll = _python_runtime_dll_path(app_dir)
+    setup_name = os.path.basename(installer_path)
     script = f"""$ErrorActionPreference = 'Continue'
-$installer = {_sq(installer_path)}
-$appDir = {_sq(app_dir)}
 $dll = {_sq(dll)}
-$flags = @({flag_list})
-$p = Start-Process -FilePath $installer -ArgumentList $flags -Wait -PassThru
+$setupName = {_sq(setup_name)}
+# Wait until this Setup process exits (or 10 minutes).
+$deadline = (Get-Date).AddMinutes(10)
+while ((Get-Date) -lt $deadline) {{
+  $alive = Get-Process -ErrorAction SilentlyContinue | Where-Object {{
+    try {{ $_.Path -and ((Split-Path -Leaf $_.Path) -eq $setupName) }} catch {{ $false }}
+  }}
+  if (-not $alive) {{ break }}
+  Start-Sleep -Milliseconds 500
+}}
+Start-Sleep -Seconds 1
 $ok = $false
-if ($null -ne $p -and $p.ExitCode -eq 0 -and (Test-Path -LiteralPath $dll)) {{
+if (Test-Path -LiteralPath $dll) {{
   try {{ $ok = ((Get-Item -LiteralPath $dll).Length -ge 100000) }} catch {{ $ok = $false }}
 }}
 if (-not $ok) {{
@@ -1054,7 +1062,7 @@ if (-not $ok) {{
   [void][System.Windows.Forms.MessageBox]::Show(
     "ZubCut update did not finish correctly (Python runtime missing under _internal).`n`n" +
     "Uninstall ZubCut, then reinstall the full setup from the experimental (or stable) download.`n`n" +
-    "Installer exit: $($p.ExitCode) `nExpected: $dll",
+    "Expected: $dll",
     "ZubCut Update Failed",
     [System.Windows.Forms.MessageBoxButtons]::OK,
     [System.Windows.Forms.MessageBoxIcon]::Error
@@ -1073,9 +1081,8 @@ def launch_installer(tmp_path, *, no_ui=False):
     Run the downloaded Inno Setup. no_ui=True uses /VERYSILENT (nothing on screen).
     Default uses /SILENT so a small setup progress window is visible after the app exits.
 
-    On Windows, starts a detached PowerShell waiter that checks
-    ``_internal\\python311.dll`` after Inno exits (the app itself exits immediately
-    so files are not locked).
+    Setup is started directly from this process so elevation inherits from ZubCut
+    (RUNASADMIN). A separate verifier only watches for a missing ``python311.dll``.
     """
     try:
         from tools.updater_debug import updater_log
@@ -1098,25 +1105,37 @@ def launch_installer(tmp_path, *, no_ui=False):
                 flags.append('/MERGETASKS=clumsymode')
         except Exception:
             pass
-        app_dir = _installed_app_dir()
+
+    installer_abs = os.path.abspath(tmp_path)
+    # Direct child — must run before quit_all so admin token is inherited.
+    subprocess.Popen([installer_abs] + flags, close_fds=True)
+    try:
+        from tools.updater_debug import updater_log
+
+        updater_log('launch_installer: started setup directly path=%r', installer_abs)
+    except Exception:
+        pass
+
+    if sys.platform.startswith('win'):
         try:
-            ps1 = _write_update_waiter_ps1(
-                installer_path=os.path.abspath(tmp_path),
+            app_dir = _installed_app_dir()
+            ps1 = _write_update_verify_ps1(
+                installer_path=installer_abs,
                 app_dir=app_dir,
-                flags=flags,
             )
             try:
                 from tools.updater_debug import updater_log
 
-                updater_log('launch_installer: waiter=%r app_dir=%r', ps1, app_dir)
+                updater_log('launch_installer: verify_waiter=%r app_dir=%r', ps1, app_dir)
             except Exception:
                 pass
-            # Detached so quit_all() does not kill the waiter with the GUI process tree.
+            # Break away from the GUI job so quit_all does not kill the verifier.
+            # Do NOT start Setup from this script (would drop elevation).
             creationflags = 0
             if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP'):
                 creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
-            if hasattr(subprocess, 'DETACHED_PROCESS'):
-                creationflags |= subprocess.DETACHED_PROCESS
+            if hasattr(subprocess, 'CREATE_BREAKAWAY_FROM_JOB'):
+                creationflags |= subprocess.CREATE_BREAKAWAY_FROM_JOB
             subprocess.Popen(
                 [
                     'powershell.exe',
@@ -1134,15 +1153,13 @@ def launch_installer(tmp_path, *, no_ui=False):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            return
         except Exception:
             try:
                 from tools.updater_debug import updater_log
 
-                updater_log('launch_installer: waiter failed; falling back', exc_info=True)
+                updater_log('launch_installer: verify waiter failed', exc_info=True)
             except Exception:
                 pass
-    subprocess.Popen([tmp_path] + flags, close_fds=True)
 
 
 def spawn_installer_update(url):

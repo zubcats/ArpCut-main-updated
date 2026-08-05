@@ -17,7 +17,7 @@ for _p in (_SRC, _TOOLS, _ROOT):
 
 from verify_onedir_payload import verify_onedir  # noqa: E402
 from tools.updater_core import (  # noqa: E402
-    _write_update_waiter_ps1,
+    _write_update_verify_ps1,
     install_payload_ok,
     launch_installer,
 )
@@ -58,23 +58,23 @@ class TestInstallPayloadOk(unittest.TestCase):
 
 
 class TestLaunchInstallerWaiter(unittest.TestCase):
-    def test_writes_waiter_checking_python_dll(self) -> None:
+    def test_writes_verify_waiter_checking_python_dll(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             installer = os.path.join(td, 'setup.exe')
             with open(installer, 'wb') as fp:
                 fp.write(b'MZ')
-            ps1 = _write_update_waiter_ps1(
+            ps1 = _write_update_verify_ps1(
                 installer_path=installer,
                 app_dir=r'C:\Program Files\ZubCut',
-                flags=['/SILENT', '/NORESTART'],
             )
             with open(ps1, encoding='utf-8') as fp:
                 text = fp.read()
             self.assertIn('python311.dll', text)
             self.assertIn('ZubCut Update Failed', text)
-            self.assertIn('/SILENT', text)
+            # Verifier must not start Setup (that dropped elevation).
+            self.assertNotIn('Start-Process', text)
 
-    def test_launch_installer_prefers_detached_waiter_on_windows(self) -> None:
+    def test_launch_installer_starts_setup_directly_on_windows(self) -> None:
         if not sys.platform.startswith('win'):
             self.skipTest('Windows-only')
         with tempfile.TemporaryDirectory() as td:
@@ -84,7 +84,7 @@ class TestLaunchInstallerWaiter(unittest.TestCase):
             calls: list = []
 
             def _popen(cmd, **kwargs):
-                calls.append((cmd, kwargs))
+                calls.append((list(cmd), kwargs))
 
                 class _P:
                     pid = 1
@@ -96,10 +96,14 @@ class TestLaunchInstallerWaiter(unittest.TestCase):
                 return_value=False,
             ):
                 launch_installer(installer, no_ui=False)
-            self.assertEqual(len(calls), 1)
-            cmd, _kwargs = calls[0]
-            self.assertEqual(cmd[0], 'powershell.exe')
-            self.assertIn('-File', cmd)
+            self.assertGreaterEqual(len(calls), 1)
+            # First spawn must be the setup exe itself (elevation inherits).
+            self.assertEqual(calls[0][0][0], os.path.abspath(installer))
+            self.assertIn('/SILENT', calls[0][0])
+            # Optional verify waiter is separate and does not re-launch setup.
+            if len(calls) > 1:
+                self.assertEqual(calls[1][0][0], 'powershell.exe')
+                self.assertIn('-File', calls[1][0])
 
 
 class TestInnoSetupGuards(unittest.TestCase):
