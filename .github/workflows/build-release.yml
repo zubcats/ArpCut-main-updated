@@ -98,6 +98,9 @@ jobs:
       - name: Build Windows EXE (PyInstaller via build.py)
         run: python build.py
 
+      - name: Verify onedir has Python runtime (_internal/python311.dll)
+        run: python tools/verify_onedir_payload.py --dist-dir ZubCut
+
       - name: Install Inno Setup
         run: choco install innosetup -y
 

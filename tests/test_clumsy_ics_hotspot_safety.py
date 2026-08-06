@@ -280,7 +280,11 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
                 )
             self.assertTrue(inline.victim_on_clumsy_ics_subnet('192.168.137.50'))
             self.assertFalse(inline.victim_on_clumsy_ics_subnet('192.168.1.50'))
-            self.assertEqual(inline.clumsy_ics_downstream_prefix(), '192.168.137.')
+            # SoftAP off → state; live SoftAP would override (tested in test_hotspot_prefix_detect).
+            from unittest.mock import patch
+
+            with patch.object(inline, '_detect_live_hotspot_prefix', return_value=''):
+                self.assertEqual(inline.clumsy_ics_downstream_prefix(), '192.168.137.')
         finally:
             if old is not None:
                 with open(path, 'w', encoding='utf-8') as f:

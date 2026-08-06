@@ -1016,6 +1016,15 @@ def format_text_report(report: dict[str, Any]) -> str:
 
 
 def default_out_dir() -> Path:
+    # Prefer redirected OneDrive Desktop when present (matches in-app diag_paths).
+    try:
+        from tools.diag_paths import desktop_dir
+
+        desk = Path(desktop_dir())
+        if desk.is_dir():
+            return desk
+    except Exception:
+        pass
     desktop = Path.home() / 'Desktop'
     if desktop.is_dir():
         return desktop

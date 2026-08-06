@@ -139,29 +139,32 @@ class TestIcsWinDivertBlocking(unittest.TestCase):
             '192.168.1.50', '192.168.137.', hotspot_capture=True
         )
         names = [d for _, d in cands]
+        # Prefer scoped forward + victim — never system-wide ``ip or ipv6``.
         self.assertIn('forward', names)
-        self.assertIn('broad', names)
-        self.assertNotIn('victim', names)
+        self.assertNotIn('broad', names)
+        self.assertIn('victim', names)
 
     def test_open_candidates_ifidx_first_when_on_hotspot_subnet(self) -> None:
         with mock.patch('tools.clumsy_inline.clumsy_ics_downstream_ifidx', return_value=16), mock.patch(
             'tools.clumsy_inline.clumsy_ics_upstream_ifidx', return_value=5
         ):
             cands = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
-        self.assertGreaterEqual(len(cands), 5)
+        self.assertGreaterEqual(len(cands), 4)
         self.assertEqual(cands[0][1], 'ifidx-down')
         self.assertIn('ifidx-up', [d for _, d in cands])
         self.assertIn('ifIdx == 16', cands[0][0])
         self.assertEqual(cands[-1][1], 'victim')
+        self.assertNotIn('broad', [d for _, d in cands])
 
-    def test_open_candidates_broad_before_victim_when_no_ifidx(self) -> None:
+    def test_open_candidates_no_systemwide_broad_when_no_ifidx(self) -> None:
         with mock.patch('tools.clumsy_inline.clumsy_ics_downstream_ifidx', return_value=0):
             cands = wd._ics_windivert_open_candidates('192.168.137.55', '192.168.137.')
-        names = [d for _, d in cands]
-        self.assertIn('forward', names)
-        self.assertIn('broad', names)
-        self.assertEqual(names[-1], 'victim')
-        self.assertLess(names.index('broad'), names.index('victim'))
+            names = [d for _, d in cands]
+            self.assertIn('forward', names)
+            self.assertNotIn('broad', names)
+            self.assertEqual(names[-1], 'victim')
+            # Empty prefix + no ifIdx → never open system-wide ``ip``.
+            self.assertEqual(wd._ics_hotspot_forward_filter(''), '')
 
     def test_pause_drops_unparsed_packets_when_blocking(self) -> None:
         src = inspect.getsource(wd.IcsWinDivertLagGate._run_loop)

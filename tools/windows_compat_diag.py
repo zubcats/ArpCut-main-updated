@@ -17,10 +17,13 @@ def section(title):
     print('='*50)
 
 def ok(msg):
-    print(f"  ✓ {msg}")
+    print(f"  [OK] {msg}")
 
 def fail(msg):
-    print(f"  ✗ {msg}")
+    print(f"  [FAIL] {msg}")
+
+def warn(msg):
+    print(f"  [WARN] {msg}")
 
 all_passed = True
 
@@ -63,7 +66,7 @@ for mod_name, desc in gui_modules:
         ok(f"{desc} ({mod_name})")
     except ImportError as e:
         if 'PyQt5' in str(e) or 'display' in str(e).lower():
-            print(f"  ⚠ {desc}: PyQt5/display not available (expected in headless)")
+            print(f"  [WARN] {desc}: PyQt5/display not available (expected in headless)")
         else:
             fail(f"{desc}: {e}")
             all_passed = False
@@ -140,7 +143,7 @@ try:
             fail(f"GUID should start with \\\\Device\\\\NPF_ but got: {default.guid[:30]}")
             all_passed = False
     else:
-        print(f"  ⚠ get_default_iface() returned NULL (may be normal)")
+        print(f"  [WARN] get_default_iface() returned NULL (may be normal)")
 except Exception as e:
     fail(f"get_default_iface() failed: {e}")
     all_passed = False
@@ -153,7 +156,7 @@ try:
     if result:
         ok("Firewall accessible")
     else:
-        print("  ⚠ Firewall not accessible (may need admin)")
+        print("  [WARN] Firewall not accessible (may need admin)")
 except Exception as e:
     fail(f"Firewall check failed: {e}")
     all_passed = False
@@ -196,10 +199,11 @@ except Exception as e:
 # Summary
 section("SUMMARY")
 if all_passed:
-    print("\n  ✓ All compatibility tests passed!")
-    print("  The application should work on this platform.")
+    print("\n  [OK] Import/API smoke tests passed.")
+    print("  This does NOT prove Npcap capture, ARP MITM, WinDivert, ICS,")
+    print("  Admin rights, or end-to-end Kill — run ZubCut Logs → Quick check.")
     sys.exit(0)
 else:
-    print("\n  ✗ Some tests failed")
+    print("\n  [FAIL] Some tests failed")
     print("  Check the errors above for details.")
     sys.exit(1)

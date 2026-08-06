@@ -305,8 +305,11 @@ function Get-HotspotDownstreamAdapter {
     $_.Status -eq 'Up' -and $_.ifIndex -ne $ExcludeIfIndex -and (IsHotspotDownstreamNic $_)
   } | Sort-Object InterfaceMetric, ifIndex | Select-Object -First 1
   if ($down) { return $down }
+  # Full ICS SoftAP = 192.168.137.1; Hosted Network standalone DHCP = 192.168.173.1
   $gw = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Where-Object { $_.IPAddress -eq '192.168.137.1' } | Select-Object -First 1
+    Where-Object { $_.IPAddress -in @('192.168.137.1', '192.168.173.1') } |
+    Sort-Object { if ($_.IPAddress -eq '192.168.137.1') { 0 } else { 1 } } |
+    Select-Object -First 1
   if ($gw -and $gw.InterfaceIndex -ne $ExcludeIfIndex) {
     return Get-NetAdapter -InterfaceIndex $gw.InterfaceIndex -ErrorAction SilentlyContinue
   }
@@ -426,7 +429,7 @@ function Prepare-ClumsyHotspotConsole {
   }
   Ensure-HotspotDhcpFirewall
   if (-not (Test-MobileHotspotGateway)) {
-    return @{ ok = $false; error = 'Mobile Hotspot did not get 192.168.137.1. Toggle hotspot OFF 15 sec ON in Settings, then enable Clumsy mode again.' }
+    return @{ ok = $false; error = 'Mobile Hotspot did not get 192.168.137.1 / 192.168.173.1. Toggle hotspot OFF 15 sec ON in Settings, then enable Clumsy mode again.' }
   }
   return @{ ok = $true }
 }
@@ -495,12 +498,16 @@ function SharingTypeNumHotspot($cfg) {
   } catch { return -1 }
 }
 function Test-MobileHotspotGateway {
+  # SoftAP is up when either full-ICS (137.1) or Hosted Network standalone DHCP (173.1) is present.
+  # Enable paths still prefer/promote to 137.x via Set-HotspotDhcpRegistry + New-NetIPAddress.
   return [bool](Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Where-Object { $_.IPAddress -eq '192.168.137.1' } | Select-Object -First 1)
+    Where-Object { $_.IPAddress -in @('192.168.137.1', '192.168.173.1') } | Select-Object -First 1)
 }
 function Get-HotspotAdapterPair {
   $gw = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Where-Object { $_.IPAddress -eq '192.168.137.1' } | Select-Object -First 1
+    Where-Object { $_.IPAddress -in @('192.168.137.1', '192.168.173.1') } |
+    Sort-Object { if ($_.IPAddress -eq '192.168.137.1') { 0 } else { 1 } } |
+    Select-Object -First 1
   if (-not $gw) { return @{ Up=$null; Down=$null } }
   $down = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
     $_.InterfaceDescription -match 'Wi-Fi Direct|Hosted' -and $_.Status -eq 'Up'
@@ -546,12 +553,18 @@ function Test-ClumsyHotspotPathReady($pair) {
   return (Test-MobileHotspotOperational)
 }
 function Set-HotspotDhcpRegistry {
+  # Full ICS uses ScopeAddress 192.168.137.1; Hosted Network standalone DHCP uses
+  # StandaloneDhcpAddress 192.168.173.1 (Microsoft Native Wi-Fi docs). Do not
+  # overwrite StandaloneDhcpAddress with 137.1 - that confuses SoftAP cold-start.
   $saParams = 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters'
-  foreach ($name in @('ScopeAddress', 'ScopeAddressBackup', 'StandaloneDhcpAddress')) {
+  foreach ($name in @('ScopeAddress', 'ScopeAddressBackup')) {
     try {
       Set-ItemProperty -Path $saParams -Name $name -Value '192.168.137.1' -Type String -Force -ErrorAction SilentlyContinue
     } catch {}
   }
+  try {
+    Set-ItemProperty -Path $saParams -Name 'StandaloneDhcpAddress' -Value '192.168.173.1' -Type String -Force -ErrorAction SilentlyContinue
+  } catch {}
 }
 function Enable-MobileHotspotNatPath {
   param(
@@ -591,7 +604,8 @@ function Enable-MobileHotspotNatPath {
   if (-not $downNic) { $downNic = Get-HotspotDownstreamAdapter }
   if ($downNic) {
     $gw = Get-NetIPAddress -InterfaceIndex $downNic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-      Where-Object { $_.IPAddress -eq '192.168.137.1' } | Select-Object -First 1
+      Where-Object { $_.IPAddress -in @('192.168.137.1', '192.168.173.1') } | Select-Object -First 1
+    # Prefer full-ICS address; leave 173.1 alone if Windows already assigned it (standalone SoftAP).
     if (-not $gw) {
       try {
         New-NetIPAddress -InterfaceIndex $downNic.ifIndex -IPAddress 192.168.137.1 -PrefixLength 24 -ErrorAction SilentlyContinue | Out-Null
@@ -820,12 +834,16 @@ function Ensure-SharingServicesLight {
 }
 function Ensure-HotspotDhcpFirewall {
   # ICS DHCP server (svchost SharedAccess on 192.168.137.1:67) - not covered by client DHCP rules.
+  # Also allow Hosted Network standalone subnet (192.168.173.0/24) during SoftAP cold-start.
   foreach ($r in @(
     @{N='ZubCut-ICS-DHCP-In';D='in';LP='67';RP='';RIP=''},
     @{N='ZubCut-ICS-DHCP-Out';D='out';LP='67';RP='';RIP=''},
     @{N='ZubCut-ICS-DHCP-Subnet-In';D='in';LP='67';RP='';RIP='192.168.137.0/24'},
     @{N='ZubCut-ICS-DHCP-Subnet-Out';D='out';LP='67,68';RP='';RIP='192.168.137.0/24'},
-    @{N='ZubCut-ICS-DHCP-Client-In';D='in';LP='68';RP='';RIP='192.168.137.0/24'}
+    @{N='ZubCut-ICS-DHCP-Client-In';D='in';LP='68';RP='';RIP='192.168.137.0/24'},
+    @{N='ZubCut-ICS-DHCP-173-Subnet-In';D='in';LP='67';RP='';RIP='192.168.173.0/24'},
+    @{N='ZubCut-ICS-DHCP-173-Subnet-Out';D='out';LP='67,68';RP='';RIP='192.168.173.0/24'},
+    @{N='ZubCut-ICS-DHCP-173-Client-In';D='in';LP='68';RP='';RIP='192.168.173.0/24'}
   )) {
     netsh advfirewall firewall delete rule name="$($r.N)" 2>$null | Out-Null
     $cmd = "netsh advfirewall firewall add rule name=`"$($r.N)`" dir=$($r.D) action=allow protocol=UDP enable=yes"
@@ -951,9 +969,9 @@ def purge_clumsy_stale_attack_blocks(extra_ips=None, *, for_clumsy_enable: bool 
             timeout=15,
             **_windows_subprocess_no_window_kwargs(),
         )
-        for m in re.finditer(r'\b(192\.168\.137\.\d{1,3})\b', out):
+        for m in re.finditer(r'\b(192\.168\.(?:137|173)\.\d{1,3})\b', out):
             ip = m.group(1)
-            if not ip.endswith('.255') and ip != '192.168.137.1':
+            if not ip.endswith('.255') and ip not in ('192.168.137.1', '192.168.173.1'):
                 ips.add(ip)
     except Exception:
         pass
@@ -1311,7 +1329,7 @@ try {{
       }}
     }}
     if (-not $icsOk -and -not $natEnabled) {{
-      throw 'Could not enable internet to Mobile Hotspot (classic Sharing or hotspot NAT). Turn hotspot ON in Settings, wait for 192.168.137.1, then try Clumsy mode again.'
+      throw 'Could not enable internet to Mobile Hotspot (classic Sharing or hotspot NAT). Turn hotspot ON in Settings, wait for 192.168.137.1 or 192.168.173.1, then try Clumsy mode again.'
     }}
     if ($icsOk) {{
       $shareMsg = if ($ZubcutUplinkKind -eq 'ethernet') {{

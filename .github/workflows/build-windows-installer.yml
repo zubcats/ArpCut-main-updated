@@ -124,6 +124,9 @@ jobs:
       - name: Build Windows EXE (PyInstaller via build.py)
         run: python build.py
 
+      - name: Verify onedir has Python runtime (_internal/python311.dll)
+        run: python tools/verify_onedir_payload.py --dist-dir ZubCut
+
       - name: Verify license crypto in frozen build
         run: python tools/verify_frozen_nacl.py
 

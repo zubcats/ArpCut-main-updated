@@ -945,7 +945,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         main.scanner.iface = get_iface_by_name(s['iface'])
         main.killer.iface = get_iface_by_name(s['iface'])
         try:
-            main.scanner.refresh_local_topology()
+            # Settings Apply is on the GUI thread — skip getmacbyip (~4s).
+            main.scanner.refresh_local_topology(allow_scapy_probe=False)
             main.killer.iface = main.scanner.iface
             main.killer.router = getattr(main.scanner, 'router', None) or main.killer.router
             main.scanner.add_me()

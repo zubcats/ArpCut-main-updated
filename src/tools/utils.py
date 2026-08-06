@@ -1,6 +1,5 @@
 import os
 import subprocess
-from scapy.all import conf, get_if_list
 from subprocess import STDOUT, check_output, CalledProcessError
 from socket import socket
 from threading import Thread
@@ -15,6 +14,49 @@ from networking.ifaces import NetFace
 from constants import *
 
 p = manuf.MacParser()
+
+
+class _LazyScapyConf:
+    """Defer ``scapy.all`` import until first use.
+
+    Importing scapy.arch can hang when Npcap is AdminOnly/wedged. Helpers like
+    ``good_mac`` / ``ipv4_same_link`` / ``run_command`` must stay usable without
+    loading wpcap — Clumsy/diag/tests and WinDivert paths depend on that.
+    """
+
+    __slots__ = ('_real',)
+
+    def __init__(self) -> None:
+        object.__setattr__(self, '_real', None)
+
+    def _load(self):
+        real = object.__getattribute__(self, '_real')
+        if real is None:
+            from scapy.all import conf as real
+
+            object.__setattr__(self, '_real', real)
+        return real
+
+    def __getattr__(self, name):
+        return getattr(self._load(), name)
+
+    def __setattr__(self, name, value):
+        setattr(self._load(), name, value)
+
+    def __str__(self) -> str:
+        return str(self._load())
+
+    def __repr__(self) -> str:
+        return repr(self._load())
+
+
+conf = _LazyScapyConf()
+
+
+def get_if_list():
+    from scapy.all import get_if_list as _gil
+
+    return _gil()
 
 
 def _windows_subprocess_no_window_kwargs():
@@ -87,6 +129,45 @@ def _is_bad_iface_display_name(s: str) -> bool:
     if re.match(r'^interface-\d+$', t):
         return True
     return False
+
+
+_VPN_VIRTUAL_IFACE_NEEDLES = (
+    'vpn',
+    'wintun',
+    'wireguard',
+    'tap-windows',
+    'tap0901',
+    'tap adapter',
+    'nordlynx',
+    'proton',
+    'mullvad',
+    'openvpn',
+    'fortinet',
+    'anyconnect',
+    'globalprotect',
+    'hyper-v',
+    'vethernet',
+    'default switch',
+    'vmware',
+    'virtualbox',
+    'vboxnet',
+    'tailscale',
+    'zerotier',
+    'hamachi',
+    'wsl',
+    'docker',
+    'veth',
+)
+
+
+def _iface_looks_vpn_or_virtual(iface) -> bool:
+    """Soft signal that an adapter is VPN/virtual (still selectable; deprioritized)."""
+    blob = (
+        f'{getattr(iface, "name", "") or ""} '
+        f'{getattr(iface, "guid", "") or ""} '
+        f'{getattr(iface, "description", "") or ""}'
+    ).lower()
+    return any(n in blob for n in _VPN_VIRTUAL_IFACE_NEEDLES)
 
 
 def format_iface_settings_label(iface: NetFace) -> str:
@@ -277,7 +358,8 @@ def get_gateway_ip(iface_name):
 
     return chosen_gw or '0.0.0.0'
 
-def get_gateway_mac(iface_ip, router_ip):
+def get_gateway_mac(iface_ip, router_ip, *, allow_scapy_probe: bool = True):
+    """Resolve gateway MAC. Scapy getmacbyip can block ~4s — skip on GUI paint paths."""
     if sys.platform.startswith('win'):
         # Windows: try ARP table lookup
         if iface_ip and iface_ip != '127.0.0.1':
@@ -289,7 +371,15 @@ def get_gateway_mac(iface_ip, router_ip):
             # Parse Windows ARP output: "  IP_ADDRESS      MAC_ADDRESS      TYPE"
             for line in response.split('\n'):
                 line = line.strip()
-                if not line or 'Interface:' in line:
+                low = line.lower()
+                # Locale-agnostic section headers (EN/DE/ES/FR).
+                if (
+                    not line
+                    or low.startswith('interface:')
+                    or low.startswith('schnittstelle:')
+                    or low.startswith('interfaz:')
+                    or low.startswith('interface :')  # FR spacing variant
+                ):
                     continue
                 parts = line.split()
                 if len(parts) >= 2 and parts[0] == router_ip:
@@ -305,7 +395,9 @@ def get_gateway_mac(iface_ip, router_ip):
             for token in parts:
                 if ':' in token and len(token) >= 17:
                     return good_mac(token)
-    # Fallback: actively resolve via scapy
+    if not allow_scapy_probe:
+        return GLOBAL_MAC
+    # Fallback: actively resolve via scapy (can stall the GUI ~4s when ARP is cold).
     try:
         from scapy.all import getmacbyip
         mac = getmacbyip(router_ip)
@@ -339,7 +431,8 @@ def _lan_neighbor_mac_via_arp_probe(
         from scapy.all import arping
 
         for token in tokens:
-            kwargs: dict = {'timeout': 2, 'verbose': 0, 'retry': 1}
+            # 1s is enough for LAN who-has; 2s+retry made cold Kill feel stuck.
+            kwargs: dict = {'timeout': 1, 'verbose': 0, 'retry': 1}
             if token:
                 kwargs['iface'] = token
             ans = arping(f'{ip}/32', **kwargs)
@@ -403,8 +496,21 @@ def ipv4_ping_reachable(ip: str, *, timeout_ms: int = 500, attempts: int = 1) ->
                     shell=False,
                     timeout=max(2, int(timeout_ms / 1000) + 1),
                 )
-                text = str(out or '').lower()
-                if 'ttl=' in text and 'unreachable' not in text and 'timed out' not in text:
+                # run_command returns CompletedProcess — must read stdout (not repr).
+                # Prefer returncode: localized ping text varies (DE/FR/ES) but rc==0
+                # with TTL= is stable across Windows language packs.
+                text = str(getattr(out, 'stdout', None) or out or '').lower()
+                rc = getattr(out, 'returncode', None)
+                if rc == 0 and 'ttl=' in text:
+                    return True
+                if (
+                    rc is None
+                    and 'ttl=' in text
+                    and 'unreachable' not in text
+                    and 'timed out' not in text
+                    and 'zeitüberschreitung' not in text
+                    and 'délai' not in text
+                ):
                     return True
             else:
                 out = run_command(
@@ -412,7 +518,7 @@ def ipv4_ping_reachable(ip: str, *, timeout_ms: int = 500, attempts: int = 1) ->
                     shell=False,
                     timeout=max(2, int(timeout_ms / 1000) + 1),
                 )
-                text = str(out or '').lower()
+                text = str(getattr(out, 'stdout', None) or out or '').lower()
                 if 'ttl=' in text or 'time=' in text:
                     return True
         except Exception:
@@ -429,11 +535,15 @@ def victim_endpoint_live_for_mitm(
     *,
     ping_attempts: int = 3,
     arp_probe_iface: str | None = None,
+    recent_arp_mac: str | None = None,
 ) -> tuple[bool, str]:
     """
     PS5 Ethernet vs Wi‑Fi rows use different MACs — do not MITM a ghost favorite IP.
     Pings up to ``ping_attempts`` times; if ICMP is silent but ARP still maps this IP
     to ``expected_mac`` (and the MAC has not moved to another IP), treat as live.
+
+    ``recent_arp_mac`` is a MAC just learned via Scapy who-has in the caller (OS ARP
+    cache may still be empty). Treated like a fresh probe without a second arping.
     """
     ip = str(ip or '').strip()
     expected_mac = good_mac(str(expected_mac or '').strip())
@@ -452,12 +562,35 @@ def victim_endpoint_live_for_mitm(
             f'{ip} is offline — this device is now at {live_ip}. Rescan and use that row.',
         )
 
+    # Fast path: ARP already maps this IP to the selected MAC — skip ICMP waits
+    # (3×500–600 ms) so cold Kill after a scan still arms instantly.
+    arp_mac_now = lookup_mac_from_arp_table(ip, iface_ip)
+    if (
+        expected_mac
+        and mac_address_is_usable(arp_mac_now)
+        and good_mac(arp_mac_now) == expected_mac
+    ):
+        return True, ''
+
+    hint_mac = good_mac(str(recent_arp_mac or '').strip())
+    if (
+        expected_mac
+        and mac_address_is_usable(hint_mac)
+        and hint_mac == expected_mac
+        and not mac_address_is_usable(arp_mac_now)
+    ):
+        # Caller already resolved L2; accept before paying ICMP (PS5 often blocks ping).
+        return True, ''
+
     ping_tries = max(1, int(ping_attempts))
     ping_wait = 500 if ping_tries <= 1 else 600
     if not ipv4_ping_reachable(ip, attempts=ping_tries, timeout_ms=ping_wait):
-        arp_mac = lookup_mac_from_arp_table(ip, iface_ip)
+        arp_mac = arp_mac_now or lookup_mac_from_arp_table(ip, iface_ip)
         from_probe = False
-        if not mac_address_is_usable(arp_mac) and arp_probe_iface:
+        if not mac_address_is_usable(arp_mac) and mac_address_is_usable(hint_mac):
+            arp_mac = hint_mac
+            from_probe = True
+        elif not mac_address_is_usable(arp_mac) and arp_probe_iface:
             probed = _lan_neighbor_mac_via_arp_probe(ip, arp_probe_iface)
             if mac_address_is_usable(probed):
                 arp_mac = probed
@@ -478,7 +611,8 @@ def victim_endpoint_live_for_mitm(
         return (
             False,
             f'{ip} did not answer ping — wake the PS5 (not Rest Mode), run Arp Scan, '
-            f'and select the PlayStation row for that IP.',
+            f'and select the PlayStation row for that IP. '
+            f'Guest Wi‑Fi / AP isolation also blocks LAN Kill (ZC-ISOLATION).',
         )
     arp_mac = lookup_mac_from_arp_table(ip, iface_ip)
     if mac_address_is_usable(arp_mac) and expected_mac and arp_mac != expected_mac:
@@ -653,7 +787,10 @@ def resolve_live_lan_victim(
             pass
 
     _ok, reason = victim_endpoint_live_for_mitm(
-        dev.get('ip'), dev.get('mac'), iface_ip or None, ping_attempts=3
+        dev.get('ip'),
+        dev.get('mac'),
+        iface_ip or None,
+        ping_attempts=max(1, int(ping_attempts)),
     )
     return dev, reason or 'Rescan and select the PS5 row matching its current connection.'
 
@@ -1159,6 +1296,67 @@ def _mask_prefix_len(mask_value) -> int:
         return 0
 
 
+def ipv4_same_link(ip_a: str, ip_b: str, *, prefix_len: int = 24) -> bool:
+    """True when both IPv4s share ``prefix_len`` (default /24). Never raises."""
+    try:
+        from tools.diag_privacy import same_ipv4_subnet
+
+        hit = same_ipv4_subnet(ip_a, ip_b, prefix_len=prefix_len)
+        return bool(hit)
+    except Exception:
+        pass
+    try:
+        a = [int(x) for x in str(ip_a or '').split('.')]
+        b = [int(x) for x in str(ip_b or '').split('.')]
+        if len(a) != 4 or len(b) != 4:
+            return False
+        plen = max(0, min(32, int(prefix_len)))
+        if plen == 24:
+            return a[:3] == b[:3]
+        mask = (0xFFFFFFFF << (32 - plen)) & 0xFFFFFFFF if plen else 0
+        ai = (a[0] << 24) | (a[1] << 16) | (a[2] << 8) | a[3]
+        bi = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+        return (ai & mask) == (bi & mask)
+    except Exception:
+        return False
+
+
+def iface_ipv4_prefix_len(iface, default: int = 24) -> int:
+    """
+    Best-effort IPv4 prefix length for ``iface`` from the Scapy route table.
+
+    Falls back to ``default`` (/24) when unknown — preserves historical scan behavior.
+    """
+    try:
+        lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
+        if not lip or not _ipv4_valid(lip):
+            return int(default)
+        addr = ipaddress.IPv4Address(lip)
+        guid = str(getattr(iface, 'guid', None) or '').strip()
+        name = str(getattr(iface, 'name', None) or '').strip()
+        best = -1
+        for entry in getattr(conf.route, 'routes', []) or []:
+            if len(entry) < 4:
+                continue
+            net = _network_for_route(entry)
+            if not net or addr not in net:
+                continue
+            token = str(entry[3] or '')
+            if guid and token not in (guid, name):
+                # Still accept when the on-link network contains our address.
+                if int(net.prefixlen) < 8:
+                    continue
+            plen = int(net.prefixlen)
+            # Ignore absurdly broad prefixes (/8–/15) — they mis-match dual-NIC PCs.
+            if 16 <= plen <= 30 and plen > best:
+                best = plen
+        if best >= 16:
+            return best
+    except Exception:
+        pass
+    return int(default)
+
+
 def _network_for_route(route_entry):
     """
     Build IPv4Network from a scapy route entry when possible.
@@ -1250,6 +1448,15 @@ def _iface_for_route_tokens(route_tokens, ifaces):
     return None
 
 
+_ARP_IFACE_HEADER_RE = re.compile(
+    # English "Interface:", DE "Schnittstelle:", ES "Interfaz:", FR often still
+    # "Interface:" — match any header then IPv4 --- 0xIFINDEX.
+    r'(?:interface|schnittstelle|interfaz)\s*:\s*'
+    r'(\d{1,3}(?:\.\d{1,3}){3})\s*---\s*0x',
+    re.IGNORECASE,
+)
+
+
 def _parse_windows_arp_by_interface() -> dict[str, set[str]]:
     """Map local interface IPv4 -> remote IPs listed under that ARP section."""
     if not sys.platform.startswith('win'):
@@ -1261,12 +1468,10 @@ def _parse_windows_arp_by_interface() -> dict[str, set[str]]:
         line = raw.strip()
         if not line:
             continue
-        low = line.lower()
-        if low.startswith('interface:'):
-            parts = line.split()
-            current_iface_ip = parts[1] if len(parts) >= 2 else ''
-            if current_iface_ip:
-                result.setdefault(current_iface_ip, set())
+        m = _ARP_IFACE_HEADER_RE.search(line)
+        if m:
+            current_iface_ip = m.group(1)
+            result.setdefault(current_iface_ip, set())
             continue
         if not current_iface_ip:
             continue
@@ -1343,12 +1548,10 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
         try:
             if fallback is not None:
                 live_fb = _iface_live_ipv4(fallback)
-                v_oct = [int(x) for x in victim_ip.split('.')]
-                f_oct = [int(x) for x in live_fb.split('.')] if live_fb else []
+                plen = iface_ipv4_prefix_len(fallback, default=24)
                 if (
-                    len(v_oct) == 4
-                    and len(f_oct) == 4
-                    and v_oct[:3] == f_oct[:3]
+                    live_fb
+                    and ipv4_same_link(live_fb, victim_ip, prefix_len=plen)
                     and str(hit.guid) != str(fallback.guid)
                 ):
                     by_iface = _parse_windows_arp_by_interface()
@@ -1361,14 +1564,13 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     if hit is not None:
         return hit
 
-    # Fast accept only when fallback still has a live address on the victim's /24.
+    # Fast accept only when fallback still has a live address on the victim's link.
     try:
         if fallback is not None:
             live_ip = _iface_live_ipv4(fallback)
             if live_ip:
-                f_oct = [int(x) for x in live_ip.split('.')]
-                v_oct = [int(x) for x in victim_ip.split('.')]
-                if len(f_oct) == 4 and len(v_oct) == 4 and f_oct[:3] == v_oct[:3]:
+                plen = iface_ipv4_prefix_len(fallback, default=24)
+                if ipv4_same_link(live_ip, victim_ip, prefix_len=plen):
                     return fallback
     except Exception:
         pass
@@ -1401,20 +1603,14 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     except Exception:
         pass
 
-    # Fallback #2: same /24 as a live interface (hotspot clients, odd route tables).
-    try:
-        v_oct = [int(x) for x in victim_ip.split('.')]
-    except ValueError:
-        return fallback if fallback is not None else get_default_iface()
+    # Fallback #2: same on-link subnet as a live interface (hotspot / odd routes).
+    # Prefer the interface's real prefix; keep /24 as the unknown-mask default.
     for iface in ifaces:
         ip = _iface_live_ipv4(iface)
         if not ip or ip in ('0.0.0.0', '127.0.0.1'):
             continue
-        try:
-            a = [int(x) for x in ip.split('.')]
-        except ValueError:
-            continue
-        if len(a) == 4 and len(v_oct) == 4 and a[:3] == v_oct[:3]:
+        plen = iface_ipv4_prefix_len(iface, default=24)
+        if ipv4_same_link(ip, victim_ip, prefix_len=plen):
             return iface
 
     if fallback is not None and _iface_live_ipv4(fallback):
@@ -1436,6 +1632,10 @@ def pick_best_live_iface():
         score = 0
         if not _is_bad_iface_display_name(iface.name):
             score += 10
+        # Soft deprioritize VPN/TAP/Hyper-V so full-tunnel default routes do not
+        # steal auto-pick from the physical LAN NIC (ARP MITM needs L2).
+        if _iface_looks_vpn_or_virtual(iface):
+            score -= 80
         try:
             rt = conf.route.route('0.0.0.0')
             for token in rt or ():
@@ -1581,7 +1781,8 @@ def reconcile_scanner_with_settings_iface(scanner, killer=None) -> str:
             pass
 
     try:
-        scanner.refresh_local_topology()
+        # Called from startup/settings paths — avoid getmacbyip (~4s) stalls.
+        scanner.refresh_local_topology(allow_scapy_probe=False)
         scanner.add_me()
         scanner.add_router()
     except Exception:

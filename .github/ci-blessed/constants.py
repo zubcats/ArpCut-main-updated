@@ -131,7 +131,14 @@ WINDOW_CORNER_RADIUS_PX = 12
 
 # Windows-only Npcap details (ignored on macOS/Linux)
 NPCAP_URL = 'https://npcap.com/dist/npcap-1.87.exe'
-NPCAP_PATH = 'C:\\Windows\\SysWOW64\\Npcap'
+# Legacy single-path constant (kept for older callers / diag labels).
+# Prefer NPCAP_CANDIDATE_PATHS - Npcap always installs under System32/npcap;
+# SysWOW64 holds the 32-bit copy on x64 Windows (see Npcap Users' Guide).
+NPCAP_PATH = 'C:\\Windows\\SysWOW64\\npcap'
+NPCAP_CANDIDATE_PATHS = (
+    'C:\\Windows\\System32\\npcap',
+    'C:\\Windows\\SysWOW64\\npcap',
+)
 
 GLOBAL_MAC = 'FF:FF:FF:FF:FF:FF'
 

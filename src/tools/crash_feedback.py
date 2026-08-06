@@ -51,6 +51,12 @@ def safe_daemon_target(fn, /, *args, **kwargs):
                         fp.write(body)
                 except Exception:
                     pass
+                try:
+                    from tools.zubcut_log import app_log
+
+                    app_log('bg_thread_error', thread=name, error=body.splitlines()[-1] if body else '')
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -309,8 +315,24 @@ def _our_threading_excepthook(args) -> None:
         sys.stderr.write(body)
     except Exception:
         pass
+    # Queue + best-effort upload so Kill/Lag worker crashes reach support (no UI).
+    try:
+        exc_name = getattr(args.exc_type, '__name__', str(args.exc_type))
+        exc_msg = str(args.exc_value)[:500] if args.exc_value is not None else ''
+        _attempt_remote_send(
+            ref,
+            path,
+            exc_type=exc_name,
+            exc_message=exc_msg,
+            save_pending_on_fail=True,
+        )
+    except Exception:
+        pass
     if _prev_threading_excepthook is not None:
-        _prev_threading_excepthook(args)
+        try:
+            _prev_threading_excepthook(args)
+        except Exception:
+            pass
 
 
 def schedule_pending_crash_upload() -> None:

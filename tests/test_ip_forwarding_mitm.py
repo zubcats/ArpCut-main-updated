@@ -32,10 +32,30 @@ class TestIpForwardingMitm(unittest.TestCase):
         with (
             mock.patch('networking.killer.enable_ip_forwarding') as enable,
             mock.patch('networking.killer.disable_ip_forwarding') as disable,
+            mock.patch(
+                'tools.clumsy_inline.clumsy_mode_enabled',
+                return_value=False,
+            ),
         ):
             k._stop_forwarder('AA:BB:CC:DD:EE:FF')
         enable.assert_not_called()
         disable.assert_called_once()
+
+    def test_stop_forwarder_skips_disable_in_clumsy_mode(self) -> None:
+        from networking.killer import Killer
+
+        k = Killer.__new__(Killer)
+        k.forwarders = {}
+        k.killed = {}
+        with (
+            mock.patch('networking.killer.disable_ip_forwarding') as disable,
+            mock.patch(
+                'tools.clumsy_inline.clumsy_mode_enabled',
+                return_value=True,
+            ),
+        ):
+            k._stop_forwarder('AA:BB:CC:DD:EE:FF')
+        disable.assert_not_called()
 
     def test_kill_disables_forwarding_on_lan_path(self) -> None:
         from networking.killer import Killer
@@ -114,8 +134,16 @@ class TestIpForwardingMitm(unittest.TestCase):
         path = os.path.join(_SRC, 'networking', 'killer.py')
         with open(path, encoding='utf-8') as f:
             src = f.read()
-        self.assertIn('disable_ip_forwarding(priority_iface=', src)
+        # Call sites may wrap kwargs across lines:
+        #   disable_ip_forwarding(
+        #       priority_iface=getattr(...),
+        self.assertIn('disable_ip_forwarding(', src)
+        self.assertIn('priority_iface=', src)
         self.assertIn('priority_iface: str | None = None', src)
+        self.assertRegex(
+            src,
+            r'disable_ip_forwarding\(\s*(?:\n\s*)?priority_iface=',
+        )
 
     def test_kill_disables_forwarding_after_instant_cut(self) -> None:
         path = os.path.join(_SRC, 'networking', 'killer.py')

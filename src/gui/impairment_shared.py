@@ -44,12 +44,69 @@ def _dupe_net_run_unblock(ip: str) -> None:
         pass
 
 
+_FW_UI_WARNED = False
+
+
 def _dupe_net_run_block(iface: str, ip: str, direction: str):
     try:
-        block_ip(iface, ip, direction)
+        ok = block_ip(iface, ip, direction)
+        if ok is False:
+            try:
+                from tools.pfctl import last_error
+                from tools.zubcut_log import app_log
+                from tools.user_errors import format_error_code
+
+                detail = (last_error() or '').strip()
+                app_log(
+                    'firewall_block_failed',
+                    code='ZC-FW',
+                    ip=ip,
+                    detail=detail[:200],
+                )
+                msg = format_error_code('ZC-FW', detail)
+                global _FW_UI_WARNED
+                if not _FW_UI_WARNED:
+                    _FW_UI_WARNED = True
+                    _post_fw_warn_to_ui(msg)
+            except Exception:
+                pass
         return None
     except Exception as exc:
+        try:
+            from tools.zubcut_log import app_log
+
+            app_log('firewall_block_exception', ip=ip, error=repr(exc)[:200])
+        except Exception:
+            pass
         return exc
+
+
+def _post_fw_warn_to_ui(msg: str) -> None:
+    """One-shot orange log on the GUI thread (block_ip runs off-thread)."""
+    try:
+        from PyQt5.QtCore import QTimer
+        from PyQt5.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is None:
+            return
+        text = str(msg or '').strip()
+        if not text:
+            return
+
+        def _emit() -> None:
+            try:
+                for w in app.topLevelWidgets():
+                    log = getattr(w, 'log', None)
+                    if callable(log):
+                        log(text, 'orange')
+                        return
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, _emit)
+    except Exception:
+        pass
 
 
 def _bg_unblock_ip(ip: str | None) -> None:

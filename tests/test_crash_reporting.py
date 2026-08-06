@@ -43,6 +43,55 @@ class TestCrashRemoteReport(unittest.TestCase):
                 mod.clear_pending_crash()
                 self.assertIsNone(mod.load_pending_crash())
 
+    def test_pending_crash_queue_keeps_oldest(self) -> None:
+        from tools import crash_remote_report as mod
+
+        with tempfile.TemporaryDirectory() as td:
+            pending = os.path.join(td, 'pending.json')
+            paths = []
+            for i in range(2):
+                p = os.path.join(td, f'crash-{i}.log')
+                with open(p, 'w', encoding='utf-8') as fh:
+                    fh.write(f'log {i}\n')
+                paths.append(p)
+            with patch.object(mod, 'pending_crash_path', return_value=pending):
+                mod.save_pending_crash('ZC-OLD001', paths[0])
+                mod.save_pending_crash('ZC-NEW002', paths[1])
+                first = mod.load_pending_crash()
+                self.assertIsNotNone(first)
+                assert first is not None
+                self.assertEqual(first['ref'], 'ZC-OLD001')
+                mod.clear_pending_crash('ZC-OLD001')
+                second = mod.load_pending_crash()
+                self.assertIsNotNone(second)
+                assert second is not None
+                self.assertEqual(second['ref'], 'ZC-NEW002')
+
+    def test_try_send_skips_permanent_http_error_poison(self) -> None:
+        from tools import crash_remote_report as mod
+
+        with tempfile.TemporaryDirectory() as td:
+            pending = os.path.join(td, 'pending.json')
+            bad = os.path.join(td, 'bad.log')
+            good = os.path.join(td, 'good.log')
+            with open(bad, 'w', encoding='utf-8') as fh:
+                fh.write('bad\n')
+            with open(good, 'w', encoding='utf-8') as fh:
+                fh.write('good\n')
+            with patch.object(mod, 'pending_crash_path', return_value=pending):
+                mod.save_pending_crash('ZC-BAD001', bad)
+                mod.save_pending_crash('ZC-GOOD02', good)
+
+                def _submit(ref, _log, **_kw):
+                    if ref == 'ZC-BAD001':
+                        return False, 'HTTP Error 400: Bad Request'
+                    return True, 'ok'
+
+                with patch.object(mod, 'submit_crash_report', side_effect=_submit):
+                    ok, _ = mod.try_send_pending_crash()
+                self.assertTrue(ok)
+                self.assertIsNone(mod.load_pending_crash())
+
     def test_build_payload_includes_license_id(self) -> None:
         from tools import crash_remote_report as mod
 

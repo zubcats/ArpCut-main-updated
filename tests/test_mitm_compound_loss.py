@@ -5,8 +5,9 @@ import sys
 import unittest
 
 _ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
-if _ROOT not in sys.path:
-    sys.path.insert(0, os.path.join(_ROOT, 'src'))
+_SRC = os.path.join(_ROOT, 'src')
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 from tools.mitm_compound_loss import effective_delivery_pct, survival_probability
 

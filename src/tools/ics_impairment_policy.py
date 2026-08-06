@@ -99,7 +99,8 @@ def classify_device_impairment(
             from tools.clumsy_ics import read_clumsy_ics_state
 
             gw = str(read_clumsy_ics_state().get('downstream_ipv4') or '').strip()
-            if gw.startswith('192.168.137.'):
+            # SoftAP ICS (137.x) or Hosted Network DHCP (173.x).
+            if gw.startswith('192.168.137.') or gw.startswith('192.168.173.'):
                 topo = 'hotspot'
         except Exception:
             pass

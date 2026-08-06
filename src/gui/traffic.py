@@ -3,7 +3,18 @@ from PyQt5.QtCore import Qt, QTimer
 
 from networking.sniffer import TrafficSniffer
 from networking.forwarder import MitmForwarder
-from tools.pfctl import ensure_pf_enabled, install_anchor, block_dst, unblock_dst, export_rules, import_rules, is_blocked, pf_self_check, list_rules
+from tools.pfctl import (
+    ensure_pf_enabled,
+    install_anchor,
+    block_dst,
+    unblock_dst,
+    export_rules,
+    import_rules,
+    is_blocked,
+    pf_self_check,
+    list_rules,
+    last_error,
+)
 from ui.ui_traffic import Ui_Traffic
 import constants as _zcut_constants
 from constants import APP_DISPLAY_NAME
@@ -186,7 +197,14 @@ class Traffic(FramelessResizableMixin, QMainWindow):
         if ensure_pf_enabled() and install_anchor():
             use_port = self.ui.chkIncludePort.isChecked()
             ok = block_dst(iface, victim, dst, port=(port if use_port else None), proto=proto)
-            self.parent.log(('Blocked ' if ok else 'Failed blocking ') + dst, _UI_LOG_VICTIM_BLOCK_FG if ok else 'red')
+            if ok:
+                self.parent.log('Blocked ' + dst, _UI_LOG_VICTIM_BLOCK_FG)
+            else:
+                detail = (last_error() or '').strip()
+                msg = 'Failed blocking ' + dst
+                if detail:
+                    msg += f' ({detail})'
+                self.parent.log(msg, 'red')
 
     def unblock_selected(self):
         target = self.selected_flow()

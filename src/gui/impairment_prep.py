@@ -169,7 +169,7 @@ class ImpairmentPrepMixin:
                     run_command(
                         ['ping', '-n', '1', '-w', '400', ip],
                         shell=False,
-                        timeout=2,
+                        timeout=1,
                     )
                 except Exception:
                     pass
@@ -336,7 +336,8 @@ class ImpairmentPrepMixin:
             router_mac = getattr(self.scanner, 'router_mac', '') or ''
             need_topo = changed or not mac_address_is_usable(router_mac)
             if need_topo and not fast:
-                self.scanner.refresh_local_topology()
+                # Still GUI-thread — never pay getmacbyip; OS ARP refresh follows.
+                self.scanner.refresh_local_topology(allow_scapy_probe=False)
                 self._refresh_router_mac_from_system_arp()
             elif need_topo and fast and not mac_address_is_usable(router_mac):
                 # Fast arm: one ping already ran in _refresh_router_mac_from_system_arp.

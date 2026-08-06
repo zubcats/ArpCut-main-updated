@@ -46,12 +46,23 @@ function Format-SafeIPv4([string]$ip) {
     return '(ip)'
 }
 
-function Test-SameSlash24([string]$ipA, [string]$ipB) {
+function Test-SameSubnet([string]$ipA, [string]$ipB, [int]$prefixLen = 24) {
+    # Prefix-aware same-link check (default /24 for backward-compatible reports).
     if ($ipA -notmatch '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') { return $false }
-    $a1 = $Matches[1]; $a2 = $Matches[2]; $a3 = $Matches[3]
+    $a = @([int]$Matches[1], [int]$Matches[2], [int]$Matches[3], [int]$Matches[4])
     if ($ipB -notmatch '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') { return $false }
-    return ($a1 -eq $Matches[1] -and $a2 -eq $Matches[2] -and $a3 -eq $Matches[3])
+    $b = @([int]$Matches[1], [int]$Matches[2], [int]$Matches[3], [int]$Matches[4])
+    if ($prefixLen -lt 0 -or $prefixLen -gt 32) { $prefixLen = 24 }
+    if ($prefixLen -eq 24) {
+        return ($a[0] -eq $b[0] -and $a[1] -eq $b[1] -and $a[2] -eq $b[2])
+    }
+    if ($prefixLen -eq 0) { return $true }
+    $ai = [int64](($a[0] -shl 24) -bor ($a[1] -shl 16) -bor ($a[2] -shl 8) -bor $a[3])
+    $bi = [int64](($b[0] -shl 24) -bor ($b[1] -shl 16) -bor ($b[2] -shl 8) -bor $b[3])
+    $mask = [int64](([int64]0xFFFFFFFF -shl (32 - $prefixLen)) -band [int64]0xFFFFFFFF)
+    return (($ai -band $mask) -eq ($bi -band $mask))
 }
+function Test-SameSlash24([string]$ipA, [string]$ipB) { return Test-SameSubnet $ipA $ipB 24 }
 
 $admin = Test-IsAdmin
 $ipcfg = ipconfig | Out-String
@@ -112,14 +123,22 @@ if ($gwPrimary) {
 
 $pcIp = $null
 foreach ($a in $adapters) {
-    if ($a.IPAddress -and ($a.IPAddress -notlike '169.254.*') -and ($a.IPAddress -notlike '192.168.137.*')) {
+    if ($a.IPAddress -and ($a.IPAddress -notlike '169.254.*') -and ($a.IPAddress -notlike '192.168.137.*') -and ($a.IPAddress -notlike '192.168.173.*')) {
         $pcIp = [string]$a.IPAddress
         break
     }
 }
 if (-not $pcIp -and $savedIp) { $pcIp = $savedIp }
 $pcGwSame = $false
-if ($pcIp -and $gwPrimary) { $pcGwSame = Test-SameSlash24 $pcIp $gwPrimary }
+$pcPrefix = 24
+try {
+    if ($pcIp) {
+        $pcAddr = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $pcIp -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($pcAddr -and $pcAddr.PrefixLength) { $pcPrefix = [int]$pcAddr.PrefixLength }
+    }
+} catch { $pcPrefix = 24 }
+if ($pcIp -and $gwPrimary) { $pcGwSame = Test-SameSubnet $pcIp $gwPrimary $pcPrefix }
 
 $ipFwd = 0
 try {
@@ -158,7 +177,7 @@ if ($ifaceSaved) {
 }
 $lines += ("[{0}] Gateway MAC known (MITM)" -f $(if ($gwMacOk) { 'PASS' } else { 'FAIL' }))
 if ($pcIp -and $gwPrimary) {
-    $lines += ("[{0}] PC and gateway on same /24" -f $(if ($pcGwSame) { 'PASS' } else { 'FAIL' }))
+    $lines += ("[{0}] PC and gateway on same subnet (/{1})" -f $(if ($pcGwSame) { 'PASS' } else { 'FAIL' }), $pcPrefix)
     $lines += ("[INFO] PC {0}  GW {1}" -f (Format-SafeIPv4 $pcIp), (Format-SafeIPv4 $gwPrimary))
 } else {
     $lines += '[WARN] Could not compare PC IP vs gateway subnet'

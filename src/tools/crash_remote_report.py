@@ -197,16 +197,51 @@ def pending_crash_path() -> str:
     return os.path.join(base, 'ZubCut-crash-pending.json')
 
 
+_PENDING_CRASH_MAX = 5
+
+
 def save_pending_crash(ref: str, log_path: str) -> None:
-    """Remember a crash the user chose to send later (or retry on next launch)."""
+    """Remember a crash the user chose to send later (or retry on next launch).
+
+    Keeps a bounded FIFO queue so a later crash does not erase an earlier unsent
+    report (previous behavior overwrote a single pointer).
+    """
     try:
-        with open(pending_crash_path(), 'w', encoding='utf-8') as fh:
-            json.dump({'ref': ref, 'logPath': log_path}, fh)
+        items: list = []
+        path = pending_crash_path()
+        if os.path.isfile(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as fh:
+                    data = json.load(fh)
+                if isinstance(data, dict) and data.get('ref') and data.get('logPath'):
+                    items = [data]
+                elif isinstance(data, dict) and isinstance(data.get('items'), list):
+                    items = [x for x in data['items'] if isinstance(x, dict)]
+                elif isinstance(data, list):
+                    items = [x for x in data if isinstance(x, dict)]
+            except Exception:
+                items = []
+        items.append({'ref': ref, 'logPath': log_path})
+        # Dedupe by ref, keep newest last, bound length.
+        seen = set()
+        deduped = []
+        for item in reversed(items):
+            r = str(item.get('ref') or '')
+            if not r or r in seen:
+                continue
+            seen.add(r)
+            deduped.append(item)
+            if len(deduped) >= _PENDING_CRASH_MAX:
+                break
+        deduped.reverse()
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump({'items': deduped}, fh)
     except Exception:
         pass
 
 
 def load_pending_crash() -> Optional[Dict[str, str]]:
+    """Return the oldest pending crash (FIFO), or None."""
     path = pending_crash_path()
     if not os.path.isfile(path):
         return None
@@ -215,28 +250,61 @@ def load_pending_crash() -> Optional[Dict[str, str]]:
             data = json.load(fh)
         if isinstance(data, dict) and data.get('ref') and data.get('logPath'):
             return {'ref': str(data['ref']), 'logPath': str(data['logPath'])}
+        items = []
+        if isinstance(data, dict) and isinstance(data.get('items'), list):
+            items = data['items']
+        elif isinstance(data, list):
+            items = data
+        for item in items:
+            if isinstance(item, dict) and item.get('ref') and item.get('logPath'):
+                return {'ref': str(item['ref']), 'logPath': str(item['logPath'])}
     except Exception:
         pass
     return None
 
 
-def clear_pending_crash() -> None:
+def clear_pending_crash(ref: str | None = None) -> None:
+    """Clear one pending crash by ref, or the whole queue when ``ref`` is None."""
+    path = pending_crash_path()
+    if ref is None:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        return
     try:
-        os.remove(pending_crash_path())
+        if not os.path.isfile(path):
+            return
+        with open(path, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+        items = []
+        if isinstance(data, dict) and isinstance(data.get('items'), list):
+            items = [x for x in data['items'] if isinstance(x, dict)]
+        elif isinstance(data, dict) and data.get('ref'):
+            items = [data]
+        elif isinstance(data, list):
+            items = [x for x in data if isinstance(x, dict)]
+        keep = [x for x in items if str(x.get('ref') or '') != str(ref)]
+        if not keep:
+            os.remove(path)
+        else:
+            with open(path, 'w', encoding='utf-8') as fh:
+                json.dump({'items': keep}, fh)
     except Exception:
         pass
 
 
 def try_send_pending_crash() -> Tuple[bool, str]:
-    """On startup: retry a queued crash report from a prior failed upload."""
+    """On startup: retry queued crash reports from prior failed uploads (oldest first)."""
     pending = load_pending_crash()
     if not pending:
         return False, 'no pending'
     log_path = pending['logPath']
     ref = pending['ref']
     if not os.path.isfile(log_path):
-        clear_pending_crash()
-        return False, 'log missing'
+        clear_pending_crash(ref)
+        # Try next item if any.
+        return try_send_pending_crash()
     try:
         with open(log_path, 'r', encoding='utf-8', errors='replace') as fh:
             log_text = fh.read()
@@ -244,5 +312,29 @@ def try_send_pending_crash() -> Tuple[bool, str]:
         return False, str(exc)
     ok, msg = submit_crash_report(ref, log_text)
     if ok:
-        clear_pending_crash()
+        clear_pending_crash(ref)
+        # Drain additional queued reports opportunistically.
+        more = load_pending_crash()
+        if more:
+            try_send_pending_crash()
+        return ok, msg
+    # Permanent client errors must not poison the FIFO head forever.
+    low = str(msg or '').lower()
+    if any(
+        token in low
+        for token in (
+            'http error 400',
+            'http error 401',
+            'http error 403',
+            'http error 404',
+            'http error 422',
+            ' 400 ',
+            ' 401 ',
+            ' 403 ',
+            ' 404 ',
+            ' 422 ',
+        )
+    ) or low.strip().startswith(('400', '401', '403', '404', '422')):
+        clear_pending_crash(ref)
+        return try_send_pending_crash()
     return ok, msg

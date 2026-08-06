@@ -32,15 +32,78 @@ class MitmPrereqsTests(unittest.TestCase):
         k = self._killer()
         victim = {'ip': '192.168.1.50', 'mac': ''}
         with patch(
+            'networking.killer.lookup_mac_from_arp_table',
+            return_value='',
+        ), patch(
             'networking.killer._lan_neighbor_mac_via_arp_probe',
             return_value='DE:AD:BE:EF:00:01',
+        ) as probe, patch(
+            'networking.killer.victim_endpoint_live_for_mitm',
+            return_value=(True, ''),
+        ) as live:
+            ok, reason = k.mitm_prereqs_ok(victim, ping_attempts=1)
+        self.assertTrue(ok, reason)
+        self.assertEqual(victim['mac'], 'DE:AD:BE:EF:00:01')
+        probe.assert_called_once()
+        live.assert_called_once()
+        self.assertEqual(
+            live.call_args.kwargs.get('recent_arp_mac'),
+            'DE:AD:BE:EF:00:01',
+        )
+        self.assertIsNone(live.call_args.kwargs.get('arp_probe_iface'))
+
+    def test_probe_success_still_passes_when_live_needs_hint(self) -> None:
+        """ICMP blocked + cold OS ARP must not fail after a successful who-has."""
+        k = self._killer()
+        victim = {'ip': '192.168.1.50', 'mac': ''}
+        probed = 'DE:AD:BE:EF:00:01'
+
+        def _live(ip, mac, iface_ip=None, **kwargs):
+            # Real helper: with recent_arp_mac set, cold cache + no ping → live.
+            from tools.utils import victim_endpoint_live_for_mitm
+
+            return victim_endpoint_live_for_mitm(ip, mac, iface_ip, **kwargs)
+
+        with patch(
+            'networking.killer.lookup_mac_from_arp_table',
+            return_value='',
         ), patch(
+            'tools.utils.lookup_mac_from_arp_table',
+            return_value='',
+        ), patch(
+            'tools.utils.lookup_ip_from_arp_table',
+            return_value='',
+        ), patch(
+            'tools.utils.ipv4_ping_reachable',
+            return_value=False,
+        ), patch(
+            'networking.killer._lan_neighbor_mac_via_arp_probe',
+            return_value=probed,
+        ), patch(
+            'networking.killer.victim_endpoint_live_for_mitm',
+            side_effect=_live,
+        ):
+            ok, reason = k.mitm_prereqs_ok(victim, ping_attempts=1)
+        self.assertTrue(ok, reason)
+        self.assertEqual(victim['mac'], probed)
+
+    def test_skips_scapy_arp_probe_when_os_cache_warm(self) -> None:
+        k = self._killer()
+        victim = {'ip': '192.168.1.50', 'mac': 'AA:AA:AA:AA:AA:AA'}
+        with patch(
+            'networking.killer.lookup_mac_from_arp_table',
+            return_value='DE:AD:BE:EF:00:01',
+        ), patch(
+            'networking.killer._lan_neighbor_mac_via_arp_probe',
+            return_value='FF:FF:FF:FF:FF:FF',
+        ) as probe, patch(
             'networking.killer.victim_endpoint_live_for_mitm',
             return_value=(True, ''),
         ):
             ok, reason = k.mitm_prereqs_ok(victim, ping_attempts=1)
         self.assertTrue(ok, reason)
         self.assertEqual(victim['mac'], 'DE:AD:BE:EF:00:01')
+        probe.assert_not_called()
 
     def test_refreshes_router_mac_when_missing(self) -> None:
         k = self._killer()
@@ -50,6 +113,9 @@ class MitmPrereqsTests(unittest.TestCase):
             k, '_refresh_router_mac_for_mitm', side_effect=lambda: k.router.update(
                 {'mac': '11:22:33:44:55:66'}
             )
+        ), patch(
+            'networking.killer.lookup_mac_from_arp_table',
+            return_value='DE:AD:BE:EF:00:01',
         ), patch(
             'networking.killer._lan_neighbor_mac_via_arp_probe',
             return_value='DE:AD:BE:EF:00:01',

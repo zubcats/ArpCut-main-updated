@@ -448,7 +448,7 @@ class ImpairmentIcsGateMixin:
             if seen == 0 and not arp_active:
                 self.log(
                     f'WinDivert sees no traffic for {ip} (layers {layers}). '
-                    'Run as Administrator; confirm PS5 is on 192.168.137.x.',
+                    'Run as Administrator; confirm PS5 is on 192.168.137.x / 173.x.',
                     'red',
                 )
             elif seen == 0 and arp_active:
@@ -706,14 +706,14 @@ class ImpairmentIcsGateMixin:
             pass
         if stack_arp and not arp_ok:
             self.log(
-                f'Hotspot block failed for {ip} — rescan so the PS5 shows 192.168.137.x, '
+                f'Hotspot block failed for {ip} — rescan so the PS5 shows 192.168.137.x / 173.x, '
                 'run as Administrator, then Kill again.',
                 'red',
             )
         else:
             self.log(
                 'Hotspot block failed — run as Administrator, confirm WinDivert bundle, '
-                'then rescan the PS5 on 192.168.137.x.',
+                'then rescan the PS5 on 192.168.137.x / 173.x.',
                 'red',
             )
         self._sync_killed_devices()

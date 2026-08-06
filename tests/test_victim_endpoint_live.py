@@ -73,6 +73,30 @@ class TestVictimEndpointLive(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(reason, "")
 
+    def test_recent_arp_mac_hint_without_second_probe(self) -> None:
+        wifi_mac = "DC:E9:94:AB:E6:C4"
+        with (
+            mock.patch("tools.utils.ipv4_ping_reachable", return_value=False) as ping,
+            mock.patch("tools.utils.lookup_mac_from_arp_table", return_value=""),
+            mock.patch(
+                "tools.utils._lan_neighbor_mac_via_arp_probe",
+                return_value="FF:FF:FF:FF:FF:FF",
+            ) as probe,
+            mock.patch("tools.utils.lookup_ip_from_arp_table", return_value=""),
+        ):
+            ok, reason = victim_endpoint_live_for_mitm(
+                "192.168.1.165",
+                wifi_mac,
+                "192.168.1.56",
+                ping_attempts=1,
+                arp_probe_iface=None,
+                recent_arp_mac=wifi_mac,
+            )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+        probe.assert_not_called()
+        ping.assert_not_called()
+
     def test_arp_probe_accepts_stale_scan_mac(self) -> None:
         wifi_mac = "DC:E9:94:AB:E6:C4"
         stale_mac = "00:E4:21:44:ED:0C"

@@ -792,7 +792,8 @@ QMainWindow#zubcutAuxiliaryWindow QLabel#logsDiagHeading {{
     background-color: transparent;
     font-weight: 600;
 }}
-QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn {{
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn,
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagAnalysisBtn {{
     background-color: #2b2b2b;
     color: {tx};
     border: 1px solid {bd};
@@ -800,13 +801,25 @@ QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn {{
     padding: 6px 12px;
     min-height: 24px;
 }}
-QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn:hover {{
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn:hover,
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagAnalysisBtn:hover {{
     background-color: #3d3d3d;
     border: 1px solid {sel_bg};
 }}
-QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn:pressed {{
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagQuickBtn:pressed,
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagAnalysisBtn:pressed {{
     background-color: {sel_bg};
     color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagAnalysisBtn:checked {{
+    background-color: {sel_bg};
+    color: {sel_fg};
+    border: 1px solid {sel_bg};
+    font-weight: 600;
+}}
+QMainWindow#zubcutAuxiliaryWindow QPushButton#logsDiagAnalysisBtn:checked:hover {{
+    background-color: {sel_bg};
+    border: 1px solid {tx};
 }}
 """
 
@@ -1415,12 +1428,191 @@ def restart_zubcut(main_window=None) -> bool:
 
 def npcap_exists():
     """
-    Check for Npcap driver (Windows only)
+    Check for Npcap install (Windows only).
+
+    Npcap always places DLLs under ``%SystemRoot%\\System32\\npcap`` (and the
+    SysWOW64 copy for 32-bit apps). Older ZubCut only checked SysWOW64, which
+    false-negatives on some 64-bit / ARM64 layouts and false-positives when the
+    folder exists but the ``npcap`` service is missing.
     """
-    if sys.platform.startswith('win'):
-        return path.exists(NPCAP_PATH)
-    # macOS/Linux uses libpcap (bundled); always True
-    return True
+    if not sys.platform.startswith('win'):
+        # macOS/Linux uses libpcap (bundled); always True
+        return True
+    candidates = ()
+    try:
+        from constants import NPCAP_CANDIDATE_PATHS
+
+        candidates = tuple(NPCAP_CANDIDATE_PATHS)
+    except Exception:
+        candidates = ()
+    if not candidates:
+        candidates = (NPCAP_PATH, r'C:\Windows\System32\npcap')
+    for candidate in candidates:
+        try:
+            if path.isdir(candidate) and (
+                path.exists(path.join(candidate, 'wpcap.dll'))
+                or path.exists(path.join(candidate, 'Packet.dll'))
+            ):
+                return True
+        except Exception:
+            continue
+    # Folder-only fallback (older installs / odd layouts).
+    for candidate in candidates:
+        try:
+            if path.exists(candidate):
+                return True
+        except Exception:
+            continue
+    # Registry / service — last resort when DLLs live under a non-default root.
+    try:
+        import winreg
+
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r'SOFTWARE\WOW6432Node\Npcap',
+        )
+        winreg.CloseKey(key)
+        return True
+    except Exception:
+        pass
+    try:
+        import winreg
+
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Npcap')
+        winreg.CloseKey(key)
+        return True
+    except Exception:
+        pass
+    try:
+        import ctypes
+
+        scm = ctypes.windll.advapi32.OpenSCManagerW(None, None, 0x0001)  # SC_MANAGER_CONNECT
+        if scm:
+            try:
+                svc = ctypes.windll.advapi32.OpenServiceW(scm, 'npcap', 0x0001)  # SERVICE_QUERY_STATUS
+                if svc:
+                    ctypes.windll.advapi32.CloseServiceHandle(svc)
+                    return True
+            finally:
+                ctypes.windll.advapi32.CloseServiceHandle(scm)
+    except Exception:
+        pass
+    return False
+
+
+def npcap_admin_only_enabled() -> bool:
+    """True when Npcap was installed with AdminOnly (restrict driver to Administrators)."""
+    if not sys.platform.startswith('win') or winreg is None:
+        return False
+    for path_key in (
+        r'SYSTEM\CurrentControlSet\Services\Npcap\Parameters',
+        r'SYSTEM\CurrentControlSet\Services\npf\Parameters',
+    ):
+        try:
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path_key)
+            try:
+                val, _ = winreg.QueryValueEx(key, 'AdminOnly')
+                if int(val or 0) != 0:
+                    return True
+            finally:
+                winreg.CloseKey(key)
+        except Exception:
+            continue
+    return False
+
+
+def ensure_npcap_service_running() -> bool:
+    """
+    Best-effort start of the ``npcap`` (or legacy ``npf``) driver service.
+
+    Returns True when the service is already running or was started. Never raises.
+    Safe no-op on non-Windows. Keeps first Kill from paying a cold driver-load cost.
+
+    Important: open with QUERY rights first. Requesting SERVICE_START in the same
+    OpenService call fails for non-elevated users even when the driver is already
+    RUNNING, which falsely triggered ZC-NPCAP-SVC on first launch.
+    """
+    if not sys.platform.startswith('win'):
+        return True
+    try:
+        import ctypes
+        import time as _time
+        from ctypes import wintypes
+
+        advapi = ctypes.windll.advapi32
+        SC_MANAGER_CONNECT = 0x0001
+        SERVICE_QUERY_STATUS = 0x0004
+        SERVICE_START = 0x0010
+        SERVICE_RUNNING = 0x00000004
+        ERROR_SERVICE_ALREADY_RUNNING = 1056
+
+        class SERVICE_STATUS(ctypes.Structure):
+            _fields_ = [
+                ('dwServiceType', wintypes.DWORD),
+                ('dwCurrentState', wintypes.DWORD),
+                ('dwControlsAccepted', wintypes.DWORD),
+                ('dwWin32ExitCode', wintypes.DWORD),
+                ('dwServiceSpecificExitCode', wintypes.DWORD),
+                ('dwCheckPoint', wintypes.DWORD),
+                ('dwWaitHint', wintypes.DWORD),
+            ]
+
+        def _is_running(svc_handle) -> bool:
+            status = SERVICE_STATUS()
+            if not advapi.QueryServiceStatus(svc_handle, ctypes.byref(status)):
+                return False
+            return int(status.dwCurrentState) == SERVICE_RUNNING
+
+        scm = advapi.OpenSCManagerW(None, None, SC_MANAGER_CONNECT)
+        if not scm:
+            # Cannot talk to SCM — only alarm when Npcap files are also missing.
+            return bool(npcap_exists())
+        try:
+            queried_stopped = False
+            for name in ('npcap', 'npf'):
+                # Query-only — works without admin when AdminOnly Npcap is installed.
+                svc = advapi.OpenServiceW(scm, name, SERVICE_QUERY_STATUS)
+                if not svc:
+                    continue
+                try:
+                    if _is_running(svc):
+                        return True
+                    queried_stopped = True
+                finally:
+                    advapi.CloseServiceHandle(svc)
+
+                # Not running — need START rights (usually requires elevation).
+                svc = advapi.OpenServiceW(
+                    scm, name, SERVICE_QUERY_STATUS | SERVICE_START
+                )
+                if not svc:
+                    continue
+                try:
+                    if _is_running(svc):
+                        return True
+                    if not advapi.StartServiceW(svc, 0, None):
+                        if ctypes.GetLastError() == ERROR_SERVICE_ALREADY_RUNNING:
+                            return True
+                    for _ in range(10):  # ~500ms - SYSTEM_START drivers can lag at login
+                        _time.sleep(0.05)
+                        if _is_running(svc):
+                            return True
+                    # Start accepted; prewarm may finish load. Avoid false ZC-NPCAP-SVC.
+                    return True
+                finally:
+                    advapi.CloseServiceHandle(svc)
+            if queried_stopped:
+                return False
+            # Service name not openable but DLLs present — avoid false ZC-NPCAP-SVC.
+            return bool(npcap_exists())
+        finally:
+            advapi.CloseServiceHandle(scm)
+    except Exception:
+        try:
+            return bool(npcap_exists())
+        except Exception:
+            return False
+
 
 _SINGLE_INSTANCE_MUTEX = None
 

@@ -47,9 +47,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Default is checked (omit Flags: unchecked). "checked" is not a valid [Tasks] flag in Inno Setup.
 Name: "clumsymode"; Description: "Clumsy mode (WinDivert for PC Mobile Hotspot lag)"; GroupDescription: "Optional:"
 
-; Replace the whole onedir payload on upgrade (avoids stale PyInstaller files beside new builds).
-[InstallDelete]
-Type: filesandordirs; Name: "{app}\_internal"
+; Onedir replace is handled in [Code] PrepareToInstall (rename _internal → backup,
+; restore if python311.dll is missing after copy). Do not hard-delete _internal here —
+; that left users with ZubCut.exe and no runtime after interrupted/silent updates.
 
 [Files]
 Source: "..\dist\{#MyAppName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -71,9 +71,73 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Root: HKCU; Subkey: "Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers"; ValueType: string; ValueName: "{app}\{#MyAppExeName}"; ValueData: "~ RUNASADMIN"; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall shellexec
+; runascurrentuser: keep the elevated token from admin Setup. Default postinstall
+; runasoriginaluser drops elevation → ZC-NPCAP-ADMIN when Npcap AdminOnly=1.
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall shellexec runascurrentuser
 
 [Code]
+function InternalDirPath: String;
+begin
+  Result := ExpandConstant('{app}\_internal');
+end;
+
+function InternalBakPath: String;
+begin
+  Result := ExpandConstant('{app}\_internal.bak_zubcut');
+end;
+
+function PythonRuntimeDllPath: String;
+begin
+  Result := ExpandConstant('{app}\_internal\python311.dll');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Src, Bak: String;
+begin
+  { Move old onedir runtime aside so a failed copy can restore it. }
+  Result := '';
+  NeedsRestart := False;
+  Src := InternalDirPath;
+  Bak := InternalBakPath;
+  if DirExists(Bak) then
+  begin
+    if not DelTree(Bak, True, True, True) then
+    begin
+      Result := 'Could not clear a previous failed-update backup (_internal.bak_zubcut). Close ZubCut and retry.';
+      Exit;
+    end;
+  end;
+  if DirExists(Src) then
+  begin
+    if not RenameFile(Src, Bak) then
+    begin
+      if not DelTree(Src, True, True, True) then
+        Result := 'Could not replace the previous ZubCut runtime folder. Close ZubCut and retry the update.';
+    end;
+  end;
+end;
+
+procedure RestoreInternalBackupIfNeeded;
+var
+  Src, Bak: String;
+begin
+  Src := InternalDirPath;
+  Bak := InternalBakPath;
+  if not DirExists(Bak) then
+    Exit;
+  if DirExists(Src) then
+    DelTree(Src, True, True, True);
+  if not RenameFile(Bak, Src) then
+    Log('WARNING: could not restore _internal.bak_zubcut after failed update');
+end;
+
+procedure DiscardInternalBackup;
+begin
+  if DirExists(InternalBakPath) then
+    DelTree(InternalBakPath, True, True, True);
+end;
+
 function WinPcapUninstallString(var UninstallString: String): Boolean;
 begin
   Result := RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\WinPcapInst', 'UninstallString', UninstallString);
@@ -262,6 +326,15 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    if not FileExists(PythonRuntimeDllPath) then
+    begin
+      RestoreInternalBackupIfNeeded;
+      RaiseException(
+        'Update failed: Python runtime (_internal\python311.dll) is missing after install. '
+        + 'Your previous install was restored when possible. Re-download the setup and try again.'
+      );
+    end;
+    DiscardInternalBackup;
     UninstallWinPcapIfPresent();
     InstallNpcapIfMissing();
     EnsureWinDivertInstalledForClumsy();

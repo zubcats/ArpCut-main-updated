@@ -1,3 +1,7 @@
+---
+alwaysApply: true
+---
+
 # CI Workflow Rules
 
 - Every push to `experimental` must trigger the workflow assigned to `experimental`.

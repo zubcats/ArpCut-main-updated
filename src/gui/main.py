@@ -585,6 +585,10 @@ class DupeDialog(FramelessResizableMixin, QDialog):
         self.dupeSpin.setSingleStep(100)
         self.dupeSpin.setValue(5000)
         self.dupeSpin.setSuffix(' ms')
+        self.dupeSpin.setToolTip(
+            'Dupe burst length. Default 5000 ms. '
+            'With Logs → Analysis ON, keep ≥ 8000 ms (5s is often too short for DURING).'
+        )
         timing_layout.addRow('Lag duration (one shot)', self.dupeSpin)
         layout.addWidget(self.timing_group)
 
@@ -947,6 +951,12 @@ class ZubCutApp(
         self._dupe_net_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='dupe_net')
         self._dupe_end_mono = None  # wall deadline for countdown (set when block_ip finishes)
         self._mitm_probe_retried_macs: set[str] = set()
+        self._cut_analysis_enabled = False
+        self._cut_analysis_gen = 0
+        self._cut_analysis_baseline_gen = 0
+        self._cut_analysis_baseline = None
+        self._cut_analysis_session = None
+        self._cut_analysis_baseline_timer = None
         self._idle_mitm_reconcile_timer = QTimer(self)
         self._idle_mitm_reconcile_timer.setInterval(20000)
         self._idle_mitm_reconcile_timer.timeout.connect(
@@ -1065,7 +1075,8 @@ class ZubCutApp(
         self.btnDupe.setFont(dupe_font)
         self.btnDupe.setToolTip(
             'Dupe — one-shot lag for a set duration, then full stop. '
-            'Duration/direction controls are always visible below. Shortcut: P.'
+            'Duration/direction controls are always visible below. Shortcut: P. '
+            'With Logs → Analysis ON, use at least 8000 ms (8s); 5s is often too short for DURING.'
         )
         self.btnDupe.pressed.connect(lambda: self._shortcut_global_dupe(from_button=True))
 
@@ -1148,6 +1159,10 @@ class ZubCutApp(
         self.dupeSpinMain.setSingleStep(100)
         self.dupeSpinMain.setValue(5000)
         self.dupeSpinMain.setSuffix(' ms')
+        self.dupeSpinMain.setToolTip(
+            'Dupe burst length. Default 5000 ms. '
+            'With Logs → Analysis ON, keep ≥ 8000 ms (5s is often too short for DURING).'
+        )
         self.dupeTimingRow.addWidget(self.dupeSpinMain)
         self.groupDupeInlineLayout.addLayout(self.dupeTimingRow)
         self.dupeDirRow = QHBoxLayout()
@@ -1824,6 +1839,11 @@ class ZubCutApp(
         if not_enabled:
             self._schedule_impairment_stack_warm('select')
             self._schedule_npcap_prewarm('select')
+            # First click of this IP since last scan only — never on Kill, never every re-click.
+            try:
+                self._schedule_device_readiness_check(device)
+            except Exception:
+                pass
 
         self.btnKill.setEnabled(not_enabled)
         self.btnLagSwitch.setEnabled(not_enabled)
@@ -2016,7 +2036,8 @@ class ZubCutApp(
         """
         # Ensure "Me" and "Router" are always shown even if scan hasn't run
         try:
-            self.scanner.refresh_local_topology()
+            # Paint path: ARP table only — never scapy getmacbyip (~4s GUI freeze).
+            self.scanner.refresh_local_topology(allow_scapy_probe=False)
             self.scanner.add_me()
             self.scanner.add_router()
         except Exception:
@@ -2113,10 +2134,19 @@ class ZubCutApp(
             if not mac or mac not in remembered:
                 continue
             if should_restore_remembered_kill(rem_device, self.scanner):
-                self._apply_victim_block(rem_device, 'both')
+                # Cold post-scan ARP/router context — use full arm validation so
+                # remembered kills do not silently fail after rescan (fast_arm is
+                # for instant UI click paths).
+                if not self._apply_victim_block(rem_device, 'both', fast_arm=False):
+                    self.log(
+                        f"Remembered kill restore failed for "
+                        f"{rem_device.get('ip') or mac}.",
+                        'red',
+                    )
             elif self._is_ics_downstream(rem_device) and self._kill_ui_shows_on(
                 mac, rem_device.get('ip'), rem_device
             ):
+                # WinDivert path — do not pass fast_arm (not accepted by ICS apply).
                 self._apply_victim_block(rem_device, 'both')
 
         # Killer holds ARP for lag/dupe on LAN; explicit Kill uses killed_devices / ICS profiles.
@@ -2201,6 +2231,10 @@ class ZubCutApp(
         self.pgbar.setVisible(False)
         if self.taskbar_progress:
             self.taskbar_progress.setVisible(False)
+        try:
+            self._invalidate_device_readiness(reason='post_scan')
+        except Exception:
+            pass
         self.processDevices()
         try:
             threading.Thread(
@@ -2211,6 +2245,10 @@ class ZubCutApp(
         except Exception:
             pass
         self._schedule_impairment_stack_warm('post_scan')
+        try:
+            self._schedule_pc_readiness_check(reason='post_scan')
+        except Exception:
+            pass
 
     def UpdateThread_Starter(self):
         """
@@ -2221,6 +2259,11 @@ class ZubCutApp(
         self._start_clumsy_inline_refresh_timer()
         self._start_impairment_warm_on_reactivate()
         self._schedule_impairment_stack_warm('startup')
+        try:
+            # PC-only readiness in background — never gates Clumsy, never on Kill.
+            QTimer.singleShot(800, lambda: self._schedule_pc_readiness_check(reason='startup'))
+        except Exception:
+            pass
 
     def UpdateThread_Reciever(self):
         """
@@ -2292,6 +2335,35 @@ class ZubCutApp(
             force=reason in ('startup', 'settings', 'post_init'),
             prewarm=self.killer.prewarm_l2_socket,
         )
+        # Keep the L2 socket warm while the app is open — cold Npcap opens cost 0.5–2s
+        # and make first Kill feel delayed even after a successful startup prewarm.
+        if reason != 'keepalive':
+            self._ensure_npcap_keepalive_timer()
+
+    def _ensure_npcap_keepalive_timer(self) -> None:
+        """Re-prewarm the cached L2 socket every ~90s so instant cut stays hot."""
+        if getattr(self, '_npcap_keepalive_timer', None) is not None:
+            return
+        if getattr(self, '_shutting_down', False):
+            return
+        try:
+            timer = QTimer(self)
+            timer.setInterval(90_000)
+
+            def _keepalive() -> None:
+                if getattr(self, '_shutting_down', False):
+                    return
+                try:
+                    if not self.killer.l2_socket_ready():
+                        self.killer.prewarm_l2_socket(join_ms=0)
+                except Exception:
+                    pass
+
+            timer.timeout.connect(_keepalive)
+            timer.start()
+            self._npcap_keepalive_timer = timer
+        except Exception:
+            self._npcap_keepalive_timer = None
 
     def _should_poll_update_availability(self):
         import sys
@@ -2647,7 +2719,7 @@ class ZubCutApp(
                     run_command(
                         ['ping', '-n', '1', '-w', '500', router_ip],
                         shell=False,
-                        timeout=2,
+                        timeout=1,
                     )
                 except Exception:
                     pass

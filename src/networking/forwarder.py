@@ -423,7 +423,6 @@ class MitmForwarder:
             print(f"[forwarder] pkt#{self._pkt_count}: {src} -> {dst}")
 
         now = time.monotonic()
-        sz = self._packet_size_bytes(pkt)
 
         # Outbound: victim -> router/internet
         if src == self.victim['ip']:
@@ -432,6 +431,7 @@ class MitmForwarder:
                 if self._debug and self._drop_count <= 3:
                     print(f"[forwarder] DROPPING outbound: {src} -> {dst}")
                 return
+            sz = self._packet_size_bytes(pkt)
             if not self._passes_ratio(self.pass_from_victim_pct, 'out', sz):
                 self._drop_count += 1
                 return
@@ -461,6 +461,7 @@ class MitmForwarder:
                 if self._debug and self._drop_count <= 3:
                     print(f"[forwarder] DROPPING inbound: {src} -> {dst}")
                 return
+            sz = self._packet_size_bytes(pkt)
             if not self._passes_ratio(self.pass_to_victim_pct, 'in', sz):
                 self._drop_count += 1
                 return
@@ -487,6 +488,26 @@ class MitmForwarder:
         if self._debug and self._pkt_count % 100 == 0:
             print(f"[forwarder] stats: {self._pkt_count} seen, {self._drop_count} dropped, {self._fwd_count} fwd")
 
+    def _note_send_error(self, exc: BaseException) -> None:
+        """Rate-limited durable log for silent L2 send failures (compat debugging)."""
+        try:
+            import time as _time
+
+            now = _time.monotonic()
+            last = float(getattr(self, '_last_send_err_log', 0.0) or 0.0)
+            if now - last < 2.0:
+                return
+            self._last_send_err_log = now
+            from tools.zubcut_log import app_log
+
+            app_log(
+                'forwarder_send_failed',
+                iface=str(getattr(self, 'iface', '') or ''),
+                error=repr(exc),
+            )
+        except Exception:
+            pass
+
     def _send(self, pkt):
         """Send using persistent socket, prevents Windows socket exhaustion"""
         with self._send_lock:
@@ -496,8 +517,8 @@ class MitmForwarder:
                 else:
                     from scapy.all import sendp
                     sendp(pkt, iface=self.iface, verbose=0)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._note_send_error(exc)
 
     def _send_raw(self, raw: bytes):
         with self._send_lock:
@@ -508,8 +529,8 @@ class MitmForwarder:
                 else:
                     from scapy.all import sendp
                     sendp(pkt, iface=self.iface, verbose=0)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._note_send_error(exc)
 
     @staticmethod
     def _fix_checksums(pkt):
