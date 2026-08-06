@@ -205,7 +205,7 @@ class TestCollectDevicePathReadiness(unittest.TestCase):
         self.assertIn('ZC-GWMAC', codes)
         self.assertIn('ZC-ROUTE', codes)
         self.assertIn('ZC-WPA3', codes)
-        self.assertIn('ZC-IPV6', codes)
+        self.assertNotIn('ZC-IPV6', codes)
         self.assertNotEqual(worst_level(findings), 'ok')
 
     def test_skips_admin_row(self):

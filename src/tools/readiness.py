@@ -501,10 +501,10 @@ def collect_device_path_readiness(
     router_ip: str = '',
     router_mac: str = '',
     wifi_link_hints: Optional[Iterable[str]] = None,
-    lan_ipv6_enabled: Optional[bool] = None,
+    lan_ipv6_enabled: Optional[bool] = None,  # accepted for callers; not surfaced in Ready
     prefix_len: int = 24,
 ) -> list[ReadinessFinding]:
-    """Per-victim LAN path checks (no ping / no scapy). Uses cached Wi‑Fi/IPv6 hints."""
+    """Per-victim LAN path checks (no ping / no scapy). Uses cached Wi‑Fi hints."""
     findings: list[ReadinessFinding] = []
     if not isinstance(device, dict):
         return [
@@ -575,18 +575,6 @@ def collect_device_path_readiness(
         )
 
     _append_wifi_hint_findings(findings, wifi_link_hints)
-
-    if lan_ipv6_enabled is True:
-        findings.append(
-            ReadinessFinding(
-                level='warn',
-                code='ZC-IPV6',
-                message=(
-                    'IPv6 may bypass IPv4 ARP Kill on dual-stack (PS5) — '
-                    'disable IPv6 on the router/LAN if cuts feel partial.'
-                ),
-            )
-        )
 
     if not findings:
         label = str(device.get('name') or device.get('vendor') or victim_ip).strip() or victim_ip
