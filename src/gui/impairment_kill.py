@@ -992,7 +992,12 @@ class ImpairmentKillMixin:
             except Exception:
                 pass
             self.killed_devices[pk] = False
-
+        try:
+            w = getattr(self, 'kill_flows_window', None)
+            if w is not None and callable(getattr(w, 'notify_kill_state_changed', None)):
+                w.notify_kill_state_changed()
+        except Exception:
+            pass
 
     def _set_kill_button_idle_look(self):
         """Icon + compact width for Kill: OFF (matches Lag/Dupe footprint)."""

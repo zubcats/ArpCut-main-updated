@@ -976,7 +976,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self,
             main.device_window,
             main.traffic_window,
+            getattr(main, 'kill_flows_window', None),
         ]
+        _w = [w for w in _w if w is not None]
         _w.extend(
             d
             for d in (

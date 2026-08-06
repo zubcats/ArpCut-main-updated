@@ -38,8 +38,10 @@ class ImpairmentFlowNetMixin:
                 self.about_window,
                 self.device_window,
                 self.traffic_window,
+                getattr(self, 'kill_flows_window', None),
                 self.advanced_lag_settings_dialog,
             ]
+            _chrome = [w for w in _chrome if w is not None]
             for d in (
                 getattr(self, 'lag_switch_dialog', None),
                 getattr(self, 'dupe_switch_dialog', None),

@@ -29,6 +29,7 @@ from gui.device import Device
 from gui.advanced_lag_settings import AdvancedLagSettingsDialog
 from gui.logs_window import LogEntry, LogsWindow, log_color_to_hex
 from .traffic import Traffic
+from .kill_flows import KillFlowsWindow
 
 from networking.scanner import Scanner
 from networking.killer import Killer
@@ -1006,6 +1007,7 @@ class ZubCutApp(
         self.about_window = About(self, self.shell_icon)
         self.device_window = Device(self, self.shell_icon)
         self.traffic_window = Traffic(self, self.shell_icon)
+        self.kill_flows_window = KillFlowsWindow(self, self.shell_icon)
         self.logs_window = LogsWindow(self, self.shell_icon)
 
         # Connect buttons with icons and tooltips
@@ -1300,8 +1302,8 @@ class ZubCutApp(
         tray_menu.addAction(show_option)
         tray_menu.addAction(hide_option)
         tray_menu.addSeparator()
-        self.traffic_option = QAction('Traffic for Selected', self)
-        self.traffic_option.triggered.connect(self.openTraffic)
+        self.traffic_option = QAction('Kill Flows for Selected', self)
+        self.traffic_option.triggered.connect(self.openKillFlows)
         tray_menu.addAction(self.traffic_option)
         tray_menu.addAction(quit_option)
         
@@ -1333,6 +1335,7 @@ class ZubCutApp(
             self.about_window,
             self.device_window,
             self.traffic_window,
+            self.kill_flows_window,
             self.logs_window,
         ]
         if self.advanced_lag_settings_dialog is not None:
@@ -1535,28 +1538,30 @@ class ZubCutApp(
         w.raise_()
         w.activateWindow()
 
-    def openTraffic(self):
+    def openKillFlows(self):
+        """Live Kill monitor for the selected victim (in/out rates + cut vs not-in-path)."""
         if not self.tableScan.selectedItems():
             self.log('No device selected', 'red')
             return
         device = self.current_index()
-        if device['admin']:
-            self.log('Admin device', UI_LOG_RESTORE_FG)
+        if not device or device.get('admin'):
+            self.log('Select a client device (not Me/Router).', UI_LOG_RESTORE_FG)
             return
-        victim_ip = device['ip']
-        iface = self.scanner.iface.name
-        self.traffic_window.stop()
-        self.traffic_window.start(victim_ip, iface)
-        self.traffic_window.hide()
-        self.traffic_window.show()
-        self.traffic_window.setWindowState(Qt.WindowNoState)
+        try:
+            self.kill_flows_window.open_for_device(device)
+        except Exception as exc:
+            self.log(f'Kill Flows failed to open: {exc}', 'red')
+
+    # Back-compat name used by older tray wiring / docs.
+    def openTraffic(self):
+        self.openKillFlows()
 
     def table_context_menu(self, pos):
         menu = QMenu(self)
         theme_popup_menu(menu)
-        act_traffic = QAction('Traffic for Selected', self)
-        act_probe = QAction('Probe IP…', self)
-        act_traffic.triggered.connect(self.openTraffic)
+        act_traffic = QAction('Kill Flows for Selected', self)
+        act_probe = QAction('Manual IP Search…', self)
+        act_traffic.triggered.connect(self.openKillFlows)
         act_probe.triggered.connect(self.probe_ip)
         menu.addAction(act_traffic)
         menu.addAction(act_probe)
@@ -1608,10 +1613,12 @@ class ZubCutApp(
 
     def probe_ip(self):
         from PyQt5.QtWidgets import QInputDialog
-        ip, ok = QInputDialog.getText(self, 'Probe IP', 'Enter IP to probe:')
+        ip, ok = QInputDialog.getText(
+            self, 'Manual IP Search', 'Enter IP address to search for:'
+        )
         if not ok or not ip:
             return
-        self.log(f'Probing {ip}...', 'aqua')
+        self.log(f'Searching for {ip}...', 'aqua')
         hit = self.scanner.probe_ip(ip)
         if hit:
             self.log(f'Discovered {hit[0]} {hit[1]}', UI_LOG_RESTORE_FG)
@@ -1619,7 +1626,7 @@ class ZubCutApp(
         else:
             self.log(
                 'No response — no MAC in ARP for that IP yet (wrong interface, offline host, '
-                'or need Admin/Npcap for direct probe). Try a normal scan or pick the LAN adapter in Settings.',
+                'or need Admin/Npcap for a direct search). Try a normal scan or pick the LAN adapter in Settings.',
                 'red',
             )
 
@@ -2510,6 +2517,7 @@ class ZubCutApp(
             getattr(self, 'about_window', None),
             getattr(self, 'device_window', None),
             getattr(self, 'traffic_window', None),
+            getattr(self, 'kill_flows_window', None),
             getattr(self, 'logs_window', None),
         ]
         aw = QApplication.activeWindow()

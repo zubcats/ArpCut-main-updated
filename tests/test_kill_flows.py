@@ -1,0 +1,131 @@
+"""Kill Flows monitor — verdict logic + UI chrome guards."""
+from __future__ import annotations
+
+import os
+import sys
+import unittest
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SRC = os.path.join(_ROOT, 'src')
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+
+from networking.kill_flow_monitor import classify_kill_flow_verdict
+
+
+class TestKillFlowVerdict(unittest.TestCase):
+    def test_waiting_when_kill_off(self):
+        v = classify_kill_flow_verdict(
+            kill_on=False,
+            lan_reachable=True,
+            mitm_armed=False,
+            ics_path=False,
+            out_bps=0,
+            in_bps=0,
+            saw_any_packets=False,
+        )
+        self.assertEqual(v.code, 'WAITING')
+        self.assertEqual(v.level, 'idle')
+
+    def test_lan_dead(self):
+        v = classify_kill_flow_verdict(
+            kill_on=True,
+            lan_reachable=False,
+            mitm_armed=True,
+            ics_path=False,
+            out_bps=0,
+            in_bps=0,
+            saw_any_packets=False,
+        )
+        self.assertEqual(v.code, 'LAN_DEAD')
+        self.assertEqual(v.level, 'fail')
+
+    def test_not_armed(self):
+        v = classify_kill_flow_verdict(
+            kill_on=True,
+            lan_reachable=True,
+            mitm_armed=False,
+            ics_path=False,
+            out_bps=0,
+            in_bps=0,
+            saw_any_packets=False,
+        )
+        self.assertEqual(v.code, 'NOT_ARMED')
+
+    def test_leaking(self):
+        v = classify_kill_flow_verdict(
+            kill_on=True,
+            lan_reachable=True,
+            mitm_armed=True,
+            ics_path=False,
+            out_bps=100,
+            in_bps=5000,
+            saw_any_packets=True,
+        )
+        self.assertEqual(v.code, 'LEAKING')
+        self.assertEqual(v.level, 'warn')
+
+    def test_cut_attempts(self):
+        v = classify_kill_flow_verdict(
+            kill_on=True,
+            lan_reachable=True,
+            mitm_armed=True,
+            ics_path=False,
+            out_bps=2000,
+            in_bps=50,
+            saw_any_packets=True,
+        )
+        self.assertEqual(v.code, 'CUT_ATTEMPTS')
+        self.assertEqual(v.level, 'ok')
+
+    def test_in_path_no_frames(self):
+        v = classify_kill_flow_verdict(
+            kill_on=True,
+            lan_reachable=None,
+            mitm_armed=True,
+            ics_path=False,
+            out_bps=0,
+            in_bps=0,
+            saw_any_packets=False,
+        )
+        self.assertEqual(v.code, 'CUT_OR_IDLE')
+
+
+class TestKillFlowsUiChrome(unittest.TestCase):
+    def test_window_uses_auxiliary_object_name(self):
+        path = os.path.join(_SRC, 'gui', 'kill_flows.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn("setObjectName('zubcutAuxiliaryWindow')", src)
+        self.assertIn("setObjectName('centralwidget')", src)
+        self.assertIn("setObjectName('killFlowsTable')", src)
+        self.assertNotIn('#19232D', src)
+        self.assertNotIn('#1A72BB', src)
+        self.assertNotIn('#37414F', src)
+        self.assertIn('UI_TABLE_SELECTION_BG', src)
+        self.assertIn('ADMIN_DEVICE_TABLE_ROW_BG', src)
+
+    def test_aux_qss_has_kill_flows_selectors(self):
+        path = os.path.join(_SRC, 'tools', 'utils_gui.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('QTableWidget#killFlowsTable', src)
+        self.assertIn('QFrame#killFlowsStatusRow', src)
+        block = src[
+            src.index('QTableWidget#killFlowsTable') :
+            src.index('QFrame#killFlowsStatusRow') + 80
+        ]
+        self.assertNotIn('#19232D', block)
+        self.assertNotIn('#1A72BB', block)
+
+    def test_main_menu_renamed(self):
+        path = os.path.join(_SRC, 'gui', 'main.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('Kill Flows for Selected', src)
+        self.assertIn('openKillFlows', src)
+        self.assertNotIn("QAction('Traffic for Selected'", src)
+
+
+if __name__ == '__main__':
+    unittest.main()
