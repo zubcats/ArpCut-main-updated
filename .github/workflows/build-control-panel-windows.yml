@@ -20,9 +20,10 @@ on:
       - 'packaging/pyinstaller-hooks/rthook_qt_control_panel.py'
       - 'installer/ZubCut-Control-Panel.iss'
       - 'installer/Build-Control-Panel-Installer.bat'
-      - '.github/workflows/build-control-panel-windows.yml'
       - 'tests/test_control_panel.py'
       - 'tools/crash_reports_admin.py'
+      # Intentionally omit this workflow file from paths — CI filter tweaks must not
+      # republish control-panel-latest. Use workflow_dispatch to rebuild after YAML-only edits.
   workflow_dispatch:
 
 permissions:
