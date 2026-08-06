@@ -23,6 +23,212 @@ from gui.impairment_shared import (
 
 
 class ImpairmentMitmMixin:
+    def _ensure_readiness_state(self) -> None:
+        """Lazy-init readiness caches (PC + first-select-per-scan device path)."""
+        if getattr(self, '_readiness_state_ready', False):
+            return
+        self._readiness_scan_gen = int(getattr(self, '_readiness_scan_gen', 0) or 0)
+        self._readiness_device_checked: set[str] = set(
+            getattr(self, '_readiness_device_checked', None) or ()
+        )
+        self._readiness_pc_started = bool(getattr(self, '_readiness_pc_started', False))
+        self._readiness_pc_findings = list(getattr(self, '_readiness_pc_findings', None) or [])
+        self._readiness_state_ready = True
+
+    def _invalidate_device_readiness(self, *, reason: str = 'scan') -> None:
+        """New scan generation — device path checks run again on next first click per IP."""
+        self._ensure_readiness_state()
+        self._readiness_scan_gen = int(self._readiness_scan_gen) + 1
+        self._readiness_device_checked.clear()
+        try:
+            from tools.zubcut_log import app_log
+
+            app_log('readiness_device_cache_cleared', reason=str(reason), gen=self._readiness_scan_gen)
+        except Exception:
+            pass
+
+    def _schedule_pc_readiness_check(self, *, reason: str = 'startup') -> None:
+        """Background PC-only readiness (Admin/Npcap/iface/HVCI/routes). Never on Kill."""
+        if not sys.platform.startswith('win'):
+            return
+        self._ensure_readiness_state()
+        if self._readiness_pc_started:
+            return
+        self._readiness_pc_started = True
+
+        is_admin = bool(getattr(self, '_admin_elevated', False))
+        iface = getattr(getattr(self, 'scanner', None), 'iface', None)
+        iface_name = str(getattr(iface, 'name', None) or '')
+        iface_guid = str(getattr(iface, 'guid', None) or '')
+        iface_ip = str(getattr(iface, 'ip', None) or '')
+
+        def _work() -> None:
+            findings = []
+            try:
+                from tools.readiness import collect_pc_readiness
+
+                findings = collect_pc_readiness(
+                    is_admin=is_admin,
+                    iface_name=iface_name,
+                    iface_guid=iface_guid,
+                    iface_ip=iface_ip,
+                )
+            except Exception as exc:
+                try:
+                    from tools.zubcut_log import app_log
+
+                    app_log('pc_readiness_failed', error=repr(exc), reason=str(reason), exc_info=True)
+                except Exception:
+                    pass
+                return
+            self._readiness_pc_findings = list(findings)
+            try:
+                QTimer.singleShot(
+                    0,
+                    lambda fs=list(findings), r=str(reason): self._apply_readiness_findings(
+                        fs, scope='pc', reason=r
+                    ),
+                )
+            except Exception:
+                self._apply_readiness_findings(findings, scope='pc', reason=str(reason))
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-pc-readiness',
+                daemon=True,
+            ).start()
+        except Exception:
+            self._readiness_pc_started = False
+
+    def _schedule_device_readiness_check(self, device: dict) -> None:
+        """First select of this IP since last scan — path check once. Not on Kill / re-clicks."""
+        if not isinstance(device, dict) or device.get('admin'):
+            return
+        self._ensure_readiness_state()
+        victim_ip = str(device.get('ip') or '').strip()
+        if not victim_ip:
+            return
+        key = victim_ip.lower()
+        if key in self._readiness_device_checked:
+            return
+        # Mark immediately so itemClicked / restore-select cannot double-fire.
+        self._readiness_device_checked.add(key)
+        scan_gen = int(self._readiness_scan_gen)
+
+        iface = getattr(getattr(self, 'scanner', None), 'iface', None)
+        iface_ip = str(getattr(iface, 'ip', None) or '')
+        router = (
+            getattr(getattr(self, 'killer', None), 'router', None)
+            or getattr(getattr(self, 'scanner', None), 'router', None)
+            or {}
+        )
+        router_ip = str((router or {}).get('ip') or '')
+        router_mac = str((router or {}).get('mac') or '')
+        wifi_hints = list(getattr(self, '_wifi_link_hints_cached', None) or [])
+        lan_ipv6 = getattr(self, '_lan_ipv6_enabled_cached', None)
+        device_snap = {
+            'ip': victim_ip,
+            'mac': str(device.get('mac') or ''),
+            'name': str(device.get('name') or ''),
+            'vendor': str(device.get('vendor') or ''),
+            'admin': bool(device.get('admin')),
+        }
+
+        def _work() -> None:
+            if int(getattr(self, '_readiness_scan_gen', 0)) != scan_gen:
+                return
+            findings = []
+            try:
+                from tools.readiness import collect_device_path_readiness
+
+                findings = collect_device_path_readiness(
+                    device_snap,
+                    iface_ip=iface_ip,
+                    router_ip=router_ip,
+                    router_mac=router_mac,
+                    wifi_link_hints=wifi_hints,
+                    lan_ipv6_enabled=lan_ipv6 if isinstance(lan_ipv6, bool) else None,
+                )
+            except Exception as exc:
+                try:
+                    from tools.zubcut_log import app_log
+
+                    app_log(
+                        'device_readiness_failed',
+                        error=repr(exc),
+                        ip=victim_ip,
+                        exc_info=True,
+                    )
+                except Exception:
+                    pass
+                return
+            try:
+                QTimer.singleShot(
+                    0,
+                    lambda fs=list(findings), ip=victim_ip: self._apply_readiness_findings(
+                        fs, scope='device', reason=ip
+                    ),
+                )
+            except Exception:
+                self._apply_readiness_findings(findings, scope='device', reason=victim_ip)
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-device-readiness',
+                daemon=True,
+            ).start()
+        except Exception:
+            try:
+                self._readiness_device_checked.discard(key)
+            except Exception:
+                pass
+
+    def _apply_readiness_findings(
+        self, findings, *, scope: str = 'pc', reason: str = ''
+    ) -> None:
+        """Surface warn/fail on status strip; OK device path once; never auto-Clumsy."""
+        try:
+            from tools.readiness import ReadinessFinding, worst_level
+            from tools.zubcut_log import app_log
+        except Exception:
+            return
+        rows = [f for f in (findings or []) if isinstance(f, ReadinessFinding)]
+        if not rows:
+            return
+        try:
+            app_log(
+                'readiness_result',
+                scope=str(scope),
+                reason=str(reason),
+                worst=worst_level(rows),
+                findings=[f.format_line() for f in rows],
+            )
+        except Exception:
+            pass
+
+        problems = [f for f in rows if f.level in ('warn', 'fail')]
+        if problems:
+            # Worst first; keep UI to a few lines so we don't flood.
+            order = {'fail': 0, 'warn': 1, 'ok': 2}
+            problems.sort(key=lambda f: order.get(f.level, 9))
+            for f in problems[:4]:
+                color = 'red' if f.level == 'fail' else 'orange'
+                try:
+                    self.log(f'Ready: {f.format_line()}', color)
+                except Exception:
+                    pass
+            return
+
+        if scope == 'device':
+            ok = next((f for f in rows if f.level == 'ok'), None)
+            if ok is not None:
+                try:
+                    self.log(f'Ready: {ok.format_line()}', UI_LOG_RESTORE_FG)
+                except Exception:
+                    pass
+
     def _lan_mitm_stack_is_warm(self) -> bool:
         """True when home-LAN router/iface context was refreshed recently."""
         warmed_at = float(getattr(self, '_lan_impairment_warmed_at', 0.0))
@@ -70,6 +276,7 @@ class ImpairmentMitmMixin:
                 self._schedule_wifi_link_probe()
                 self._warn_vpn_iface_if_selected()
                 self._warn_controlled_folder_access_once()
+                self._schedule_pc_readiness_check(reason='lan_warm')
         except Exception as exc:
             try:
                 from tools.zubcut_log import app_log

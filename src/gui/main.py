@@ -1839,6 +1839,11 @@ class ZubCutApp(
         if not_enabled:
             self._schedule_impairment_stack_warm('select')
             self._schedule_npcap_prewarm('select')
+            # First click of this IP since last scan only — never on Kill, never every re-click.
+            try:
+                self._schedule_device_readiness_check(device)
+            except Exception:
+                pass
 
         self.btnKill.setEnabled(not_enabled)
         self.btnLagSwitch.setEnabled(not_enabled)
@@ -2226,6 +2231,10 @@ class ZubCutApp(
         self.pgbar.setVisible(False)
         if self.taskbar_progress:
             self.taskbar_progress.setVisible(False)
+        try:
+            self._invalidate_device_readiness(reason='post_scan')
+        except Exception:
+            pass
         self.processDevices()
         try:
             threading.Thread(
@@ -2236,6 +2245,10 @@ class ZubCutApp(
         except Exception:
             pass
         self._schedule_impairment_stack_warm('post_scan')
+        try:
+            self._schedule_pc_readiness_check(reason='post_scan')
+        except Exception:
+            pass
 
     def UpdateThread_Starter(self):
         """
@@ -2246,6 +2259,11 @@ class ZubCutApp(
         self._start_clumsy_inline_refresh_timer()
         self._start_impairment_warm_on_reactivate()
         self._schedule_impairment_stack_warm('startup')
+        try:
+            # PC-only readiness in background — never gates Clumsy, never on Kill.
+            QTimer.singleShot(800, lambda: self._schedule_pc_readiness_check(reason='startup'))
+        except Exception:
+            pass
 
     def UpdateThread_Reciever(self):
         """
