@@ -2256,7 +2256,8 @@ class ZubCutApp(
             pass
         self._schedule_impairment_stack_warm('post_scan')
         try:
-            self._schedule_pc_readiness_check(reason='post_scan')
+            # Refresh once with post-scan router/MAC context (enrich slot).
+            self._schedule_pc_readiness_check(reason='post_scan', force=True)
         except Exception:
             pass
 

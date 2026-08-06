@@ -1,6 +1,7 @@
 """LAN readiness checks for first-run clarity (never on Kill hot path).
 
-PC checks: Admin / Npcap / iface / forwarding / HVCI hints.
+PC checks (on open): Admin / Npcap / WinPcap leftovers / iface / forwarding /
+HVCI / WinDivert bundle / routes / gateway MAC+subnet / Wi‑Fi WPA3·MLO.
 Device-path checks: MAC / subnet / cached Wi‑Fi policy — once per IP per scan.
 
 Does not auto-enable Clumsy mode or change impairment settings.
@@ -139,14 +140,132 @@ def count_default_routes_ipv4() -> Optional[int]:
     return None
 
 
+def winpcap_leftover_present() -> bool:
+    """True when a WinPcap/Win10Pcap uninstall key is still registered (conflicts with Npcap)."""
+    if not sys.platform.startswith('win'):
+        return False
+    try:
+        import winreg
+
+        for path in (
+            r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\WinPcapInst',
+            r'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\WinPcapInst',
+            r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Win10Pcap',
+            r'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Win10Pcap',
+        ):
+            try:
+                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path)
+                winreg.CloseKey(key)
+                return True
+            except OSError:
+                continue
+    except Exception:
+        return False
+    return False
+
+
+def probe_wifi_link_hint_codes() -> list[str]:
+    """Cheap netsh Wi‑Fi hints (WPA3 / Wi‑Fi 7 MLO). Empty when not on Wi‑Fi or probe fails."""
+    if not sys.platform.startswith('win'):
+        return []
+    hints: list[str] = []
+    try:
+        from tools.utils import run_command
+        from tools.support_wifi_link_diag import (
+            parse_wlan_interfaces,
+            security_zubcut_class,
+        )
+
+        proc = run_command(
+            ['netsh', 'wlan', 'show', 'interfaces'],
+            shell=False,
+            timeout=5,
+        )
+        raw = str(getattr(proc, 'stdout', None) or '')
+        for a in parse_wlan_interfaces(raw):
+            if not bool(a.get('connected')):
+                continue
+            auth = str(a.get('authentication') or '')
+            if security_zubcut_class(auth) == 'wpa3':
+                hints.append('ZC-WPA3')
+            radio = str(a.get('radio_type') or '').lower()
+            band = str(a.get('band') or '').lower()
+            if (
+                '802.11be' in radio
+                or 'wi-fi 7' in radio
+                or 'wifi 7' in radio
+                or 'mlo' in radio
+                or 'multi-link' in radio
+                or ('6' in band and 'ghz' in band)
+            ):
+                hints.append('ZC-MLO')
+    except Exception:
+        return []
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for h in hints:
+        if h not in seen:
+            seen.add(h)
+            ordered.append(h)
+    return ordered
+
+
+def _append_wifi_hint_findings(
+    findings: list[ReadinessFinding], wifi_link_hints: Optional[Iterable[str]]
+) -> None:
+    for code in list(wifi_link_hints or []):
+        c = str(code or '').strip().upper()
+        if c == 'ZC-WPA3':
+            findings.append(
+                ReadinessFinding(
+                    level='warn',
+                    code='ZC-WPA3',
+                    message=(
+                        'WPA3 Wi‑Fi often blocks ARP MITM — set the SSID to WPA2-Personal for LAN Kill.'
+                    ),
+                )
+            )
+        elif c == 'ZC-MLO':
+            findings.append(
+                ReadinessFinding(
+                    level='warn',
+                    code='ZC-MLO',
+                    message=(
+                        'Wi‑Fi 7 MLO can break ARP MITM — disable multi-link on the router '
+                        'or use Ethernet.'
+                    ),
+                )
+            )
+        elif c == 'ZC-ISOLATION':
+            findings.append(
+                ReadinessFinding(
+                    level='warn',
+                    code='ZC-ISOLATION',
+                    message=(
+                        'AP/client isolation (guest Wi‑Fi) can block ARP MITM — '
+                        'use the main LAN SSID or Ethernet.'
+                    ),
+                )
+            )
+
+
 def collect_pc_readiness(
     *,
     is_admin: bool,
     iface_name: str = '',
     iface_guid: str = '',
     iface_ip: str = '',
+    router_ip: str = '',
+    router_mac: str = '',
+    wifi_link_hints: Optional[Iterable[str]] = None,
+    probe_wifi: bool = True,
 ) -> list[ReadinessFinding]:
-    """PC-only checks (no victim). Safe to run in a background thread."""
+    """PC-only checks (no victim). Safe to run in a background thread.
+
+    Covers the high-signal Quick-check failure modes that matter on open:
+    Admin/Npcap/iface/forwarding/HVCI/routes, plus WinPcap leftovers, WinDivert
+    bundle gaps, gateway MAC, PC↔gateway subnet, and this PC's Wi‑Fi WPA3/MLO.
+    """
     findings: list[ReadinessFinding] = []
     if not sys.platform.startswith('win'):
         return findings
@@ -219,7 +338,19 @@ def collect_pc_readiness(
                 )
             )
 
+    if winpcap_leftover_present():
+        findings.append(
+            ReadinessFinding(
+                level='fail',
+                code='ZC-WINPCAP',
+                message=(
+                    'WinPcap/Win10Pcap is still installed — uninstall it, reboot, keep Npcap only.'
+                ),
+            )
+        )
+
     name = str(iface_name or '').strip()
+    ip = str(iface_ip or '').strip()
     if not name or name == 'NULL':
         findings.append(
             ReadinessFinding(
@@ -229,7 +360,6 @@ def collect_pc_readiness(
             )
         )
     else:
-        ip = str(iface_ip or '').strip()
         if not ip or ip.startswith('169.254.'):
             findings.append(
                 ReadinessFinding(
@@ -275,6 +405,40 @@ def collect_pc_readiness(
             )
         )
 
+    try:
+        from tools.clumsy_inline import (
+            clumsy_bundle_incomplete,
+            clumsy_mode_enabled,
+            windivert_bundle_complete,
+        )
+
+        # Avoid false ZC-WD in source/dev runs: clumsy_bundle_offered() is True
+        # whenever not frozen, even with no windivert folder beside cwd.
+        if clumsy_mode_enabled() and not windivert_bundle_complete():
+            findings.append(
+                ReadinessFinding(
+                    level='warn',
+                    code='ZC-WD',
+                    message=(
+                        'Clumsy mode is ON but WinDivert is unavailable — hotspot cut '
+                        'needs Admin + a complete WinDivert bundle.'
+                    ),
+                )
+            )
+        elif getattr(sys, 'frozen', False) and clumsy_bundle_incomplete():
+            findings.append(
+                ReadinessFinding(
+                    level='warn',
+                    code='ZC-WD',
+                    message=(
+                        'WinDivert bundle missing from this install — Clumsy/hotspot cut '
+                        'will fail. Repair/reinstall ZubCut (LAN ARP Kill still works).'
+                    ),
+                )
+            )
+    except Exception:
+        pass
+
     routes = count_default_routes_ipv4()
     if routes is not None and routes > 1:
         findings.append(
@@ -287,6 +451,45 @@ def collect_pc_readiness(
                 ),
             )
         )
+
+    gw_ip = str(router_ip or '').strip()
+    gw_mac = str(router_mac or '').strip()
+    if gw_ip and ip and not ipv4_same_subnet(ip, gw_ip, 24):
+        findings.append(
+            ReadinessFinding(
+                level='fail',
+                code='ZC-ROUTE',
+                message=(
+                    f'PC ({ip}) and gateway ({gw_ip}) are not on the same subnet — '
+                    'pick the LAN router adapter in Settings (not modem/VPN).'
+                ),
+            )
+        )
+    if gw_ip:
+        try:
+            from tools.utils import mac_address_is_usable
+        except Exception:
+
+            def mac_address_is_usable(mac: Any) -> bool:  # type: ignore
+                s = str(mac or '').strip().lower().replace('-', ':')
+                return bool(s) and s not in ('00:00:00:00:00:00', 'ff:ff:ff:ff:ff:ff')
+
+        if not mac_address_is_usable(gw_mac):
+            findings.append(
+                ReadinessFinding(
+                    level='fail',
+                    code='ZC-GWMAC',
+                    message=(
+                        'Router MAC unknown — ARP MITM cannot arm. '
+                        'Check Npcap + cable/Wi‑Fi driver, then Rescan.'
+                    ),
+                )
+            )
+
+    hints = list(wifi_link_hints or [])
+    if probe_wifi and not hints:
+        hints = probe_wifi_link_hint_codes()
+    _append_wifi_hint_findings(findings, hints)
 
     return findings
 
@@ -371,40 +574,7 @@ def collect_device_path_readiness(
             )
         )
 
-    for code in list(wifi_link_hints or []):
-        c = str(code or '').strip().upper()
-        if c == 'ZC-WPA3':
-            findings.append(
-                ReadinessFinding(
-                    level='warn',
-                    code='ZC-WPA3',
-                    message=(
-                        'WPA3 Wi‑Fi often blocks ARP MITM — set the SSID to WPA2-Personal for LAN Kill.'
-                    ),
-                )
-            )
-        elif c == 'ZC-MLO':
-            findings.append(
-                ReadinessFinding(
-                    level='warn',
-                    code='ZC-MLO',
-                    message=(
-                        'Wi‑Fi 7 MLO can break ARP MITM — disable multi-link on the router '
-                        'or use Ethernet.'
-                    ),
-                )
-            )
-        elif c == 'ZC-ISOLATION':
-            findings.append(
-                ReadinessFinding(
-                    level='warn',
-                    code='ZC-ISOLATION',
-                    message=(
-                        'AP/client isolation (guest Wi‑Fi) can block ARP MITM — '
-                        'use the main LAN SSID or Ethernet.'
-                    ),
-                )
-            )
+    _append_wifi_hint_findings(findings, wifi_link_hints)
 
     if lan_ipv6_enabled is True:
         findings.append(

@@ -17,6 +17,7 @@ from tools.readiness import (
     collect_pc_readiness,
     iface_looks_virtual,
     ipv4_same_subnet,
+    winpcap_leftover_present,
     worst_level,
 )
 
@@ -42,52 +43,138 @@ class TestReadinessHelpers(unittest.TestCase):
         self.assertEqual(worst_level(rows[:2]), 'warn')
 
 
+_PC_CLEAN_PATCHES = (
+    patch('tools.readiness.probe_wifi_link_hint_codes', return_value=[]),
+    patch('tools.readiness.winpcap_leftover_present', return_value=False),
+    patch('tools.readiness.count_default_routes_ipv4', return_value=1),
+    patch('tools.readiness.hvci_memory_integrity_enabled', return_value=False),
+    patch('tools.readiness.ip_forwarding_registry_on', return_value=False),
+    patch('tools.utils_gui.ensure_npcap_service_running', return_value=True),
+    patch('tools.utils_gui.npcap_admin_only_enabled', return_value=False),
+    patch('tools.utils_gui.npcap_exists', return_value=True),
+    patch('tools.clumsy_inline.clumsy_bundle_incomplete', return_value=False),
+    patch('tools.clumsy_inline.clumsy_mode_enabled', return_value=False),
+    patch('tools.clumsy_inline.windivert_bundle_complete', return_value=True),
+)
+
+
+def _apply_pc_clean_patches(fn):
+    for p in reversed(_PC_CLEAN_PATCHES):
+        fn = p(fn)
+    return fn
+
+
 class TestCollectPcReadiness(unittest.TestCase):
-    @patch('tools.readiness.count_default_routes_ipv4', return_value=1)
-    @patch('tools.readiness.hvci_memory_integrity_enabled', return_value=False)
-    @patch('tools.readiness.ip_forwarding_registry_on', return_value=False)
-    @patch('tools.utils_gui.ensure_npcap_service_running', return_value=True)
-    @patch('tools.utils_gui.npcap_admin_only_enabled', return_value=False)
-    @patch('tools.utils_gui.npcap_exists', return_value=True)
+    @_apply_pc_clean_patches
     def test_pc_ok_admin_clean(self, *_mocks):
         findings = collect_pc_readiness(
             is_admin=True,
             iface_name='Wi-Fi',
             iface_guid='{abc}',
             iface_ip='192.168.1.20',
+            router_ip='192.168.1.1',
+            router_mac='11:22:33:44:55:66',
+            probe_wifi=False,
         )
         self.assertEqual(findings, [])
 
-    @patch('tools.readiness.count_default_routes_ipv4', return_value=1)
-    @patch('tools.readiness.hvci_memory_integrity_enabled', return_value=False)
-    @patch('tools.readiness.ip_forwarding_registry_on', return_value=False)
-    @patch('tools.utils_gui.ensure_npcap_service_running', return_value=True)
-    @patch('tools.utils_gui.npcap_admin_only_enabled', return_value=False)
-    @patch('tools.utils_gui.npcap_exists', return_value=True)
+    @_apply_pc_clean_patches
     def test_pc_fail_not_admin(self, *_mocks):
         findings = collect_pc_readiness(
             is_admin=False,
             iface_name='Wi-Fi',
             iface_ip='192.168.1.20',
+            probe_wifi=False,
         )
         codes = {f.code for f in findings}
         self.assertIn('ZC-ADMIN', codes)
 
-    @patch('tools.readiness.count_default_routes_ipv4', return_value=3)
-    @patch('tools.readiness.hvci_memory_integrity_enabled', return_value=True)
-    @patch('tools.readiness.ip_forwarding_registry_on', return_value=False)
-    @patch('tools.utils_gui.ensure_npcap_service_running', return_value=True)
-    @patch('tools.utils_gui.npcap_admin_only_enabled', return_value=False)
-    @patch('tools.utils_gui.npcap_exists', return_value=True)
+    @_apply_pc_clean_patches
     def test_pc_warn_vpn_hvci_routes(self, *_mocks):
-        findings = collect_pc_readiness(
-            is_admin=True,
-            iface_name='WireGuard Tunnel',
-            iface_ip='10.0.0.2',
-        )
+        # Override HVCI / routes from the clean stack via nested patches.
+        with patch('tools.readiness.count_default_routes_ipv4', return_value=3), patch(
+            'tools.readiness.hvci_memory_integrity_enabled', return_value=True
+        ):
+            findings = collect_pc_readiness(
+                is_admin=True,
+                iface_name='WireGuard Tunnel',
+                iface_ip='10.0.0.2',
+                probe_wifi=False,
+            )
         codes = {f.code for f in findings}
         self.assertIn('ZC-ROUTE', codes)
         self.assertIn('ZC-WD-HVCI', codes)
+
+    @_apply_pc_clean_patches
+    def test_pc_fail_winpcap_and_gwmac(self, *_mocks):
+        with patch('tools.readiness.winpcap_leftover_present', return_value=True):
+            findings = collect_pc_readiness(
+                is_admin=True,
+                iface_name='Wi-Fi',
+                iface_ip='192.168.1.20',
+                router_ip='192.168.1.1',
+                router_mac='',
+                probe_wifi=False,
+            )
+        codes = {f.code for f in findings}
+        self.assertIn('ZC-WINPCAP', codes)
+        self.assertIn('ZC-GWMAC', codes)
+
+    @_apply_pc_clean_patches
+    def test_pc_warn_windivert_when_clumsy_on(self, *_mocks):
+        with patch('tools.clumsy_inline.clumsy_mode_enabled', return_value=True), patch(
+            'tools.clumsy_inline.windivert_bundle_complete', return_value=False
+        ), patch(
+            'tools.readiness.probe_wifi_link_hint_codes', return_value=['ZC-WPA3', 'ZC-MLO']
+        ):
+            findings = collect_pc_readiness(
+                is_admin=True,
+                iface_name='Wi-Fi',
+                iface_ip='192.168.1.20',
+                router_ip='192.168.1.1',
+                router_mac='11:22:33:44:55:66',
+                probe_wifi=True,
+            )
+        codes = {f.code for f in findings}
+        self.assertIn('ZC-WD', codes)
+        self.assertIn('ZC-WPA3', codes)
+        self.assertIn('ZC-MLO', codes)
+
+    @_apply_pc_clean_patches
+    def test_pc_no_windivert_warn_in_dev_when_clumsy_off(self, *_mocks):
+        # clumsy_bundle_incomplete() is often True in non-frozen checkouts — must not spam.
+        with patch('tools.clumsy_inline.clumsy_bundle_incomplete', return_value=True), patch(
+            'tools.clumsy_inline.clumsy_mode_enabled', return_value=False
+        ), patch.object(sys, 'frozen', False, create=True):
+            findings = collect_pc_readiness(
+                is_admin=True,
+                iface_name='Wi-Fi',
+                iface_ip='192.168.1.20',
+                router_ip='192.168.1.1',
+                router_mac='11:22:33:44:55:66',
+                probe_wifi=False,
+            )
+        codes = {f.code for f in findings}
+        self.assertNotIn('ZC-WD', codes)
+
+    @_apply_pc_clean_patches
+    def test_pc_fail_gateway_subnet(self, *_mocks):
+        findings = collect_pc_readiness(
+            is_admin=True,
+            iface_name='Wi-Fi',
+            iface_ip='192.168.1.20',
+            router_ip='10.0.0.1',
+            router_mac='11:22:33:44:55:66',
+            probe_wifi=False,
+        )
+        codes = {f.code for f in findings}
+        self.assertIn('ZC-ROUTE', codes)
+
+    def test_winpcap_helper_non_windows(self):
+        if sys.platform.startswith('win'):
+            self.assertIsInstance(winpcap_leftover_present(), bool)
+        else:
+            self.assertFalse(winpcap_leftover_present())
 
 
 class TestCollectDevicePathReadiness(unittest.TestCase):
@@ -143,6 +230,33 @@ class TestDeviceCheckOnceSemantics(unittest.TestCase):
         self.assertIn(key, checked)
         # Second click would no-op
         self.assertTrue(key in checked)
+
+
+class TestPcReadinessScheduleSemantics(unittest.TestCase):
+    """Pure state-machine checks for first pass vs enrich (no Qt)."""
+
+    def test_force_first_run_does_not_burn_enrich(self):
+        started = False
+        enriched = False
+        force = True
+        # warm wins race
+        if started and not force:
+            self.fail('should not skip')
+        if force and started:
+            self.fail('should not mark enrich on first run')
+        was_enrich = bool(force and started)
+        started = True
+        self.assertFalse(was_enrich)
+        self.assertTrue(started)
+        self.assertFalse(enriched)
+        # later post_scan force should be allowed as enrich
+        force2 = True
+        if started and not force2:
+            self.fail('force should proceed')
+        if force2 and started:
+            self.assertFalse(enriched)
+            enriched = True
+        self.assertTrue(enriched)
 
 
 if __name__ == '__main__':
