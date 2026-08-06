@@ -757,6 +757,8 @@ class ZubCutApp(
     """Main ZubCut window (network scan, impairment toggles, Clumsy hotspot path)."""
     mitm_teardown_finished = pyqtSignal(str, bool, str, bool, object)
     flow_net_main_done = pyqtSignal(object)
+    # findings list + reason — emitted from PC-readiness worker; always Queued to GUI.
+    readiness_pc_done = pyqtSignal(object, str)
 
     def __init__(self, window_icon=None):
         super().__init__()
@@ -927,6 +929,7 @@ class ZubCutApp(
         self._mitm_adv_last_sched = None
         self.mitm_teardown_finished.connect(self._on_mitm_teardown_finished)
         self.flow_net_main_done.connect(self._on_flow_net_main_done)
+        self.readiness_pc_done.connect(self._deliver_pc_readiness_findings)
         self._lag_dialog_target_mac = None
         self._dupe_dialog_target_mac = None
         self.dupe_timer = QTimer(self)
@@ -2006,6 +2009,13 @@ class ZubCutApp(
     def _on_table_selection_for_row_hover(self, *_args):
         self._refresh_selected_device_impairment_plan()
         self._repaint_all_table_rows_for_hover()
+        # Keyboard / selection-model paths may not fire itemClicked — still once per IP/scan.
+        try:
+            device = self._get_selected_device()
+            if device and not device.get('admin'):
+                self._schedule_device_readiness_check(device)
+        except Exception:
+            pass
 
     def fillTableRow(self, row, device):
         texts = [

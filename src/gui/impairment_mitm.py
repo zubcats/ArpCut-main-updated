@@ -82,15 +82,18 @@ class ImpairmentMitmMixin:
                     pass
                 return
             self._readiness_pc_findings = list(findings)
+            # Never QTimer from a worker thread — use the queued signal on MainWindow.
             try:
-                QTimer.singleShot(
-                    0,
-                    lambda fs=list(findings), r=str(reason): self._apply_readiness_findings(
-                        fs, scope='pc', reason=r
-                    ),
-                )
+                sig = getattr(self, 'readiness_pc_done', None)
+                if sig is not None:
+                    sig.emit(list(findings), str(reason))
+                else:
+                    self._apply_readiness_findings(findings, scope='pc', reason=str(reason))
             except Exception:
-                self._apply_readiness_findings(findings, scope='pc', reason=str(reason))
+                try:
+                    self._apply_readiness_findings(findings, scope='pc', reason=str(reason))
+                except Exception:
+                    pass
 
         try:
             threading.Thread(
@@ -102,7 +105,12 @@ class ImpairmentMitmMixin:
             self._readiness_pc_started = False
 
     def _schedule_device_readiness_check(self, device: dict) -> None:
-        """First select of this IP since last scan — path check once. Not on Kill / re-clicks."""
+        """First select of this IP since last scan — path check once. Not on Kill / re-clicks.
+
+        Runs on the GUI thread: device-path checks are cheap (no ping/scapy). A prior
+        version scheduled QTimer from a worker thread, which often never painted the
+        status strip — and the IP stayed marked checked, so re-clicks looked dead.
+        """
         if not isinstance(device, dict) or device.get('admin'):
             return
         self._ensure_readiness_state()
@@ -114,7 +122,6 @@ class ImpairmentMitmMixin:
             return
         # Mark immediately so itemClicked / restore-select cannot double-fire.
         self._readiness_device_checked.add(key)
-        scan_gen = int(self._readiness_scan_gen)
 
         iface = getattr(getattr(self, 'scanner', None), 'iface', None)
         iface_ip = str(getattr(iface, 'ip', None) or '')
@@ -135,55 +142,40 @@ class ImpairmentMitmMixin:
             'admin': bool(device.get('admin')),
         }
 
-        def _work() -> None:
-            if int(getattr(self, '_readiness_scan_gen', 0)) != scan_gen:
-                return
-            findings = []
-            try:
-                from tools.readiness import collect_device_path_readiness
-
-                findings = collect_device_path_readiness(
-                    device_snap,
-                    iface_ip=iface_ip,
-                    router_ip=router_ip,
-                    router_mac=router_mac,
-                    wifi_link_hints=wifi_hints,
-                    lan_ipv6_enabled=lan_ipv6 if isinstance(lan_ipv6, bool) else None,
-                )
-            except Exception as exc:
-                try:
-                    from tools.zubcut_log import app_log
-
-                    app_log(
-                        'device_readiness_failed',
-                        error=repr(exc),
-                        ip=victim_ip,
-                        exc_info=True,
-                    )
-                except Exception:
-                    pass
-                return
-            try:
-                QTimer.singleShot(
-                    0,
-                    lambda fs=list(findings), ip=victim_ip: self._apply_readiness_findings(
-                        fs, scope='device', reason=ip
-                    ),
-                )
-            except Exception:
-                self._apply_readiness_findings(findings, scope='device', reason=victim_ip)
-
         try:
-            threading.Thread(
-                target=safe_daemon_target(_work),
-                name='zubcut-device-readiness',
-                daemon=True,
-            ).start()
-        except Exception:
+            from tools.readiness import collect_device_path_readiness
+            from tools.zubcut_log import app_log
+
+            app_log('device_readiness_start', ip=victim_ip)
+            findings = collect_device_path_readiness(
+                device_snap,
+                iface_ip=iface_ip,
+                router_ip=router_ip,
+                router_mac=router_mac,
+                wifi_link_hints=wifi_hints,
+                lan_ipv6_enabled=lan_ipv6 if isinstance(lan_ipv6, bool) else None,
+            )
+            self._apply_readiness_findings(findings, scope='device', reason=victim_ip)
+        except Exception as exc:
             try:
                 self._readiness_device_checked.discard(key)
             except Exception:
                 pass
+            try:
+                from tools.zubcut_log import app_log
+
+                app_log(
+                    'device_readiness_failed',
+                    error=repr(exc),
+                    ip=victim_ip,
+                    exc_info=True,
+                )
+            except Exception:
+                pass
+
+    def _deliver_pc_readiness_findings(self, findings, reason: str = '') -> None:
+        """GUI-thread slot for PC readiness (queued from background worker)."""
+        self._apply_readiness_findings(findings, scope='pc', reason=str(reason or ''))
 
     def _apply_readiness_findings(
         self, findings, *, scope: str = 'pc', reason: str = ''
