@@ -54,6 +54,10 @@ jobs:
   build-windows:
     runs-on: windows-latest
     timeout-minutes: 45
+    # Explicit job scope — repo default was briefly read-only and blocked
+    # softprops updates to rolling tags (stable-latest / experimental-latest).
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
 
@@ -181,6 +185,7 @@ jobs:
         if: ${{ github.event.inputs.release_channel == 'main' || github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && github.ref_name == 'main') }}
         uses: softprops/action-gh-release@v2.6.2
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: stable-latest
           name: ZubCut
           target_commitish: ${{ github.sha }}
@@ -189,13 +194,12 @@ jobs:
           files: |
             output/ZubCut-Setup.exe
             output/build-info.json
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish rolling experimental release
         if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.event.inputs.release_channel != 'stable' && github.ref_name == 'experimental') }}
         uses: softprops/action-gh-release@v2.6.2
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: experimental-latest
           name: ZubCut (experimental)
           target_commitish: ${{ github.sha }}
@@ -204,5 +208,3 @@ jobs:
           files: |
             output/ZubCut-Setup-experimental.exe
             output/build-info.json
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
