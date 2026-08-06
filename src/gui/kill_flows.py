@@ -220,33 +220,91 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
     def _device_ip(self) -> str:
         return str((self._device or {}).get('ip') or '').strip()
 
-    def _kill_on(self) -> bool:
+    def _live_device(self) -> Optional[dict]:
+        """Prefer the live scan-table row (profile keys match Kill bookkeeping)."""
+        snap = self._device
+        if not isinstance(snap, dict):
+            return None
         app = self.parent
-        dev = self._device
-        if not app or not dev:
-            return False
+        ip = str(snap.get('ip') or '').strip()
+        mac = str(snap.get('mac') or '').strip()
         try:
-            return bool(
-                app._kill_ui_shows_on(dev.get('mac'), dev.get('ip'), dev)
-            )
+            devices = list(getattr(getattr(app, 'scanner', None), 'devices', None) or [])
         except Exception:
+            devices = []
+        for d in devices:
+            if not isinstance(d, dict) or d.get('admin'):
+                continue
+            if ip and str(d.get('ip') or '').strip() == ip:
+                return d
+        for d in devices:
+            if not isinstance(d, dict) or d.get('admin'):
+                continue
+            if mac and str(d.get('mac') or '').strip().lower() == mac.lower():
+                return d
+        return snap
+
+    def _kill_on(self) -> bool:
+        """True when Kill is intended ON or the cut backend is live for this device.
+
+        Do not rely only on ``killed_devices`` — ``_sync_killed_devices`` can clear the
+        profile for a beat before ``killer.killed`` is populated, which made this
+        window flash "Waiting for Kill" during a real short Kill.
+        """
+        app = self.parent
+        dev = self._live_device()
+        if not app or not isinstance(dev, dict):
             return False
+        mac = str(dev.get('mac') or '').strip()
+        try:
+            if callable(getattr(app, '_kill_toggle_pending_for_mac', None)):
+                if app._kill_toggle_pending_for_mac(mac):
+                    return True
+        except Exception:
+            pass
+        try:
+            if app._kill_ui_shows_on(mac, dev.get('ip'), dev):
+                return True
+        except Exception:
+            pass
+        try:
+            if callable(getattr(app, '_any_explicit_kill_profile_for_mac', None)):
+                if app._any_explicit_kill_profile_for_mac(mac):
+                    return True
+        except Exception:
+            pass
+        try:
+            if callable(getattr(app, '_explicit_kill_backend_live', None)):
+                if app._explicit_kill_backend_live(mac, dev):
+                    return True
+        except Exception:
+            pass
+        return self._mitm_armed()
 
     def _mitm_armed(self) -> bool:
         app = self.parent
-        mac = str((self._device or {}).get('mac') or '').strip()
+        dev = self._live_device() or self._device or {}
+        mac = str(dev.get('mac') or '').strip()
         if not app or not mac:
             return False
         try:
-            killed = getattr(getattr(app, 'killer', None), 'killed', None) or {}
-            if mac in killed:
-                return True
+            if callable(getattr(app, '_killer_mac_key', None)):
+                if app._killer_mac_key(mac):
+                    return True
         except Exception:
             pass
         try:
             from tools.utils import good_mac
 
             mac_n = good_mac(mac)
+            killed = getattr(getattr(app, 'killer', None), 'killed', None) or {}
+            for key in killed:
+                if good_mac(str(key)) == mac_n:
+                    return True
+            forwarders = getattr(getattr(app, 'killer', None), 'forwarders', None) or {}
+            for key in forwarders:
+                if good_mac(str(key)) == mac_n:
+                    return True
             ics = getattr(app, '_ics_kill_profile_macs', None)
             if isinstance(ics, set) and (mac in ics or mac_n in ics):
                 return True

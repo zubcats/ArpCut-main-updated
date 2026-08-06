@@ -73,6 +73,16 @@ class ImpairmentKillMixin:
                 self._updatePercentCutButtonState()
             self._updateKillButtonState(fast=True)
             self._sync_inline_flow_controls_enabled()
+            if kind in ('kill', 'all'):
+                # Kill Flows must see ON/OFF on the same click — don't wait for sync.
+                try:
+                    w = getattr(self, 'kill_flows_window', None)
+                    if w is not None and callable(
+                        getattr(w, 'notify_kill_state_changed', None)
+                    ):
+                        w.notify_kill_state_changed()
+                except Exception:
+                    pass
         if device is not None:
             self._repaint_device_table_rows(device)
         self._flush_gui_events()

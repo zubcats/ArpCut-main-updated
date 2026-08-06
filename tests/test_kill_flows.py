@@ -126,6 +126,15 @@ class TestKillFlowsUiChrome(unittest.TestCase):
         self.assertIn('openKillFlows', src)
         self.assertNotIn("QAction('Traffic for Selected'", src)
 
+    def test_kill_on_uses_backend_not_only_profile(self):
+        path = os.path.join(_SRC, 'gui', 'kill_flows.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        fn = src[src.index('def _kill_on') : src.index('def _mitm_armed')]
+        self.assertIn('_explicit_kill_backend_live', fn)
+        self.assertIn('_kill_toggle_pending_for_mac', fn)
+        self.assertIn('_live_device', fn)
+
 
 if __name__ == '__main__':
     unittest.main()
