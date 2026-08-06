@@ -14,6 +14,7 @@ ERROR_CODES: dict[str, str] = {
     'ZC-NPCAP': 'Npcap missing or not loadable — install Npcap (WinPcap API-compatible mode).',
     'ZC-NPCAP-SVC': 'Npcap driver service is not running — reboot or reinstall Npcap.',
     'ZC-NPCAP-ADMIN': 'Npcap AdminOnly is ON — run ZubCut as Administrator, or reinstall Npcap without AdminOnly.',
+    'ZC-WINPCAP': 'WinPcap/Win10Pcap is still installed — uninstall it, reboot, keep Npcap only.',
     'ZC-ADMIN': 'Administrator rights required — relaunch ZubCut elevated (UAC).',
     'ZC-IFACE': 'Selected adapter is missing or has no usable IPv4 — pick a live NIC in Settings.',
     'ZC-ROUTE': 'Victim is not on a local L2 path from this PC — check Wi‑Fi/Ethernet handoff.',

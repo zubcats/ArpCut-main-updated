@@ -32,7 +32,15 @@ class ImpairmentMitmMixin:
             getattr(self, '_readiness_device_checked', None) or ()
         )
         self._readiness_pc_started = bool(getattr(self, '_readiness_pc_started', False))
+        self._readiness_pc_enriched = bool(getattr(self, '_readiness_pc_enriched', False))
+        self._readiness_pc_in_flight = bool(getattr(self, '_readiness_pc_in_flight', False))
+        self._readiness_pc_enrich_pending = bool(
+            getattr(self, '_readiness_pc_enrich_pending', False)
+        )
         self._readiness_pc_findings = list(getattr(self, '_readiness_pc_findings', None) or [])
+        self._readiness_pc_lines_shown = set(
+            getattr(self, '_readiness_pc_lines_shown', None) or ()
+        )
         self._readiness_state_ready = True
 
     def _invalidate_device_readiness(self, *, reason: str = 'scan') -> None:
@@ -47,53 +55,100 @@ class ImpairmentMitmMixin:
         except Exception:
             pass
 
-    def _schedule_pc_readiness_check(self, *, reason: str = 'startup') -> None:
-        """Background PC-only readiness (Admin/Npcap/iface/HVCI/routes). Never on Kill."""
+    def _schedule_pc_readiness_check(
+        self, *, reason: str = 'startup', force: bool = False
+    ) -> None:
+        """Background PC readiness (Npcap/WinPcap/WinDivert/GW/Wi‑Fi). Never on Kill.
+
+        ``force=True`` allows one enrichment pass after the first completed run
+        (LAN warm / post-scan with router MAC). If warm wins the race and is the
+        first run, it does not burn the enrich slot.
+        """
         if not sys.platform.startswith('win'):
             return
         self._ensure_readiness_state()
-        if self._readiness_pc_started:
+        if getattr(self, '_readiness_pc_in_flight', False):
+            # Startup check still running — queue one enrich after it lands.
+            if force and not bool(getattr(self, '_readiness_pc_enriched', False)):
+                self._readiness_pc_enrich_pending = True
             return
+        if self._readiness_pc_started and not force:
+            return
+        if force and self._readiness_pc_started:
+            if bool(getattr(self, '_readiness_pc_enriched', False)):
+                return
+            self._readiness_pc_enriched = True
+            self._readiness_pc_enrich_pending = False
+        # force + not started => first pass (do not mark enriched)
+        was_enrich = bool(force and self._readiness_pc_started)
         self._readiness_pc_started = True
+        self._readiness_pc_in_flight = True
 
         is_admin = bool(getattr(self, '_admin_elevated', False))
         iface = getattr(getattr(self, 'scanner', None), 'iface', None)
         iface_name = str(getattr(iface, 'name', None) or '')
         iface_guid = str(getattr(iface, 'guid', None) or '')
         iface_ip = str(getattr(iface, 'ip', None) or '')
+        router = (
+            getattr(getattr(self, 'killer', None), 'router', None)
+            or getattr(getattr(self, 'scanner', None), 'router', None)
+            or {}
+        )
+        router_ip = str((router or {}).get('ip') or '')
+        router_mac = str((router or {}).get('mac') or '')
+        wifi_hints = list(getattr(self, '_wifi_link_hints_cached', None) or [])
 
         def _work() -> None:
             findings = []
             try:
-                from tools.readiness import collect_pc_readiness
-
-                findings = collect_pc_readiness(
-                    is_admin=is_admin,
-                    iface_name=iface_name,
-                    iface_guid=iface_guid,
-                    iface_ip=iface_ip,
-                )
-            except Exception as exc:
                 try:
-                    from tools.zubcut_log import app_log
+                    from tools.readiness import collect_pc_readiness
 
-                    app_log('pc_readiness_failed', error=repr(exc), reason=str(reason), exc_info=True)
+                    findings = collect_pc_readiness(
+                        is_admin=is_admin,
+                        iface_name=iface_name,
+                        iface_guid=iface_guid,
+                        iface_ip=iface_ip,
+                        router_ip=router_ip,
+                        router_mac=router_mac,
+                        wifi_link_hints=wifi_hints,
+                        # Probe Wi‑Fi in-thread when cache is empty (open-time signal).
+                        probe_wifi=not bool(wifi_hints),
+                    )
+                except Exception as exc:
+                    try:
+                        from tools.zubcut_log import app_log
+
+                        app_log(
+                            'pc_readiness_failed',
+                            error=repr(exc),
+                            reason=str(reason),
+                            exc_info=True,
+                        )
+                    except Exception:
+                        pass
+                    findings = []
+                # Keep Wi‑Fi hints for device-path readiness / Kill arm messages.
+                try:
+                    if not wifi_hints:
+                        probed = [
+                            str(f.code)
+                            for f in findings
+                            if getattr(f, 'code', '') in ('ZC-WPA3', 'ZC-MLO', 'ZC-ISOLATION')
+                        ]
+                        self._wifi_link_hints_cached = probed
                 except Exception:
                     pass
-                return
-            self._readiness_pc_findings = list(findings)
-            # Never QTimer from a worker thread — use the queued signal on MainWindow.
-            try:
-                sig = getattr(self, 'readiness_pc_done', None)
-                if sig is not None:
-                    sig.emit(list(findings), str(reason))
-                else:
-                    self._apply_readiness_findings(findings, scope='pc', reason=str(reason))
-            except Exception:
+                self._readiness_pc_findings = list(findings)
+                # Queued to GUI thread — never apply Ready lines from the worker.
                 try:
-                    self._apply_readiness_findings(findings, scope='pc', reason=str(reason))
+                    sig = getattr(self, 'readiness_pc_done', None)
+                    if sig is not None:
+                        sig.emit(list(findings), str(reason))
                 except Exception:
                     pass
+            finally:
+                self._readiness_pc_in_flight = False
 
         try:
             threading.Thread(
@@ -103,6 +158,9 @@ class ImpairmentMitmMixin:
             ).start()
         except Exception:
             self._readiness_pc_started = False
+            self._readiness_pc_in_flight = False
+            if was_enrich:
+                self._readiness_pc_enriched = False
 
     def _schedule_device_readiness_check(self, device: dict) -> None:
         """First select of this IP since last scan — path check once. Not on Kill / re-clicks.
@@ -175,7 +233,42 @@ class ImpairmentMitmMixin:
 
     def _deliver_pc_readiness_findings(self, findings, reason: str = '') -> None:
         """GUI-thread slot for PC readiness (queued from background worker)."""
-        self._apply_readiness_findings(findings, scope='pc', reason=str(reason or ''))
+        rows = list(findings or [])
+        reason_s = str(reason or '')
+        # Follow-up passes: only surface new lines (ZC-ROUTE is reused for different issues).
+        if reason_s in ('lan_warm', 'post_scan'):
+            shown = set(getattr(self, '_readiness_pc_lines_shown', None) or ())
+            fresh = []
+            for f in rows:
+                try:
+                    line = f.format_line() if hasattr(f, 'format_line') else str(f)
+                except Exception:
+                    line = str(getattr(f, 'message', '') or f)
+                if line and line not in shown:
+                    fresh.append(f)
+            rows = fresh
+        self._apply_readiness_findings(rows, scope='pc', reason=reason_s)
+        try:
+            shown = set(getattr(self, '_readiness_pc_lines_shown', None) or ())
+            for f in findings or []:
+                try:
+                    line = f.format_line() if hasattr(f, 'format_line') else str(f)
+                except Exception:
+                    line = str(getattr(f, 'message', '') or '')
+                if line:
+                    shown.add(line)
+            self._readiness_pc_lines_shown = shown
+        except Exception:
+            pass
+        # If warm/post-scan asked to enrich while the first pass was still in flight.
+        try:
+            if getattr(self, '_readiness_pc_enrich_pending', False) and not getattr(
+                self, '_readiness_pc_enriched', False
+            ):
+                self._readiness_pc_enrich_pending = False
+                self._schedule_pc_readiness_check(reason='lan_warm', force=True)
+        except Exception:
+            pass
 
     def _apply_readiness_findings(
         self, findings, *, scope: str = 'pc', reason: str = ''
@@ -268,7 +361,8 @@ class ImpairmentMitmMixin:
                 self._schedule_wifi_link_probe()
                 self._warn_vpn_iface_if_selected()
                 self._warn_controlled_folder_access_once()
-                self._schedule_pc_readiness_check(reason='lan_warm')
+                # Enrich after router MAC / topology warm (one force pass).
+                self._schedule_pc_readiness_check(reason='lan_warm', force=True)
         except Exception as exc:
             try:
                 from tools.zubcut_log import app_log
