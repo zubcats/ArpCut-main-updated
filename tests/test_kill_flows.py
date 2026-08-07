@@ -90,6 +90,49 @@ class TestKillFlowVerdict(unittest.TestCase):
         )
         self.assertEqual(v.code, 'CUT_OR_IDLE')
 
+    def test_arming_while_pending(self):
+        v = classify_kill_flow_verdict(
+            kill_on=True,
+            lan_reachable=True,
+            mitm_armed=False,
+            ics_path=False,
+            out_bps=0,
+            in_bps=0,
+            saw_any_packets=False,
+            kill_pending=True,
+        )
+        self.assertEqual(v.code, 'ARMING')
+
+    def test_ended_session_keeps_cut_read(self):
+        v = classify_kill_flow_verdict(
+            kill_on=False,
+            lan_reachable=True,
+            mitm_armed=False,
+            ics_path=False,
+            out_bps=0,
+            in_bps=0,
+            saw_any_packets=True,
+            out_bytes=3400,
+            in_bytes=0,
+            session_had_kill=True,
+        )
+        self.assertEqual(v.code, 'ENDED_CUT')
+        self.assertEqual(v.level, 'ok')
+
+    def test_cut_from_totals_when_rates_zero(self):
+        v = classify_kill_flow_verdict(
+            kill_on=True,
+            lan_reachable=True,
+            mitm_armed=True,
+            ics_path=False,
+            out_bps=0,
+            in_bps=0,
+            saw_any_packets=True,
+            out_bytes=3400,
+            in_bytes=0,
+        )
+        self.assertEqual(v.code, 'CUT_ATTEMPTS')
+
 
 class TestKillFlowsUiChrome(unittest.TestCase):
     def test_window_uses_auxiliary_object_name(self):
@@ -134,6 +177,16 @@ class TestKillFlowsUiChrome(unittest.TestCase):
         self.assertIn('_explicit_kill_backend_live', fn)
         self.assertIn('_kill_toggle_pending_for_mac', fn)
         self.assertIn('_live_device', fn)
+
+    def test_open_syncs_after_show(self):
+        path = os.path.join(_SRC, 'gui', 'kill_flows.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        fn = src[src.index('def open_for_device') : src.index('def notify_kill_state_changed')]
+        show_at = fn.index('self.show()')
+        sync_at = fn.index('self._sync_sniff_for_state()')
+        self.assertLess(show_at, sync_at)
+        self.assertIn('self._monitor_open = True', fn)
 
 
 if __name__ == '__main__':

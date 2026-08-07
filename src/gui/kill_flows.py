@@ -75,6 +75,8 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
         self._lan_probe_in_flight = False
         self._sniff_iface = ''
         self._want_sniff = False
+        self._monitor_open = False
+        self._session_had_kill = False
 
         central = QWidget(self)
         central.setObjectName('centralwidget')
@@ -185,28 +187,38 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
         )
         self.lbl_device.setText(f'{label}  ·  {self._device["ip"]}')
         self._lan_reachable = None
-        self._sync_sniff_for_state()
+        self._session_had_kill = False
+        # Reset prior session totals when (re)opening for a device.
+        try:
+            self._sniffer.stop()
+        except Exception:
+            pass
+        self._monitor_open = True
         if not self._timer.isActive():
             self._timer.start()
         if not self._lan_timer.isActive():
             self._lan_timer.start()
-        self._schedule_lan_probe()
-        self._refresh_ui()
-        self.hide()
         self.show()
         self.setWindowState(Qt.WindowNoState)
         self.raise_()
         self.activateWindow()
+        # Must sync AFTER show — sniff gate used to require isVisible() and skipped open.
+        self._sync_sniff_for_state()
+        self._schedule_lan_probe()
+        self._refresh_ui()
 
     def notify_kill_state_changed(self) -> None:
         """Called from main when Kill bookkeeping changes (never blocks Kill)."""
-        if not self.isVisible() or not self._device:
+        if not self._monitor_open or not self._device:
             return
+        if self._kill_on():
+            self._session_had_kill = True
         self._sync_sniff_for_state()
         self._refresh_ui()
 
     def _stop_monitoring(self) -> None:
         self._want_sniff = False
+        self._monitor_open = False
         try:
             self._timer.stop()
             self._lan_timer.stop()
@@ -344,13 +356,33 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
             return guid
         return name if name != 'NULL' else ''
 
+    def _kill_pending(self) -> bool:
+        app = self.parent
+        dev = self._live_device() or self._device or {}
+        mac = str(dev.get('mac') or '').strip()
+        if not app or not mac:
+            return False
+        try:
+            return bool(app._kill_toggle_pending_for_mac(mac))
+        except Exception:
+            return False
+
     def _sync_sniff_for_state(self) -> None:
         vip = self._device_ip()
         iface = self._capture_iface()
-        want = bool(self.isVisible() and vip and self._kill_on() and iface)
+        kill_on = self._kill_on()
+        if kill_on:
+            self._session_had_kill = True
+        # Use monitor_open — isVisible() is false during open_for_device before show().
+        want = bool(self._monitor_open and vip and kill_on and iface)
         self._want_sniff = want
         if not want:
-            self._sniffer.stop()
+            # Stop capture on Kill OFF but keep counters for "Kill ended" verdict.
+            if self._sniffer.snapshot().get('running'):
+                try:
+                    self._sniffer.stop()
+                except Exception:
+                    pass
             self._sniff_iface = ''
             return
         if (
@@ -363,7 +395,7 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
         self._sniffer.start(vip, iface, on_update=lambda: self._ui_tick.emit())
 
     def _schedule_lan_probe(self) -> None:
-        if not self.isVisible() or not self._device_ip():
+        if not self._monitor_open or not self._device_ip():
             return
         if self._lan_probe_in_flight:
             return
@@ -399,7 +431,7 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
         self._refresh_ui()
 
     def _on_timer(self) -> None:
-        if not self.isVisible():
+        if not self._monitor_open:
             return
         self._sync_sniff_for_state()
         self._refresh_ui()
@@ -420,6 +452,8 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
     def _refresh_ui(self) -> None:
         snap = self._sniffer.snapshot()
         kill_on = self._kill_on()
+        if kill_on:
+            self._session_had_kill = True
         mitm = self._mitm_armed()
         ics = self._ics_path()
         verdict = classify_kill_flow_verdict(
@@ -430,6 +464,10 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
             out_bps=float(snap.get('out_bps') or 0.0),
             in_bps=float(snap.get('in_bps') or 0.0),
             saw_any_packets=bool(snap.get('saw_any')),
+            kill_pending=self._kill_pending(),
+            out_bytes=int(snap.get('out_bytes') or 0),
+            in_bytes=int(snap.get('in_bytes') or 0),
+            session_had_kill=bool(self._session_had_kill),
         )
         self._apply_verdict_style(verdict)
 

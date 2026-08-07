@@ -33,9 +33,44 @@ def classify_kill_flow_verdict(
     out_bps: float,
     in_bps: float,
     saw_any_packets: bool,
+    kill_pending: bool = False,
+    out_bytes: int = 0,
+    in_bytes: int = 0,
+    session_had_kill: bool = False,
 ) -> KillFlowVerdict:
     """Differentiate full cut vs not-in-path vs leak (for Kill monitor UI)."""
     if not kill_on:
+        # Keep last-session read after a short Kill instead of snapping back to Waiting.
+        if session_had_kill and (saw_any_packets or out_bytes > 0 or in_bytes > 0):
+            if in_bytes <= 0 and out_bytes > 0:
+                return KillFlowVerdict(
+                    code='ENDED_CUT',
+                    label='Kill ended — looked like a full cut',
+                    detail=(
+                        f'Last session: {_fmt_session_bytes(out_bytes)} out, '
+                        f'{_fmt_session_bytes(in_bytes)} in (attempts, no replies).'
+                    ),
+                    level='ok',
+                )
+            if in_bytes > 0 and in_bytes >= max(1500, out_bytes // 2):
+                return KillFlowVerdict(
+                    code='ENDED_LEAK',
+                    label='Kill ended — had return traffic',
+                    detail=(
+                        f'Last session: {_fmt_session_bytes(out_bytes)} out, '
+                        f'{_fmt_session_bytes(in_bytes)} in — possible leak while armed.'
+                    ),
+                    level='warn',
+                )
+            return KillFlowVerdict(
+                code='ENDED',
+                label='Kill ended',
+                detail=(
+                    f'Last session totals: {_fmt_session_bytes(out_bytes)} out, '
+                    f'{_fmt_session_bytes(in_bytes)} in. Turn Kill ON again to watch live.'
+                ),
+                level='idle',
+            )
         return KillFlowVerdict(
             code='WAITING',
             label='Waiting for Kill',
@@ -53,6 +88,13 @@ def classify_kill_flow_verdict(
 
     in_path = bool(mitm_armed or ics_path)
     if not in_path:
+        if kill_pending:
+            return KillFlowVerdict(
+                code='ARMING',
+                label='Arming Kill…',
+                detail='Kill clicked — waiting for MITM/hotspot backend to arm.',
+                level='idle',
+            )
         return KillFlowVerdict(
             code='NOT_ARMED',
             label='Kill ON — not in path',
@@ -69,6 +111,20 @@ def classify_kill_flow_verdict(
         )
 
     if out_bps >= _ATTEMPT_OUT_BPS and in_bps < _LEAK_IN_BPS * 0.35:
+        return KillFlowVerdict(
+            code='CUT_ATTEMPTS',
+            label='Full cut (attempts, no replies)',
+            detail='Device→net attempts seen; almost no return path — classic blackhole Kill.',
+            level='ok',
+        )
+
+    # Prefer lifetime totals during a short Kill (rates can already be 0 B/s).
+    if (
+        saw_any_packets
+        and out_bytes > 0
+        and in_bytes <= max(64, out_bytes // 20)
+        and in_bps < _LEAK_IN_BPS * 0.35
+    ):
         return KillFlowVerdict(
             code='CUT_ATTEMPTS',
             label='Full cut (attempts, no replies)',
@@ -101,6 +157,15 @@ def classify_kill_flow_verdict(
         detail='Collecting live rates…',
         level='idle',
     )
+
+
+def _fmt_session_bytes(n: int) -> str:
+    n = int(n or 0)
+    if n < 1024:
+        return f'{n} B'
+    if n < 1024 * 1024:
+        return f'{n / 1024:.1f} KB'
+    return f'{n / (1024 * 1024):.2f} MB'
 
 
 class KillFlowSniffer:
