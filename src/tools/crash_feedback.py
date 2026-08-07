@@ -84,6 +84,13 @@ def _crash_log_path(ref: str) -> str:
 
 def _write_report(ref: str, body: str) -> str:
     path = _crash_log_path(ref)
+    zc_line = ''
+    try:
+        from tools.user_errors import format_zc_codes_header
+
+        zc_line = format_zc_codes_header()
+    except Exception:
+        zc_line = ''
     head = [
         f'reference={ref}',
         f'time_utc={datetime.now(timezone.utc).isoformat()}',
@@ -91,6 +98,7 @@ def _write_report(ref: str, body: str) -> str:
         f'frozen={getattr(sys, "frozen", False)}',
         f'executable={sys.executable!r}',
         f'python={sys.version.splitlines()[0]!r}',
+        f'zc_codes={zc_line or "none"}',
         '',
     ]
     with open(path, 'w', encoding='utf-8', errors='replace') as fp:

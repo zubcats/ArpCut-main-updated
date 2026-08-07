@@ -60,6 +60,11 @@ class TestControlPanelSource(unittest.TestCase):
         self.assertIn('QSizePolicy.Ignored', src)
         self.assertIn("Refresh failed. See details in the popup.", src)
         self.assertIn('self.lblStatus.setToolTip', src)
+        self.assertIn('ZC codes', src)
+        self.assertIn('ZC code legend', src)
+        self.assertIn('zc_codes', src)
+        self.assertNotIn('#19232D', src)
+        self.assertNotIn('#1A72BB', src)
 
 
 class TestWorkerHttpHeaders(unittest.TestCase):

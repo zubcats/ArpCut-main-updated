@@ -165,6 +165,47 @@ async function enforceCrashRateLimit(kv, ip) {
   return { ok: true };
 }
 
+function normalizeZcCodes(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw.slice(0, 32)) {
+    if (!item || typeof item !== 'object') continue;
+    const code = String(item.code || '')
+      .trim()
+      .toUpperCase()
+      .slice(0, 40);
+    if (!code.startsWith('ZC-')) continue;
+    out.push({
+      code,
+      level: String(item.level || '')
+        .trim()
+        .toLowerCase()
+        .slice(0, 12),
+      source: String(item.source || '').trim().slice(0, 40),
+      message: String(item.message || '').trim().slice(0, 240),
+    });
+  }
+  return out;
+}
+
+function normalizeZcCatalog(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw.slice(0, 64)) {
+    if (!item || typeof item !== 'object') continue;
+    const code = String(item.code || '')
+      .trim()
+      .toUpperCase()
+      .slice(0, 40);
+    if (!code.startsWith('ZC-')) continue;
+    out.push({
+      code,
+      message: String(item.message || '').trim().slice(0, 240),
+    });
+  }
+  return out;
+}
+
 async function storeCrashReport(kv, report) {
   const ref = normalizeCrashRef(report?.ref);
   if (!ref) return { ok: false, error: 'Invalid crash reference.' };
@@ -178,6 +219,8 @@ async function storeCrashReport(kv, report) {
   const licenseId = String(report?.license_id || report?.licenseId || '')
     .trim()
     .slice(0, 80);
+  const zcCodes = normalizeZcCodes(report?.zc_codes);
+  const zcCatalog = normalizeZcCatalog(report?.zc_catalog);
   const payload = {
     ref,
     time_utc: String(report?.time_utc || new Date().toISOString()),
@@ -191,6 +234,8 @@ async function storeCrashReport(kv, report) {
     license_id: licenseId,
     exc_type: String(report?.exc_type || '').slice(0, 120),
     exc_message: String(report?.exc_message || '').slice(0, 500),
+    zc_codes: zcCodes,
+    zc_catalog: zcCatalog,
     body: body.length > CRASH_BODY_MAX ? body.slice(0, CRASH_BODY_MAX) : body,
     received_at: new Date().toISOString(),
   };
@@ -207,6 +252,7 @@ async function storeCrashReport(kv, report) {
     license_id: payload.license_id,
     exc_type: payload.exc_type,
     exc_message: payload.exc_message,
+    zc_codes: zcCodes.map((c) => c.code).filter(Boolean).slice(0, 16),
     received_at: payload.received_at,
   };
   const filtered = index.filter((e) => e && e.ref !== ref);
