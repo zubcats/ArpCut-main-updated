@@ -59,7 +59,6 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
     """Auxiliary window: monitor selected victim while Kill is on."""
 
     lan_probe_done = pyqtSignal(object)  # Optional[bool]
-    _ui_tick = pyqtSignal()
 
     def __init__(self, parent, icon):
         super().__init__()
@@ -77,6 +76,7 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
         self._want_sniff = False
         self._monitor_open = False
         self._session_had_kill = False
+        self._state_dirty = False
 
         central = QWidget(self)
         central.setObjectName('centralwidget')
@@ -157,14 +157,14 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
         self.resize(720, 480)
 
         self.lan_probe_done.connect(self._on_lan_probe_done)
-        self._ui_tick.connect(self._refresh_ui)
 
         self._timer = QTimer(self)
+        # UI-only poll — never do sniffer join / arping on the Kill click path.
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._on_timer)
 
         self._lan_timer = QTimer(self)
-        self._lan_timer.setInterval(2500)
+        self._lan_timer.setInterval(4000)
         self._lan_timer.timeout.connect(self._schedule_lan_probe)
 
     def closeEvent(self, event):
@@ -190,10 +190,11 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
         self._session_had_kill = False
         # Reset prior session totals when (re)opening for a device.
         try:
-            self._sniffer.stop()
+            self._sniffer.stop(join=False)
         except Exception:
             pass
         self._monitor_open = True
+        self._state_dirty = True
         if not self._timer.isActive():
             self._timer.start()
         if not self._lan_timer.isActive():
@@ -202,30 +203,27 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
         self.setWindowState(Qt.WindowNoState)
         self.raise_()
         self.activateWindow()
-        # Must sync AFTER show — sniff gate used to require isVisible() and skipped open.
-        self._sync_sniff_for_state()
+        # Defer sniff/UI work to the timer — never block the opener / Kill click.
         self._schedule_lan_probe()
-        self._refresh_ui()
+        QTimer.singleShot(0, self._on_timer)
 
     def notify_kill_state_changed(self) -> None:
-        """Called from main when Kill bookkeeping changes (never blocks Kill)."""
+        """Mark dirty only — never sniff/join/refresh on the Kill toggle stack."""
         if not self._monitor_open or not self._device:
             return
-        if self._kill_on():
-            self._session_had_kill = True
-        self._sync_sniff_for_state()
-        self._refresh_ui()
+        self._state_dirty = True
 
     def _stop_monitoring(self) -> None:
         self._want_sniff = False
         self._monitor_open = False
+        self._state_dirty = False
         try:
             self._timer.stop()
             self._lan_timer.stop()
         except Exception:
             pass
         try:
-            self._sniffer.stop()
+            self._sniffer.stop(join=False)
         except Exception:
             pass
 
@@ -373,14 +371,13 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
         kill_on = self._kill_on()
         if kill_on:
             self._session_had_kill = True
-        # Use monitor_open — isVisible() is false during open_for_device before show().
         want = bool(self._monitor_open and vip and kill_on and iface)
         self._want_sniff = want
         if not want:
             # Stop capture on Kill OFF but keep counters for "Kill ended" verdict.
             if self._sniffer.snapshot().get('running'):
                 try:
-                    self._sniffer.stop()
+                    self._sniffer.stop(join=False)
                 except Exception:
                     pass
             self._sniff_iface = ''
@@ -392,7 +389,8 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
         ):
             return
         self._sniff_iface = iface
-        self._sniffer.start(vip, iface, on_update=lambda: self._ui_tick.emit())
+        # No per-packet UI callback — timer refreshes only.
+        self._sniffer.start(vip, iface, on_update=None)
 
     def _schedule_lan_probe(self) -> None:
         if not self._monitor_open or not self._device_ip():
@@ -407,6 +405,7 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
         def _work() -> None:
             result: Optional[bool] = None
             try:
+                # ARP cache only — never probe_ip/arping (fights MITM + merges table rows).
                 result = probe_lan_reachable(scanner, ip)
             except Exception:
                 result = None
@@ -428,11 +427,12 @@ class KillFlowsWindow(FramelessResizableMixin, QMainWindow):
         self._lan_probe_in_flight = False
         if isinstance(result, bool):
             self._lan_reachable = result
-        self._refresh_ui()
+        # Don't rebuild UI from the probe thread's emit during Kill paint — timer will.
 
     def _on_timer(self) -> None:
         if not self._monitor_open:
             return
+        self._state_dirty = False
         self._sync_sniff_for_state()
         self._refresh_ui()
 

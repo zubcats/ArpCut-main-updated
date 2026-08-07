@@ -24,6 +24,15 @@ class KillFlowVerdict:
     level: str  # 'ok' | 'warn' | 'fail' | 'idle'
 
 
+def _fmt_session_bytes(n: int) -> str:
+    n = int(n or 0)
+    if n < 1024:
+        return f'{n} B'
+    if n < 1024 * 1024:
+        return f'{n / 1024:.1f} KB'
+    return f'{n / (1024 * 1024):.2f} MB'
+
+
 def classify_kill_flow_verdict(
     *,
     kill_on: bool,
@@ -159,15 +168,6 @@ def classify_kill_flow_verdict(
     )
 
 
-def _fmt_session_bytes(n: int) -> str:
-    n = int(n or 0)
-    if n < 1024:
-        return f'{n} B'
-    if n < 1024 * 1024:
-        return f'{n / 1024:.1f} KB'
-    return f'{n / (1024 * 1024):.2f} MB'
-
-
 class KillFlowSniffer:
     """Directional host sniff for one victim IP (background thread)."""
 
@@ -191,9 +191,11 @@ class KillFlowSniffer:
         self._in_bps = 0.0
         self._callback: Optional[Callable[[], None]] = None
         self._last_pkt_at = 0.0
+        self._gen = 0
 
     def start(self, victim_ip: str, iface: str, on_update: Optional[Callable[[], None]] = None) -> None:
-        self.stop()
+        # Never join on the caller thread (often the GUI) — that stalled Kill toggles.
+        self.stop(join=False)
         self._victim_ip = str(victim_ip or '').strip()
         self._iface = str(iface or '').strip()
         self._callback = on_update
@@ -208,17 +210,14 @@ class KillFlowSniffer:
         if not self._victim_ip or not self._iface:
             return
         self._stop.clear()
+        self._gen += 1
+        gen = self._gen
 
         def _target() -> None:
             try:
-                from tools.crash_feedback import safe_daemon_target
-
-                safe_daemon_target(self._run)()
+                self._run(gen)
             except Exception:
-                try:
-                    self._run()
-                except Exception:
-                    pass
+                pass
 
         self._thread = Thread(
             target=_target,
@@ -227,18 +226,18 @@ class KillFlowSniffer:
         )
         self._thread.start()
 
-    def stop(self) -> None:
-        if self._thread and self._thread.is_alive():
-            self._stop.set()
-            self._thread.join(timeout=0.25)
-        self._thread = None
+    def stop(self, *, join: bool = False) -> None:
+        self._gen += 1
         self._stop.set()
+        thread = self._thread
+        self._thread = None
+        if join and thread is not None and thread.is_alive():
+            thread.join(timeout=0.2)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             now = monotonic()
             dt = max(0.25, now - self._window_t0)
-            # Refresh rates at least when snapshot is taken (UI timer).
             self._out_bps = self._window_out / dt
             self._in_bps = self._window_in / dt
             if dt >= 1.0:
@@ -272,7 +271,7 @@ class KillFlowSniffer:
                 'running': bool(self._thread and self._thread.is_alive()),
             }
 
-    def _run(self) -> None:
+    def _run(self, gen: int) -> None:
         try:
             from scapy.all import sniff
         except Exception:
@@ -280,16 +279,18 @@ class KillFlowSniffer:
         bpf = f'host {self._victim_ip}'
         try:
             sniff(
-                prn=self._process,
+                prn=lambda pkt: self._process(pkt, gen),
                 filter=bpf,
                 store=False,
                 iface=self._iface,
-                stop_filter=lambda _p: self._stop.is_set(),
+                stop_filter=lambda _p: self._stop.is_set() or gen != self._gen,
             )
         except Exception:
             pass
 
-    def _process(self, pkt) -> None:
+    def _process(self, pkt, gen: int) -> None:
+        if gen != self._gen or self._stop.is_set():
+            return
         try:
             from scapy.all import IP, TCP, UDP
         except Exception:
@@ -315,6 +316,8 @@ class KillFlowSniffer:
         port = dport if outgoing else sport
         key = (peer, int(port), proto)
         with self._lock:
+            if gen != self._gen:
+                return
             self._last_pkt_at = time()
             flow = self._flows[key]
             flow['proto'] = proto
@@ -330,33 +333,20 @@ class KillFlowSniffer:
                 self._window_in += size
                 flow['in_bytes'] += size
                 flow['in_packets'] += 1
-        cb = self._callback
-        if cb is not None:
-            try:
-                cb()
-            except Exception:
-                pass
+        # Do not callback per-packet — GUI timer refreshes (avoids event-loop storms).
 
 
 def probe_lan_reachable(scanner, ip: str) -> Optional[bool]:
-    """Cheap LAN liveness: ARP cache, then best-effort /32 arping. None if unknown."""
+    """ARP-cache-only liveness. Never arping/ping/merge — those fight Kill/MITM + selection."""
     ip = str(ip or '').strip()
     if not ip or scanner is None:
         return None
     try:
-        hit = scanner.probe_ip_arp_cache_only(ip)
-        if hit:
-            return True
-    except Exception:
-        pass
-    try:
-        hit = scanner.probe_ip(ip)
-        if hit:
-            return True
-        # probe_ip may have refreshed cache
-        hit = scanner.probe_ip_arp_cache_only(ip)
-        if hit:
-            return True
+        # Prefer read-only lookup; fall back only if an older scanner lacks it.
+        lookup = getattr(scanner, 'lookup_ip_in_arp_cache', None)
+        if callable(lookup):
+            return bool(lookup(ip))
+        # Legacy scanner without read-only lookup — skip (merging probes fight selection).
+        return None
     except Exception:
         return None
-    return False

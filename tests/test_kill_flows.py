@@ -178,15 +178,46 @@ class TestKillFlowsUiChrome(unittest.TestCase):
         self.assertIn('_kill_toggle_pending_for_mac', fn)
         self.assertIn('_live_device', fn)
 
-    def test_open_syncs_after_show(self):
+    def test_open_defers_sniff_off_kill_path(self):
         path = os.path.join(_SRC, 'gui', 'kill_flows.py')
         with open(path, encoding='utf-8') as f:
             src = f.read()
-        fn = src[src.index('def open_for_device') : src.index('def notify_kill_state_changed')]
-        show_at = fn.index('self.show()')
-        sync_at = fn.index('self._sync_sniff_for_state()')
-        self.assertLess(show_at, sync_at)
-        self.assertIn('self._monitor_open = True', fn)
+        open_fn = src[src.index('def open_for_device') : src.index('def notify_kill_state_changed')]
+        notify_fn = src[
+            src.index('def notify_kill_state_changed') : src.index('def _stop_monitoring')
+        ]
+        self.assertIn('self._monitor_open = True', open_fn)
+        self.assertIn('QTimer.singleShot', open_fn)
+        self.assertNotIn('self._sync_sniff_for_state()', open_fn)
+        self.assertIn('self._state_dirty = True', notify_fn)
+        self.assertNotIn('self._sync_sniff_for_state()', notify_fn)
+        self.assertNotIn('self._refresh_ui()', notify_fn)
+        self.assertIn('stop(join=False)', src)
+
+    def test_lan_probe_is_read_only(self):
+        path = os.path.join(_SRC, 'networking', 'kill_flow_monitor.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        fn = src[src.index('def probe_lan_reachable') :]
+        self.assertIn('lookup_ip_in_arp_cache', fn)
+        self.assertNotIn('probe_ip_arp_cache_only', fn)
+        self.assertNotIn('merge_client_hits', fn)
+        self.assertNotIn('.probe_ip(', fn)
+
+    def test_sniffer_stop_defaults_no_join(self):
+        path = os.path.join(_SRC, 'networking', 'kill_flow_monitor.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('def stop(self, *, join: bool = False)', src)
+        start = src[src.index('def start(') : src.index('def stop(')]
+        self.assertIn('self.stop(join=False)', start)
+
+    def test_sync_killed_does_not_notify_flows(self):
+        path = os.path.join(_SRC, 'gui', 'impairment_kill.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        fn = src[src.index('def _sync_killed_devices') : src.index('def _set_kill_button_idle_look')]
+        self.assertNotIn('notify_kill_state_changed', fn)
 
 
 if __name__ == '__main__':

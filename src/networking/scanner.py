@@ -786,7 +786,8 @@ class Scanner():
                             return (want_ip, mac)
         return None
 
-    def probe_ip_arp_cache_only(self, ip: str) -> Optional[tuple]:
+    def lookup_ip_in_arp_cache(self, ip: str) -> Optional[tuple]:
+        """Read-only ARP table lookup — never merges devices or touches selection."""
         ip = (ip or '').strip()
         if not ip:
             return None
@@ -807,7 +808,6 @@ class Scanner():
                 seen_txt.add(cache)
                 hit = self._windows_parse_arp_probe_hit(cache, ip)
                 if hit:
-                    self.merge_client_hits([hit])
                     return hit
             return None
         cache = terminal('arp -an') or ''
@@ -816,6 +816,13 @@ class Scanner():
                 macs = re.findall(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', line)
                 if macs:
                     mac = good_mac(macs[0])
-                    self.merge_client_hits([(ip, mac)])
-                    return (ip, mac)
+                    if mac and mac != GLOBAL_MAC:
+                        return (ip, mac)
         return None
+
+    def probe_ip_arp_cache_only(self, ip: str) -> Optional[tuple]:
+        """ARP-cache probe that merges a hit into the device table (Manual IP Search)."""
+        hit = self.lookup_ip_in_arp_cache(ip)
+        if hit:
+            self.merge_client_hits([hit])
+        return hit
