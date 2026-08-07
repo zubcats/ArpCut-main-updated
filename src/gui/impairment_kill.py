@@ -73,6 +73,16 @@ class ImpairmentKillMixin:
                 self._updatePercentCutButtonState()
             self._updateKillButtonState(fast=True)
             self._sync_inline_flow_controls_enabled()
+            if kind in ('kill', 'all'):
+                # Dirty-flag only — Kill Flows must never sniff/join on this stack.
+                try:
+                    w = getattr(self, 'kill_flows_window', None)
+                    if w is not None and callable(
+                        getattr(w, 'notify_kill_state_changed', None)
+                    ):
+                        w.notify_kill_state_changed()
+                except Exception:
+                    pass
         if device is not None:
             self._repaint_device_table_rows(device)
         self._flush_gui_events()
@@ -992,7 +1002,8 @@ class ImpairmentKillMixin:
             except Exception:
                 pass
             self.killed_devices[pk] = False
-
+        # Do NOT notify Kill Flows here — this runs from many lag/dupe/MITM paths and
+        # previously caused sniffer join + UI work on the Kill/toggle hot path.
 
     def _set_kill_button_idle_look(self):
         """Icon + compact width for Kill: OFF (matches Lag/Dupe footprint)."""

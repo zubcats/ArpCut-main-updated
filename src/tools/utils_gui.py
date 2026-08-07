@@ -422,8 +422,9 @@ QTableWidget#tableScan:focus {{
 
 def _auxiliary_windows_qss() -> str:
     """
-    Settings / About / Device / Traffic (QMainWindow#zubcutAuxiliaryWindow) and modal dialogs
-    (Lag Switch, Dupe, message boxes): same charcoal buttons / panels as the main window.
+    Settings / About / Device / Traffic / Kill Flows (QMainWindow#zubcutAuxiliaryWindow)
+    and modal dialogs (Lag Switch, Dupe, message boxes): same charcoal buttons / panels
+    as the main window.
     """
     toggle_acc = getattr(_zcut_constants, 'UI_TOGGLE_BORDER_ACCENT', '#316E69')
     sel_bg = getattr(_zcut_constants, 'UI_TABLE_SELECTION_BG', '#316E69')
@@ -713,6 +714,25 @@ QDialog QTableWidget::item:selected {{
     font-weight: normal;
     background-color: {_aux_sel_bg};
     color: {_aux_sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QTableWidget#killFlowsTable {{
+    font-weight: normal;
+    background-color: #000000;
+    alternate-background-color: {tbl_alt};
+    color: {tx};
+    border: 1px solid {bd};
+    border-radius: 4px;
+    gridline-color: #141414;
+}}
+QMainWindow#zubcutAuxiliaryWindow QTableWidget#killFlowsTable::item:selected {{
+    font-weight: normal;
+    background-color: {sel_bg};
+    color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QFrame#killFlowsStatusRow {{
+    background-color: {panel};
+    border: 1px solid {bd};
+    border-radius: 4px;
 }}
 QMainWindow#zubcutAuxiliaryWindow QHeaderView::section,
 QDialog QHeaderView::section {{
