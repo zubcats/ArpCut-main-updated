@@ -57,21 +57,27 @@ class CrashReportsPanel(QWidget):
         self.btnRefresh = QPushButton('Refresh', self)
         self.btnRefresh.clicked.connect(self.refresh)
         header.addWidget(self.btnRefresh)
+        self.btnZcLegend = QPushButton('ZC code legend', self)
+        self.btnZcLegend.setToolTip(
+            'Show all diagnostic ZC-* support codes (separate from crash refs).'
+        )
+        self.btnZcLegend.clicked.connect(self._show_zc_legend)
+        header.addWidget(self.btnZcLegend)
         root.addLayout(header)
 
         splitter = QSplitter(Qt.Vertical, self)
-        self.table = QTableWidget(0, 6, self)
+        self.table = QTableWidget(0, 7, self)
         self.table.setHorizontalHeaderLabels(
-            ['Ref', 'Received', 'Account', 'Build', 'Exception', 'Message']
+            ['Ref', 'Received', 'Account', 'Build', 'ZC codes', 'Exception', 'Message']
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         hdr = self.table.horizontalHeader()
-        for col in range(5):
+        for col in range(6):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(5, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(6, QHeaderView.Stretch)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.itemDoubleClicked.connect(lambda *_: self._load_selected_body())
         splitter.addWidget(self.table)
@@ -119,6 +125,25 @@ class CrashReportsPanel(QWidget):
         self._rebuild_filter_combo()
         self._populate_table()
         self._update_status_label()
+
+    def _show_zc_legend(self) -> None:
+        """Local registry of diagnostic codes — always available even for old reports."""
+        try:
+            from tools.user_errors import zc_code_catalog
+
+            rows = zc_code_catalog()
+        except Exception as exc:
+            QMessageBox.warning(self, 'ZC codes', str(exc))
+            return
+        lines = [
+            'Diagnostic support codes (not crash refs like ZC-ABC123):',
+            '',
+        ]
+        for row in rows:
+            lines.append(f"{row.get('code')}: {row.get('message')}")
+        # Prefer the detail pane so we don't need a giant modal.
+        self.txtBody.setPlainText('\n'.join(lines))
+        self._set_status_label(f'{len(rows)} ZC codes in registry')
 
     def _filtered_rows(self) -> list[dict]:
         if self._account_filter == _FILTER_ALL:
@@ -195,9 +220,20 @@ class CrashReportsPanel(QWidget):
                 )
                 if p
             )
+            zc_raw = row.get('zc_codes') or []
+            if isinstance(zc_raw, list):
+                zc_codes = ', '.join(
+                    str(c.get('code') if isinstance(c, dict) else c)
+                    for c in zc_raw
+                    if c
+                )
+            else:
+                zc_codes = str(zc_raw or '')
             exc_type = str(row.get('exc_type') or '')
             message = str(row.get('exc_message') or '')
-            for col, text in enumerate((ref, received, account, build, exc_type, message)):
+            for col, text in enumerate(
+                (ref, received, account, build, zc_codes, exc_type, message)
+            ):
                 item = QTableWidgetItem(text)
                 if col == 0:
                     item.setData(Qt.UserRole, ref)
@@ -223,12 +259,20 @@ class CrashReportsPanel(QWidget):
             return
         summary = next((r for r in self._rows if r.get('ref') == ref), None)
         if summary:
+            zc = summary.get('zc_codes') or []
+            if isinstance(zc, list):
+                zc_txt = ', '.join(
+                    str(c.get('code') if isinstance(c, dict) else c) for c in zc if c
+                ) or '—'
+            else:
+                zc_txt = str(zc or '—')
             self.txtBody.setPlainText(
                 '\n'.join(
                     [
                         f'ref={summary.get("ref")}',
                         f'account={summary.get("account_hint") or "(not signed in)"}',
                         f'license_id={summary.get("license_id") or "—"}',
+                        f'zc_codes={zc_txt}',
                         f'exc={summary.get("exc_type")}: {summary.get("exc_message")}',
                         '',
                         '(double-click to load full body)',
@@ -245,11 +289,26 @@ class CrashReportsPanel(QWidget):
         except CrashApiError as exc:
             QMessageBox.warning(self, 'Crash report', str(exc))
             return
+        zc_lines = []
+        for c in report.get('zc_codes') or []:
+            if not isinstance(c, dict):
+                continue
+            code = str(c.get('code') or '')
+            if not code:
+                continue
+            level = str(c.get('level') or '')
+            msg = str(c.get('message') or '')
+            bit = f'{code}' + (f' ({level})' if level else '')
+            if msg:
+                bit = f'{bit}: {msg}'
+            zc_lines.append(bit)
         head = [
             f'ref={report.get("ref")}',
             f'account={report.get("account_hint") or "(not signed in)"}',
             f'license_id={report.get("license_id") or "—"}',
             f'build={report.get("build_channel")} {report.get("build_commit")}',
+            'zc_codes:',
+            *(f'  {line}' for line in (zc_lines or ['(none observed)'])),
             '',
         ]
         self.txtBody.setPlainText('\n'.join(head) + str(report.get('body') or ''))

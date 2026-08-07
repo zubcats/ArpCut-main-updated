@@ -147,6 +147,35 @@ def _build_payload(
         'exc_type': (exc_type or parsed_type)[:120],
         'exc_message': (exc_message or parsed_msg)[:500],
     }
+    # Diagnostic ZC-* support codes (readiness / format_error_code), not the crash ref.
+    try:
+        from tools.user_errors import (
+            latest_zc_codes,
+            parse_zc_codes_header,
+            zc_code_catalog,
+        )
+
+        codes = latest_zc_codes()
+        if not codes:
+            codes = parse_zc_codes_header(log_text)
+        # Cap payload size; catalog is small (~20 entries).
+        payload['zc_codes'] = [
+            {
+                'code': str(c.get('code') or '')[:40],
+                'level': str(c.get('level') or '')[:12],
+                'source': str(c.get('source') or '')[:40],
+                'message': str(c.get('message') or '')[:240],
+            }
+            for c in (codes or [])[:32]
+            if c.get('code')
+        ]
+        payload['zc_catalog'] = [
+            {'code': str(c.get('code') or '')[:40], 'message': str(c.get('message') or '')[:240]}
+            for c in zc_code_catalog()
+        ]
+    except Exception:
+        payload['zc_codes'] = []
+        payload['zc_catalog'] = []
     # Optional worker secret (wrangler CRASH_INGEST_TOKEN). Empty = worker accepts all.
     token = (
         os.environ.get('ZUBCUT_CRASH_INGEST_TOKEN')

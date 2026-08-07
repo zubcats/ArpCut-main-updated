@@ -41,9 +41,17 @@ Rate limit: about **30 reports per client IP per hour** (KV counter).
   "account_hint": "customer_username",
   "license_id": "uuid-from-license-payload",
   "exc_type": "RuntimeError",
-  "exc_message": "Percent Cut failed to start"
+  "exc_message": "Percent Cut failed to start",
+  "zc_codes": [
+    {"code": "ZC-NPCAP", "level": "fail", "source": "pc_readiness", "message": "Npcap missing…"}
+  ],
+  "zc_catalog": [
+    {"code": "ZC-NPCAP", "message": "Npcap missing…"}
+  ]
 }
 ```
+
+`zc_codes` are **diagnostic support codes** observed before the crash (readiness / `format_error_code`), not the random crash `ref`. `zc_catalog` is the full registry shipped with that build.
 
 `log` is accepted as an alias for `body`. `licenseKey` / `account` are aliases for `account_hint`.
 
@@ -82,11 +90,14 @@ Response:
       "app_version": "…",
       "account_hint": "user",
       "exc_type": "RuntimeError",
-      "exc_message": "…"
+      "exc_message": "…",
+      "zc_codes": ["ZC-NPCAP", "ZC-WPA3"]
     }
   ]
 }
 ```
+
+List summaries store `zc_codes` as code strings; full `GET` reports keep objects + `zc_catalog`.
 
 ### Get full report
 

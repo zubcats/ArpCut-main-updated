@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+from threading import Lock
+from typing import Any, Iterable, Optional
 
 _GITHUB_URL_RE = re.compile(
     r'https?://(?:www\.)?(?:api\.)?github(?:usercontent)?\.com\S*',
@@ -31,6 +33,132 @@ ERROR_CODES: dict[str, str] = {
     'ZC-ISOLATION': 'AP/client isolation (guest Wi‑Fi) can block ARP MITM — use Ethernet PC + console, or PC Mobile Hotspot.',
     'ZC-AV': 'Antivirus / Controlled Folder Access may block Npcap or WinDivert — allow ZubCut.',
 }
+
+_LEVEL_RANK = {'ok': 0, 'info': 0, 'warn': 1, 'fail': 2, 'error': 2}
+_zc_lock = Lock()
+# code -> {code, level, source, message} — recent diagnostic observations for crash reports.
+_zc_seen: dict[str, dict[str, str]] = {}
+_ZC_SEEN_MAX = 40
+
+
+def normalize_zc_code(code: str) -> str:
+    """Return a registry ZC-* key, or '' if unknown / crash-ref shaped."""
+    key = str(code or '').strip().upper()
+    if not key:
+        return ''
+    if key in ERROR_CODES:
+        return key
+    # Reject random crash refs (ZC- + exactly 6 chars, not in the registry).
+    if re.fullmatch(r'ZC-[A-Z0-9]{6}', key):
+        return ''
+    return ''
+
+
+def note_zc_code(code: str, *, level: str = '', source: str = '') -> None:
+    """Remember a diagnostic ZC code (best-effort; used by crash reporting)."""
+    key = normalize_zc_code(code)
+    if not key:
+        return
+    lvl = str(level or '').strip().lower()
+    if lvl not in _LEVEL_RANK:
+        lvl = 'warn'
+    src = str(source or '').strip()[:40]
+    msg = ERROR_CODES.get(key, '')
+    with _zc_lock:
+        prev = _zc_seen.get(key)
+        if prev is not None and _LEVEL_RANK.get(prev.get('level', ''), 0) > _LEVEL_RANK.get(lvl, 0):
+            # Keep the worse severity; refresh source if provided.
+            if src and not prev.get('source'):
+                prev['source'] = src
+            return
+        _zc_seen[key] = {
+            'code': key,
+            'level': lvl,
+            'source': src or (prev or {}).get('source', ''),
+            'message': msg,
+        }
+        if len(_zc_seen) > _ZC_SEEN_MAX:
+            # Drop oldest insertion order (dict preserves order on 3.7+).
+            for drop in list(_zc_seen.keys())[: len(_zc_seen) - _ZC_SEEN_MAX]:
+                _zc_seen.pop(drop, None)
+
+
+def note_zc_findings(findings: Iterable[Any], *, source: str = 'readiness') -> None:
+    """Record codes from readiness (or similar) finding objects / dicts."""
+    for f in findings or ():
+        try:
+            if isinstance(f, dict):
+                code = f.get('code') or ''
+                level = f.get('level') or ''
+            else:
+                code = getattr(f, 'code', '') or ''
+                level = getattr(f, 'level', '') or ''
+            if code:
+                note_zc_code(str(code), level=str(level or ''), source=source)
+        except Exception:
+            continue
+
+
+def latest_zc_codes() -> list[dict[str, str]]:
+    """Snapshot of recently observed diagnostic codes (worst level first)."""
+    with _zc_lock:
+        rows = [dict(v) for v in _zc_seen.values()]
+    rows.sort(
+        key=lambda r: (
+            -_LEVEL_RANK.get(str(r.get('level') or ''), 0),
+            str(r.get('code') or ''),
+        )
+    )
+    return rows
+
+
+def zc_code_catalog() -> list[dict[str, str]]:
+    """Full registry of support codes (for crash payload / Control Panel legend)."""
+    return [{'code': k, 'message': v} for k, v in sorted(ERROR_CODES.items())]
+
+
+def format_zc_codes_header(codes: Optional[Iterable[dict]] = None) -> str:
+    """Compact ``zc_codes=ZC-NPCAP:fail,ZC-WPA3:warn`` line for crash logs."""
+    rows = list(codes) if codes is not None else latest_zc_codes()
+    parts = []
+    for r in rows:
+        code = str((r or {}).get('code') or '').strip()
+        if not code:
+            continue
+        level = str((r or {}).get('level') or '').strip()
+        parts.append(f'{code}:{level}' if level else code)
+    return ','.join(parts)
+
+
+def parse_zc_codes_header(log_text: str) -> list[dict[str, str]]:
+    """Parse ``zc_codes=…`` from a crash log header (pending upload path)."""
+    for line in (log_text or '').splitlines()[:40]:
+        s = line.strip()
+        if not s.lower().startswith('zc_codes='):
+            continue
+        raw = s.split('=', 1)[1].strip()
+        if not raw or raw in ('—', '-', 'none'):
+            return []
+        out: list[dict[str, str]] = []
+        for part in raw.split(','):
+            token = part.strip()
+            if not token:
+                continue
+            code, _, level = token.partition(':')
+            key = normalize_zc_code(code) or str(code or '').strip().upper()
+            if not key.startswith('ZC-'):
+                continue
+            lvl = level.strip().lower()
+            out.append(
+                {
+                    'code': key,
+                    'level': lvl if lvl in _LEVEL_RANK else '',
+                    'source': 'log',
+                    'message': ERROR_CODES.get(key, ''),
+                }
+            )
+        return out
+    return []
 
 
 def scrub_user_error_text(text: str) -> str:
@@ -67,6 +195,10 @@ def format_error_code(code: str, detail: str = '') -> str:
     Example: ``ZC-NPCAP: Npcap missing... (detail)``
     """
     key = str(code or '').strip().upper()
+    try:
+        note_zc_code(key, level='fail', source='format_error_code')
+    except Exception:
+        pass
     base = ERROR_CODES.get(key) or ERROR_CODES.get(code) or ''
     if not base:
         base = scrub_user_error_text(str(detail or key or 'Unknown error'))

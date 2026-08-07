@@ -76,7 +76,14 @@ def cmd_list(args: argparse.Namespace) -> int:
         acct = row.get('account_hint') or ''
         exc = row.get('exc_type') or ''
         msg = (row.get('exc_message') or '')[:80]
-        print(f'{ref}\t{when}\t{acct}\t{exc}\t{msg}')
+        zc = row.get('zc_codes') or []
+        if isinstance(zc, list):
+            zc_txt = ','.join(
+                str(c.get('code') if isinstance(c, dict) else c) for c in zc if c
+            )
+        else:
+            zc_txt = str(zc or '')
+        print(f'{ref}\t{when}\t{acct}\t{zc_txt}\t{exc}\t{msg}')
     return 0
 
 
@@ -95,6 +102,18 @@ def cmd_get(args: argparse.Namespace) -> int:
     print(f'account_hint={report.get("account_hint")}')
     print(f'build={report.get("build_channel")} {report.get("build_commit")} {report.get("app_version")}')
     print(f'exc={report.get("exc_type")}: {report.get("exc_message")}')
+    zc = report.get('zc_codes') or []
+    if isinstance(zc, list) and zc:
+        print('zc_codes:')
+        for c in zc:
+            if isinstance(c, dict):
+                print(
+                    f"  {c.get('code')} ({c.get('level') or '-'}): {c.get('message') or ''}"
+                )
+            else:
+                print(f'  {c}')
+    else:
+        print('zc_codes: (none)')
     print('--- body ---')
     print(report.get('body') or '')
     if args.out:

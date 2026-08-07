@@ -491,6 +491,12 @@ def collect_pc_readiness(
         hints = probe_wifi_link_hint_codes()
     _append_wifi_hint_findings(findings, hints)
 
+    try:
+        from tools.user_errors import note_zc_findings
+
+        note_zc_findings(findings, source='pc_readiness')
+    except Exception:
+        pass
     return findings
 
 
@@ -506,12 +512,24 @@ def collect_device_path_readiness(
 ) -> list[ReadinessFinding]:
     """Per-victim LAN path checks (no ping / no scapy). Uses cached Wi‑Fi hints."""
     findings: list[ReadinessFinding] = []
+
+    def _finish(rows: list[ReadinessFinding]) -> list[ReadinessFinding]:
+        try:
+            from tools.user_errors import note_zc_findings
+
+            note_zc_findings(rows, source='device_readiness')
+        except Exception:
+            pass
+        return rows
+
     if not isinstance(device, dict):
-        return [
-            ReadinessFinding(level='fail', message='No device selected for path check.'),
-        ]
+        return _finish(
+            [
+                ReadinessFinding(level='fail', message='No device selected for path check.'),
+            ]
+        )
     if device.get('admin'):
-        return findings
+        return _finish(findings)
 
     try:
         from tools.utils import mac_address_is_usable
@@ -531,7 +549,7 @@ def collect_device_path_readiness(
         findings.append(
             ReadinessFinding(level='fail', message='Selected device has no IP.'),
         )
-        return findings
+        return _finish(findings)
 
     if not mac_address_is_usable(victim_mac):
         findings.append(
@@ -584,7 +602,7 @@ def collect_device_path_readiness(
                 message=f'LAN path looks OK for {label} ({victim_ip}).',
             )
         )
-    return findings
+    return _finish(findings)
 
 
 def worst_level(findings: Iterable[ReadinessFinding]) -> str:
