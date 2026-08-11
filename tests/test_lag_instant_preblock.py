@@ -67,6 +67,8 @@ class TestLagInstantPreblock(unittest.TestCase):
         self.assertIn('def _lan_mitm_stack_is_warm', src)
         warm = methods_through('_warm_impairment_stack', '_start_impairment_warm_on_reactivate')
         self.assertIn('_warm_lan_mitm_stack()', warm)
+        self.assertIn('prewarm_windivert_driver', warm)
+        self.assertIn('zubcut-windivert-prewarm', warm)
 
     def test_unified_flow_preblock_helper(self) -> None:
         src = self._main_py()

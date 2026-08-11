@@ -747,10 +747,20 @@ def apply_ics_victim_arp_block(scanner: Scanner, killer, device) -> bool:
     except Exception:
         pass
     apply_clumsy_ics_router_context(scanner, killer, ip)
+    prev_guid = getattr(getattr(killer, 'iface', None), 'guid', None)
     killer.iface = scanner.iface
     killer.router = scanner.router
+    # Only drop the L2 socket when the NIC actually changed — close+reopen on
+    # Windows is 0.5-2s and made hotspot Kill ON feel stuck on the GUI thread.
     try:
-        killer._close_socket()
+        new_guid = getattr(scanner.iface, 'guid', None)
+        if prev_guid != new_guid:
+            killer._close_socket()
+    except Exception:
+        pass
+    try:
+        if hasattr(killer, 'l2_socket_ready') and not killer.l2_socket_ready():
+            killer.prewarm_l2_socket(join_ms=120)
     except Exception:
         pass
     try:
