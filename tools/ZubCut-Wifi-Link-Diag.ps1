@@ -37,19 +37,49 @@ function Get-SecurityZubCutClass([string]$auth) {
 $admin = Test-IsAdmin
 $raw = netsh wlan show interfaces | Out-String
 
-# Parse interface blocks
+function Fold-Latin([string]$s) {
+    if (-not $s) { return '' }
+    $n = $s.Normalize([Text.NormalizationForm]::FormD)
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($ch in $n.ToCharArray()) {
+        if ([Globalization.CharUnicodeInfo]::GetUnicodeCategory($ch) -ne 'NonSpacingMark') {
+            [void]$sb.Append($ch)
+        }
+    }
+    return $sb.ToString().ToLowerInvariant()
+}
+function Canon-WlanKey([string]$k) {
+    $f = Fold-Latin (($k -replace '\s+', ' ').Trim())
+    switch -Regex ($f) {
+        '^(name|nom|nombre|nome)$' { return 'Name' }
+        '^(state|zustand|etat|estado|stato)$' { return 'State' }
+        '^(ssid)$' { return 'SSID' }
+        '^(band|bande|banda)$' { return 'Band' }
+        '^(channel|kanal|canal|canale)$' { return 'Channel' }
+        '^(authentication|authentifizierung|authentification|autenticacion|autenticazione)$' { return 'Authentication' }
+        default { return (($k -replace '\s+', ' ').Trim()) }
+    }
+}
+function Test-WlanConnected($st, $ssid) {
+    $f = Fold-Latin ([string]$st)
+    if ($f -in @('connected','verbunden','connecte','conectado','connesso')) { return $true }
+    if ($f -in @('disconnected','getrennt','deconnecte','desconectado','disconnesso')) { return $false }
+    return ([string]$ssid).Trim().Length -gt 0
+}
+
+# Parse interface blocks (EN/DE/FR/ES Name/State keys)
 $adapters = @()
 $current = @{}
 foreach ($line in ($raw -split "`r?`n")) {
-    if ($line -match '^\s*Name\s*:\s*(.+)\s*$') {
+    if ($line -match '^\s*(Name|Nom|Nombre|Nome)\s*:\s*(.+)\s*$') {
         if ($current.Count -gt 0 -and $current.ContainsKey('Name')) {
             $adapters += ,([pscustomobject]$current)
         }
-        $current = @{ Name = $Matches[1].Trim() }
+        $current = @{ Name = $Matches[2].Trim() }
         continue
     }
     if ($line -match '^\s+(\S.*?)\s*:\s*(.*?)\s*$') {
-        $key = ($Matches[1] -replace '\s+', ' ').Trim()
+        $key = Canon-WlanKey $Matches[1]
         $val = $Matches[2].Trim()
         if ($key) { $current[$key] = $val }
     }
@@ -87,9 +117,7 @@ $lines += '---------------------------------------------------------------------
 $lines += ("[{0}] Running as Administrator" -f $(if ($admin) { 'PASS' } else { 'FAIL' }))
 
 $connected = @($adapters | Where-Object {
-        $st = [string]$_.State
-        $ssid = [string]$_.SSID
-        ($st -eq 'connected') -and ($ssid.Trim().Length -gt 0)
+        Test-WlanConnected $_.State $_.SSID
     })
 
 if ($adapters.Count -eq 0) {

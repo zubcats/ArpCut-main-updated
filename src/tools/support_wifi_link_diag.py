@@ -39,14 +39,25 @@ def band_from_channel(channel: int | None) -> str | None:
 
 
 def parse_wlan_interfaces(text: str) -> list[dict[str, Any]]:
-    """Parse ``netsh wlan show interfaces`` into per-adapter dicts."""
+    """Parse ``netsh wlan show interfaces`` into per-adapter dicts (EN/DE/FR/ES keys)."""
+    from tools.win_locale import (
+        WLAN_KEY_ALIASES,
+        wlan_canonical_key,
+        wlan_state_is_connected,
+    )
+
     text = _norm(text)
     if not text.strip():
         return []
+
+    # Block split: localized "Name/Nom/Nombre … :" starts a new interface block.
+    name_aliases = '|'.join(re.escape(a) for a in WLAN_KEY_ALIASES['name'])
+    name_header_re = re.compile(rf'^\s*(?:{name_aliases})\s*:', re.I)
+
     blocks: list[str] = []
     current: list[str] = []
     for line in text.splitlines():
-        if re.match(r'^\s*Name\s*:', line, re.I) and current:
+        if name_header_re.match(line) and current:
             blocks.append('\n'.join(current))
             current = [line]
         else:
@@ -62,7 +73,7 @@ def parse_wlan_interfaces(text: str) -> list[dict[str, Any]]:
             if not re.match(r'^\s+\S', line) or ':' not in line:
                 continue
             key, _, val = line.partition(':')
-            key_n = re.sub(r'\s+', ' ', key.strip().lower())
+            key_n = wlan_canonical_key(key)
             val_n = val.strip()
             if not key_n:
                 continue
@@ -70,7 +81,7 @@ def parse_wlan_interfaces(text: str) -> list[dict[str, Any]]:
         name = str(info.get('name') or '').strip()
         if not name:
             continue
-        state = (info.get('state') or '').lower()
+        state = str(info.get('state') or '')
         ssid = info.get('ssid') or ''
         bssid = info.get('bssid') or ''
         auth = info.get('authentication') or ''
@@ -93,11 +104,11 @@ def parse_wlan_interfaces(text: str) -> list[dict[str, Any]]:
         if not band:
             derived = band_from_channel(channel)
             band = derived or ''
-        connected = state == 'connected' and bool(ssid)
+        connected = wlan_state_is_connected(state, ssid=ssid)
         out.append(
             {
                 'name': name,
-                'state': info.get('state') or '',
+                'state': state,
                 'connected': connected,
                 'ssid': ssid,
                 'bssid': bssid,
@@ -402,19 +413,49 @@ function Get-SecurityZubCutClass([string]$auth) {
 $admin = Test-IsAdmin
 $raw = netsh wlan show interfaces | Out-String
 
-# Parse interface blocks
+function Fold-Latin([string]$s) {
+    if (-not $s) { return '' }
+    $n = $s.Normalize([Text.NormalizationForm]::FormD)
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($ch in $n.ToCharArray()) {
+        if ([Globalization.CharUnicodeInfo]::GetUnicodeCategory($ch) -ne 'NonSpacingMark') {
+            [void]$sb.Append($ch)
+        }
+    }
+    return $sb.ToString().ToLowerInvariant()
+}
+function Canon-WlanKey([string]$k) {
+    $f = Fold-Latin (($k -replace '\s+', ' ').Trim())
+    switch -Regex ($f) {
+        '^(name|nom|nombre|nome)$' { return 'Name' }
+        '^(state|zustand|etat|estado|stato)$' { return 'State' }
+        '^(ssid)$' { return 'SSID' }
+        '^(band|bande|banda)$' { return 'Band' }
+        '^(channel|kanal|canal|canale)$' { return 'Channel' }
+        '^(authentication|authentifizierung|authentification|autenticacion|autenticazione)$' { return 'Authentication' }
+        default { return (($k -replace '\s+', ' ').Trim()) }
+    }
+}
+function Test-WlanConnected($st, $ssid) {
+    $f = Fold-Latin ([string]$st)
+    if ($f -in @('connected','verbunden','connecte','conectado','connesso')) { return $true }
+    if ($f -in @('disconnected','getrennt','deconnecte','desconectado','disconnesso')) { return $false }
+    return ([string]$ssid).Trim().Length -gt 0
+}
+
+# Parse interface blocks (EN/DE/FR/ES Name/State keys)
 $adapters = @()
 $current = @{}
 foreach ($line in ($raw -split "`r?`n")) {
-    if ($line -match '^\s*Name\s*:\s*(.+)\s*$') {
+    if ($line -match '^\s*(Name|Nom|Nombre|Nome)\s*:\s*(.+)\s*$') {
         if ($current.Count -gt 0 -and $current.ContainsKey('Name')) {
             $adapters += ,([pscustomobject]$current)
         }
-        $current = @{ Name = $Matches[1].Trim() }
+        $current = @{ Name = $Matches[2].Trim() }
         continue
     }
     if ($line -match '^\s+(\S.*?)\s*:\s*(.*?)\s*$') {
-        $key = ($Matches[1] -replace '\s+', ' ').Trim()
+        $key = Canon-WlanKey $Matches[1]
         $val = $Matches[2].Trim()
         if ($key) { $current[$key] = $val }
     }
@@ -452,9 +493,7 @@ $lines += '---------------------------------------------------------------------
 $lines += ("[{0}] Running as Administrator" -f $(if ($admin) { 'PASS' } else { 'FAIL' }))
 
 $connected = @($adapters | Where-Object {
-        $st = [string]$_.State
-        $ssid = [string]$_.SSID
-        ($st -eq 'connected') -and ($ssid.Trim().Length -gt 0)
+        Test-WlanConnected $_.State $_.SSID
     })
 
 if ($adapters.Count -eq 0) {

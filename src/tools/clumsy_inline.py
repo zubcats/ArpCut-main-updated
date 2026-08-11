@@ -253,12 +253,10 @@ def clumsy_ics_downstream_ifidx_from_arp() -> int:
             gw = f'{quad}.1' if quad else ''
         if not gw:
             return 0
+        from tools.win_locale import arp_ifindex_pattern
+
         cache = terminal(f'arp -a -N {gw}') or terminal('arp -a') or ''
-        pat = re.compile(
-            rf'Interface:\s*{re.escape(gw)}\s*---\s*0x([0-9a-fA-F]+)',
-            re.IGNORECASE,
-        )
-        m = pat.search(cache)
+        m = arp_ifindex_pattern(gw).search(cache)
         if m:
             return int(m.group(1), 16)
     except Exception:
