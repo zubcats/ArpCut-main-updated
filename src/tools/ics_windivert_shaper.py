@@ -189,16 +189,22 @@ def _windivert_service_image_path() -> str:
         return ''
 
 
+_WD_SERVICE_REPAIR_DONE = False
+_WD_DRIVER_WARMED = False
+_WD_DRIVER_WARM_LOCK = threading.Lock()
+
+
 def _windivert_sc_stop_and_delete() -> None:
     from tools.utils import _windows_subprocess_no_window_kwargs
 
     sc_kw = _windows_subprocess_no_window_kwargs()
+    # Cap hard: a stuck sc.exe must not freeze Kill ON for 30-60s on the GUI thread.
     for args in (['sc.exe', 'stop', 'WinDivert'], ['sc.exe', 'delete', 'WinDivert']):
         try:
             subprocess.run(
                 args,
                 capture_output=True,
-                timeout=15,
+                timeout=3,
                 check=False,
                 **sc_kw,
             )
@@ -212,13 +218,18 @@ def _windivert_repair_stale_service(sys_path: str) -> tuple[bool, str]:
     still points at a deleted or temp-extracted .sys path. Remove the stale service so
     the next WinDivertOpen registers WinDivert64.sys next to our DLL.
     """
+    global _WD_SERVICE_REPAIR_DONE
+    if _WD_SERVICE_REPAIR_DONE:
+        return True, 'already repaired this session'
     want = _windivert_normalized_path(sys_path)
     if not want or not os.path.isfile(want):
         return False, 'WinDivert64.sys missing'
     current = _windivert_service_image_path()
     if not current:
+        _WD_SERVICE_REPAIR_DONE = True
         return True, 'no service (will install on open)'
     if current == want:
+        _WD_SERVICE_REPAIR_DONE = True
         return True, 'service path ok'
     if os.path.isfile(current):
         # Keep a different *stable* install; delete temp/extract leftovers that break
@@ -232,9 +243,48 @@ def _windivert_repair_stale_service(sys_path: str) -> tuple[bool, str]:
             '\\appdata\\local\\tmp\\',
         )
         if not any(h in low for h in stale_hints):
+            _WD_SERVICE_REPAIR_DONE = True
             return True, 'service uses another valid driver path'
     _windivert_sc_stop_and_delete()
+    _WD_SERVICE_REPAIR_DONE = True
     return True, f'removed stale WinDivert service (was {current})'
+
+
+def prewarm_windivert_driver() -> bool:
+    """
+    Materialize WinDivert dll+sys, repair stale service, load DLL, open+close one handle.
+
+    Call off the GUI thread (stack warm). Makes the first Clumsy/hotspot Kill ON reuse a
+    warm driver instead of blocking the click on cold install / sc.exe repair.
+    """
+    global _WD_DRIVER_WARMED
+    if not sys.platform.startswith('win'):
+        return False
+    with _WD_DRIVER_WARM_LOCK:
+        if _WD_DRIVER_WARMED:
+            return True
+        try:
+            dll_path, sys_path = _windivert_materialize_paths()
+            if not dll_path or not sys_path:
+                return False
+            ok, _note = _windivert_repair_stale_service(sys_path)
+            if not ok:
+                return False
+            dll = _windivert_load_dll(dll_path, sys_path)
+            _bind_windivert_api(dll)
+            # Dummy SoftAP client IP — opens the same filter/layer set Kill uses.
+            opened = _open_windivert_handles(
+                dll, '192.168.137.254', '192.168.137.', hotspot_capture=True
+            )
+            for h, _layer, _desc in opened:
+                try:
+                    dll.WinDivertClose(h)
+                except Exception:
+                    pass
+            _WD_DRIVER_WARMED = bool(opened)
+            return _WD_DRIVER_WARMED
+        except Exception:
+            return False
 
 
 def _windivert_load_dll(dll_path: str, sys_path: Optional[str] = None) -> ctypes.WinDLL:

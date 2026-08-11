@@ -76,6 +76,22 @@ class ImpairmentPrepMixin:
             self._windivert_ready_cached = clumsy_ics_lag_can_use_windivert(
                 probe if isinstance(probe, dict) else {}, self.scanner
             )
+            # Cold WinDivert open (dll copy + sc.exe repair + driver start) must not
+            # run on the first Kill click — that freezes the UI on hotspot PCs.
+            if self._windivert_ready_cached:
+                try:
+                    import threading
+
+                    from tools.crash_feedback import safe_daemon_target
+                    from tools.ics_windivert_shaper import prewarm_windivert_driver
+
+                    threading.Thread(
+                        target=safe_daemon_target(prewarm_windivert_driver),
+                        name='zubcut-windivert-prewarm',
+                        daemon=True,
+                    ).start()
+                except Exception:
+                    pass
             self._impairment_stack_warmed_at = time.monotonic()
         except Exception:
             pass

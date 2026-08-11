@@ -367,6 +367,11 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         arp_src = inspect.getsource(inline.apply_ics_victim_arp_block)
         self.assertIn('sync_scanner_iface_for_ics_downstream', arp_src)
         self.assertNotIn('sync_iface_for_victim_ip', arp_src)
+        self.assertIn('prewarm_l2_socket', arp_src)
+        self.assertIn('prev_guid', arp_src)
+        self.assertIn('_bg_block_ip', ics_block)
+        self.assertNotIn('bool(block_ip', ics_block)
+        self.assertNotIn('from tools.pfctl import block_ip', ics_block)
         layers_src = inspect.getsource(wd_mod._layers_for_capture_desc)
         self.assertIn(
             '(WINDIVERT_LAYER_NETWORK_FORWARD, WINDIVERT_LAYER_NETWORK)',

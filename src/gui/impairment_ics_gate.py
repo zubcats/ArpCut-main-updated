@@ -15,8 +15,7 @@ from tools.clumsy_inline import (
     victim_on_clumsy_ics_subnet,
 )
 from tools.ics_impairment_policy import quiesce_legacy_stack
-from tools.pfctl import block_ip
-from gui.impairment_shared import UI_LOG_VICTIM_BLOCK_FG, _bg_unblock_ip
+from gui.impairment_shared import UI_LOG_VICTIM_BLOCK_FG, _bg_block_ip, _bg_unblock_ip
 
 
 class ImpairmentIcsGateMixin:
@@ -660,17 +659,13 @@ class ImpairmentIcsGateMixin:
                 'red',
             )
         if stack_arp and ip and sys.platform.startswith('win'):
-            # Firewall is a real fallback when WinDivert AND ARP both fail
-            # (rare, but happens if Npcap is half-installed or the gateway
-            # cannot be ARP-resolved). Keep this sync so fw_ok accurately
-            # reflects the firewall layer in the success gate below — this
-            # is only hit ONCE per hotspot Kill ON (stack_arp is False for
-            # Lag/Dupe block phases), so the 1-3 s netsh cost is acceptable
-            # vs. silently reporting Kill ON without any active block.
+            # Firewall is a backstop only — WinDivert/ICS-ARP already cut. Do not
+            # run sync netsh on the GUI thread (1-3s+ on slow PCs); match LAN Kill.
             try:
-                fw_ok = bool(block_ip('', ip, direction))
+                _bg_block_ip('', ip, direction)
             except Exception:
-                fw_ok = False
+                pass
+            fw_ok = False
         if windivert_ok or arp_ok or fw_ok:
             if for_dupe:
                 pass
