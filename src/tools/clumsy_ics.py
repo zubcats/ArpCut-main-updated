@@ -550,7 +550,11 @@ function Test-MobileHotspotOperational {
 function Test-ClumsyHotspotPathReady($pair) {
   if ($null -eq $pair -or $null -eq $pair.Up -or $null -eq $pair.Down) { return $false }
   if (Test-IcsActiveForPair $pair) { return $true }
-  return (Test-MobileHotspotOperational)
+  if (Test-MobileHotspotOperational) { return $true }
+  # Win11 SoftAP often NATs without classic HNetCfg Sharing and without a visible :67 bind.
+  # Treat gateway + tethering + uplink as ready so Clumsy enable does not re-Apply ICS and drop consoles.
+  if ((Test-MobileHotspotGateway) -and (Test-TetheringOn) -and $pair.Up) { return $true }
+  return $false
 }
 function Set-HotspotDhcpRegistry {
   # Full ICS uses ScopeAddress 192.168.137.1; Hosted Network standalone DHCP uses
@@ -613,19 +617,21 @@ function Enable-MobileHotspotNatPath {
     }
   }
   Ensure-HotspotDhcpFirewall
+  # Never Restart icssvc while SoftAP was already on - that drops PS5/console internet on Win11.
   if ($wasOn -and -not (Test-HotspotDhcp67)) {
     try {
-      Restart-Service icssvc -Force -ErrorAction SilentlyContinue
-      Start-Sleep -Seconds 4
+      Start-Service icssvc -ErrorAction SilentlyContinue
       Start-Service SharedAccess -ErrorAction SilentlyContinue
       Start-Sleep -Seconds 2
     } catch {}
   }
   for ($w = 0; $w -lt 12; $w++) {
     if (Test-MobileHotspotOperational) { return $true }
+    if ($wasOn -and (Test-MobileHotspotGateway) -and (Test-TetheringOn)) { return $true }
     Start-Sleep -Seconds 1
   }
-  return (Test-MobileHotspotOperational)
+  if (Test-MobileHotspotOperational) { return $true }
+  return ($wasOn -and (Test-MobileHotspotGateway) -and (Test-TetheringOn))
 }
 function Test-HotspotIcsActive {
   $det = Detect-ClumsyConsolePath
@@ -646,6 +652,8 @@ function Get-HotspotAdapterPairForIcs {
 function Apply-HotspotIcsCore($pair) {
   if ($null -eq $pair.Up -or $null -eq $pair.Down) { return $false }
   if (Test-IcsActiveForPair $pair) { return $true }
+  # Win11 Mobile Hotspot NAT is already up - flipping classic Sharing drops console internet.
+  if ((Test-MobileHotspotGateway) -and (Test-TetheringOn)) { return $true }
   $share = New-Object -ComObject HNetCfg.HNetShare
   $connMap = @{}
   foreach ($conn in @($share.EnumEveryConnection())) {
@@ -1000,6 +1008,36 @@ def purge_clumsy_stale_attack_blocks(extra_ips=None, *, for_clumsy_enable: bool 
     return summary
 
 
+def _hotspot_softap_already_online() -> bool:
+    """True when Windows SoftAP gateway 192.168.137.1 / 192.168.173.1 is present."""
+    if os.name != 'nt':
+        return False
+    try:
+        from tools.utils import _windows_subprocess_no_window_kwargs, subprocess_text_kwargs
+
+        proc = subprocess.run(
+            [
+                'powershell',
+                '-NoProfile',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-Command',
+                (
+                    "if (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+                    "Where-Object { $_.IPAddress -in @('192.168.137.1','192.168.173.1') } | "
+                    'Select-Object -First 1) { Write-Output YES } else { Write-Output NO }'
+                ),
+            ],
+            capture_output=True,
+            timeout=20,
+            **subprocess_text_kwargs(),
+            **_windows_subprocess_no_window_kwargs(),
+        )
+        return 'YES' in str(proc.stdout or '').upper()
+    except Exception:
+        return False
+
+
 def prepare_pc_mobile_hotspot() -> Tuple[bool, str]:
     """
     Automated Clumsy-style hotspot prep: start hotspot, enable ICS to it, DHCP firewall rules.
@@ -1290,28 +1328,36 @@ try {{
   }}
 
   if ($ZubcutTopology -eq 'hotspot') {{
-    try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
-    try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
     $pair = @{{ Up=$up; Down=$down }}
-  $alreadyOk = (Test-MobileHotspotGateway) -and (Test-ClumsyHotspotPathReady $pair)
-  if ($alreadyOk) {{
-    Ensure-HotspotDhcpFirewall
-    if (Test-IcsActiveForPair $pair) {{
-      $shareMsg = 'Clumsy mode ready (hotspot sharing already active). Connect your console to the PC hotspot Wi-Fi.'
-    }} else {{
-      $shareMsg = 'Clumsy mode ready (Mobile Hotspot NAT active). Connect your console to the PC hotspot Wi-Fi.'
+    # Leave a working SoftAP alone. Re-applying classic HNetCfg Sharing / restarting icssvc
+    # commonly drops console internet even when Windows Mobile Hotspot was fine.
+    $alreadyOk = (Test-HotspotConsoleReady) -or ((Test-MobileHotspotGateway) -and (Test-ClumsyHotspotPathReady $pair))
+    if (-not $alreadyOk -and (Test-MobileHotspotGateway) -and (Test-TetheringOn)) {{
+      $alreadyOk = $true
     }}
-  }} else {{
+    if ($alreadyOk) {{
+      Ensure-HotspotDhcpFirewall
+      if (Test-IcsActiveForPair $pair) {{
+        $shareMsg = 'Clumsy mode ready (hotspot sharing already active). Connect your console to the PC hotspot Wi-Fi.'
+      }} else {{
+        $shareMsg = 'Clumsy mode ready (Mobile Hotspot NAT active). Connect your console to the PC hotspot Wi-Fi.'
+      }}
+      Write-ClumsyState $up $down $snapshot $shareMsg
+    }} else {{
     if (-not (Test-MobileHotspotGateway)) {{
       throw 'Mobile Hotspot is not active. Turn it on in Windows Settings, then enable Clumsy mode again.'
     }}
+    try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
+    try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
     Ensure-HotspotDhcpFirewall
     if ($ZubcutUplinkKind -eq 'ethernet') {{
       Disconnect-WifiClientWhenEthernetUplink
       Ensure-EthernetPreferredRouting
     }}
     $icsOk = Test-IcsActiveForPair $pair
-    if (-not $icsOk) {{
+    # SoftAP gateway is up but readiness checks failed - still do NOT flip classic Sharing
+    # while Windows tethering reports On (Win11 NAT path). Only apply ICS when tethering is off.
+    if (-not $icsOk -and -not (Test-TetheringOn)) {{
       Apply-HotspotIcsCore $pair | Out-Null
       Start-Sleep -Seconds 2
       $icsOk = (Test-IcsActiveForPair $pair)
@@ -1320,7 +1366,7 @@ try {{
     $natEnabled = $false
     $natAlready = $false
     if (-not $icsOk) {{
-      $natAlready = Test-MobileHotspotOperational
+      $natAlready = (Test-MobileHotspotOperational) -or ((Test-MobileHotspotGateway) -and (Test-TetheringOn))
       if ($natAlready) {{
         Ensure-HotspotDhcpFirewall
         $natEnabled = $true
@@ -1346,8 +1392,8 @@ try {{
         'Clumsy mode ready: ZubCut enabled Mobile Hotspot NAT (Wi-Fi uplink). Classic Sharing was not available on this PC.'
       }}
     }}
-  }}
     Write-ClumsyState $up $down $snapshot $shareMsg
+  }}
   }} else {{
     try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
     try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
@@ -1381,19 +1427,7 @@ try {{
   }}
 }}
 catch {{
-  try {{
-    if ($ZubcutTopology -eq 'hotspot') {{
-      if (-not (Test-HotspotConsoleReady)) {{
-        $pair = Detect-ClumsyConsolePath
-        if ($pair.Ok -and [string]$pair.Path -eq 'hotspot') {{
-          $p = @{{ Up = $pair.Up; Down = $pair.Down }}
-          if (-not (Test-IcsActiveForPair $p)) {{
-            Apply-HotspotIcsCore $p | Out-Null
-          }}
-        }}
-      }}
-    }}
-  }} catch {{}}
+  # Do not Apply-HotspotIcsCore on failure when SoftAP is already up - that drops console internet.
   $em = if ($null -ne $_.Exception) {{ $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }} else {{ $_ | Out-String }}
   JsonOut @{{ ok=$false; error=$em }}
   exit 1
@@ -1404,7 +1438,12 @@ catch {{
     if ok:
         return True, str(payload.get('message') or 'ICS sharing enabled.')
     msg = str(payload.get('error') or '').strip() or str(raw or '').strip() or 'ICS enable failed.'
-    _retry_main_wifi_sharing_for_hotspot()
+    # Only retry ICS apply when SoftAP is not already online (retry itself can break a working hotspot).
+    try:
+        if not _hotspot_softap_already_online():
+            _retry_main_wifi_sharing_for_hotspot()
+    except Exception:
+        pass
     return False, msg
 
 
@@ -1742,7 +1781,7 @@ def maybe_repair_stale_clumsy_ics_on_startup() -> None:
         from tools.clumsy_inline import clumsy_mode_enabled
 
         if clumsy_mode_enabled():
-            # Do not re-run hotspot prep on every launch — that breaks users who already configured sharing.
+            # Do not re-run hotspot prep on every launch - that breaks users who already configured sharing.
             return
     except Exception:
         pass

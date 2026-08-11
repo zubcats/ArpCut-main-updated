@@ -204,15 +204,49 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         helpers = ics._PS_HOTSPOT_HELPERS
         self.assertIn('Test-HotspotConsoleReady', helpers)
         hotspot_idx = src.index("if ($ZubcutTopology -eq 'hotspot')")
-        eth_idx = src.index('} else {', hotspot_idx)
+        eth_marker = "Clumsy: Ethernet console path (ICS already active)"
+        eth_idx = src.index(eth_marker, hotspot_idx)
         hotspot_block = src[hotspot_idx:eth_idx]
         self.assertIn('$alreadyOk', hotspot_block)
         self.assertIn('Test-ClumsyHotspotPathReady', hotspot_block)
+        self.assertIn('Test-HotspotConsoleReady', hotspot_block)
         self.assertIn('sharing already active', hotspot_block)
+        self.assertIn('do NOT flip classic Sharing', hotspot_block)
+        self.assertIn('-not (Test-TetheringOn)', hotspot_block)
         self.assertIn('Apply-HotspotIcsCore', src)
         self.assertNotIn('Prepare-ClumsyHotspotConsole', hotspot_block)
         self.assertNotIn('Apply-HotspotIcsWithTetheringToggle', hotspot_block)
         self.assertNotIn('Ensure-MainWifiSharingForClumsy', hotspot_block)
+
+    def test_path_ready_accepts_tethering_without_dhcp67(self) -> None:
+        helpers = ics._PS_HOTSPOT_HELPERS
+        ready_idx = helpers.index('function Test-ClumsyHotspotPathReady')
+        next_fn = helpers.index('function Set-HotspotDhcpRegistry', ready_idx + 1)
+        ready = helpers[ready_idx:next_fn]
+        self.assertIn('Test-TetheringOn', ready)
+        self.assertIn('without classic HNetCfg', ready)
+
+    def test_apply_ics_core_skips_when_win11_tethering_on(self) -> None:
+        helpers = ics._PS_HOTSPOT_HELPERS
+        core_idx = helpers.index('function Apply-HotspotIcsCore')
+        next_fn = helpers.index('function Apply-HotspotIcs', core_idx + 1)
+        core = helpers[core_idx:next_fn]
+        self.assertIn('Test-TetheringOn', core)
+        self.assertIn('flipping classic Sharing drops console internet', core)
+
+    def test_enable_failure_does_not_retry_ics_when_softap_online(self) -> None:
+        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
+        self.assertIn('_hotspot_softap_already_online', src)
+        self.assertIn('_retry_main_wifi_sharing_for_hotspot', src)
+        self.assertNotIn('Apply-HotspotIcsCore $p | Out-Null', src)
+
+    def test_nat_path_never_restarts_icssvc_while_hotspot_on(self) -> None:
+        helpers = ics._PS_HOTSPOT_HELPERS
+        nat_idx = helpers.index('function Enable-MobileHotspotNatPath')
+        next_fn = helpers.index('function Test-HotspotIcsActive', nat_idx + 1)
+        nat = helpers[nat_idx:next_fn]
+        self.assertNotIn('Restart-Service icssvc', nat)
+        self.assertIn('Never Restart icssvc', nat)
 
     def test_ethernet_enable_skips_ics_when_already_active(self) -> None:
         src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
