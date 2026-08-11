@@ -13,6 +13,9 @@ if _SRC not in sys.path:
 
 from tools.utils import (
     NetFace,
+    _ipconfig_adapter_name_from_header,
+    _ipconfig_line_is_adapter_header,
+    _ipconfig_line_is_host_ipv4,
     _prefer_ipv4,
     get_my_ip,
     resolve_iface_my_ip,
@@ -25,11 +28,86 @@ class TestApipaIp(unittest.TestCase):
         self.assertEqual(_prefer_ipv4('192.168.1.56', '169.254.1.1'), '192.168.1.56')
 
     def test_ipconfig_skips_gateway_line(self) -> None:
-        from tools.utils import _ipconfig_line_is_host_ipv4
-
         self.assertTrue(_ipconfig_line_is_host_ipv4('IPv4 Address. . . . . . : 192.168.1.56'))
         self.assertFalse(_ipconfig_line_is_host_ipv4('Default Gateway . . . . : 192.168.1.1'))
         self.assertFalse(_ipconfig_line_is_host_ipv4('DHCP Server . . . . . : 192.168.1.1'))
+
+    def test_ipconfig_german_locale_host_ipv4(self) -> None:
+        self.assertTrue(
+            _ipconfig_line_is_host_ipv4('IPv4-Adresse. . . . . . . : 192.168.1.56')
+        )
+        self.assertTrue(_ipconfig_line_is_host_ipv4('IP-Adresse. . . . . . . : 192.168.1.56'))
+        self.assertFalse(
+            _ipconfig_line_is_host_ipv4('Standardgateway. . . . . . : 192.168.1.1')
+        )
+        self.assertFalse(
+            _ipconfig_line_is_host_ipv4('DHCP-Server. . . . . . . . : 192.168.1.1')
+        )
+        self.assertFalse(
+            _ipconfig_line_is_host_ipv4('Subnetzmaske. . . . . . . : 255.255.255.0')
+        )
+
+    def test_ipconfig_french_locale_host_ipv4(self) -> None:
+        self.assertTrue(_ipconfig_line_is_host_ipv4('Adresse IPv4. . . . . . . : 192.168.1.56'))
+        self.assertFalse(
+            _ipconfig_line_is_host_ipv4('Passerelle par défaut. . . . : 192.168.1.1')
+        )
+        self.assertFalse(
+            _ipconfig_line_is_host_ipv4('Serveur DHCP. . . . . . . . : 192.168.1.1')
+        )
+        self.assertFalse(
+            _ipconfig_line_is_host_ipv4('Masque de sous-réseau. . . : 255.255.255.0')
+        )
+
+    def test_ipconfig_spanish_locale_host_ipv4(self) -> None:
+        self.assertTrue(
+            _ipconfig_line_is_host_ipv4('Dirección IPv4. . . . . . . : 192.168.1.56')
+        )
+        self.assertTrue(
+            _ipconfig_line_is_host_ipv4('Direccion IPv4. . . . . . . : 192.168.1.56')
+        )
+        self.assertFalse(
+            _ipconfig_line_is_host_ipv4(
+                'Puerta de enlace predeterminada. . . : 192.168.1.1'
+            )
+        )
+        self.assertFalse(
+            _ipconfig_line_is_host_ipv4('Servidor DHCP. . . . . . . . : 192.168.1.1')
+        )
+        self.assertFalse(
+            _ipconfig_line_is_host_ipv4('Máscara de subred. . . . . . : 255.255.255.0')
+        )
+
+    def test_ipconfig_adapter_headers_localized(self) -> None:
+        cases = {
+            'Ethernet adapter Ethernet:': 'Ethernet',
+            'Wireless LAN adapter Wi-Fi:': 'Wi-Fi',
+            'Ethernet-Adapter Ethernet:': 'Ethernet',
+            'Drahtlos-LAN-Adapter WLAN:': 'WLAN',
+            'Adaptador de Ethernet Ethernet:': 'Ethernet',
+            'Adaptador de LAN inalámbrica Wi-Fi:': 'Wi-Fi',
+            'Carte réseau sans fil Wi-Fi:': 'Wi-Fi',
+            'Carte Ethernet Ethernet:': 'Ethernet',
+            'Scheda Ethernet Ethernet:': 'Ethernet',
+        }
+        for header, expect in cases.items():
+            self.assertTrue(
+                _ipconfig_line_is_adapter_header(header), msg=header
+            )
+            self.assertEqual(
+                _ipconfig_adapter_name_from_header(header), expect, msg=header
+            )
+
+        # Property lines must not be treated as adapter section headers.
+        self.assertFalse(
+            _ipconfig_line_is_adapter_header('IPv4 Address. . . . . . : 192.168.1.56')
+        )
+        self.assertFalse(
+            _ipconfig_line_is_adapter_header('Adresse IPv4. . . . . . . : 192.168.1.56')
+        )
+        self.assertFalse(
+            _ipconfig_line_is_adapter_header('Dirección IPv4. . . . . . : 192.168.1.56')
+        )
 
     def test_get_my_ip_skips_apipa_when_dhcp_on_same_iface(self) -> None:
         routes = [

@@ -949,15 +949,15 @@ def get_ifaces():
                 line = line.strip()
                 if not line:
                     continue
-                # Look for adapter name: "Ethernet adapter Ethernet:" (works for localized outputs too)
-                if 'adapter' in line.lower() and ':' in line:
-                    # Extract adapter name (text before the colon)
-                    adapter_name = line.split(':', 1)[0].split()[-1]
-                    if adapter_name:
-                        current_adapter = line.split(':', 1)[0].split('adapter')[-1].strip(' :')
-                        if not current_adapter:
-                            current_adapter = adapter_name
-                        interface_map[current_adapter] = {'ip': '0.0.0.0', 'mac': GLOBAL_MAC, 'guid': None}
+                # Adapter section headers (EN/DE/ES/FR/IT) — not English-only "adapter".
+                if _ipconfig_line_is_adapter_header(line):
+                    current_adapter = _ipconfig_adapter_name_from_header(line)
+                    if current_adapter:
+                        interface_map[current_adapter] = {
+                            'ip': '0.0.0.0',
+                            'mac': GLOBAL_MAC,
+                            'guid': None,
+                        }
                 elif current_adapter:
                     # Only the adapter's own IPv4 — skip gateway/DHCP/DNS/mask lines
                     if not _ipconfig_line_is_host_ipv4(line):
@@ -1257,18 +1257,102 @@ def _prefer_ipv4(current: str, new: str) -> str:
     return nxt or cur
 
 
+# ipconfig /all section headers (EN/DE/ES/FR/IT). Not locale-detection — substring match.
+_IPCONFIG_ADAPTER_HEADER_RE = re.compile(
+    r'(?i)\b(adaptador|adapter|carte|scheda)\b'
+)
+
+
+def _ipconfig_line_is_adapter_header(line: str) -> bool:
+    """True for adapter section titles like 'Wireless LAN adapter Wi-Fi:' / 'Adaptador …:'."""
+    s = (line or '').strip()
+    if not s.endswith(':') or ':' not in s:
+        return False
+    head = s.split(':', 1)[0]
+    low = head.lower()
+    # Property lines can contain ':' on some locales — never treat those as section headers.
+    if any(
+        tok in low
+        for tok in (
+            'ipv4',
+            'ip address',
+            'ip-adresse',
+            'adresse',
+            'direcci',  # dirección / direccion
+            'indirizzo',
+            'gateway',
+            'passerelle',
+            'enlace',
+            'dhcp',
+            'dns',
+            'subnet',
+            'mask',
+            'mascara',
+            'máscara',
+            'suffix',
+            'description',
+            'beschreibung',
+            'descripci',
+        )
+    ):
+        return False
+    return bool(_IPCONFIG_ADAPTER_HEADER_RE.search(head))
+
+
+def _ipconfig_adapter_name_from_header(line: str) -> str:
+    """Friendly adapter name from a localized ipconfig section header."""
+    head = (line or '').split(':', 1)[0].strip()
+    if not head:
+        return ''
+    low = head.lower()
+    for marker in ('adaptador', 'adapter', 'scheda', 'carte'):
+        idx = low.find(marker)
+        if idx < 0:
+            continue
+        rest = head[idx + len(marker) :].strip(' :-')
+        if rest:
+            parts = rest.split()
+            return parts[-1] if parts else rest
+        parts = head.split()
+        return parts[-1] if parts else head
+    parts = head.split()
+    return parts[-1] if parts else head
+
+
 def _ipconfig_line_is_host_ipv4(line: str) -> bool:
     """True only for adapter IPv4 assignment lines — not gateway/DNS/mask."""
     low = (line or '').lower()
+    # Normalize common accented forms so matching stays ASCII-simple.
+    low = (
+        low.replace('á', 'a')
+        .replace('é', 'e')
+        .replace('í', 'i')
+        .replace('ó', 'o')
+        .replace('ú', 'u')
+        .replace('ü', 'u')
+        .replace('ñ', 'n')
+    )
     if any(
         token in low
         for token in (
             'gateway',
+            'standardgateway',  # German
+            'passerelle',  # French
+            'puerta de enlace',  # Spanish
+            'enlace predeterminada',
+            'gateway predefinito',  # Italian
             'dhcp server',
+            'dhcp-server',  # German
+            'serveur dhcp',  # French
+            'servidor dhcp',  # Spanish
+            'server dhcp',  # Italian
             'dns',
             'wins',
             'mask',
             'subnet',
+            'subnetzmaske',  # German
+            'masque',  # French subnet mask
+            'mascara',  # Spanish (accent stripped)
             'route',
         )
     ):
@@ -1278,9 +1362,18 @@ def _ipconfig_line_is_host_ipv4(line: str) -> bool:
         for token in (
             'ipv4 address',
             'ip address',
+            # German: "IPv4-Adresse" / older "IP-Adresse"
+            'ipv4-adresse',
             'ip-adresse',
+            # French: "Adresse IPv4"
             'adresse ipv4',
+            'adresse ip',
+            # Spanish: "Dirección IPv4"
+            'direccion ipv4',
+            'direccion ip',
+            # Italian: "Indirizzo IPv4"
             'indirizzo ipv4',
+            'indirizzo ip',
         )
     )
 
@@ -1889,11 +1982,13 @@ def is_connected(current_iface=None):
                 return False
 
     if sys.platform.startswith('win'):
-        # Windows: check for default gateway via ipconfig
-        ipconfig_output = terminal('ipconfig | findstr /i gateway')
+        # Locale-proof: English "gateway", German Standardgateway, French passerelle,
+        # Spanish "puerta de enlace" — findstr /i gateway alone misses non-English PCs.
+        ipconfig_output = terminal(
+            'ipconfig | findstr /i /c:"gateway" /c:"passerelle" /c:"enlace" /c:"Standardgateway"'
+        )
         if ipconfig_output and ipconfig_output.strip():
-            # Check if output contains IP addresses (digits with dots)
-            if any(c.isdigit() for c in ipconfig_output):
+            if re.search(r'\d{1,3}(?:\.\d{1,3}){3}', ipconfig_output):
                 return True
         # Fallback: check if interface has a valid IP
         if current_iface.ip and current_iface.ip != '0.0.0.0' and current_iface.ip != '127.0.0.1':
