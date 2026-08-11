@@ -109,43 +109,36 @@ $adapter = Get-NetAdapter -Name '{safe}' -ErrorAction SilentlyContinue
 if (-not $adapter) {{ return }}
 if ($adapter.InterfaceDescription -notmatch 'I219|Ethernet Connection') {{ return }}
 
-function Set-Prop($display, $value) {{
-  try {{
-    Set-NetAdapterAdvancedProperty -Name $adapter.Name -DisplayName $display -DisplayValue $value -NoRestart -ErrorAction Stop | Out-Null
-  }} catch {{ }}
-}}
-function Set-PropAny($display, $values) {{
+# RegistryKeyword is locale-proof (DisplayName is translated on DE/FR/ES Windows).
+function Set-ByKeyword($keyword, $values) {{
   foreach ($v in $values) {{
     try {{
-      Set-NetAdapterAdvancedProperty -Name $adapter.Name -DisplayName $display -DisplayValue $v -NoRestart -ErrorAction Stop | Out-Null
+      Set-NetAdapterAdvancedProperty -Name $adapter.Name -RegistryKeyword $keyword -DisplayValue $v -NoRestart -ErrorAction Stop | Out-Null
+      return
+    }} catch {{ }}
+    try {{
+      Set-NetAdapterAdvancedProperty -Name $adapter.Name -RegistryKeyword $keyword -RegistryValue $v -NoRestart -ErrorAction Stop | Out-Null
       return
     }} catch {{ }}
   }}
 }}
 
-Set-PropAny 'PCI Express Link Power Saving' @('Disabled', 'Off')
-Set-PropAny 'Energy Efficient Ethernet'     @('Off','Disabled')
-Set-PropAny 'Gigabit Master Slave Mode'     @('Force Master Mode')
-Set-PropAny 'Green Ethernet'                @('Off','Disabled')
-Set-PropAny 'Ultra Low Power Mode'          @('Off','Disabled')
-Set-PropAny 'Power Saving Mode'             @('Off','Disabled')
-Set-PropAny 'Reduce Speed On Power Down'    @('Off','Disabled')
-Set-PropAny 'System Idle Power Saver'       @('Off','Disabled')
-Set-Prop 'Interrupt Moderation'             'Disabled'
-Set-PropAny 'Interrupt Moderation Rate'     @('Off', 'Disabled', 'Lowest', 'Low')
-Set-PropAny 'Wake on Magic Packet'          @('Disabled', 'Off')
-Set-PropAny 'Wake on Pattern Match'         @('Disabled', 'Off')
-Set-Prop 'Large Send Offload V2 (IPv4)'     'Disabled'
-Set-Prop 'Large Send Offload V2 (IPv6)'     'Disabled'
-Set-PropAny 'Protocol ARP Offload'          @('Disabled', 'Off')
-Set-PropAny 'Protocol NS Offload'           @('Disabled', 'Off')
-Set-Prop 'Flow Control'                     'Disabled'
-Set-Prop 'Receive Side Scaling'             'Enabled'
-Set-Prop 'IPv4 Checksum Offload'            'Rx & Tx Enabled'
-Set-Prop 'TCP Checksum Offload (IPv4)'      'Rx & Tx Enabled'
-Set-Prop 'UDP Checksum Offload (IPv4)'      'Rx & Tx Enabled'
-Set-Prop 'Receive Buffers'                  '2048'
-Set-Prop 'Transmit Buffers'                 '2048'
+Set-ByKeyword '*EEE'                        @('0', 'Off', 'Disabled')
+Set-ByKeyword 'EEE'                         @('0', 'Off', 'Disabled')
+Set-ByKeyword '*InterruptModeration'        @('0', 'Off', 'Disabled')
+Set-ByKeyword '*FlowControl'                @('0', 'Disabled', 'Off')
+Set-ByKeyword '*RSS'                        @('1', 'Enabled', 'On')
+Set-ByKeyword '*LsoV2IPv4'                  @('0', 'Disabled', 'Off')
+Set-ByKeyword '*LsoV2IPv6'                  @('0', 'Disabled', 'Off')
+Set-ByKeyword '*IPChecksumOffloadIPv4'      @('3', 'Rx & Tx Enabled', 'Rx/Tx Enabled')
+Set-ByKeyword '*TCPChecksumOffloadIPv4'     @('3', 'Rx & Tx Enabled', 'Rx/Tx Enabled')
+Set-ByKeyword '*UDPChecksumOffloadIPv4'     @('3', 'Rx & Tx Enabled', 'Rx/Tx Enabled')
+Set-ByKeyword '*WakeOnMagicPacket'          @('0', 'Disabled', 'Off')
+Set-ByKeyword '*WakeOnPattern'              @('0', 'Disabled', 'Off')
+Set-ByKeyword '*ReceiveBuffers'             @('2048')
+Set-ByKeyword '*TransmitBuffers'            @('2048')
+Set-ByKeyword 'ITR'                         @('0', 'Off', 'Disabled', 'Lowest')
+Set-ByKeyword '*PriorityVLANTag'            @('0', 'Disabled', 'Off')
 
 $pmOk = $false
 try {{

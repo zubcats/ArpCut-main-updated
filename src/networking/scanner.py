@@ -765,9 +765,15 @@ class Scanner():
             line = (raw or '').strip()
             if not line:
                 continue
-            low = line.lower()
-            if 'interface:' in low or 'schnittstelle:' in low:
-                continue
+            try:
+                from tools.win_locale import arp_line_is_interface_header
+
+                if arp_line_is_interface_header(line):
+                    continue
+            except Exception:
+                low = line.lower()
+                if 'interface:' in low or 'schnittstelle:' in low or 'interfaz:' in low:
+                    continue
             parts = line.split()
             if len(parts) >= 2:
                 if parts[0] == want_ip:

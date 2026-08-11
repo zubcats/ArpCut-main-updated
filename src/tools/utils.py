@@ -119,16 +119,9 @@ def run_command(command, *, shell=True, timeout=None, check=False):
 
 def _is_bad_iface_display_name(s: str) -> bool:
     """True if netsh/ipconfig gave a useless label (e.g. 'Description', state words, generic stubs)."""
-    t = (s or '').strip().lower()
-    if not t:
-        return True
-    if t == 'description' or t.startswith('description'):
-        return True
-    if t in ('connected', 'disconnected', 'enabled', 'disabled', 'dedicated'):
-        return True
-    if re.match(r'^interface-\d+$', t):
-        return True
-    return False
+    from tools.win_locale import is_bad_iface_display_name
+
+    return is_bad_iface_display_name(s)
 
 
 _VPN_VIRTUAL_IFACE_NEEDLES = (
@@ -369,17 +362,11 @@ def get_gateway_mac(iface_ip, router_ip, *, allow_scapy_probe: bool = True):
         
         if response:
             # Parse Windows ARP output: "  IP_ADDRESS      MAC_ADDRESS      TYPE"
+            from tools.win_locale import arp_line_is_interface_header
+
             for line in response.split('\n'):
                 line = line.strip()
-                low = line.lower()
-                # Locale-agnostic section headers (EN/DE/ES/FR).
-                if (
-                    not line
-                    or low.startswith('interface:')
-                    or low.startswith('schnittstelle:')
-                    or low.startswith('interfaz:')
-                    or low.startswith('interface :')  # FR spacing variant
-                ):
+                if not line or arp_line_is_interface_header(line):
                     continue
                 parts = line.split()
                 if len(parts) >= 2 and parts[0] == router_ip:
@@ -462,9 +449,11 @@ def lookup_mac_from_arp_table(ip: str, iface_ip: str | None = None) -> str:
         else:
             response = terminal(f'arp -a {ip}')
         if response:
+            from tools.win_locale import arp_line_is_interface_header
+
             for line in response.split('\n'):
                 line = line.strip()
-                if not line or 'Interface:' in line:
+                if not line or arp_line_is_interface_header(line):
                     continue
                 parts = line.split()
                 if len(parts) >= 2 and parts[0] == ip:
@@ -806,9 +795,19 @@ def lookup_ip_from_arp_table(mac: str, iface_ip: str | None = None) -> str:
         else:
             response = terminal('arp -a')
         if response:
+            from tools.win_locale import arp_line_is_interface_header, fold_latin
+
             for line in response.split('\n'):
                 line = line.strip()
-                if not line or 'Interface:' in line or 'Internet Address' in line:
+                low = fold_latin(line)
+                if (
+                    not line
+                    or arp_line_is_interface_header(line)
+                    or 'internet address' in low
+                    or 'adresse internet' in low
+                    or 'direccion de internet' in low
+                    or 'internetadresse' in low
+                ):
                     continue
                 parts = line.split()
                 if len(parts) >= 2:
@@ -1257,125 +1256,25 @@ def _prefer_ipv4(current: str, new: str) -> str:
     return nxt or cur
 
 
-# ipconfig /all section headers (EN/DE/ES/FR/IT). Not locale-detection — substring match.
-_IPCONFIG_ADAPTER_HEADER_RE = re.compile(
-    r'(?i)\b(adaptador|adapter|carte|scheda)\b'
-)
-
-
 def _ipconfig_line_is_adapter_header(line: str) -> bool:
-    """True for adapter section titles like 'Wireless LAN adapter Wi-Fi:' / 'Adaptador …:'."""
-    s = (line or '').strip()
-    if not s.endswith(':') or ':' not in s:
-        return False
-    head = s.split(':', 1)[0]
-    low = head.lower()
-    # Property lines can contain ':' on some locales — never treat those as section headers.
-    if any(
-        tok in low
-        for tok in (
-            'ipv4',
-            'ip address',
-            'ip-adresse',
-            'adresse',
-            'direcci',  # dirección / direccion
-            'indirizzo',
-            'gateway',
-            'passerelle',
-            'enlace',
-            'dhcp',
-            'dns',
-            'subnet',
-            'mask',
-            'mascara',
-            'máscara',
-            'suffix',
-            'description',
-            'beschreibung',
-            'descripci',
-        )
-    ):
-        return False
-    return bool(_IPCONFIG_ADAPTER_HEADER_RE.search(head))
+    """True for adapter section titles (EN/DE/FR/ES)."""
+    from tools.win_locale import ipconfig_line_is_adapter_header
+
+    return ipconfig_line_is_adapter_header(line)
 
 
 def _ipconfig_adapter_name_from_header(line: str) -> str:
     """Friendly adapter name from a localized ipconfig section header."""
-    head = (line or '').split(':', 1)[0].strip()
-    if not head:
-        return ''
-    low = head.lower()
-    for marker in ('adaptador', 'adapter', 'scheda', 'carte'):
-        idx = low.find(marker)
-        if idx < 0:
-            continue
-        rest = head[idx + len(marker) :].strip(' :-')
-        if rest:
-            parts = rest.split()
-            return parts[-1] if parts else rest
-        parts = head.split()
-        return parts[-1] if parts else head
-    parts = head.split()
-    return parts[-1] if parts else head
+    from tools.win_locale import ipconfig_adapter_name_from_header
+
+    return ipconfig_adapter_name_from_header(line)
 
 
 def _ipconfig_line_is_host_ipv4(line: str) -> bool:
     """True only for adapter IPv4 assignment lines — not gateway/DNS/mask."""
-    low = (line or '').lower()
-    # Normalize common accented forms so matching stays ASCII-simple.
-    low = (
-        low.replace('á', 'a')
-        .replace('é', 'e')
-        .replace('í', 'i')
-        .replace('ó', 'o')
-        .replace('ú', 'u')
-        .replace('ü', 'u')
-        .replace('ñ', 'n')
-    )
-    if any(
-        token in low
-        for token in (
-            'gateway',
-            'standardgateway',  # German
-            'passerelle',  # French
-            'puerta de enlace',  # Spanish
-            'enlace predeterminada',
-            'gateway predefinito',  # Italian
-            'dhcp server',
-            'dhcp-server',  # German
-            'serveur dhcp',  # French
-            'servidor dhcp',  # Spanish
-            'server dhcp',  # Italian
-            'dns',
-            'wins',
-            'mask',
-            'subnet',
-            'subnetzmaske',  # German
-            'masque',  # French subnet mask
-            'mascara',  # Spanish (accent stripped)
-            'route',
-        )
-    ):
-        return False
-    return any(
-        token in low
-        for token in (
-            'ipv4 address',
-            'ip address',
-            # German: "IPv4-Adresse" / older "IP-Adresse"
-            'ipv4-adresse',
-            'ip-adresse',
-            # French: "Adresse IPv4"
-            'adresse ipv4',
-            'adresse ip',
-            # Spanish: "Dirección IPv4"
-            'direccion ipv4',
-            'direccion ip',
-            # Italian: "Indirizzo IPv4"
-            'indirizzo ipv4',
-            'indirizzo ip',
-        )
-    )
+    from tools.win_locale import ipconfig_line_is_host_ipv4
+
+    return ipconfig_line_is_host_ipv4(line)
 
 
 def _mask_prefix_len(mask_value) -> int:
@@ -1982,11 +1881,9 @@ def is_connected(current_iface=None):
                 return False
 
     if sys.platform.startswith('win'):
-        # Locale-proof: English "gateway", German Standardgateway, French passerelle,
-        # Spanish "puerta de enlace" — findstr /i gateway alone misses non-English PCs.
-        ipconfig_output = terminal(
-            'ipconfig | findstr /i /c:"gateway" /c:"passerelle" /c:"enlace" /c:"Standardgateway"'
-        )
+        from tools.win_locale import ipconfig_gateway_findstr_command
+
+        ipconfig_output = terminal(ipconfig_gateway_findstr_command())
         if ipconfig_output and ipconfig_output.strip():
             if re.search(r'\d{1,3}(?:\.\d{1,3}){3}', ipconfig_output):
                 return True
