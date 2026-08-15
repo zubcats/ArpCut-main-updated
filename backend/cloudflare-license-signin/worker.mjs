@@ -361,6 +361,51 @@ export default {
       return jsonResponse({ ok: true });
     }
 
+      if (path === '/admin/accounts/list') {
+        const expected = env.ADMIN_SECRET;
+        const okSecret = await adminSecretOk(String(body?.secret ?? ''), expected);
+        if (!okSecret) {
+          return jsonResponse({ ok: false, error: 'Unauthorized.' }, 401);
+        }
+        if (!kv) {
+          return jsonResponse({ ok: false, error: 'Server misconfigured (no KV).' }, 500);
+        }
+        const includeBundles = Boolean(body?.include_bundles);
+        const accounts = [];
+        const bundles = [];
+        let cursor;
+        do {
+          const page = await kv.list({ cursor, limit: 1000 });
+          for (const key of page.keys || []) {
+            const name = String(key?.name || '');
+            if (!name || name.startsWith('crash:') || name.startsWith('crashrate:') || name.startsWith('__')) {
+              continue;
+            }
+            accounts.push(name);
+            if (includeBundles) {
+              try {
+                const raw = await kv.get(name, { type: 'text' });
+                if (!raw) continue;
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === 'object' && parsed.license) {
+                  bundles.push(parsed);
+                }
+              } catch {
+                // skip corrupt rows
+              }
+            }
+          }
+          cursor = page.list_complete ? undefined : page.cursor;
+        } while (cursor);
+        accounts.sort();
+        return jsonResponse({
+          ok: true,
+          accounts,
+          total: accounts.length,
+          ...(includeBundles ? { bundles } : {}),
+        });
+      }
+
       if (path === '/admin/crashes/list') {
         const expected = env.ADMIN_SECRET;
         const okSecret = await adminSecretOk(String(body?.secret ?? ''), expected);

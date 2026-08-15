@@ -273,3 +273,59 @@ def delete_account_from_worker(account_key: str) -> tuple[bool, str]:
 
     err = str((body or {}).get('error') or 'Delete failed').strip() if isinstance(body, dict) else 'Delete failed'
     return False, err
+
+
+def pull_accounts_from_worker() -> tuple[bool, str, int]:
+    """
+    POST /admin/accounts/list with include_bundles=true, merge into local admin DB.
+
+    Returns (ok, message, imported_count).
+    """
+    s = load_cloud_sync_settings()
+    base = _normalize_worker_base(str(s.get('worker_base_url') or ''))
+    secret = str(s.get('admin_secret') or '')
+    if not base.startswith('https://'):
+        return False, 'Set Worker base URL and Save cloud settings first.', 0
+    if not secret:
+        return False, 'Set Admin secret and Save cloud settings first.', 0
+
+    url = f'{base}/admin/accounts/list'
+    try:
+        r = requests.post(
+            url,
+            json={'secret': secret, 'include_bundles': True},
+            headers=worker_http_headers(),
+            timeout=90,
+        )
+    except requests.RequestException as e:
+        return False, f'Could not reach Worker: {e}', 0
+
+    try:
+        body = r.json()
+    except Exception:
+        return False, f'Worker returned HTTP {r.status_code} (not JSON).', 0
+
+    if not isinstance(body, dict) or not body.get('ok'):
+        err = str((body or {}).get('error') or 'List failed').strip() if isinstance(body, dict) else 'List failed'
+        if r.status_code in (401, 403):
+            return False, format_worker_api_error(r.status_code, err), 0
+        if r.status_code == 404:
+            return (
+                False,
+                'Worker does not support /admin/accounts/list yet — redeploy cloudflare-license-signin.',
+                0,
+            )
+        return False, err, 0
+
+    bundles = body.get('bundles')
+    if not isinstance(bundles, list):
+        bundles = []
+    from tools.license_admin import import_license_records_from_kv_bundles
+
+    imported, skipped = import_license_records_from_kv_bundles(bundles)
+    total = int(body.get('total') or len(bundles))
+    return (
+        True,
+        f'Pulled {imported} account(s) from cloud ({total} listed, {skipped} skipped).',
+        imported,
+    )
