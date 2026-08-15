@@ -12,6 +12,16 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 - **Right:** Unicast poison only (`_poison_frames` → victim MAC + router MAC), with both
   ARP *request* (`op=1`) and *reply* (`op=2`) to each.
 
+## Clumsy enable must not break a working hotspot
+
+- **Wrong:** Start `RemoteAccess`, set `IPEnableRouter=1`, rewrite ICS firewall rules, or
+  disable kernel forwarding on the Clumsy restart when SoftAP is already up.
+  Hotspot and Sharing stay "on" but the PS5 loses internet.
+- **Wrong:** Heal/ARP as `192.168.137.1` using the uplink Wi‑Fi MAC (Settings iface).
+- **Right:** If Mobile Hotspot is already ready, only write Clumsy state. Bind heal/ARP
+  to the SoftAP adapter. Skip startup `ensure_home_lan_mitm_forwarding_off` while
+  Clumsy is on.
+
 ## Home LAN IP forwarding
 
 - **Wrong:** `netsh interface ipv4 set global forwarding=…` — invalid; does nothing.

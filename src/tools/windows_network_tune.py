@@ -82,9 +82,19 @@ def ensure_home_lan_mitm_forwarding_off() -> None:
     """
     Home LAN Kill/Lag/Dupe cut requires kernel IP forwarding OFF when no forwarder owns relay.
     Replaces manual Repair-ZubCut-Home-Lan-Mitm.ps1.
+
+    Skip when Clumsy/hotspot is on: disabling IPEnableRouter + per-iface forwarding
+    drops PS5 internet while Mobile Hotspot / Sharing still look enabled.
     """
     if not sys.platform.startswith('win') or not _is_admin():
         return
+    try:
+        from tools.clumsy_inline import clumsy_mode_enabled
+
+        if clumsy_mode_enabled():
+            return
+    except Exception:
+        pass
     try:
         from networking.killer import disable_ip_forwarding
 
