@@ -525,15 +525,19 @@ class ControlPanelWindow(QMainWindow):
         reply = QMessageBox.warning(
             self,
             'Rotate signing key',
-            'This creates a NEW license signing key and re-signs all local accounts.\n\n'
-            'You must then update GitHub secret LICENSE_PUBLIC_KEY_B64 to the new public key '
-            'and rebuild ZubCut, or customer sign-in will fail.\n\nContinue?',
+            'This creates a NEW license signing key and leaves existing accounts on their '
+            'old signatures so current installs keep working.\n\n'
+            'New and renewed accounts need a ZubCut build that accepts both keys. Set '
+            'GitHub secret LICENSE_PUBLIC_KEY_B64 to the new public key and leave '
+            'PAID_LICENSE_PUBLIC_KEY_B64 unchanged, then rebuild.\n\n'
+            'Do not re-sign existing accounts unless you want to force everyone to update.\n\n'
+            'Continue?',
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
-        ok, msg, pub = rotate_signing_key(re_sign_licenses=True)
+        ok, msg, pub = rotate_signing_key(re_sign_licenses=False)
         if not ok:
             QMessageBox.warning(self, 'Rotate signing key', msg)
             return

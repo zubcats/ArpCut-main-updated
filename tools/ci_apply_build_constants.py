@@ -5,8 +5,10 @@ Patch src/constants.py after CI copies .github/ci-blessed/constants.py.
 Git branch ``main`` is the stable / production line. UPDATE_CHANNEL in binaries
 stays ``main``; workflow_dispatch may pass ``stable`` as an alias for ``main``.
 
-Secrets: LICENSE_PUBLIC_KEY_B64 (or PAID_LICENSE_PUBLIC_KEY_B64), LICENSE_SIGNIN_URL,
-optional CRASH_INGEST_TOKEN (baked into experimental/main builds for POST /crash).
+Secrets: LICENSE_PUBLIC_KEY_B64 (or PAID_LICENSE_PUBLIC_KEY_B64), optional
+LICENSE_PUBLIC_KEY_B64_PREV (previous verify key so old licenses still work),
+LICENSE_SIGNIN_URL, optional CRASH_INGEST_TOKEN (baked into experimental/main
+builds for POST /crash).
 """
 from __future__ import annotations
 
@@ -44,6 +46,7 @@ def main() -> None:
     main_url = os.getenv("UPDATE_URL_MAIN", "")
     experimental_url = os.getenv("UPDATE_URL_EXPERIMENTAL", "")
     lic_pubkey = os.getenv("LICENSE_PUBLIC_KEY_B64", "").strip()
+    lic_pubkey_prev = os.getenv("LICENSE_PUBLIC_KEY_B64_PREV", "").strip()
     signin_url = os.getenv("LICENSE_SIGNIN_URL", "").strip()
     crash_ingest = os.getenv("CRASH_INGEST_TOKEN", "").strip()
 
@@ -70,12 +73,24 @@ def main() -> None:
     if channel in ("main", "experimental") and lic_pubkey:
         if "LICENSE_PUBLIC_KEY_B64" not in txt:
             raise SystemExit("constants.py is missing LICENSE_PUBLIC_KEY_B64; cannot inject signing key.")
+        # Negative lookahead so LICENSE_PUBLIC_KEY_B64_PREV is not overwritten.
         txt = re.sub(
-            r"^LICENSE_PUBLIC_KEY_B64\s*=.*$",
+            r"^LICENSE_PUBLIC_KEY_B64(?!_PREV)\s*=.*$",
             f"LICENSE_PUBLIC_KEY_B64 = {lic_pubkey!r}",
             txt,
             flags=re.M,
         )
+        if lic_pubkey_prev:
+            if "LICENSE_PUBLIC_KEY_B64_PREV" not in txt:
+                raise SystemExit(
+                    "constants.py is missing LICENSE_PUBLIC_KEY_B64_PREV; cannot inject previous verify key."
+                )
+            txt = re.sub(
+                r"^LICENSE_PUBLIC_KEY_B64_PREV\s*=.*$",
+                f"LICENSE_PUBLIC_KEY_B64_PREV = {lic_pubkey_prev!r}",
+                txt,
+                flags=re.M,
+            )
 
     if signin_url:
         if "LICENSE_SIGNIN_URL" not in txt:

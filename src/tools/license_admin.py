@@ -63,9 +63,9 @@ def _load_signing_key(*, allow_generate: bool | None = None) -> SigningKey:
             allow_generate = True
     if not allow_generate:
         raise FileNotFoundError(
-            'Signing key is missing (%s). Restore paid-license-signing.key from backup '
-            'before creating or renewing accounts — generating a new key would not match '
-            'existing ZubCut builds.'
+            'Signing key is missing (%s). Restore paid-license-signing.key from backup, '
+            'or use Rotate signing key (keep existing accounts) after a dual-key ZubCut '
+            'build is shipping — a silent new key would not match already-installed builds.'
             % PAID_LICENSE_ADMIN_SIGNING_KEY_PATH
         )
     key = SigningKey.generate()
@@ -118,7 +118,8 @@ def rotate_signing_key(*, re_sign_licenses: bool = True) -> tuple[bool, str, str
     """
     Generate a new Ed25519 signing key (DPAPI-wrapped) and optionally re-sign all licenses.
 
-    Returns (ok, message, new_public_key_b64). Update CI LICENSE_PUBLIC_KEY_B64 to the new pubkey.
+    Returns (ok, message, new_public_key_b64). Set GitHub secret LICENSE_PUBLIC_KEY_B64
+    to the new pubkey and keep PAID_LICENSE_PUBLIC_KEY_B64 as the previous verify key.
     """
     path = PAID_LICENSE_ADMIN_SIGNING_KEY_PATH
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -138,13 +139,17 @@ def rotate_signing_key(*, re_sign_licenses: bool = True) -> tuple[bool, str, str
         return (
             True,
             f'New signing key saved. Re-signed {n} license(s). '
-            'Update GitHub secret LICENSE_PUBLIC_KEY_B64 and rebuild ZubCut with the new public key.',
+            'Set GitHub secret LICENSE_PUBLIC_KEY_B64 to the new public key, keep '
+            'PAID_LICENSE_PUBLIC_KEY_B64 as the previous key, and rebuild ZubCut.',
             pub,
         )
     return (
         True,
-        'New signing key saved (licenses not re-signed — existing signatures are now invalid). '
-        'Update GitHub secret LICENSE_PUBLIC_KEY_B64 and rebuild ZubCut.',
+        'New signing key saved. Existing accounts were left on the old signatures '
+        '(they keep working on current installs). New and renewed accounts need a '
+        'ZubCut build that includes both verify keys. Set GitHub secret '
+        'LICENSE_PUBLIC_KEY_B64 to the new public key and leave '
+        'PAID_LICENSE_PUBLIC_KEY_B64 unchanged.',
         pub,
     )
 

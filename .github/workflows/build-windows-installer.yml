@@ -73,8 +73,10 @@ jobs:
           REQUESTED_CHANNEL: ${{ github.event.inputs.release_channel || '' }}
           UPDATE_URL_MAIN: ${{ vars.UPDATE_DOWNLOAD_URL_MAIN }}
           UPDATE_URL_EXPERIMENTAL: ${{ vars.UPDATE_DOWNLOAD_URL_EXPERIMENTAL }}
-          # Prefer LICENSE_PUBLIC_KEY_B64; fall back during migration from PAID_LICENSE_PUBLIC_KEY_B64.
+          # Current key: LICENSE_PUBLIC_KEY_B64. Previous key stays in PAID_LICENSE_PUBLIC_KEY_B64
+          # so existing accounts keep working on new builds without a forced update.
           LICENSE_PUBLIC_KEY_B64: ${{ secrets.LICENSE_PUBLIC_KEY_B64 || secrets.PAID_LICENSE_PUBLIC_KEY_B64 }}
+          LICENSE_PUBLIC_KEY_B64_PREV: ${{ secrets.LICENSE_PUBLIC_KEY_B64_PREV || secrets.PAID_LICENSE_PUBLIC_KEY_B64 }}
           LICENSE_SIGNIN_URL: ${{ secrets.LICENSE_SIGNIN_URL }}
           CRASH_INGEST_TOKEN: ${{ secrets.CRASH_INGEST_TOKEN }}
         run: python tools/ci_apply_build_constants.py

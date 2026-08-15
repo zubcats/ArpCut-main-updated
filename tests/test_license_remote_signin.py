@@ -179,9 +179,13 @@ class TestLicenseRemoteSignin(unittest.TestCase):
         import tempfile
 
         old = lo.LICENSE_PUBLIC_KEY_B64
+        old_prev = getattr(lo, 'LICENSE_PUBLIC_KEY_B64_PREV', '')
         old_path = lo.LICENSE_FILE_PATH
+        old_env = os.environ.pop('ZUBCUT_LICENSE_PUBLIC_KEY_B64', None)
+        old_env_prev = os.environ.pop('ZUBCUT_LICENSE_PUBLIC_KEY_B64_PREV', None)
         try:
             lo.LICENSE_PUBLIC_KEY_B64 = 'built-in-key'
+            lo.LICENSE_PUBLIC_KEY_B64_PREV = ''
             tmp = tempfile.mkdtemp()
             lic = os.path.join(tmp, 'zubcut-license.json')
             lo.LICENSE_FILE_PATH = lic
@@ -191,7 +195,16 @@ class TestLicenseRemoteSignin(unittest.TestCase):
             self.assertEqual(lo._effective_public_key_b64(), 'built-in-key')
         finally:
             lo.LICENSE_PUBLIC_KEY_B64 = old
+            lo.LICENSE_PUBLIC_KEY_B64_PREV = old_prev
             lo.LICENSE_FILE_PATH = old_path
+            if old_env is None:
+                os.environ.pop('ZUBCUT_LICENSE_PUBLIC_KEY_B64', None)
+            else:
+                os.environ['ZUBCUT_LICENSE_PUBLIC_KEY_B64'] = old_env
+            if old_env_prev is None:
+                os.environ.pop('ZUBCUT_LICENSE_PUBLIC_KEY_B64_PREV', None)
+            else:
+                os.environ['ZUBCUT_LICENSE_PUBLIC_KEY_B64_PREV'] = old_env_prev
 
     def test_fetch_remote_verify_key(self) -> None:
         from tools import license_remote_signin as lrs
