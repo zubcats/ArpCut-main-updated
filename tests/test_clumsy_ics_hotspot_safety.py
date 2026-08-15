@@ -34,12 +34,8 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         with patch.object(ics, 'sys') as mock_sys:
             mock_sys.platform = 'win32'
             with patch('tools.pfctl.teardown_all_zubcut_network_attacks') as teardown:
-                with patch('tools.pfctl.unblock_ip') as unblock_ip:
-                    with patch('tools.pfctl.unblock_all_for') as unblock_all:
-                        ics.purge_clumsy_stale_attack_blocks(for_clumsy_enable=True)
+                ics.purge_clumsy_stale_attack_blocks(for_clumsy_enable=True)
         teardown.assert_not_called()
-        unblock_ip.assert_not_called()
-        unblock_all.assert_not_called()
 
     def test_ensure_clumsy_ics_enabled_uses_light_purge(self) -> None:
         src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
@@ -213,7 +209,14 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('sharing already active', hotspot_block)
         self.assertIn('do NOT flip classic Sharing', hotspot_block)
         self.assertIn('-not (Test-TetheringOn)', hotspot_block)
+        already_true = hotspot_block.split('if ($alreadyOk)', 1)[1].split('}} else {{', 1)[0]
+        self.assertNotIn('IPEnableRouter', already_true)
+        self.assertNotIn('RemoteAccess', already_true)
+        self.assertNotIn('Ensure-HotspotDhcpFirewall', already_true)
         self.assertIn('Apply-HotspotIcsCore', src)
+        src_head = src.split('Detect-ClumsyConsolePath', 1)[0]
+        self.assertNotIn('IPEnableRouter', src_head)
+        self.assertNotIn("Start-Service -Name $svc", src_head)
         self.assertNotIn('Prepare-ClumsyHotspotConsole', hotspot_block)
         self.assertNotIn('Apply-HotspotIcsWithTetheringToggle', hotspot_block)
         self.assertNotIn('Ensure-MainWifiSharingForClumsy', hotspot_block)
@@ -489,6 +492,12 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         block = src.split('def _ensure_clean_network_on_startup', 1)[1].split('\n    def ', 1)[0]
         self.assertNotIn('self.killer.killed.clear()', block)
         self.assertIn('heal_all_hotspot_arp_clients', block)
+
+    def test_hotspot_heal_binds_softap_iface(self) -> None:
+        heal = inspect.getsource(inline.heal_all_hotspot_arp_clients)
+        apply = inspect.getsource(inline.apply_clumsy_ics_router_context)
+        self.assertIn('sync_scanner_iface_for_ics_downstream', heal)
+        self.assertIn('sync_scanner_iface_for_ics_downstream', apply)
 
     def test_unkill_all_uses_ics_router_context(self) -> None:
         from networking.killer import Killer

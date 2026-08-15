@@ -105,6 +105,7 @@ class TestIpForwardingMitm(unittest.TestCase):
             )
         ]
         self.assertIn('disable_ip_forwarding(blocking=True)', block)
+        self.assertIn('clumsy_mode_enabled', block)
 
     def test_iface_indexes_from_netsh_parses_idx(self) -> None:
         path = os.path.join(_SRC, 'networking', 'killer.py')

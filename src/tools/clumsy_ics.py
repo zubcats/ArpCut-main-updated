@@ -1210,15 +1210,8 @@ function EnableSharingSafe([object]$cfg, [int]$sharingKind) {{
   throw 'EnableSharing failed after retries.'
 }}
 try {{
-  # ICS / sharing: start related services (best-effort; do not change startup types).
-  foreach ($svc in @('RemoteAccess', 'SharedAccess', 'NlaSvc')) {{
-    try {{ Start-Service -Name $svc -ErrorAction SilentlyContinue }} catch {{}}
-  }}
-
-  try {{
-    Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' -Name IPEnableRouter -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-  }} catch {{}}
-
+  # Detect first. Starting RRAS or flipping kernel forwarding before that
+  # drops console internet while hotspot/ICS still look "on".
   $detect = Detect-ClumsyConsolePath
   if (-not $detect.Ok) {{
     JsonOut @{{ ok=$false; error=$detect.Error }}
@@ -1336,7 +1329,6 @@ try {{
       $alreadyOk = $true
     }}
     if ($alreadyOk) {{
-      Ensure-HotspotDhcpFirewall
       if (Test-IcsActiveForPair $pair) {{
         $shareMsg = 'Clumsy mode ready (hotspot sharing already active). Connect your console to the PC hotspot Wi-Fi.'
       }} else {{
@@ -1347,6 +1339,7 @@ try {{
     if (-not (Test-MobileHotspotGateway)) {{
       throw 'Mobile Hotspot is not active. Turn it on in Windows Settings, then enable Clumsy mode again.'
     }}
+    try {{ Start-Service SharedAccess -ErrorAction SilentlyContinue }} catch {{}}
     try {{ Set-NetConnectionProfile -InterfaceIndex $up.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
     try {{ Set-NetConnectionProfile -InterfaceIndex $down.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue }} catch {{}}
     Ensure-HotspotDhcpFirewall

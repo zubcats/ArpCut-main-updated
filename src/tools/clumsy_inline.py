@@ -814,6 +814,12 @@ def apply_clumsy_ics_router_context(scanner: Scanner, killer, victim_ip: str) ->
         return False
     if not victim_on_clumsy_ics_subnet(victim_ip):
         return False
+    # Settings iface is usually the uplink Wi-Fi. Advertising that MAC as
+    # 192.168.137.1 poisons the PS5 gateway without turning hotspot/ICS off.
+    try:
+        sync_scanner_iface_for_ics_downstream(scanner)
+    except Exception:
+        pass
     # Prefer victim's SoftAP subnet (173 vs 137) over stale ICS state / leftover .1.
     prefix = resolve_ics_downstream_prefix(victim_ip)
     gw = str(read_clumsy_ics_state().get('downstream_ipv4') or '').strip()
@@ -914,6 +920,10 @@ def heal_all_hotspot_arp_clients(
     gw = str(read_clumsy_ics_state().get('downstream_ipv4') or '').strip()
     if not gw or not gw.startswith(prefix.rstrip('.')):
         gw = prefix.rstrip('.') + '.1'
+    try:
+        sync_scanner_iface_for_ics_downstream(scanner)
+    except Exception:
+        pass
     try:
         apply_clumsy_ics_router_context(scanner, killer, gw)
     except Exception:
