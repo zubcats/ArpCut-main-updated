@@ -234,6 +234,12 @@ class TestZubcutNpcapDllBootstrap(unittest.TestCase):
 
 
 class TestWindivertStaleServiceRepair(unittest.TestCase):
+    def setUp(self) -> None:
+        from tools import ics_windivert_shaper as wd
+
+        # Session dedupe is process-wide; isolate each case.
+        wd._WD_SERVICE_REPAIR_DONE = False
+
     def test_deletes_temp_image_path_even_if_file_exists(self) -> None:
         from tools import ics_windivert_shaper as wd
 
