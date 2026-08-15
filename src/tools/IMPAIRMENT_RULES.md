@@ -47,7 +47,7 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 
 | Device path | Use | Do not use |
 |-------------|-----|------------|
-| Hotspot / ethernet-console client (downstream subnet) | WinDivert gate | ARP MITM, `block_ip`, MITM forwarder |
+| Hotspot / ethernet-console client (downstream subnet) | WinDivert gate | ARP MITM, `block_ip`, MITM forwarder, `stack_arp` |
 | Home LAN (regular) | ARP MITM + `block_ip` + forwarder | WinDivert for that victim |
 
 Classify with `classify_device_impairment()` — do not duplicate checks with

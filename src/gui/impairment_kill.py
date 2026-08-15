@@ -507,7 +507,7 @@ class ImpairmentKillMixin:
                             and str(gate.victim_ip or '').strip() == resolved_ip
                         ):
                             _mark('windivert_instant')
-                            # Preblock opened WinDivert; still run full hotspot Kill stack (ICS-ARP + profile).
+                            # Preblock opened WinDivert; arm Kill profile (WinDivert pause only).
                             kill_applied = bool(self._apply_ics_client_block(device, 'both'))
                         else:
                             kill_applied = bool(self._apply_victim_block(device, 'both'))
