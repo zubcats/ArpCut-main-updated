@@ -36,6 +36,8 @@ class TestCrashIngestTokenWiring(unittest.TestCase):
         src = script.read_text(encoding='utf-8')
         self.assertIn('CRASH_INGEST_TOKEN', src)
         self.assertIn('os.getenv("CRASH_INGEST_TOKEN"', src)
+        self.assertIn('LICENSE_PUBLIC_KEY_B64_PREV', src)
+        self.assertIn('LICENSE_PUBLIC_KEY_B64(?!_PREV)', src)
 
         sample = (
             "UPDATE_CHANNEL = 'experimental'\n"
@@ -74,6 +76,11 @@ class TestCrashIngestTokenWiring(unittest.TestCase):
                 flags=re.M,
             )
             self.assertIn("CRASH_INGEST_TOKEN = 'ci-token-value'", txt)
+
+    def test_build_workflows_inject_previous_verify_key(self) -> None:
+        for name in ('build-windows-installer.yml', 'build-release.yml'):
+            text = (Path(_ROOT) / '.github' / 'workflows' / name).read_text(encoding='utf-8')
+            self.assertIn('LICENSE_PUBLIC_KEY_B64_PREV', text, name)
 
     def test_set_script_exists(self) -> None:
         path = Path(_ROOT) / 'tools' / 'set_crash_ingest_token.sh'

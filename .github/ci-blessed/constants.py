@@ -51,6 +51,9 @@ SETTINGS_PATH = path.join(DOCUMENTS_PATH, 'zubcut.json')
 LICENSE_FILE_PATH = path.join(DOCUMENTS_PATH, 'zubcut-license.json')
 # CI injects from secret LICENSE_PUBLIC_KEY_B64 (Ed25519 verify key, base64).
 LICENSE_PUBLIC_KEY_B64 = ''
+# Previous verify key (CI: LICENSE_PUBLIC_KEY_B64_PREV or PAID_LICENSE_PUBLIC_KEY_B64).
+# New builds accept signatures from either key so existing accounts keep working.
+LICENSE_PUBLIC_KEY_B64_PREV = ''
 # License sign-in HTTPS URL. Override at runtime with ZUBCUT_LICENSE_SIGNIN_URL.
 LICENSE_SIGNIN_URL = 'https://zubcut-license-signin.zubcats.workers.dev'
 # Crash report HTTPS URL (POST /crash). Defaults to LICENSE_SIGNIN_URL; override with ZUBCUT_CRASH_REPORT_URL.

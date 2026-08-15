@@ -20,10 +20,15 @@ _LEGACY_LICENSE_BASENAME = 'paid-license.json'
 
 try:
     from constants import LICENSE_FILE_PATH, LICENSE_PUBLIC_KEY_B64
+    try:
+        from constants import LICENSE_PUBLIC_KEY_B64_PREV
+    except Exception:
+        LICENSE_PUBLIC_KEY_B64_PREV = ''
 except Exception:
     _appdata = os.path.join(os.environ.get('APPDATA', ''), 'ZubCut')
     LICENSE_FILE_PATH = os.path.join(_appdata, 'zubcut-license.json')
     LICENSE_PUBLIC_KEY_B64 = ''
+    LICENSE_PUBLIC_KEY_B64_PREV = ''
 
 
 def _legacy_license_path() -> str:
@@ -84,14 +89,33 @@ def _license_disk_verify_key() -> str:
 
 
 def _effective_public_key_b64() -> str:
-    """Build/env verify key first; per-machine disk cache only as fallback."""
-    return str(
-        os.environ.get('ZUBCUT_LICENSE_PUBLIC_KEY_B64')
-        or os.environ.get('ZUBCUT_PAID_PUBLIC_KEY_B64')
-        or LICENSE_PUBLIC_KEY_B64
-        or _license_disk_verify_key()
-        or ''
-    ).strip()
+    """Primary verify key (current signing key). Prefer the first accepted key."""
+    keys = _verify_public_keys_b64()
+    return keys[0] if keys else ''
+
+
+def _verify_public_keys_b64() -> list[str]:
+    """All Ed25519 verify keys this build accepts (current + previous + disk fallback)."""
+    raw: list[str] = []
+    extra = str(os.environ.get('ZUBCUT_LICENSE_PUBLIC_KEY_B64_PREV') or '').strip()
+    raw.extend(
+        [
+            str(os.environ.get('ZUBCUT_LICENSE_PUBLIC_KEY_B64') or '').strip(),
+            str(os.environ.get('ZUBCUT_PAID_PUBLIC_KEY_B64') or '').strip(),
+            str(LICENSE_PUBLIC_KEY_B64 or '').strip(),
+            extra,
+            str(LICENSE_PUBLIC_KEY_B64_PREV or '').strip(),
+            _license_disk_verify_key(),
+        ]
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for key in raw:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
 
 
 @dataclass
@@ -162,7 +186,9 @@ def license_crypto_self_test() -> tuple[bool, str]:
         lines.append(f'channel={UPDATE_CHANNEL}')
         lines.append(f'built={APP_BUILD_TIME_ISO}')
         lines.append(f'commit={str(APP_BUILD_COMMIT or "")[:12]}')
-        lines.append(f'verify_key_len={len(_effective_public_key_b64())}')
+        keys = _verify_public_keys_b64()
+        lines.append(f'verify_key_count={len(keys)}')
+        lines.append(f'verify_key_len={len(keys[0]) if keys else 0}')
     except Exception as e:
         lines.append(f'constants_error={e}')
     if getattr(sys, 'frozen', False):
@@ -237,8 +263,8 @@ def validate_license_document(
     signature = data.get('signature')
     if not isinstance(payload, dict) or not isinstance(signature, str):
         return LicenseValidationResult(False, 'License payload/signature missing')
-    key_b64 = _effective_public_key_b64()
-    if not key_b64:
+    keys = _verify_public_keys_b64()
+    if not keys:
         return LicenseValidationResult(
             False,
             'This build has no license verify key. Install the latest official ZubCut build.',
@@ -246,7 +272,7 @@ def validate_license_document(
     crypto_err = _crypto_import_error()
     if crypto_err:
         return LicenseValidationResult(False, crypto_err)
-    if not _verify_signature(payload, signature, key_b64):
+    if not any(_verify_signature(payload, signature, key_b64) for key_b64 in keys):
         return LicenseValidationResult(
             False,
             'License signature invalid. Ask your admin to re-push your account in Control Panel, '
