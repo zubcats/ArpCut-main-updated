@@ -38,7 +38,14 @@ def _canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
 
 
-def _load_signing_key() -> SigningKey:
+def _load_signing_key(*, allow_generate: bool | None = None) -> SigningKey:
+    """
+    Load the Control Panel Ed25519 signing key.
+
+    If the key file is missing and the admin DB already has licenses, refuse to
+    auto-generate a new key (that would break renewals vs the public key baked
+    into ZubCut builds). First-time bootstrap (empty DB) may still generate.
+    """
     os.makedirs(os.path.dirname(PAID_LICENSE_ADMIN_SIGNING_KEY_PATH), exist_ok=True)
     if os.path.exists(PAID_LICENSE_ADMIN_SIGNING_KEY_PATH):
         raw = open(PAID_LICENSE_ADMIN_SIGNING_KEY_PATH, 'rb').read()
@@ -49,6 +56,18 @@ def _load_signing_key() -> SigningKey:
         except Exception:
             pass
         return SigningKey(raw)
+    if allow_generate is None:
+        try:
+            allow_generate = not bool(load_license_db().get('licenses'))
+        except Exception:
+            allow_generate = True
+    if not allow_generate:
+        raise FileNotFoundError(
+            'Signing key is missing (%s). Restore paid-license-signing.key from backup '
+            'before creating or renewing accounts — generating a new key would not match '
+            'existing ZubCut builds.'
+            % PAID_LICENSE_ADMIN_SIGNING_KEY_PATH
+        )
     key = SigningKey.generate()
     blob = bytes(key)
     try:
@@ -60,6 +79,10 @@ def _load_signing_key() -> SigningKey:
     except Exception:
         open(PAID_LICENSE_ADMIN_SIGNING_KEY_PATH, 'wb').write(bytes(key))
     return key
+
+
+def signing_key_file_present() -> bool:
+    return os.path.isfile(PAID_LICENSE_ADMIN_SIGNING_KEY_PATH)
 
 
 def admin_public_verify_key_b64() -> str:
@@ -350,6 +373,56 @@ def export_cloud_kv_bundle(license_id: str, out_path: str) -> bool:
     with open(out_path, 'w', encoding='utf-8') as fh:
         json.dump(bundle, fh, indent=2)
     return True
+
+
+def import_license_records_from_kv_bundles(bundles: list[dict[str, Any]]) -> tuple[int, int]:
+    """
+    Merge Cloudflare KV account bundles into the local admin DB.
+
+    Returns (imported_or_updated, skipped). Does not require the signing key —
+    signatures from the cloud bundles are kept as-is.
+    """
+    db = load_license_db()
+    by_id: dict[str, dict[str, Any]] = {}
+    for rec in db.get('licenses') or []:
+        if not isinstance(rec, dict):
+            continue
+        lid = str((rec.get('payload') or {}).get('license_id') or '').strip()
+        if lid:
+            by_id[lid] = rec
+    imported = 0
+    skipped = 0
+    for bundle in bundles:
+        if not isinstance(bundle, dict):
+            skipped += 1
+            continue
+        lic = bundle.get('license')
+        if not isinstance(lic, dict):
+            skipped += 1
+            continue
+        payload = dict(lic.get('payload') or {})
+        if not payload.get('license_id'):
+            skipped += 1
+            continue
+        if not payload.get('password_hash') and bundle.get('password_hash_hex'):
+            payload['password_hash'] = bundle.get('password_hash_hex')
+        if not payload.get('password_salt') and bundle.get('password_salt'):
+            payload['password_salt'] = bundle.get('password_salt')
+        if bundle.get('password_iters') and not payload.get('password_iters'):
+            payload['password_iters'] = bundle.get('password_iters')
+        sig = str(lic.get('signature') or '')
+        lid = str(payload.get('license_id'))
+        rec = {
+            'payload': payload,
+            'signature': sig,
+            'created_at': str(payload.get('issued_at') or ''),
+            'updated_at': str(payload.get('issued_at') or ''),
+        }
+        by_id[lid] = rec
+        imported += 1
+    db['licenses'] = list(by_id.values())
+    save_license_db(db)
+    return imported, skipped
 
 
 def list_license_rows() -> list[dict[str, Any]]:

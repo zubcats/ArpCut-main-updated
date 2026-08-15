@@ -39,10 +39,12 @@ from tools.license_admin import (
     rotate_signing_key,
     set_license_status,
     signed_document_for_license_id,
+    signing_key_file_present,
 )
 from tools.license_cloud_sync import (
     delete_account_from_worker,
     load_cloud_sync_settings,
+    pull_accounts_from_worker,
     push_account_to_worker,
     rewrap_cloud_sync_secrets,
     save_cloud_sync_settings,
@@ -340,6 +342,24 @@ class ControlPanelWindow(QMainWindow):
         self.setStyleSheet(_control_panel_qss())
         # Native Windows title bar (frameless chrome caused invisible window on some PCs).
         QTimer.singleShot(0, self.refresh_rows)
+        QTimer.singleShot(200, self._warn_if_signing_key_missing)
+
+    def _warn_if_signing_key_missing(self) -> None:
+        try:
+            rows = list_license_rows()
+        except Exception:
+            rows = []
+        if not rows or signing_key_file_present():
+            return
+        QMessageBox.warning(
+            self,
+            'Signing key missing',
+            'Accounts were restored, but paid-license-signing.key is still missing.\n\n'
+            'You can view accounts and customers can still sign in online.\n'
+            'Create / Renew will stay blocked until you restore that key file into:\n'
+            '%APPDATA%\\ZubCut\\paid-license-signing.key\n\n'
+            'Do not generate a new key — it will not match existing ZubCut builds.',
+        )
 
     def _build_ui(self):
         root = QWidget(self)
@@ -394,11 +414,13 @@ class ControlPanelWindow(QMainWindow):
         self.btnCloudSave = QPushButton('Save cloud settings', self)
         self.btnCloudTest = QPushButton('Test connection', self)
         self.btnPushCloud = QPushButton('Push selected to cloud', self)
+        self.btnPullCloud = QPushButton('Pull accounts from cloud', self)
         self.btnRewrapSecrets = QPushButton('Re-protect secrets', self)
         self.btnRotateSigningKey = QPushButton('Rotate signing key…', self)
         cloud_btns.addWidget(self.btnCloudSave)
         cloud_btns.addWidget(self.btnCloudTest)
         cloud_btns.addWidget(self.btnPushCloud)
+        cloud_btns.addWidget(self.btnPullCloud)
         cloud_btns.addWidget(self.btnRewrapSecrets)
         cloud_btns.addWidget(self.btnRotateSigningKey)
         cloud_btns.addStretch()
@@ -459,6 +481,7 @@ class ControlPanelWindow(QMainWindow):
         self.btnCloudSave.clicked.connect(self._save_cloud_sync_clicked)
         self.btnCloudTest.clicked.connect(self._test_cloud_sync_clicked)
         self.btnPushCloud.clicked.connect(self.push_cloud_selected)
+        self.btnPullCloud.clicked.connect(self.pull_cloud_accounts)
         self.btnRewrapSecrets.clicked.connect(self._rewrap_secrets_clicked)
         self.btnRotateSigningKey.clicked.connect(self._rotate_signing_key_clicked)
 
@@ -549,6 +572,25 @@ class ControlPanelWindow(QMainWindow):
             QMessageBox.information(self, 'Cloud', msg)
         else:
             QMessageBox.warning(self, 'Cloud', msg)
+
+    def pull_cloud_accounts(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            'Pull accounts from cloud',
+            'Merge all Cloudflare Worker accounts into this Control Panel?\n\n'
+            'Existing local rows with the same license id are replaced.',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        ok, msg, _n = pull_accounts_from_worker()
+        self.refresh_rows()
+        if ok:
+            QMessageBox.information(self, 'Cloud', msg)
+            self._warn_if_signing_key_missing()
+        else:
+            QMessageBox.warning(self, 'Cloud', msg or 'Pull failed.')
 
     def _selected_license_id(self) -> str | None:
         items = self.table.selectedItems()
@@ -651,7 +693,11 @@ class ControlPanelWindow(QMainWindow):
         pwd = _ask_new_sign_in_password(self)
         if pwd is None:
             return
-        rec = create_license(user, 1, sign_in_password=pwd, duration_minutes=dur_minutes)
+        try:
+            rec = create_license(user, 1, sign_in_password=pwd, duration_minutes=dur_minutes)
+        except FileNotFoundError as exc:
+            QMessageBox.warning(self, 'Create Account', str(exc))
+            return
         self.refresh_rows()
         lic_id = str(rec.get('payload', {}).get('license_id') or '')
         _show_account_credentials(self, user)
@@ -672,7 +718,11 @@ class ControlPanelWindow(QMainWindow):
         )
         if ext_minutes is None:
             return
-        rec = renew_license(lic_id, 1, extend_minutes=ext_minutes)
+        try:
+            rec = renew_license(lic_id, 1, extend_minutes=ext_minutes)
+        except FileNotFoundError as exc:
+            QMessageBox.warning(self, 'Renew', str(exc))
+            return
         if not rec:
             QMessageBox.warning(self, 'Renew', 'Could not renew selected account.')
             return
