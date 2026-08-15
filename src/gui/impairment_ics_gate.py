@@ -1,8 +1,6 @@
 """ICS / WinDivert gate helpers for impairment (extracted from MainWindow)."""
 from __future__ import annotations
 
-import sys
-
 from PyQt5.QtCore import QTimer
 
 from tools.clumsy_inline import (
@@ -15,7 +13,7 @@ from tools.clumsy_inline import (
     victim_on_clumsy_ics_subnet,
 )
 from tools.ics_impairment_policy import quiesce_legacy_stack
-from gui.impairment_shared import UI_LOG_VICTIM_BLOCK_FG, _bg_block_ip, _bg_unblock_ip
+from gui.impairment_shared import UI_LOG_VICTIM_BLOCK_FG, _bg_unblock_ip
 
 
 class ImpairmentIcsGateMixin:
@@ -412,7 +410,7 @@ class ImpairmentIcsGateMixin:
 
     def _schedule_ics_windivert_traffic_check(self, victim_ip: str) -> None:
         """
-        After Kill ON: if WinDivert sees no traffic, log a hint (ICS-ARP may still block).
+        After Kill ON: if WinDivert sees no traffic, log a hint.
         """
         ip = str(victim_ip or '').strip()
         if not ip:
@@ -452,7 +450,7 @@ class ImpairmentIcsGateMixin:
                 )
             elif seen == 0 and arp_active:
                 self.log(
-                    f'WinDivert idle for {ip}; ICS-ARP kill is active.',
+                    f'WinDivert idle for {ip}; Kill is still armed.',
                     UI_LOG_VICTIM_BLOCK_FG,
                 )
 
@@ -599,8 +597,9 @@ class ImpairmentIcsGateMixin:
         """
         ICS client impairment (all lag methods): pause connection in WinDivert.
 
-        Used for Kill, Dupe, Lag Switch block phase, and firewall fallback avoidance — not ARP MITM.
-        Lag Switch uses WinDivert pause only — do not mirror Kill into killer.killed / killed_devices.
+        Used for Kill, Dupe, and Lag Switch block. Hotspot is WinDivert-only
+        (same as real Clumsy) — no ICS-ARP and no firewall on this path.
+        Lag Switch uses WinDivert pause only — do not mirror Kill into killer.killed.
         """
         plan = self._impairment_plan_for(device)
         if not plan.is_ics_downstream:
@@ -615,24 +614,14 @@ class ImpairmentIcsGateMixin:
             device['ip'] = ip
         self.killer.disable_percent_cut(device['mac'])
         windivert_ok = False
-        arp_ok = False
-        fw_ok = False
         gate = None
-        stack_arp = bool(ip) and not for_lag and not for_dupe
-        if stack_arp:
-            try:
-                from tools.clumsy_inline import (
-                    apply_ics_victim_arp_block,
-                    sync_scanner_iface_for_ics_downstream,
-                )
-
-                sync_scanner_iface_for_ics_downstream(self.scanner)
-                arp_ok = bool(
-                    apply_ics_victim_arp_block(self.scanner, self.killer, device)
-                )
-            except Exception:
-                arp_ok = False
-        if clumsy_ics_lag_can_use_windivert(device, self.scanner):
+        if not clumsy_ics_lag_can_use_windivert(device, self.scanner):
+            self.log(
+                'Hotspot lag needs WinDivert: '
+                + clumsy_windivert_unavailable_reason(device),
+                'red',
+            )
+        else:
             try:
                 if for_lag or for_dupe:
                     self._ics_quiesce_killer_mitm(device)
@@ -652,21 +641,7 @@ class ImpairmentIcsGateMixin:
                     f'WinDivert lag failed for {ip}: {exc} [{detail}]',
                     'red',
                 )
-        elif ip and not stack_arp:
-            self.log(
-                'Hotspot lag needs WinDivert: '
-                + clumsy_windivert_unavailable_reason(device),
-                'red',
-            )
-        if stack_arp and ip and sys.platform.startswith('win'):
-            # Firewall is a backstop only — WinDivert/ICS-ARP already cut. Do not
-            # run sync netsh on the GUI thread (1-3s+ on slow PCs); match LAN Kill.
-            try:
-                _bg_block_ip('', ip, direction)
-            except Exception:
-                pass
-            fw_ok = False
-        if windivert_ok or arp_ok or fw_ok:
+        if windivert_ok:
             if for_dupe:
                 pass
             elif for_lag:
@@ -679,16 +654,10 @@ class ImpairmentIcsGateMixin:
                 self._updateKillButtonState()
             if not for_lag:
                 parts = []
-                if windivert_ok and gate is not None:
+                if gate is not None:
                     cap = getattr(gate, '_capture_desc', '?')
                     n_h = len(getattr(gate, '_handles', []) or [])
                     parts.append(f'WinDivert {cap} h={n_h}')
-                if arp_ok:
-                    parts.append('ICS-ARP')
-                if fw_ok:
-                    parts.append('firewall')
-                if not arp_ok and stack_arp:
-                    parts.append('ARP-miss')
                 self.log(
                     f'Hotspot pause on {ip} ({", ".join(parts) or "active"})',
                     UI_LOG_VICTIM_BLOCK_FG,
@@ -699,18 +668,11 @@ class ImpairmentIcsGateMixin:
             self._ics_teardown_gate_if_idle(str(device.get('mac') or '').strip() or None)
         except Exception:
             pass
-        if stack_arp and not arp_ok:
-            self.log(
-                f'Hotspot block failed for {ip} — rescan so the PS5 shows 192.168.137.x / 173.x, '
-                'run as Administrator, then Kill again.',
-                'red',
-            )
-        else:
-            self.log(
-                'Hotspot block failed — run as Administrator, confirm WinDivert bundle, '
-                'then rescan the PS5 on 192.168.137.x / 173.x.',
-                'red',
-            )
+        self.log(
+            'Hotspot block failed — run as Administrator, confirm WinDivert bundle, '
+            'then rescan the PS5 on 192.168.137.x / 173.x.',
+            'red',
+        )
         self._sync_killed_devices()
         self._refresh_table_row_for_mac(device['mac'])
         self._updateKillButtonState()
@@ -726,14 +688,8 @@ class ImpairmentIcsGateMixin:
             if pause_only:
                 self._ics_unpause_victim(device)
             else:
-                # Kill ON for hotspot stacked WinDivert + ICS-ARP + firewall
-                # via _apply_ics_client_block(stack_arp=True). The plain
-                # _release_ics_windivert_block only tears down WinDivert and
-                # pops killer.killed[mac] — it does NOT send the gratuitous
-                # ARPs that release_ics_victim_block uses to heal the PS5's
-                # poisoned gateway cache, and it does NOT remove the netsh
-                # firewall rules. Use _ics_emergency_release so every layer
-                # we stacked on Kill ON is unwound on Kill OFF.
+                # Unpause/stop WinDivert. Also unwind leftover ARP/firewall
+                # from older builds that stacked ICS-ARP on Kill ON.
                 self._ics_emergency_release(device, heal=True)
         else:
             self._ics_unpause_victim(device)
