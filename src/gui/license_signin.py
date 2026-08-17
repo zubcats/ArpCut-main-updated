@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from constants import APP_DISPLAY_NAME
@@ -26,6 +27,12 @@ from tools.license_remote_signin import (
 )
 
 _LAST_SIGNIN_ERROR = ''
+_SIGNIN_DIALOG_DEPTH = 0
+
+
+def license_signin_is_open() -> bool:
+    """True while the sign-in dialog is on screen (runtime lockout must not quit)."""
+    return _SIGNIN_DIALOG_DEPTH > 0
 
 
 def _format_signin_error(reason: str) -> str:
@@ -56,6 +63,16 @@ def get_last_signin_error() -> str:
 
 def run_license_signin(parent, window_icon) -> bool:
     """Show modal sign-in. Returns True if user completed install and license validates on disk."""
+    global _SIGNIN_DIALOG_DEPTH
+    _set_last_signin_error('')
+    _SIGNIN_DIALOG_DEPTH += 1
+    try:
+        return _run_license_signin_body(parent, window_icon)
+    finally:
+        _SIGNIN_DIALOG_DEPTH = max(0, _SIGNIN_DIALOG_DEPTH - 1)
+
+
+def _run_license_signin_body(parent, window_icon) -> bool:
     _set_last_signin_error('')
     if not effective_signin_url():
         _set_last_signin_error('Missing sign-in server URL')
@@ -95,6 +112,7 @@ def run_license_signin(parent, window_icon) -> bool:
 class LicenseSignInDialog(QDialog):
     def __init__(self, parent, window_icon):
         super().__init__(parent)
+        self.setObjectName('zubcutLicenseSignInDialog')
         self.setWindowTitle(f'{APP_DISPLAY_NAME} — Sign in')
         self.setWindowIcon(window_icon)
         self.setWindowModality(Qt.ApplicationModal)
@@ -103,7 +121,13 @@ class LicenseSignInDialog(QDialog):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        body = QWidget(self)
+        body.setObjectName('zubcutDialogBody')
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(body)
+        root = QVBoxLayout(body)
+        root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
         root.addWidget(
             QLabel(

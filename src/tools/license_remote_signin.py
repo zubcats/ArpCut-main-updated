@@ -144,7 +144,16 @@ def signin_failure_hint(reason: str) -> str:
     if 're-push your account' in low:
         return 'Admin: open Control Panel, select the account, click Push selected to cloud.'
     if 'expired' in low:
-        return 'Ask your administrator to renew your subscription in Control Panel.'
+        return (
+            'If your admin created a new account after the license reset, sign in with that '
+            'new account name and password (not the old one). Otherwise ask them to renew '
+            'your subscription in Control Panel and Push selected to cloud.'
+        )
+    if 'session no longer valid' in low:
+        return (
+            'This install still has the old license file. Sign in with your current account '
+            'name and password to replace it.'
+        )
     return ''
 
 

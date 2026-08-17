@@ -184,32 +184,39 @@ def _validate_license_or_exit(icon) -> None:
     """
     if not _license_gated_build():
         return
-    res = load_and_validate_installed_license()
-    if res.ok:
-        return
-
     from gui.license_signin import get_last_signin_error, run_license_signin
 
-    if run_license_signin(None, icon):
+    while True:
         res = load_and_validate_installed_license()
         if res.ok:
             return
+        if run_license_signin(None, icon):
+            res = load_and_validate_installed_license()
+            if res.ok:
+                return
+            continue
         reason = get_last_signin_error() or res.reason or 'Unknown sign-in failure'
+        cancelled = 'cancelled' in reason.casefold()
+        if cancelled:
+            msg_box(
+                APP_DISPLAY_NAME,
+                f'Sign in is required.\n\nReason: {reason}',
+                MsgIcon.CRITICAL,
+                icon,
+            )
+            exit(1)
         msg_box(
             APP_DISPLAY_NAME,
-            f'Incorrect sign in.\n\nReason: {reason}',
+            f'Incorrect sign in.\n\nReason: {reason}\n\n'
+            'If your admin created a new account, use that account name and password.',
             MsgIcon.CRITICAL,
             icon,
         )
-        exit(1)
-    reason = get_last_signin_error() or 'Unknown sign-in failure'
-    msg_box(
-        APP_DISPLAY_NAME,
-        f'Incorrect sign in.\n\nReason: {reason}',
-        MsgIcon.CRITICAL,
-        icon,
-    )
-    exit(1)
+        # Missing URL / verify key cannot be fixed in-dialog — stop looping.
+        if 'missing' in reason.casefold() and (
+            'url' in reason.casefold() or 'verify key' in reason.casefold()
+        ):
+            exit(1)
 
 
 def _start_license_runtime_validation(gui, icon) -> None:
@@ -217,16 +224,7 @@ def _start_license_runtime_validation(gui, icon) -> None:
     if not _license_gated_build():
         return
 
-    def _force_lockout_and_exit(reason: str) -> None:
-        if bool(getattr(gui, '_license_lockout_in_progress', False)):
-            return
-        gui._license_lockout_in_progress = True
-        try:
-            gui.log('License expired or invalid. Stopping protection and closing app.', 'red')
-        except Exception:
-            pass
-
-        # Stop active attack loops first, then aggressively send unkill a few times.
+    def _stop_protection() -> None:
         try:
             gui.stopLagSwitch()
         except Exception:
@@ -263,15 +261,45 @@ def _start_license_runtime_validation(gui, icon) -> None:
         QTimer.singleShot(250, _unkill_pass)
         QTimer.singleShot(800, _unkill_pass)
         QTimer.singleShot(1800, _unkill_pass)
-        QTimer.singleShot(2200, gui.quit_all)
 
-        # Keep visible reason for operator while shutdown proceeds.
+    def _offer_reauth_or_quit(reason: str) -> None:
+        from gui.license_signin import license_signin_is_open, run_license_signin
+
+        if license_signin_is_open():
+            return
+        if bool(getattr(gui, '_license_lockout_in_progress', False)):
+            return
+        gui._license_lockout_in_progress = True
+        try:
+            gui.log(f'License expired or replaced ({reason}). Sign in to continue.', 'red')
+        except Exception:
+            pass
+        _stop_protection()
         msg_box(
             APP_DISPLAY_NAME,
-            f'License expired.\n\nReason: {reason}',
+            f'License expired or replaced.\n\nReason: {reason}\n\n'
+            'Sign in with your current account (the new one if your admin reissued it).',
             MsgIcon.CRITICAL,
             icon,
         )
+        parent = gui
+        try:
+            sw = getattr(gui, 'settings_window', None)
+            if sw is not None and sw.isVisible():
+                parent = sw
+        except Exception:
+            parent = gui
+        if run_license_signin(parent, icon):
+            gui._license_lockout_in_progress = False
+            try:
+                gui.log('License updated. You can keep using ZubCut.', _UI_LOG_RESTORE_FG)
+            except Exception:
+                pass
+            return
+        try:
+            gui.quit_all()
+        except Exception:
+            pass
 
     gui._license_runtime_last_deferred_reason = ''
 
@@ -283,21 +311,31 @@ def _start_license_runtime_validation(gui, icon) -> None:
         gui.log(f'License check deferred: {short}', _UI_LOG_RESTORE_FG)
 
     def _on_session_validated(ok, reason: str) -> None:
+        from gui.license_signin import license_signin_is_open
+
+        if license_signin_is_open():
+            return
         if ok is True:
             gui._license_runtime_last_deferred_reason = ''
             return
         if ok is None:
             _log_runtime_deferred(reason)
             return
-        _force_lockout_and_exit(reason)
+        _offer_reauth_or_quit(reason)
 
     def _enforce_runtime_license() -> None:
+        from gui.license_signin import license_signin_is_open
+
+        if license_signin_is_open():
+            return
+        if bool(getattr(gui, '_license_lockout_in_progress', False)):
+            return
         prev = getattr(gui, '_license_runtime_validate_thread', None)
         if prev is not None and prev.isRunning():
             return
         res = load_and_validate_installed_license()
         if not res.ok:
-            _force_lockout_and_exit(res.reason)
+            _offer_reauth_or_quit(res.reason)
             return
         payload = res.payload or {}
         account = str(res.signin_account or '').strip()
