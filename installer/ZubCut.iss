@@ -47,9 +47,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Default is checked (omit Flags: unchecked). "checked" is not a valid [Tasks] flag in Inno Setup.
 Name: "clumsymode"; Description: "Clumsy mode (WinDivert for PC Mobile Hotspot lag)"; GroupDescription: "Optional:"
 
-; Onedir replace is handled in [Code] PrepareToInstall (rename _internal → backup,
-; restore if python311.dll is missing after copy). Do not hard-delete _internal here —
-; that left users with ZubCut.exe and no runtime after interrupted/silent updates.
+; Onedir replace is handled in [Code] PrepareToInstall (wait for ZubCut.exe to exit,
+; rename _internal → backup, restore if python311.dll is missing after copy).
+; Never hard-delete the live _internal folder — that left users with ZubCut.exe
+; and no runtime when a silent update raced the still-running app.
 
 [Files]
 Source: "..\dist\{#MyAppName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -91,6 +92,42 @@ begin
   Result := ExpandConstant('{app}\_internal\python311.dll');
 end;
 
+function GetRunningProcessCount(const FileName: String): Integer;
+var
+  WbemLocator, WMIService, WbemObjectSet: Variant;
+begin
+  Result := 0;
+  try
+    WbemLocator := CreateOleObject('WbemScripting.SWbemLocator');
+    WMIService := WbemLocator.ConnectServer('.', 'root\CIMV2');
+    WbemObjectSet := WMIService.ExecQuery(
+      'SELECT Name FROM Win32_Process WHERE Name=''' + FileName + '''');
+    if not VarIsNull(WbemObjectSet) then
+      Result := WbemObjectSet.Count;
+  except
+  end;
+end;
+
+function WaitUntilAppClosed: String;
+var
+  Tries: Integer;
+begin
+  Result := '';
+  Tries := 0;
+  while (GetRunningProcessCount('{#MyAppExeName}') > 0) and (Tries < 180) do
+  begin
+    Sleep(500);
+    Tries := Tries + 1;
+  end;
+  if GetRunningProcessCount('{#MyAppExeName}') > 0 then
+  begin
+    Result := 'ZubCut is still running. Close it completely, then retry the update.';
+    Exit;
+  end;
+  { Let file handles on python311.dll drop before renaming _internal. }
+  Sleep(2000);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Src, Bak: String;
@@ -98,6 +135,9 @@ begin
   { Move old onedir runtime aside so a failed copy can restore it. }
   Result := '';
   NeedsRestart := False;
+  Result := WaitUntilAppClosed;
+  if Result <> '' then
+    Exit;
   Src := InternalDirPath;
   Bak := InternalBakPath;
   if DirExists(Bak) then
@@ -112,8 +152,10 @@ begin
   begin
     if not RenameFile(Src, Bak) then
     begin
-      if not DelTree(Src, True, True, True) then
-        Result := 'Could not replace the previous ZubCut runtime folder. Close ZubCut and retry the update.';
+      { Never DelTree the live runtime — a locked python311.dll used to leave
+        ZubCut.exe with no _internal after silent in-app updates. }
+      Result := 'Could not replace the previous ZubCut runtime folder. Close ZubCut completely and retry the update.';
+      Exit;
     end;
   end;
 end;

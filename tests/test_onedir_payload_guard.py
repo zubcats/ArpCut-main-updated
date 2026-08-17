@@ -71,6 +71,9 @@ class TestLaunchInstallerWaiter(unittest.TestCase):
                 text = fp.read()
             self.assertIn('python311.dll', text)
             self.assertIn('ZubCut Update Failed', text)
+            self.assertIn('$sawSetup', text)
+            self.assertIn('Get-Process -Name $setupProc', text)
+            self.assertNotIn('$_.Path', text)
             # Verifier must not start Setup (that dropped elevation).
             self.assertNotIn('Start-Process', text)
 
@@ -100,6 +103,7 @@ class TestLaunchInstallerWaiter(unittest.TestCase):
             # First spawn must be the setup exe itself (elevation inherits).
             self.assertEqual(calls[0][0][0], os.path.abspath(installer))
             self.assertIn('/SILENT', calls[0][0])
+            self.assertIn('/FORCECLOSEAPPLICATIONS', calls[0][0])
             # Optional verify waiter is separate and does not re-launch setup.
             if len(calls) > 1:
                 self.assertEqual(calls[1][0][0], 'powershell.exe')
@@ -116,6 +120,14 @@ class TestInnoSetupGuards(unittest.TestCase):
         self.assertIn('_internal.bak_zubcut', iss)
         self.assertIn('python311.dll', iss)
         self.assertIn('RestoreInternalBackupIfNeeded', iss)
+        self.assertIn('WaitUntilAppClosed', iss)
+        self.assertIn('ZubCut is still running', iss)
+        self.assertIn('Close ZubCut completely and retry the update', iss)
+        # Failed rename must abort, not DelTree the live runtime folder.
+        prepare = iss.split('function PrepareToInstall', 1)[1].split(
+            'procedure RestoreInternalBackupIfNeeded', 1
+        )[0]
+        self.assertNotIn('DelTree(Src', prepare)
         # Hard delete without backup must not return.
         self.assertNotIn(
             'Type: filesandordirs; Name: "{app}\\_internal"',
