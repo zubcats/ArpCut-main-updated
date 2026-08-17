@@ -3,6 +3,9 @@
 
 Used by the Windows installer workflow so a GitHub blip does not fail a
 finished PyInstaller/Inno build. Re-running only this job is cheap.
+
+The public asset is the installer EXE only. Build metadata goes in the
+release notes so users are not asked to extract two files.
 """
 from __future__ import annotations
 
@@ -87,6 +90,30 @@ def _require_ok(result: GhResult, action: str) -> None:
     raise PublishError(f"{action} failed: {detail}")
 
 
+def _notes_args(notes_file: Path | None) -> list[str]:
+    if notes_file is not None:
+        return ["--notes-file", str(notes_file)]
+    return ["--notes", "Rolling installer."]
+
+
+def _drop_stale_json_asset(runner: GhRunner, tag: str) -> None:
+    """Older publishes attached build-info.json as a download; drop it."""
+    _gh(runner, ["release", "delete-asset", tag, "build-info.json", "--yes"])
+
+
+def _partition_files(
+    files: Sequence[Path], notes_file: Path | None
+) -> tuple[list[Path], Path | None]:
+    keep: list[Path] = []
+    notes = notes_file
+    for path in files:
+        if path.name.lower() == "build-info.json":
+            notes = path
+        else:
+            keep.append(path)
+    return keep, notes
+
+
 def _edit_and_upload(
     runner: GhRunner,
     *,
@@ -95,6 +122,7 @@ def _edit_and_upload(
     target: str,
     prerelease: bool,
     files: Sequence[Path],
+    notes_file: Path | None,
 ) -> None:
     edit_args = [
         "release",
@@ -105,11 +133,13 @@ def _edit_and_upload(
         "--target",
         target,
         "--latest=false",
+        *_notes_args(notes_file),
     ]
     edit_args.append("--prerelease" if prerelease else "--prerelease=false")
     _require_ok(_gh(runner, edit_args), f"gh release edit {tag}")
     upload_args = ["release", "upload", tag, "--clobber", *[str(p) for p in files]]
     _require_ok(_gh(runner, upload_args), f"gh release upload {tag}")
+    _drop_stale_json_asset(runner, tag)
 
 
 def _create(
@@ -120,6 +150,7 @@ def _create(
     target: str,
     prerelease: bool,
     files: Sequence[Path],
+    notes_file: Path | None,
 ) -> GhResult:
     create_args = [
         "release",
@@ -129,8 +160,7 @@ def _create(
         title,
         "--target",
         target,
-        "--notes",
-        "Rolling installer.",
+        *_notes_args(notes_file),
         "--latest=false",
         *[str(p) for p in files],
     ]
@@ -147,7 +177,11 @@ def publish_once(
     target: str,
     prerelease: bool,
     files: Sequence[Path],
+    notes_file: Path | None = None,
 ) -> None:
+    files, notes_file = _partition_files(files, notes_file)
+    if not files:
+        raise PublishError("No installer file to publish")
     view = _gh(runner, ["release", "view", tag])
     if view.returncode == 0:
         _edit_and_upload(
@@ -157,6 +191,7 @@ def publish_once(
             target=target,
             prerelease=prerelease,
             files=files,
+            notes_file=notes_file,
         )
         return
     if not is_not_found(view):
@@ -169,10 +204,12 @@ def publish_once(
         target=target,
         prerelease=prerelease,
         files=files,
+        notes_file=notes_file,
     )
     if created.returncode == 0:
         if created.stdout.strip():
             print(created.stdout.rstrip())
+        _drop_stale_json_asset(runner, tag)
         return
     if is_already_exists(created):
         _edit_and_upload(
@@ -182,6 +219,7 @@ def publish_once(
             target=target,
             prerelease=prerelease,
             files=files,
+            notes_file=notes_file,
         )
         return
     raise PublishError(f"gh release create {tag} failed: {created.output.strip()}")
@@ -198,6 +236,7 @@ def publish_with_retries(
     target: str,
     prerelease: bool,
     files: Sequence[Path],
+    notes_file: Path | None = None,
     attempts: int = DEFAULT_ATTEMPTS,
     initial_sleep_s: float = DEFAULT_INITIAL_SLEEP_S,
     max_sleep_s: float = DEFAULT_MAX_SLEEP_S,
@@ -205,6 +244,7 @@ def publish_with_retries(
     sleeper: Callable[[float], None] = time.sleep,
 ) -> None:
     resolved = [resolve_file(Path(p)) for p in files]
+    notes_resolved = resolve_file(notes_file) if notes_file is not None else None
     use_runner = runner or _default_runner
     last_error = "unknown error"
     total = max(1, attempts)
@@ -217,6 +257,7 @@ def publish_with_retries(
                 target=target,
                 prerelease=prerelease,
                 files=resolved,
+                notes_file=notes_resolved,
             )
             print(f"Published {tag} on attempt {attempt}/{total}")
             return
@@ -238,12 +279,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target", required=True)
     parser.add_argument("--prerelease", action="store_true")
     parser.add_argument("--file", dest="files", action="append", required=True)
+    parser.add_argument("--notes-file", dest="notes_file", default=None)
     parser.add_argument("--attempts", type=int, default=DEFAULT_ATTEMPTS)
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    notes = Path(args.notes_file) if args.notes_file else None
     try:
         publish_with_retries(
             tag=args.tag,
@@ -251,6 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             target=args.target,
             prerelease=bool(args.prerelease),
             files=[Path(p) for p in args.files],
+            notes_file=notes,
             attempts=args.attempts,
         )
     except PublishError as exc:

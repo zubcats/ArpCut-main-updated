@@ -336,6 +336,18 @@ class UpdaterCoreTest(unittest.TestCase):
     def test_github_repo_slug_matches_constants(self):
         self.assertEqual(GITHUB_REPO_SLUG, 'zubcats/ArpCut-main-updated')
 
+    def test_build_info_from_release_body_json(self):
+        import tools.updater_core as uc
+
+        payload = {
+            'body': '{"commit":"abc123","built_at":"2026-08-17T19:16:46Z","channel":"main"}',
+            'assets': [],
+        }
+        info = uc._build_info_from_release_payload(payload)
+        self.assertEqual(info.get('commit'), 'abc123')
+        self.assertEqual(info.get('channel'), 'main')
+        self.assertEqual(uc._build_info_from_release_payload({'body': 'Rolling installer.'}), {})
+
 
 if __name__ == '__main__':
     unittest.main()

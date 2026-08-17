@@ -108,24 +108,42 @@ begin
   end;
 end;
 
+function CloseRunningApp: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(
+    ExpandConstant('{sys}\taskkill.exe'),
+    '/IM {#MyAppExeName} /F /T',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode);
+end;
+
 function WaitUntilAppClosed: String;
 var
   Tries: Integer;
 begin
+  { Close ZubCut ourselves. Do not sit for minutes — CloseApplications has not
+    run yet at PrepareToInstall, so a long wait looks like a stuck installer. }
   Result := '';
+  if GetRunningProcessCount('{#MyAppExeName}') > 0 then
+    CloseRunningApp;
   Tries := 0;
-  while (GetRunningProcessCount('{#MyAppExeName}') > 0) and (Tries < 180) do
+  while (GetRunningProcessCount('{#MyAppExeName}') > 0) and (Tries < 16) do
   begin
+    if Tries = 3 then
+      CloseRunningApp;
     Sleep(500);
     Tries := Tries + 1;
   end;
   if GetRunningProcessCount('{#MyAppExeName}') > 0 then
   begin
-    Result := 'ZubCut is still running. Close it completely, then retry the update.';
+    Result := 'ZubCut is still running. Close it, then run setup again.';
     Exit;
   end;
-  { Let file handles on python311.dll drop before renaming _internal. }
-  Sleep(2000);
+  Sleep(1500);
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

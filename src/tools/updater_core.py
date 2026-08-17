@@ -206,11 +206,36 @@ def _api_asset_download_url(asset_id: int) -> str:
     return f'https://api.github.com/repos/{repo}/releases/assets/{int(asset_id)}'
 
 
+def _parse_build_info_dict(raw) -> dict:
+    if isinstance(raw, dict) and (
+        raw.get('commit') or raw.get('built_at') or raw.get('channel')
+    ):
+        return raw
+    return {}
+
+
+def _build_info_from_release_payload(payload: dict) -> dict:
+    """Prefer release-body JSON so the public download is the installer only."""
+    body = str((payload or {}).get('body') or '').strip()
+    if body.startswith('{'):
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            parsed = None
+        info = _parse_build_info_dict(parsed)
+        if info:
+            return info
+    return {}
+
+
 def _fetch_build_info_for_release(channel: str) -> dict:
     try:
         payload = _api_release_json(channel)
     except Exception:
         return {}
+    from_body = _build_info_from_release_payload(payload)
+    if from_body:
+        return from_body
     for asset in payload.get('assets') or []:
         if str(asset.get('name') or '') != _BUILD_INFO_ASSET:
             continue

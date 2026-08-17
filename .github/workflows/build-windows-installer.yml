@@ -214,7 +214,7 @@ jobs:
           --title "ZubCut"
           --target ${{ github.sha }}
           --file output/ZubCut-Setup.exe
-          --file output/build-info.json
+          --notes-file output/build-info.json
 
   publish-experimental:
     needs: build-windows
@@ -243,4 +243,4 @@ jobs:
           --target ${{ github.sha }}
           --prerelease
           --file output/ZubCut-Setup-experimental.exe
-          --file output/build-info.json
+          --notes-file output/build-info.json
