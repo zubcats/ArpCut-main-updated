@@ -47,6 +47,23 @@ class TestControlPanelSource(unittest.TestCase):
         self.assertNotIn('register_window_surface_effects(self)', src)
         self.assertNotIn('setup_frameless_main_window', src)
         self.assertNotIn('FramelessResizableMixin', src)
+        self.assertNotIn('QInputDialog.getText', src)
+        self.assertNotIn('QInputDialog.getInt', src)
+        self.assertNotIn('QInputDialog.getItem', src)
+        self.assertIn('def _ask_line_text', src)
+        self.assertIn("_show_panel_error(self, 'Create Account'", src)
+        self.assertIn('except Exception as exc:', src)
+        self.assertIn('QComboBox', src)
+        self.assertIn('QSpinBox', src)
+
+    def test_entry_slot_errors_do_not_force_exit(self) -> None:
+        entry = os.path.join(_ROOT, 'src', 'zubcut_control_panel.py')
+        with open(entry, encoding='utf-8') as fh:
+            src = fh.read()
+        self.assertIn('excepthook', src)
+        self.assertIn('_install_control_panel_excepthook', src)
+        self.assertNotIn('os._exit(', src)
+        self.assertNotIn('crash_feedback', src)
 
     def test_crash_api_module(self) -> None:
         from tools.control_panel_crashes import list_crash_reports

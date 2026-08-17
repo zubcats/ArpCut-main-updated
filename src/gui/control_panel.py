@@ -1,19 +1,23 @@
 from datetime import datetime, timedelta, timezone
+import os
+import traceback
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
+    QListView,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -53,11 +57,67 @@ from tools.license_cloud_sync import (
 from tools.updater_core import download_installer, launch_installer
 
 
-def _ask_new_sign_in_password(parent: QWidget) -> str | None:
+def _log_panel_error(text: str) -> None:
+    body = datetime.now().isoformat(timespec='seconds') + '\n' + str(text or '') + '\n\n'
+    try:
+        ad = os.environ.get('APPDATA') or ''
+        if not ad:
+            return
+        folder = os.path.join(ad, 'ZubCut')
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, 'zubcut_control_panel_error.txt'), 'a', encoding='utf-8') as fh:
+            fh.write(body)
+    except Exception:
+        pass
+
+
+def _show_panel_error(parent: QWidget | None, title: str, exc: BaseException) -> None:
+    _log_panel_error(traceback.format_exc() or f'{type(exc).__name__}: {exc}')
+    QMessageBox.warning(
+        parent,
+        title,
+        f'{type(exc).__name__}: {exc}\n\nThe Control Panel stayed open. Details were saved to %APPDATA%\\ZubCut\\zubcut_control_panel_error.txt',
+    )
+
+
+def _make_panel_dialog(parent: QWidget | None, title: str) -> tuple[QDialog, QVBoxLayout]:
     dlg = QDialog(parent)
-    dlg.setWindowTitle('Customer sign-in password')
+    dlg.setObjectName('zubcutControlPanelDialog')
+    dlg.setWindowTitle(title)
     dlg.setModal(True)
-    lay = QVBoxLayout(dlg)
+    body = QWidget(dlg)
+    body.setObjectName('zubcutDialogBody')
+    outer = QVBoxLayout(dlg)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.addWidget(body)
+    lay = QVBoxLayout(body)
+    lay.setContentsMargins(12, 12, 12, 12)
+    lay.setSpacing(8)
+    return dlg, lay
+
+
+def _ask_line_text(parent: QWidget, title: str, label: str) -> str | None:
+    dlg, lay = _make_panel_dialog(parent, title)
+    lay.addWidget(QLabel(label, dlg))
+    ed = QLineEdit(dlg)
+    lay.addWidget(ed)
+    row = QHBoxLayout()
+    row.addStretch()
+    cancel = QPushButton('Cancel', dlg)
+    ok = QPushButton('OK', dlg)
+    ok.setDefault(True)
+    row.addWidget(cancel)
+    row.addWidget(ok)
+    lay.addLayout(row)
+    cancel.clicked.connect(dlg.reject)
+    ok.clicked.connect(dlg.accept)
+    if dlg.exec_() != QDialog.Accepted:
+        return None
+    return str(ed.text() or '').strip()
+
+
+def _ask_new_sign_in_password(parent: QWidget) -> str | None:
+    dlg, lay = _make_panel_dialog(parent, 'Customer sign-in password')
     lay.addWidget(
         QLabel(
             'Choose the password this customer will type in ZubCut\n'
@@ -101,10 +161,7 @@ def _ask_new_sign_in_password(parent: QWidget) -> str | None:
 
 
 def _show_account_credentials(parent: QWidget, user: str) -> None:
-    dlg = QDialog(parent)
-    dlg.setWindowTitle('Send to customer')
-    dlg.setModal(True)
-    v = QVBoxLayout(dlg)
+    dlg, v = _make_panel_dialog(parent, 'Send to customer')
     v.addWidget(
         QLabel(
             f'Give your customer:\n\n'
@@ -128,20 +185,38 @@ def _ask_duration_minutes(
     qty_label: str,
     qty_default: int,
 ) -> int | None:
-    qty, ok = QInputDialog.getInt(parent, title, qty_label, qty_default, 1, 10_000_000, 1)
-    if not ok:
+    dlg, lay = _make_panel_dialog(parent, title)
+    lay.addWidget(QLabel(qty_label, dlg))
+    qty = QSpinBox(dlg)
+    qty.setRange(1, 10_000_000)
+    qty.setValue(max(1, int(qty_default)))
+    lay.addWidget(qty)
+    lay.addWidget(QLabel('Duration unit:', dlg))
+    unit = QComboBox(dlg)
+    unit.setView(QListView(unit))
+    unit.addItems(['Minutes', 'Hours', 'Days'])
+    unit.setCurrentIndex(2)
+    lay.addWidget(unit)
+    row = QHBoxLayout()
+    row.addStretch()
+    cancel = QPushButton('Cancel', dlg)
+    ok = QPushButton('OK', dlg)
+    ok.setDefault(True)
+    row.addWidget(cancel)
+    row.addWidget(ok)
+    lay.addLayout(row)
+    cancel.clicked.connect(dlg.reject)
+    ok.clicked.connect(dlg.accept)
+    if dlg.exec_() != QDialog.Accepted:
         return None
-    unit, ok = QInputDialog.getItem(parent, title, 'Duration unit:', ['Minutes', 'Hours', 'Days'], 2, False)
-    if not ok:
-        return None
-    u = str(unit or '').strip().lower()
+    u = str(unit.currentText() or '').strip().lower()
     if u.startswith('minute'):
         mult = 1
     elif u.startswith('hour'):
         mult = 60
     else:
         mult = 24 * 60
-    return int(qty) * mult
+    return int(qty.value()) * mult
 
 
 def _human_remaining(seconds: int) -> str:
@@ -240,6 +315,22 @@ QMainWindow#zubcutControlPanel QGroupBox#cloudSyncGroup::title {{
     left: 10px;
     padding: 0 4px;
 }}
+QMainWindow#zubcutControlPanel QComboBox,
+QMainWindow#zubcutControlPanel QSpinBox,
+QMainWindow#zubcutControlPanel QLineEdit {{
+    background-color: {field};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 3px;
+    padding: 4px 6px;
+}}
+QMainWindow#zubcutControlPanel QComboBox QAbstractItemView {{
+    background-color: #000000;
+    color: {text};
+    selection-background-color: {accent};
+    selection-color: #f2f2f2;
+    border: 1px solid {border};
+}}
 """
 
 
@@ -283,12 +374,26 @@ QDialog QPushButton:hover, QMessageBox QPushButton:hover, QInputDialog QPushButt
     background-color: #383838;
     border: 1px solid #383838;
 }}
-QDialog QLineEdit, QInputDialog QLineEdit, QMessageBox QLineEdit {{
+QDialog QLineEdit, QInputDialog QLineEdit, QMessageBox QLineEdit,
+QDialog QComboBox, QDialog QSpinBox, QDialog QAbstractSpinBox {{
     background-color: {field};
     color: {text};
     border: 1px solid {accent};
     border-radius: 3px;
     padding: 4px 6px;
+    min-height: 22px;
+}}
+QDialog QComboBox QAbstractItemView {{
+    background-color: #000000;
+    color: {text};
+    selection-background-color: {accent};
+    selection-color: #f2f2f2;
+    border: 1px solid {border};
+}}
+QDialog QSpinBox::up-button, QDialog QSpinBox::down-button {{
+    background-color: {field};
+    border: 1px solid {border};
+    width: 16px;
 }}
 QMenu {{
     background-color: {panel};
@@ -553,18 +658,21 @@ class ControlPanelWindow(QMainWindow):
         )
 
     def _maybe_auto_push_cloud(self, license_id: str) -> tuple[bool, str]:
-        s = load_cloud_sync_settings()
-        if not s.get('auto_sync'):
-            return True, ''
-        base = str(s.get('worker_base_url') or '').strip()
-        secret = str(s.get('admin_secret') or '')
-        if not base or not secret:
-            return (
-                False,
-                'Cloud auto-sync is on but Worker URL or admin secret is empty. '
-                'Fill them and click Save cloud settings, or turn off auto-sync.',
-            )
-        return push_account_to_worker(license_id)
+        try:
+            s = load_cloud_sync_settings()
+            if not s.get('auto_sync'):
+                return True, ''
+            base = str(s.get('worker_base_url') or '').strip()
+            secret = str(s.get('admin_secret') or '')
+            if not base or not secret:
+                return (
+                    False,
+                    'Cloud auto-sync is on but Worker URL or admin secret is empty. '
+                    'Fill them and click Save cloud settings, or turn off auto-sync.',
+                )
+            return push_account_to_worker(license_id)
+        except Exception as exc:
+            return False, f'{type(exc).__name__}: {exc}'
 
     def push_cloud_selected(self) -> None:
         lic_id = self._selected_license_id()
@@ -588,13 +696,16 @@ class ControlPanelWindow(QMainWindow):
         )
         if reply != QMessageBox.Yes:
             return
-        ok, msg, _n = pull_accounts_from_worker()
-        self.refresh_rows()
-        if ok:
-            QMessageBox.information(self, 'Cloud', msg)
-            self._warn_if_signing_key_missing()
-        else:
-            QMessageBox.warning(self, 'Cloud', msg or 'Pull failed.')
+        try:
+            ok, msg, _n = pull_accounts_from_worker()
+            self.refresh_rows()
+            if ok:
+                QMessageBox.information(self, 'Cloud', msg)
+                self._warn_if_signing_key_missing()
+            else:
+                QMessageBox.warning(self, 'Cloud', msg or 'Pull failed.')
+        except Exception as exc:
+            _show_panel_error(self, 'Cloud', exc)
 
     def _selected_license_id(self) -> str | None:
         items = self.table.selectedItems()
@@ -629,85 +740,90 @@ class ControlPanelWindow(QMainWindow):
         )
         if confirm != QMessageBox.Yes:
             return
-        doc = signed_document_for_license_id(lic_id)
-        p = (doc or {}).get('payload') or {}
-        account_key = cloud_kv_key_for_account(str(p.get('user_name') or ''))
+        try:
+            doc = signed_document_for_license_id(lic_id)
+            p = (doc or {}).get('payload') or {}
+            account_key = cloud_kv_key_for_account(str(p.get('user_name') or ''))
 
-        if not delete_license(lic_id):
-            QMessageBox.warning(self, 'Delete account', 'Could not delete that account.')
-            return
+            if not delete_license(lic_id):
+                QMessageBox.warning(self, 'Delete account', 'Could not delete that account.')
+                return
 
-        self.refresh_rows()
+            self.refresh_rows()
 
-        cloud_ok, cloud_msg = delete_account_from_worker(account_key)
-        if not cloud_ok:
-            QMessageBox.warning(
-                self,
-                'Delete account',
-                f'Account removed locally, but cloud removal failed:\n{cloud_msg}',
-            )
-            return
-        msg = 'Account deleted.'
-        if cloud_msg:
-            msg = f'{msg}\n\n{cloud_msg}'
-        QMessageBox.information(self, 'Delete account', msg)
+            cloud_ok, cloud_msg = delete_account_from_worker(account_key)
+            if not cloud_ok:
+                QMessageBox.warning(
+                    self,
+                    'Delete account',
+                    f'Account removed locally, but cloud removal failed:\n{cloud_msg}',
+                )
+                return
+            msg = 'Account deleted.'
+            if cloud_msg:
+                msg = f'{msg}\n\n{cloud_msg}'
+            QMessageBox.information(self, 'Delete account', msg)
+        except Exception as exc:
+            _show_panel_error(self, 'Delete account', exc)
 
     def refresh_rows(self):
-        rows = list_license_rows()
-        self.table.setRowCount(len(rows))
-        active = 0
-        for r, row in enumerate(rows):
-            status = row['status']
-            if status == 'active' and row['remaining_sec'] >= 0:
-                active += 1
-            vals = [
-                row['user_name'],
-                row['license_id'],
-                status,
-                _format_utc_label(row['expires_at']),
-                _human_remaining(int(row['remaining_sec'])),
-                '-' if row.get('expired_days') is None else str(int(row['expired_days'])),
-            ]
-            for c, v in enumerate(vals):
-                item = QTableWidgetItem(str(v))
-                item.setTextAlignment(Qt.AlignCenter)
-                if status != 'active' or row['remaining_sec'] < 0:
-                    item.setForeground(Qt.gray)
-                self.table.setItem(r, c, item)
-        self.table.resizeColumnsToContents()
-        self.lblSummary.setText(f'Accounts: {len(rows)} total / {active} active')
-        self.crash_panel.set_known_accounts([str(r.get('user_name') or '') for r in rows])
+        try:
+            rows = list_license_rows()
+            self.table.setRowCount(len(rows))
+            active = 0
+            for r, row in enumerate(rows):
+                status = row['status']
+                if status == 'active' and row['remaining_sec'] >= 0:
+                    active += 1
+                vals = [
+                    row['user_name'],
+                    row['license_id'],
+                    status,
+                    _format_utc_label(row['expires_at']),
+                    _human_remaining(int(row['remaining_sec'])),
+                    '-' if row.get('expired_days') is None else str(int(row['expired_days'])),
+                ]
+                for c, v in enumerate(vals):
+                    item = QTableWidgetItem(str(v))
+                    item.setTextAlignment(Qt.AlignCenter)
+                    if status != 'active' or row['remaining_sec'] < 0:
+                        item.setForeground(Qt.gray)
+                    self.table.setItem(r, c, item)
+            self.table.resizeColumnsToContents()
+            self.lblSummary.setText(f'Accounts: {len(rows)} total / {active} active')
+            self.crash_panel.set_known_accounts([str(r.get('user_name') or '') for r in rows])
+        except Exception as exc:
+            _show_panel_error(self, 'Refresh', exc)
 
     def create_account(self):
-        user, ok = QInputDialog.getText(self, 'Create Account', 'User name:')
-        if not ok:
-            return
-        user = str(user).strip()
-        if not user:
-            QMessageBox.warning(self, 'Create Account', 'User name is required.')
-            return
-        dur_minutes = _ask_duration_minutes(
-            self,
-            title='Create Account',
-            qty_label='Duration quantity:',
-            qty_default=30,
-        )
-        if dur_minutes is None:
-            return
-        pwd = _ask_new_sign_in_password(self)
-        if pwd is None:
-            return
         try:
+            user = _ask_line_text(self, 'Create Account', 'User name:')
+            if user is None:
+                return
+            user = str(user).strip()
+            if not user:
+                QMessageBox.warning(self, 'Create Account', 'User name is required.')
+                return
+            dur_minutes = _ask_duration_minutes(
+                self,
+                title='Create Account',
+                qty_label='Duration quantity:',
+                qty_default=30,
+            )
+            if dur_minutes is None:
+                return
+            pwd = _ask_new_sign_in_password(self)
+            if pwd is None:
+                return
             rec = create_license(user, 1, sign_in_password=pwd, duration_minutes=dur_minutes)
-        except FileNotFoundError as exc:
-            QMessageBox.warning(self, 'Create Account', str(exc))
-            return
-        self.refresh_rows()
-        lic_id = str(rec.get('payload', {}).get('license_id') or '')
-        _show_account_credentials(self, user)
-        ok, msg = self._maybe_auto_push_cloud(lic_id)
-        if not ok:
-            QMessageBox.warning(self, 'Cloud sync', msg)
+            self.refresh_rows()
+            lic_id = str(rec.get('payload', {}).get('license_id') or '')
+            _show_account_credentials(self, user)
+            ok, msg = self._maybe_auto_push_cloud(lic_id)
+            if not ok:
+                QMessageBox.warning(self, 'Cloud sync', msg)
+        except Exception as exc:
+            _show_panel_error(self, 'Create Account', exc)
 
     def renew_selected(self):
         lic_id = self._selected_license_id()
@@ -724,32 +840,34 @@ class ControlPanelWindow(QMainWindow):
             return
         try:
             rec = renew_license(lic_id, 1, extend_minutes=ext_minutes)
-        except FileNotFoundError as exc:
-            QMessageBox.warning(self, 'Renew', str(exc))
-            return
-        if not rec:
-            QMessageBox.warning(self, 'Renew', 'Could not renew selected account.')
-            return
-        self.refresh_rows()
-        QMessageBox.information(self, 'Renew', 'Account renewed.')
-        ok, msg = self._maybe_auto_push_cloud(lic_id)
-        if not ok:
-            QMessageBox.warning(self, 'Cloud sync', msg)
+            if not rec:
+                QMessageBox.warning(self, 'Renew', 'Could not renew selected account.')
+                return
+            self.refresh_rows()
+            QMessageBox.information(self, 'Renew', 'Account renewed.')
+            ok, msg = self._maybe_auto_push_cloud(lic_id)
+            if not ok:
+                QMessageBox.warning(self, 'Cloud sync', msg)
+        except Exception as exc:
+            _show_panel_error(self, 'Renew', exc)
 
     def set_selected_status(self, status: str):
         lic_id = self._selected_license_id()
         if not lic_id:
             QMessageBox.warning(self, 'Update Status', 'Select an account first.')
             return
-        rec = set_license_status(lic_id, status)
-        if not rec:
-            QMessageBox.warning(self, 'Update Status', 'Could not update selected account.')
-            return
-        self.refresh_rows()
-        QMessageBox.information(self, 'Update Status', f'Account status set to {status}.')
-        ok, msg = self._maybe_auto_push_cloud(lic_id)
-        if not ok:
-            QMessageBox.warning(self, 'Cloud sync', msg)
+        try:
+            rec = set_license_status(lic_id, status)
+            if not rec:
+                QMessageBox.warning(self, 'Update Status', 'Could not update selected account.')
+                return
+            self.refresh_rows()
+            QMessageBox.information(self, 'Update Status', f'Account status set to {status}.')
+            ok, msg = self._maybe_auto_push_cloud(lic_id)
+            if not ok:
+                QMessageBox.warning(self, 'Cloud sync', msg)
+        except Exception as exc:
+            _show_panel_error(self, 'Update Status', exc)
 
     def export_kv_bundle_selected(self):
         lic_id = self._selected_license_id()
