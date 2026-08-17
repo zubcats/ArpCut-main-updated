@@ -54,10 +54,8 @@ jobs:
   build-windows:
     runs-on: windows-latest
     timeout-minutes: 45
-    # Explicit job scope — repo default was briefly read-only and blocked
-    # softprops updates to rolling tags (stable-latest / experimental-latest).
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v5
 
@@ -174,39 +172,75 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ZubCut-Windows-Installer
-          path: output/ZubCut-Setup.exe
+          path: |
+            output/ZubCut-Setup.exe
+            output/build-info.json
 
       - name: Upload installer EXE (Experimental)
         if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.event.inputs.release_channel != 'stable' && github.ref_name != 'main' && github.ref_type != 'tag') }}
         uses: actions/upload-artifact@v6
         with:
           name: ZubCut-Windows-Installer-Experimental
-          path: output/ZubCut-Setup-experimental.exe
-
-      - name: Publish rolling stable release
-        if: ${{ github.event.inputs.release_channel == 'main' || github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && github.ref_name == 'main') }}
-        uses: softprops/action-gh-release@v2.6.2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: stable-latest
-          name: ZubCut
-          target_commitish: ${{ github.sha }}
-          prerelease: false
-          make_latest: false
-          files: |
-            output/ZubCut-Setup.exe
-            output/build-info.json
-
-      - name: Publish rolling experimental release
-        if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.event.inputs.release_channel != 'stable' && github.ref_name == 'experimental') }}
-        uses: softprops/action-gh-release@v2.6.2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: experimental-latest
-          name: ZubCut (experimental)
-          target_commitish: ${{ github.sha }}
-          prerelease: true
-          make_latest: false
-          files: |
+          path: |
             output/ZubCut-Setup-experimental.exe
             output/build-info.json
+
+  # Separate from PyInstaller so a GitHub Releases API blip can be retried
+  # without rebuilding the installer. gh CLI retries live in
+  # tools/ci_publish_github_release.py.
+  publish-stable:
+    needs: build-windows
+    if: ${{ github.event.inputs.release_channel == 'main' || github.event.inputs.release_channel == 'stable' || (github.event.inputs.release_channel != 'experimental' && github.ref_name == 'main') }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download installer artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: ZubCut-Windows-Installer
+          path: output
+
+      - name: Publish rolling stable release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: >
+          python tools/ci_publish_github_release.py
+          --tag stable-latest
+          --title "ZubCut"
+          --target ${{ github.sha }}
+          --file output/ZubCut-Setup.exe
+          --file output/build-info.json
+
+  publish-experimental:
+    needs: build-windows
+    if: ${{ github.event.inputs.release_channel == 'experimental' || (github.event.inputs.release_channel != 'main' && github.event.inputs.release_channel != 'stable' && github.ref_name == 'experimental') }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download installer artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: ZubCut-Windows-Installer-Experimental
+          path: output
+
+      - name: Publish rolling experimental release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: >
+          python tools/ci_publish_github_release.py
+          --tag experimental-latest
+          --title "ZubCut (experimental)"
+          --target ${{ github.sha }}
+          --prerelease
+          --file output/ZubCut-Setup-experimental.exe
+          --file output/build-info.json
