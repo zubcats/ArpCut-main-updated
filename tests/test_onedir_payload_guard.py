@@ -121,7 +121,9 @@ class TestInnoSetupGuards(unittest.TestCase):
         self.assertIn('python311.dll', iss)
         self.assertIn('RestoreInternalBackupIfNeeded', iss)
         self.assertIn('WaitUntilAppClosed', iss)
+        self.assertIn('taskkill.exe', iss)
         self.assertIn('ZubCut is still running', iss)
+        self.assertNotIn('Tries < 180', iss)
         self.assertIn('Close ZubCut completely and retry the update', iss)
         # Failed rename must abort, not DelTree the live runtime folder.
         prepare = iss.split('function PrepareToInstall', 1)[1].split(

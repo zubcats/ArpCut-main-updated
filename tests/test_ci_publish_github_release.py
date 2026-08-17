@@ -38,6 +38,7 @@ class TestCiPublishGithubRelease(unittest.TestCase):
                 _gh(0, stdout="ZubCut (experimental)"),
                 _gh(0),
                 _gh(0),
+                _gh(0),
             ]
         )
         with tempfile.TemporaryDirectory() as td:
@@ -57,14 +58,19 @@ class TestCiPublishGithubRelease(unittest.TestCase):
         self.assertEqual(runner.calls[1][:3], ["gh", "release", "edit"])
         self.assertIn("--prerelease", runner.calls[1])
         self.assertIn("--latest=false", runner.calls[1])
+        self.assertIn("--notes-file", runner.calls[1])
         self.assertEqual(runner.calls[2][:3], ["gh", "release", "upload"])
         self.assertIn("--clobber", runner.calls[2])
+        self.assertTrue(any(str(c).endswith(".exe") for c in runner.calls[2]))
+        self.assertFalse(any(str(c).endswith("build-info.json") for c in runner.calls[2]))
+        self.assertEqual(runner.calls[3][:3], ["gh", "release", "delete-asset"])
 
     def test_creates_release_when_missing(self) -> None:
         runner = _ScriptedRunner(
             [
                 _gh(1, stderr="release not found"),
                 _gh(0, stdout="https://github.com/example/releases/tag/stable-latest"),
+                _gh(0),
             ]
         )
         with tempfile.TemporaryDirectory() as td:
@@ -90,6 +96,7 @@ class TestCiPublishGithubRelease(unittest.TestCase):
                 _gh(0, stdout="ZubCut"),
                 _gh(0),
                 _gh(0),
+                _gh(0),
             ]
         )
         with tempfile.TemporaryDirectory() as td:
@@ -108,7 +115,7 @@ class TestCiPublishGithubRelease(unittest.TestCase):
                 sleeper=sleeps.append,
             )
         self.assertEqual(sleeps, [2.0])
-        self.assertEqual(len(runner.calls), 4)
+        self.assertEqual(len(runner.calls), 5)
 
     def test_missing_file_fails_before_gh(self) -> None:
         runner = _ScriptedRunner([])
@@ -132,6 +139,8 @@ class TestCiPublishGithubRelease(unittest.TestCase):
         self.assertIn("publish-experimental", text)
         self.assertIn("publish-stable", text)
         self.assertNotIn("softprops/action-gh-release", text)
+        self.assertIn("--notes-file output/build-info.json", text)
+        self.assertNotIn("--file output/build-info.json", text)
 
 
 if __name__ == "__main__":
