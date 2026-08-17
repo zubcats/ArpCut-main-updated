@@ -89,10 +89,49 @@ def _fatal(title: str, msg: str) -> None:
     print(full, file=_sys.stderr)
 
 
+def _install_control_panel_excepthook() -> None:
+    """Log Qt slot errors and keep the window open (unlike the main app crash hook)."""
+
+    def _hook(exc_type, exc, tb) -> None:
+        if exc_type is not None and issubclass(exc_type, (SystemExit, KeyboardInterrupt)):
+            return
+        msg = ''.join(traceback.format_exception(exc_type, exc, tb))
+        _cp_boot('uncaught: ' + msg.replace('\n', ' | '))
+        for path in _cp_log_paths('zubcut_control_panel_error.txt'):
+            try:
+                with open(path, 'a', encoding='utf-8', errors='replace') as fh:
+                    fh.write(msg + '\n')
+            except Exception:
+                pass
+        shown = (
+            f'{getattr(exc_type, "__name__", exc_type)}: {exc}\n\n'
+            'The Control Panel stayed open. Details were saved to '
+            '%APPDATA%\\ZubCut\\zubcut_control_panel_error.txt'
+        )
+        try:
+            from PyQt5.QtWidgets import QApplication, QMessageBox
+
+            if QApplication.instance() is not None:
+                QMessageBox.warning(None, 'ZubCut Control Panel', shown)
+                return
+        except Exception:
+            pass
+        _fatal('ZubCut Control Panel', msg)
+
+    _sys.excepthook = _hook
+    if hasattr(_sys, 'unraisablehook'):
+
+        def _unraisable(args) -> None:
+            _hook(args.exc_type, args.exc_value, args.exc_traceback)
+
+        _sys.unraisablehook = _unraisable
+
+
 if __name__ == '__main__':
     from constants import CONTROL_PANEL_DISPLAY_NAME
 
     _maybe_attach_debug_console()
+    _install_control_panel_excepthook()
     _cp_boot('__main__: start')
     try:
         from tools.qt_frozen_bootstrap import configure_qt_environment
