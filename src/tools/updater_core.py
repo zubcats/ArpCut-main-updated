@@ -1043,19 +1043,42 @@ def _write_update_verify_ps1(*, installer_path: str, app_dir: str) -> str:
     script = f"""$ErrorActionPreference = 'Continue'
 $dll = {_sq(dll)}
 $setupName = {_sq(setup_name)}
-# Wait until this Setup process exits (or 10 minutes).
+$setupProc = [IO.Path]::GetFileNameWithoutExtension($setupName)
+function Get-SetupProcesses {{
+  $found = @()
+  try {{
+    $found += @(Get-Process -Name $setupProc -ErrorAction SilentlyContinue)
+  }} catch {{}}
+  try {{
+    $found += @(Get-Process -ErrorAction SilentlyContinue | Where-Object {{
+      try {{
+        $n = [string]$_.ProcessName
+        ($n -like 'ZubCut-Setup*') -or ($n -like 'is-*')
+      }} catch {{ $false }}
+    }})
+  }} catch {{}}
+  return @($found | Where-Object {{ $_ }} | Sort-Object Id -Unique)
+}}
+# Wait until Setup has been seen AND has exited (or 10 minutes).
+# Do not treat "not visible yet" as finished — Get-Process .Path is often empty
+# on the elevated installer, which used to pop a false "runtime missing" dialog
+# while _internal was only renamed aside.
 $deadline = (Get-Date).AddMinutes(10)
+$sawSetup = $false
 while ((Get-Date) -lt $deadline) {{
-  $alive = Get-Process -ErrorAction SilentlyContinue | Where-Object {{
-    try {{ $_.Path -and ((Split-Path -Leaf $_.Path) -eq $setupName) }} catch {{ $false }}
-  }}
-  if (-not $alive) {{ break }}
+  $alive = @(Get-SetupProcesses)
+  if ($alive.Count -gt 0) {{ $sawSetup = $true }}
+  if ($sawSetup -and $alive.Count -eq 0) {{ break }}
   Start-Sleep -Milliseconds 500
 }}
-Start-Sleep -Seconds 1
 $ok = $false
-if (Test-Path -LiteralPath $dll) {{
-  try {{ $ok = ((Get-Item -LiteralPath $dll).Length -ge 100000) }} catch {{ $ok = $false }}
+$dllDeadline = (Get-Date).AddMinutes(2)
+while ((Get-Date) -lt $dllDeadline) {{
+  if (Test-Path -LiteralPath $dll) {{
+    try {{ $ok = ((Get-Item -LiteralPath $dll).Length -ge 100000) }} catch {{ $ok = $false }}
+    if ($ok) {{ break }}
+  }}
+  Start-Sleep -Milliseconds 500
 }}
 if (-not $ok) {{
   Add-Type -AssemblyName System.Windows.Forms
@@ -1094,9 +1117,21 @@ def launch_installer(tmp_path, *, no_ui=False):
         tempfile.gettempdir(), f'{APP_BUNDLE_NAME.lower()}-update-install.log'
     )
     if no_ui:
-        flags = ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', f'/LOG={install_log}']
+        flags = [
+            '/VERYSILENT',
+            '/SUPPRESSMSGBOXES',
+            '/NORESTART',
+            '/FORCECLOSEAPPLICATIONS',
+            f'/LOG={install_log}',
+        ]
     else:
-        flags = ['/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', f'/LOG={install_log}']
+        flags = [
+            '/SILENT',
+            '/SUPPRESSMSGBOXES',
+            '/NORESTART',
+            '/FORCECLOSEAPPLICATIONS',
+            f'/LOG={install_log}',
+        ]
     if sys.platform.startswith('win'):
         try:
             from tools.clumsy_inline import clumsy_bundle_offered
