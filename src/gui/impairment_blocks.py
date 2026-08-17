@@ -221,7 +221,6 @@ class ImpairmentBlocksMixin:
             self._release_victim_arp_mitm_stack(device, refresh_context=refresh_context)
         except Exception:
             pass
-        self._schedule_dupe_off_reinforce(device.get('mac'), device)
 
 
     def _apply_victim_block(self, device, direction, **ics_block_kw) -> bool:

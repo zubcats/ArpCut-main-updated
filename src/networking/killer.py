@@ -855,9 +855,10 @@ class Killer:
         if not mac or mac not in self.killed:
             return
         rounds = max(1, min(8, int(rounds)))
+        seq = int(self._op_seq.get(mac, 0))
         sealed = False
         for i in range(rounds):
-            if mac not in self.killed:
+            if mac not in self.killed or int(self._op_seq.get(mac, 0)) != seq:
                 return
             self.reassert_poison(victim, repeats=4)
             if not self._seal_hard_drop(mac):
@@ -1069,6 +1070,11 @@ class Killer:
             # 0.0: Percent Cut ON must feel instant (Lag/Kill preblock parity).
             self.kill(victim, wait_after=0.0, traffic_cut=False)
         else:
+            # Reuse a live hard-drop forwarder — stop+restart races Dupe/Kill OFF
+            # (Npcap close vs new AsyncSniffer) and can freeze the GUI.
+            pass_percent = max(0, min(100, int(pass_percent)))
+            if pass_percent <= 0 and self._seal_hard_drop(mac):
+                return True
             self._stop_forwarder(mac)
         pass_percent = max(0, min(100, int(pass_percent)))
         pass_from_victim = pass_percent
@@ -1243,7 +1249,11 @@ class Killer:
         self._stop_forwarder(victim['mac'])
         # Immediate ARP burst with no sleep — sleeps belong in @threaded _unkill_restore_worker
         # so the GUI thread returns instantly on Kill/Lag/Dupe OFF.
-        self._restore_arp_now(victim, seq, repeats=3, delay_s=0)
+        # Never open a cold Npcap L2 socket on this thread (0.5–2s, or hang).
+        if self.l2_socket_ready():
+            self._restore_arp_now(victim, seq, repeats=3, delay_s=0)
+        else:
+            self.prewarm_l2_socket(join_ms=0)
         self._unkill_restore_worker(victim, seq, quick=ics_mode)
 
     def reinforce_restore(self, victim, *, ics_mode=False):
@@ -1258,7 +1268,10 @@ class Killer:
             return
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         seq = self._op_seq.get(mac, 0)
-        self._restore_arp_now(victim, seq, repeats=2, delay_s=0)
+        if self.l2_socket_ready():
+            self._restore_arp_now(victim, seq, repeats=2, delay_s=0)
+        else:
+            self.prewarm_l2_socket(join_ms=0)
 
     def _restore_arp_now(self, victim, seq=0, repeats=1, delay_s=0.1):
         """Best-effort ARP restore; aborts if a newer op supersedes this sequence."""

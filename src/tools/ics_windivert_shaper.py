@@ -1191,25 +1191,46 @@ class IcsWinDivertLagGate:
         self.prepare_stop()
         self._stop.set()
         handles = list(self._handles)
-        if handles and self._dll is not None:
+        dll = self._dll
+        if handles and dll is not None:
             for h in handles:
                 try:
-                    self._dll.WinDivertShutdown(h, WINDIVERT_SHUTDOWN_BOTH)
+                    dll.WinDivertShutdown(h, WINDIVERT_SHUTDOWN_BOTH)
                 except Exception:
                     pass
         th = self._thread
         if th is not None and th.is_alive():
             th.join(timeout=max(0.05, float(join_timeout)))
+        still_recv = th is not None and th.is_alive()
         self._thread = None
-        if handles and self._dll is not None:
-            for h in handles:
-                try:
-                    self._dll.WinDivertClose(h)
-                except Exception:
-                    pass
         self._handles = []
         self._open_layers = []
         self._dll = None
+
+        def _close_handles() -> None:
+            if still_recv and th is not None:
+                try:
+                    th.join(timeout=1.5)
+                except Exception:
+                    pass
+            if handles and dll is not None:
+                for h in handles:
+                    try:
+                        dll.WinDivertClose(h)
+                    except Exception:
+                        pass
+
+        # WinDivertClose blocks until Recv returns. If the capture thread is
+        # still alive, closing on the GUI/OFF click freezes ZubCut.
+        if still_recv:
+            try:
+                threading.Thread(
+                    target=safe_daemon_target(_close_handles), daemon=True
+                ).start()
+            except Exception:
+                _close_handles()
+        else:
+            _close_handles()
 
     def _shapes_packet(
         self, direction: str, *, from_victim: bool, to_victim: bool

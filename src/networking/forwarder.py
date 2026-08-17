@@ -236,30 +236,28 @@ class MitmForwarder:
             self._delay_heap.clear()
         sniffer = self.sniffer
         self.sniffer = None
-        if sniffer is not None:
-            # AsyncSniffer.stop() can block the GUI for hundreds of ms — never join it here.
-            def _stop_sniff():
-                try:
+        sock = self._socket
+        self._socket = None
+        # AsyncSniffer.stop() and L2socket.close() can hang on Npcap while recv
+        # is in flight — never run either on the GUI/OFF click thread.
+        def _stop_sniff():
+            try:
+                if sniffer is not None:
                     sniffer.stop()
+            except Exception:
+                pass
+            if sock is not None:
+                try:
+                    sock.close()
                 except Exception:
                     pass
 
-            try:
-                threading.Thread(
-                    target=safe_daemon_target(_stop_sniff), daemon=True
-                ).start()
-            except Exception:
-                try:
-                    sniffer.stop()
-                except Exception:
-                    pass
-        # Close persistent socket
-        if self._socket:
-            try:
-                self._socket.close()
-            except Exception:
-                pass
-            self._socket = None
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_stop_sniff), daemon=True
+            ).start()
+        except Exception:
+            _stop_sniff()
         thr = getattr(self, '_delay_thread', None)
         if thr is not None and thr.is_alive():
             try:
