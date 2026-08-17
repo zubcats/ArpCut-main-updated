@@ -1,6 +1,7 @@
 from os import path, makedirs, rename
 import os
 import shutil
+import time
 from json import dump, load, JSONDecodeError
 import ctypes
 import sys
@@ -1408,7 +1409,11 @@ def restart_zubcut(main_window=None) -> bool:
     Settings Clumsy-mode toggle and similar flows must relaunch with ``runas`` so the new
     instance is Administrator (WinDivert / ICS). A plain ``Popen`` from an elevated parent
     does not always inherit the admin token on Windows.
+
+    Release the single-instance mutex before spawn so the new process does not hit
+    "ZubCut is already running!" and exit while this one is still quitting.
     """
+    release_zubcut_single_instance()
     if not sys.platform.startswith('win'):
         import subprocess
 
@@ -1417,10 +1422,12 @@ def restart_zubcut(main_window=None) -> bool:
             subprocess.Popen([exe, *sys.argv[1:]], cwd=cwd, close_fds=True)
         except Exception as e:
             print(f'restart_zubcut: failed to spawn process: {e}')
+            duplicate_zubcut()
             return False
     else:
         exe, params, cwd = _windows_relaunch_command()
         if not spawn_windows_elevated(exe, params, cwd):
+            duplicate_zubcut()
             try:
                 ctypes.windll.user32.MessageBoxW(
                     0,
@@ -1637,46 +1644,72 @@ def ensure_npcap_service_running() -> bool:
 _SINGLE_INSTANCE_MUTEX = None
 
 
-def duplicate_zubcut():
+def release_zubcut_single_instance() -> None:
+    """Drop the single-instance lock so a Settings restart can replace this process."""
+    global _SINGLE_INSTANCE_MUTEX
+    handle = _SINGLE_INSTANCE_MUTEX
+    _SINGLE_INSTANCE_MUTEX = None
+    if handle is None:
+        return
+    if sys.platform.startswith('win'):
+        try:
+            ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+        return
+    try:
+        handle.close()
+    except Exception:
+        pass
+
+
+def duplicate_zubcut(*, wait_s: float = 0.0) -> bool:
     """
     Return True when another ZubCut instance already holds the single-instance lock.
 
     Windows: named mutex. Non-Windows: advisory lock file under DOCUMENTS_PATH.
+    ``wait_s`` retries while a Settings restart is handing off (old process still exiting).
     """
     global _SINGLE_INSTANCE_MUTEX
+    deadline = time.monotonic() + max(0.0, float(wait_s or 0.0))
     if sys.platform.startswith('win'):
         try:
-            import ctypes
-
             kernel32 = ctypes.windll.kernel32
             ERROR_ALREADY_EXISTS = 183
             name = f'Global\\{APP_BUNDLE_NAME}SingleInstance'
-            handle = kernel32.CreateMutexW(None, False, name)
-            if not handle:
-                return False
-            if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            while True:
+                handle = kernel32.CreateMutexW(None, False, name)
+                if not handle:
+                    return False
+                if kernel32.GetLastError() != ERROR_ALREADY_EXISTS:
+                    _SINGLE_INSTANCE_MUTEX = handle
+                    return False
                 kernel32.CloseHandle(handle)
-                return True
-            _SINGLE_INSTANCE_MUTEX = handle
-            return False
+                if time.monotonic() >= deadline:
+                    return True
+                time.sleep(0.15)
         except Exception:
             return False
     try:
         lock_path = path.join(DOCUMENTS_PATH, f'{APP_BUNDLE_NAME.lower()}.single.lock')
         makedirs(DOCUMENTS_PATH, exist_ok=True)
-        fp = open(lock_path, 'a+', encoding='utf-8')
-        try:
-            import fcntl
+        while True:
+            fp = open(lock_path, 'a+', encoding='utf-8')
+            try:
+                import fcntl
 
-            fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            fp.close()
-            return True
-        except Exception:
-            fp.close()
+                fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                fp.close()
+                if time.monotonic() >= deadline:
+                    return True
+                time.sleep(0.15)
+                continue
+            except Exception:
+                fp.close()
+                return False
+            _SINGLE_INSTANCE_MUTEX = fp
             return False
-        _SINGLE_INSTANCE_MUTEX = fp
-        return False
     except Exception:
         return False
 

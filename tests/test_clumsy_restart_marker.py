@@ -23,8 +23,11 @@ class TestClumsyRestartMarker(unittest.TestCase):
                 self.assertFalse(ics.consume_clumsy_settings_restart_pending())
                 ics.mark_clumsy_settings_restart_pending()
                 self.assertTrue(os.path.isfile(ics.clumsy_settings_restart_marker_path()))
+                self.assertTrue(ics.clumsy_settings_restart_pending())
+                self.assertTrue(os.path.isfile(ics.clumsy_settings_restart_marker_path()))
                 self.assertTrue(ics.consume_clumsy_settings_restart_pending())
                 self.assertFalse(os.path.isfile(ics.clumsy_settings_restart_marker_path()))
+                self.assertFalse(ics.clumsy_settings_restart_pending())
 
 
 if __name__ == '__main__':

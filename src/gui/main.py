@@ -2092,39 +2092,44 @@ class ZubCutApp(
         elif 0 <= current_row < len(self.scanner.devices):
             # Fallback before table is rebuilt: preserve current row's MAC identity when possible.
             selected_mac = self.scanner.devices[current_row].get('mac')
-        self.tableScan.clearSelection()
-        self.tableScan.clearContents()
-        self.tableScan.setRowCount(len(self.scanner.devices))
+        # Rebuild/restore fires selectionChanged; do not burn the per-scan Ready slot.
+        self._readiness_suppress_device_select = True
+        try:
+            self.tableScan.clearSelection()
+            self.tableScan.clearContents()
+            self.tableScan.setRowCount(len(self.scanner.devices))
 
-        for row, device in enumerate(self.scanner.devices):
-            self.fillTableRow(row, device)
+            for row, device in enumerate(self.scanner.devices):
+                self.fillTableRow(row, device)
 
-        self._table_hover_row = -1
+            self._table_hover_row = -1
 
-        self._update_scan_count_status()
+            self._update_scan_count_status()
 
-        # Restore selection by MAC identity first (row index can move after rescans),
-        # then fall back to the first non-admin row.
-        restore_row = -1
-        if selected_mac:
-            for i, d in enumerate(self.scanner.devices):
-                if d.get('mac') == selected_mac and not d.get('admin'):
-                    restore_row = i
-                    break
-        if restore_row < 0:
-            for i, d in enumerate(self.scanner.devices):
-                if not d.get('admin'):
-                    restore_row = i
-                    break
-        if 0 <= restore_row < len(self.scanner.devices) and not self.scanner.devices[restore_row].get('admin'):
-            self.tableScan.selectRow(restore_row)
-            self.tableScan.setCurrentCell(restore_row, 0)
-            self.deviceClicked()
-        else:
-            self._updateKillButtonState()
-            self._updateLagSwitchButtonState()
-            self._updateDupeButtonState()
-            self.lblcenter.setText('Nothing Selected')
+            # Restore selection by MAC identity first (row index can move after rescans),
+            # then fall back to the first non-admin row.
+            restore_row = -1
+            if selected_mac:
+                for i, d in enumerate(self.scanner.devices):
+                    if d.get('mac') == selected_mac and not d.get('admin'):
+                        restore_row = i
+                        break
+            if restore_row < 0:
+                for i, d in enumerate(self.scanner.devices):
+                    if not d.get('admin'):
+                        restore_row = i
+                        break
+            if 0 <= restore_row < len(self.scanner.devices) and not self.scanner.devices[restore_row].get('admin'):
+                self.tableScan.selectRow(restore_row)
+                self.tableScan.setCurrentCell(restore_row, 0)
+                self.deviceClicked()
+            else:
+                self._updateKillButtonState()
+                self._updateLagSwitchButtonState()
+                self._updateDupeButtonState()
+                self.lblcenter.setText('Nothing Selected')
+        finally:
+            self._readiness_suppress_device_select = False
 
         self._repaint_all_table_rows_for_hover()
         self._schedule_table_selection_repaint()

@@ -422,9 +422,9 @@ def disable_ip_forwarding(
 def _lan_kill_priority_only() -> bool:
     """True when Clumsy SoftAP may need other-NIC forwarding left alone."""
     try:
-        from tools.clumsy_inline import clumsy_mode_enabled
+        from tools.clumsy_inline import ics_forwarding_must_stay_on
 
-        return bool(clumsy_mode_enabled())
+        return bool(ics_forwarding_must_stay_on())
     except Exception:
         return False
 
@@ -1480,9 +1480,9 @@ class Killer:
         # a failed disable. Never yank forwarding under Clumsy/ICS hotspot sharing.
         if not self.forwarders and not self.killed:
             try:
-                from tools.clumsy_inline import clumsy_mode_enabled
+                from tools.clumsy_inline import ics_forwarding_must_stay_on
 
-                if clumsy_mode_enabled():
+                if ics_forwarding_must_stay_on():
                     return
             except Exception:
                 pass

@@ -85,13 +85,16 @@ def ensure_home_lan_mitm_forwarding_off() -> None:
 
     Skip when Clumsy/hotspot is on: disabling IPEnableRouter + per-iface forwarding
     drops PS5 internet while Mobile Hotspot / Sharing still look enabled.
+
+    Detect live SoftAP (192.168.137.1 / 173.1), not only the Clumsy checkbox —
+    cold start clears clumsy_mode before this runs.
     """
     if not sys.platform.startswith('win') or not _is_admin():
         return
     try:
-        from tools.clumsy_inline import clumsy_mode_enabled
+        from tools.clumsy_inline import ics_forwarding_must_stay_on
 
-        if clumsy_mode_enabled():
+        if ics_forwarding_must_stay_on():
             return
     except Exception:
         pass
@@ -233,7 +236,15 @@ foreach ($a in $targets) {{
 }}
 """
     _run_powershell(ps)
-    _disable_pcie_aspm()
+    skip_aspm = False
+    try:
+        from tools.clumsy_inline import ics_forwarding_must_stay_on
+
+        skip_aspm = bool(ics_forwarding_must_stay_on())
+    except Exception:
+        skip_aspm = False
+    if not skip_aspm:
+        _disable_pcie_aspm()
     if active:
         _apply_intel_ethernet_low_latency(active)
     ensure_home_lan_mitm_forwarding_off()

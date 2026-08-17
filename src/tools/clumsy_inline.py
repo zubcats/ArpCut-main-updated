@@ -118,6 +118,21 @@ def clumsy_mode_enabled() -> bool:
         return False
 
 
+def ics_forwarding_must_stay_on() -> bool:
+    """True when kernel IP forwarding is required for Mobile Hotspot / ICS NAT.
+
+    ``clumsy_mode`` is session-only and is cleared on a cold start. Opening ZubCut
+    while SoftAP is still up must not flip IPEnableRouter off — that drops the
+    hotspot (and often the PC uplink) even when the Clumsy checkbox is already off.
+    """
+    if clumsy_mode_enabled():
+        return True
+    try:
+        return bool(_detect_live_hotspot_prefix())
+    except Exception:
+        return False
+
+
 def _detect_live_hotspot_prefix(*, force: bool = False) -> str:
     """Return ``192.168.137.`` / ``192.168.173.`` when a live .1 gateway exists.
 

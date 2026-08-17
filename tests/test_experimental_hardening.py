@@ -127,6 +127,13 @@ class TestSingleInstanceGuard(unittest.TestCase):
             src = f.read()
         block = src[src.index('def duplicate_zubcut'): src.index('def check_documents_dir')]
         self.assertIn('CreateMutexW', block)
+        self.assertIn('wait_s', block)
+        self.assertIn('def release_zubcut_single_instance', src)
+        zpath = os.path.join(_SRC, 'zubcut.py')
+        with open(zpath, encoding='utf-8') as f:
+            zsrc = f.read()
+        self.assertIn('clumsy_settings_restart_pending', zsrc)
+        self.assertIn('duplicate_zubcut(wait_s=', zsrc)
         self.assertNotIn('not implemented', block.lower())
 
 

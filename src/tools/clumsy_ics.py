@@ -34,13 +34,21 @@ def mark_clumsy_settings_restart_pending() -> None:
 
 
 def consume_clumsy_settings_restart_pending() -> bool:
-    if not os.path.isfile(clumsy_settings_restart_marker_path()):
-        return False
+    if os.path.isfile(clumsy_settings_restart_marker_path()):
+        try:
+            os.remove(clumsy_settings_restart_marker_path())
+        except OSError:
+            pass
+        return True
+    return False
+
+
+def clumsy_settings_restart_pending() -> bool:
+    """True while a Settings-driven restart has not yet finished starting."""
     try:
-        os.remove(clumsy_settings_restart_marker_path())
+        return os.path.isfile(clumsy_settings_restart_marker_path())
     except OSError:
-        pass
-    return True
+        return False
 
 
 def _parse_marker_json(text: str) -> Dict[str, Any]:

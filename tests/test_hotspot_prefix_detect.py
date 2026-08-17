@@ -15,6 +15,7 @@ if _SRC not in sys.path:
 # Import only the pure helpers — avoid get_ifaces_cached → scapy on wedged Npcap.
 from tools.clumsy_inline import (  # noqa: E402
     _ICS_KNOWN_PREFIXES,
+    ics_forwarding_must_stay_on,
     ics_prefix_for_ip,
     resolve_ics_downstream_prefix,
     victim_on_clumsy_ics_subnet,
@@ -30,6 +31,22 @@ class TestHotspotPrefixDetect(unittest.TestCase):
         self.assertTrue(victim_on_clumsy_ics_subnet('192.168.173.22'))
         self.assertTrue(victim_on_clumsy_ics_subnet('192.168.137.22'))
         self.assertFalse(victim_on_clumsy_ics_subnet('192.168.1.22'))
+
+    def test_ics_forwarding_stays_on_for_live_hotspot(self) -> None:
+        from tools import clumsy_inline as inline
+
+        with patch.object(inline, 'clumsy_mode_enabled', return_value=False), patch.object(
+            inline, '_detect_live_hotspot_prefix', return_value='192.168.137.'
+        ):
+            self.assertTrue(ics_forwarding_must_stay_on())
+        with patch.object(inline, 'clumsy_mode_enabled', return_value=False), patch.object(
+            inline, '_detect_live_hotspot_prefix', return_value=''
+        ):
+            self.assertFalse(ics_forwarding_must_stay_on())
+        with patch.object(inline, 'clumsy_mode_enabled', return_value=True), patch.object(
+            inline, '_detect_live_hotspot_prefix', return_value=''
+        ):
+            self.assertTrue(ics_forwarding_must_stay_on())
 
     def test_ics_prefix_for_ip(self) -> None:
         self.assertEqual(ics_prefix_for_ip('192.168.173.40'), '192.168.173.')

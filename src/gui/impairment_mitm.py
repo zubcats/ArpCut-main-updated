@@ -163,12 +163,18 @@ class ImpairmentMitmMixin:
                 self._readiness_pc_enriched = False
 
     def _schedule_device_readiness_check(self, device: dict) -> None:
-        """First select of this IP since last scan — path check once. Not on Kill / re-clicks.
+        """First user select of this IP since last scan — path check once. Not on Kill.
 
         Runs on the GUI thread: device-path checks are cheap (no ping/scapy). A prior
         version scheduled QTimer from a worker thread, which often never painted the
         status strip — and the IP stayed marked checked, so re-clicks looked dead.
+
+        Programmatic restore after scan must not consume this slot: ARP/fast scan
+        re-selects the same row immediately, which used to burn the check before
+        the user clicked.
         """
+        if getattr(self, '_readiness_suppress_device_select', False):
+            return
         if not isinstance(device, dict) or device.get('admin'):
             return
         self._ensure_readiness_state()
@@ -345,9 +351,9 @@ class ImpairmentMitmMixin:
             # Skip when Clumsy/ICS is on — hotspot path may need forwarding enabled.
             if sys.platform.startswith('win'):
                 try:
-                    from tools.clumsy_inline import clumsy_mode_enabled
+                    from tools.clumsy_inline import ics_forwarding_must_stay_on
 
-                    if not clumsy_mode_enabled():
+                    if not ics_forwarding_must_stay_on():
                         from networking.killer import disable_ip_forwarding
 
                         disable_ip_forwarding(
