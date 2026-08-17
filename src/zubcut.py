@@ -461,7 +461,15 @@ if __name__ == "__main__":
         pass
 
     # Check if another instance is running
-    if duplicate_zubcut():
+    _dup_wait = 0.0
+    try:
+        from tools.clumsy_ics import clumsy_settings_restart_pending
+
+        if clumsy_settings_restart_pending():
+            _dup_wait = 15.0
+    except Exception:
+        _dup_wait = 0.0
+    if duplicate_zubcut(wait_s=_dup_wait):
         msg_box(APP_DISPLAY_NAME, f'{APP_DISPLAY_NAME} is already running!', MsgIcon.WARN, icon)
         exit(1)
 

@@ -231,6 +231,23 @@ class TestDeviceCheckOnceSemantics(unittest.TestCase):
         # Second click would no-op
         self.assertTrue(key in checked)
 
+    def test_scan_restore_does_not_consume_ready_slot(self) -> None:
+        from _gui_source import load_main_window_source, methods_through
+
+        src = load_main_window_source()
+        show = methods_through('showDevices', 'processDevices')
+        self.assertIn('_readiness_suppress_device_select = True', show)
+        self.assertIn('finally:', show)
+        self.assertIn('_readiness_suppress_device_select = False', show)
+        sched = methods_through(
+            '_schedule_device_readiness_check', '_deliver_pc_readiness_findings'
+        )
+        self.assertIn("_readiness_suppress_device_select", sched)
+        self.assertLess(
+            sched.index("_readiness_suppress_device_select"),
+            sched.index('_readiness_device_checked.add'),
+        )
+
 
 class TestPcReadinessScheduleSemantics(unittest.TestCase):
     """Pure state-machine checks for first pass vs enrich (no Qt)."""

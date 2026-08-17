@@ -33,7 +33,7 @@ class TestIpForwardingMitm(unittest.TestCase):
             mock.patch('networking.killer.enable_ip_forwarding') as enable,
             mock.patch('networking.killer.disable_ip_forwarding') as disable,
             mock.patch(
-                'tools.clumsy_inline.clumsy_mode_enabled',
+                'tools.clumsy_inline.ics_forwarding_must_stay_on',
                 return_value=False,
             ),
         ):
@@ -50,7 +50,7 @@ class TestIpForwardingMitm(unittest.TestCase):
         with (
             mock.patch('networking.killer.disable_ip_forwarding') as disable,
             mock.patch(
-                'tools.clumsy_inline.clumsy_mode_enabled',
+                'tools.clumsy_inline.ics_forwarding_must_stay_on',
                 return_value=True,
             ),
         ):
@@ -105,7 +105,7 @@ class TestIpForwardingMitm(unittest.TestCase):
             )
         ]
         self.assertIn('disable_ip_forwarding(blocking=True)', block)
-        self.assertIn('clumsy_mode_enabled', block)
+        self.assertIn('ics_forwarding_must_stay_on', block)
 
     def test_iface_indexes_from_netsh_parses_idx(self) -> None:
         path = os.path.join(_SRC, 'networking', 'killer.py')
@@ -172,6 +172,13 @@ class TestIpForwardingMitm(unittest.TestCase):
         self.assertIn('_ensure_clean_network_on_startup', src)
         block = src[src.index('GUI.scanner.init()') : src.index('reconcile_scanner_with_settings_iface')]
         self.assertNotIn('enable_ip_forwarding', block)
+
+    def test_lan_warm_skips_forwarding_disable_when_hotspot_live(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'impairment_mitm.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        block = src[src.index('def _warm_lan_mitm_stack') : src.index('def _schedule_lan_ipv6_probe')]
+        self.assertIn('ics_forwarding_must_stay_on', block)
 
     def test_killer_init_does_not_enable_forwarding(self) -> None:
         path = os.path.join(_SRC, 'networking', 'killer.py')
