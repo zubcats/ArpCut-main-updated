@@ -102,6 +102,14 @@ class TestLicenseRemoteSignin(unittest.TestCase):
         without_password = validate_license_document(doc)
         self.assertTrue(without_password.ok, without_password.reason)
 
+    def test_expired_hint_mentions_new_account(self) -> None:
+        hint = signin_failure_hint('This subscription has expired.')
+        self.assertIn('new account', hint.lower())
+
+    def test_session_replaced_hint_tells_user_to_sign_in(self) -> None:
+        hint = signin_failure_hint('Session no longer valid.')
+        self.assertIn('old license', hint.lower())
+
     def test_resolve_license_account_prefers_signin_account(self) -> None:
         data = {
             'signin_account': 'KvKey',
@@ -227,6 +235,31 @@ class TestLicenseRemoteSignin(unittest.TestCase):
             )
         finally:
             lrs.requests.get = orig
+
+
+class TestLicenseLockoutReauth(unittest.TestCase):
+    def test_runtime_expiry_offers_signin_instead_of_forced_quit(self) -> None:
+        path = os.path.join(_ROOT, 'src', 'zubcut.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        self.assertIn('def _offer_reauth_or_quit', src)
+        self.assertIn('run_license_signin(parent, icon)', src)
+        self.assertIn('license_signin_is_open()', src)
+        offer = src[src.index('def _offer_reauth_or_quit') : src.index('gui._license_runtime_last_deferred_reason')]
+        self.assertNotIn('QTimer.singleShot(2200, gui.quit_all)', offer)
+        self.assertIn('run_license_signin', offer)
+        self.assertIn('gui.quit_all()', offer)
+        self.assertLess(offer.index('run_license_signin'), offer.index('gui.quit_all()'))
+
+    def test_signin_dialog_uses_charcoal_body_name(self) -> None:
+        path = os.path.join(_ROOT, 'src', 'gui', 'license_signin.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        self.assertIn("setObjectName('zubcutLicenseSignInDialog')", src)
+        self.assertIn("setObjectName('zubcutDialogBody')", src)
+        self.assertIn('def license_signin_is_open', src)
+        self.assertNotIn('#19232D', src)
+        self.assertNotIn('#1A72BB', src)
 
 
 if __name__ == '__main__':
