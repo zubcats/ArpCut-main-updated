@@ -118,17 +118,6 @@ class ImpairmentDupeMixin:
         )
 
 
-    def _schedule_dupe_off_reinforce(self, prev_mac, device) -> None:
-        """ARP reinforce only; WinDivert-only ICS dupe skips delayed callbacks."""
-        if not device or not prev_mac:
-            return
-        if self._uses_windivert(device) and prev_mac not in self.killer.killed:
-            return
-        dupe_off_seq = self._bump_flow_off_intent('dupe', prev_mac)
-        self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 25, device)
-        self._schedule_flow_off_reinforce('dupe', prev_mac, dupe_off_seq, 100, device)
-
-
     def _finish_dupe_ics_teardown_net(self, device) -> bool:
         if not isinstance(device, dict):
             return False
@@ -207,7 +196,7 @@ class ImpairmentDupeMixin:
         return None
 
 
-    def _drain_dupe_async_network(self, max_wait_ms: int = 120_000):
+    def _drain_dupe_async_network(self, max_wait_ms: int = 400):
         """Wait for in-flight async unblock_ip; Queued unkill slot must run on the GUI thread."""
         cap = max(50, int(max_wait_ms))
         fut = getattr(self, '_dupe_clear_future', None)
@@ -242,7 +231,7 @@ class ImpairmentDupeMixin:
         if fut is None and not getattr(self, '_dupe_block_apply_pending', False):
             return
         if fut is not None:
-            self._pump_gui_until(lambda: fut.done(), 120_000)
+            self._pump_gui_until(lambda: fut.done(), 400)
             try:
                 if fut.done():
                     fut.result(timeout=0)
@@ -274,7 +263,7 @@ class ImpairmentDupeMixin:
                 pass
 
 
-    def _flush_pending_dupe_clear_sync(self, max_wait_ms: int = 120_000):
+    def _flush_pending_dupe_clear_sync(self, max_wait_ms: int = 400):
         """Run any scheduled dupe OFF firewall/ARP work immediately (before starting a new dupe)."""
         self._dupe_deferred_clear_timer.stop()
         try:
@@ -809,6 +798,12 @@ class ImpairmentDupeMixin:
         snap = self._resolve_dupe_stop_snapshot(prev_mac, prev_ip, arm_snap)
         self._refresh_flow_toggle_ui(fast=True)
         self._repaint_device_table_rows(snap)
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        except Exception:
+            pass
         if snap:
             release_snap = dict(snap)
             release_mac = prev_mac
