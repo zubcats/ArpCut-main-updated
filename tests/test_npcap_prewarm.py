@@ -62,6 +62,20 @@ class TestNpcapPrewarm(unittest.TestCase):
         self.assertIn('AllowComputerToTurnOffDevice', src)
         self.assertIn('I219|Ethernet Connection', src)
         self.assertIn('PnPCapabilities', src)
+        self.assertIn('ics_forwarding_must_stay_on', src)
+        maintain = src[
+            src.index('def maintain_windows_capture_stack') : src.index(
+                'def schedule_windows_capture_maintenance'
+            )
+        ]
+        self.assertIn('if ics_forwarding_must_stay_on()', maintain)
+        self.assertLess(
+            maintain.index('if ics_forwarding_must_stay_on()'),
+            maintain.index('Set-NetAdapterPowerManagement'),
+        )
+        self.assertIn('$isWifi', maintain)
+        sched = src[src.index('def schedule_windows_capture_maintenance') :]
+        self.assertIn('ics_forwarding_must_stay_on', sched)
 
     def test_startup_clears_ip_forwarding(self) -> None:
         src = self._main_py()

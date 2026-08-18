@@ -15,6 +15,9 @@ if _SRC not in sys.path:
 # Import only the pure helpers — avoid get_ifaces_cached → scapy on wedged Npcap.
 from tools.clumsy_inline import (  # noqa: E402
     _ICS_KNOWN_PREFIXES,
+    _ipconfig_has_softap_gateway,
+    _netsh_hostednetwork_started,
+    _netsh_interface_has_softap_nic,
     ics_forwarding_must_stay_on,
     ics_prefix_for_ip,
     resolve_ics_downstream_prefix,
@@ -36,17 +39,45 @@ class TestHotspotPrefixDetect(unittest.TestCase):
         from tools import clumsy_inline as inline
 
         with patch.object(inline, 'clumsy_mode_enabled', return_value=False), patch.object(
-            inline, '_detect_live_hotspot_prefix', return_value='192.168.137.'
+            inline, 'windows_hotspot_session_live', return_value=True
         ):
             self.assertTrue(ics_forwarding_must_stay_on())
         with patch.object(inline, 'clumsy_mode_enabled', return_value=False), patch.object(
-            inline, '_detect_live_hotspot_prefix', return_value=''
+            inline, 'windows_hotspot_session_live', return_value=False
         ):
             self.assertFalse(ics_forwarding_must_stay_on())
         with patch.object(inline, 'clumsy_mode_enabled', return_value=True), patch.object(
-            inline, '_detect_live_hotspot_prefix', return_value=''
+            inline, 'windows_hotspot_session_live', return_value=False
         ):
             self.assertTrue(ics_forwarding_must_stay_on())
+
+    def test_softap_text_parsers(self) -> None:
+        self.assertTrue(_ipconfig_has_softap_gateway('IPv4 Address . . . 192.168.137.1'))
+        self.assertTrue(_ipconfig_has_softap_gateway('192.168.173.1'))
+        self.assertFalse(_ipconfig_has_softap_gateway('192.168.1.56'))
+        self.assertTrue(
+            _netsh_hostednetwork_started('Hosted network settings\n    Status                 : Started')
+        )
+        self.assertFalse(
+            _netsh_hostednetwork_started('Hosted network settings\n    Status                 : Not started')
+        )
+        self.assertTrue(
+            _netsh_interface_has_softap_nic(
+                'Admin State    State          Type             Interface Name\n'
+                'Enabled        Connected      Dedicated        Local Area Connection* 9'
+            )
+        )
+        self.assertTrue(
+            _netsh_interface_has_softap_nic(
+                'Enabled        Connected      Dedicated        Microsoft Wi-Fi Direct Virtual Adapter'
+            )
+        )
+        self.assertFalse(
+            _netsh_interface_has_softap_nic(
+                'Enabled        Connected      Dedicated        Wi-Fi\n'
+                'Enabled        Disconnected   Dedicated        Local Area Connection* 2'
+            )
+        )
 
     def test_ics_prefix_for_ip(self) -> None:
         self.assertEqual(ics_prefix_for_ip('192.168.173.40'), '192.168.173.')
