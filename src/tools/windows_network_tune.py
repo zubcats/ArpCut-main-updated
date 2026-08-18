@@ -201,6 +201,16 @@ def maintain_windows_capture_stack(
     if not _is_admin():
         return
 
+    try:
+        from tools.clumsy_inline import ics_forwarding_must_stay_on
+
+        if ics_forwarding_must_stay_on():
+            # Hotspot / ICS is live (Clumsy checkbox may be off). Do not flip
+            # forwarding, NIC power, or bindings — that drops the PC uplink.
+            return
+    except Exception:
+        pass
+
     active = _safe_adapter_name(iface_name)
     active_clause = f"$active = '{active}'" if active else '$active = $null'
 
@@ -223,10 +233,13 @@ if (-not $targets) {{
   $targets = @(Get-NetAdapter | Where-Object {{ $_.Status -eq 'Up' }})
 }}
 foreach ($a in $targets) {{
+  $desc = [string]$a.InterfaceDescription
+  $isWifi = ($a.Name -match 'Wi-?Fi|Wireless' -or $desc -match 'Wi-?Fi|Wireless|802\.11|Direct|Hosted|Hotspot')
   $w = Get-NetAdapterBinding -Name $a.Name -ComponentID 'Win10Pcap' -ErrorAction SilentlyContinue
   if ($w -and $w.Enabled) {{
     Disable-NetAdapterBinding -Name $a.Name -ComponentID 'Win10Pcap' | Out-Null
   }}
+  if ($isWifi) {{ continue }}
   Set-NetAdapterPowerManagement -Name $a.Name `
     -AllowComputerToTurnOffDevice Disabled `
     -WakeOnMagicPacket Disabled `
@@ -259,6 +272,13 @@ def schedule_windows_capture_maintenance(
     """Background maintenance + optional Killer.prewarm_l2_socket callback."""
 
     def _work() -> None:
+        try:
+            from tools.clumsy_inline import ics_forwarding_must_stay_on
+
+            if ics_forwarding_must_stay_on():
+                return
+        except Exception:
+            pass
         try:
             maintain_windows_capture_stack(iface_name=iface_name, force=force)
         except Exception:

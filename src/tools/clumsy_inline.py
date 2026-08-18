@@ -128,9 +128,85 @@ def ics_forwarding_must_stay_on() -> bool:
     if clumsy_mode_enabled():
         return True
     try:
-        return bool(_detect_live_hotspot_prefix())
+        return bool(windows_hotspot_session_live())
     except Exception:
         return False
+
+
+def _ipconfig_has_softap_gateway(text: str) -> bool:
+    blob = str(text or '')
+    return any((p + '1') in blob for p in _ICS_KNOWN_PREFIXES)
+
+
+def _netsh_hostednetwork_started(text: str) -> bool:
+    """True when ``netsh wlan show hostednetwork`` reports the SoftAP as started."""
+    started = False
+    for raw in str(text or '').splitlines():
+        low = raw.lower()
+        if 'status' not in low and 'zustand' not in low and 'état' not in low and 'estado' not in low:
+            continue
+        if any(
+            tok in low
+            for tok in ('not started', 'stopped', 'nicht gestartet', 'arrêté', 'arrete', 'no iniciado')
+        ):
+            return False
+        if any(tok in low for tok in ('started', 'gestartet', 'démarré', 'demarre', 'iniciado')):
+            started = True
+            break
+    return started
+
+
+def _netsh_interface_has_softap_nic(text: str) -> bool:
+    """True when a connected NIC looks like Wi-Fi Direct / hosted network / LAC* SoftAP."""
+    needles = (
+        'wi-fi direct',
+        'wifi direct',
+        'hosted network',
+        'microsoft hosted',
+        'mobile hotspot',
+        'local area connection*',
+        'microsoft wi-fi direct',
+    )
+    connected_hints = ('connected', 'verbunden', 'connecté', 'conectado')
+    for raw in str(text or '').splitlines():
+        low = raw.lower()
+        if not any(h in low for h in connected_hints):
+            continue
+        if 'disconnected' in low or 'getrennt' in low or 'déconnecté' in low:
+            continue
+        if any(n in low for n in needles):
+            return True
+    return False
+
+
+def windows_hotspot_session_live() -> bool:
+    """True when Windows Mobile Hotspot / SoftAP is up, independent of Clumsy checkbox."""
+    if not sys.platform.startswith('win'):
+        return False
+    try:
+        if _detect_live_hotspot_prefix():
+            return True
+    except Exception:
+        pass
+    try:
+        from tools.utils import run_command, terminal
+
+        ipcfg = terminal('ipconfig') or ''
+        if _ipconfig_has_softap_gateway(ipcfg):
+            return True
+        hosted = run_command(
+            ['netsh', 'wlan', 'show', 'hostednetwork'],
+            shell=False,
+            timeout=2,
+        )
+        if _netsh_hostednetwork_started(str(getattr(hosted, 'stdout', None) or '')):
+            return True
+        listing = terminal('netsh interface show interface') or ''
+        if _netsh_interface_has_softap_nic(listing):
+            return True
+    except Exception:
+        return False
+    return False
 
 
 def _detect_live_hotspot_prefix(*, force: bool = False) -> str:
@@ -161,6 +237,17 @@ def _detect_live_hotspot_prefix(*, force: bool = False) -> str:
             if (prefix + '1') in text:
                 found = prefix
                 break
+        if not found:
+            try:
+                from tools.utils import terminal
+
+                ipcfg = terminal('ipconfig') or ''
+                for prefix in _ICS_KNOWN_PREFIXES:
+                    if (prefix + '1') in ipcfg:
+                        found = prefix
+                        break
+            except Exception:
+                pass
     except Exception:
         found = ''
     prev, _prev_ts = _LIVE_HOTSPOT_PREFIX_CACHE
