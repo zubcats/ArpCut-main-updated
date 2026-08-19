@@ -30,7 +30,7 @@ class TestIfaceForVictimIp(unittest.TestCase):
         wifi = _face('Wi-Fi', r'\\Device\\NPF_{WIFI}', '192.168.1.56')
         mock_cached.return_value = [eth, wifi]
 
-        def _my_ip(guid: str) -> str:
+        def _my_ip(guid: str, **_kw) -> str:
             if 'WIFI' in str(guid):
                 return '192.168.1.56'
             return '0.0.0.0'
@@ -115,7 +115,7 @@ class TestIfaceForVictimIp(unittest.TestCase):
         eth = _face('Ethernet', r'\\Device\\NPF_{ETH}', '192.168.1.110')
         wifi = _face('Wi-Fi', r'\\Device\\NPF_{WIFI}', '192.168.1.56')
         mock_cached.return_value = [eth, wifi]
-        mock_my_ip.side_effect = lambda guid: (
+        mock_my_ip.side_effect = lambda guid, **_kw: (
             '192.168.1.56' if 'WIFI' in str(guid) else '0.0.0.0'
         )
         mock_conf.route.route.return_value = None

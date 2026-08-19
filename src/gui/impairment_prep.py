@@ -381,7 +381,7 @@ class ImpairmentPrepMixin:
             from scapy.all import conf as scapy_conf
 
             guid = self.scanner.iface.guid if self.scanner.iface else None
-            if guid:
+            if guid and str(guid).strip().upper() != 'NULL':
                 scapy_conf.iface = guid
         except Exception:
             pass

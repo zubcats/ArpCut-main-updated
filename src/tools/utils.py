@@ -163,6 +163,52 @@ def _iface_looks_vpn_or_virtual(iface) -> bool:
     return any(n in blob for n in _VPN_VIRTUAL_IFACE_NEEDLES)
 
 
+_SOFTAP_IFACE_NEEDLES = (
+    'local area connection*',
+    'wi-fi direct',
+    'wifi direct',
+    'hosted network',
+    'microsoft hosted',
+    'mobile hotspot',
+    'microsoft wi-fi direct',
+)
+
+
+def _is_softap_ipv4(ip: str) -> bool:
+    """True for Windows Mobile Hotspot / ICS SoftAP host or client IPv4."""
+    s = str(ip or '').strip()
+    return s.startswith('192.168.137.') or s.startswith('192.168.173.')
+
+
+def _iface_name_looks_softap(name: str) -> bool:
+    blob = str(name or '').strip().lower()
+    return bool(blob) and any(n in blob for n in _SOFTAP_IFACE_NEEDLES)
+
+
+def _iface_looks_softap(iface) -> bool:
+    """True for the Wi-Fi Direct / hosted-network NIC used by Mobile Hotspot."""
+    return _iface_name_looks_softap(getattr(iface, 'name', None) or '')
+
+
+def _softap_bind_allowed() -> bool:
+    """LAN Kill uses the home NIC; SoftAP bind is only for Clumsy hotspot."""
+    try:
+        from tools.clumsy_inline import clumsy_mode_enabled
+
+        return bool(clumsy_mode_enabled())
+    except Exception:
+        return False
+
+
+def _ip_ok_for_bind(ip: str) -> bool:
+    """Reject leftover ICS 137/173 addresses when Clumsy mode is off."""
+    if not _ipv4_usable_for_lan(ip):
+        return False
+    if _is_softap_ipv4(ip) and not _softap_bind_allowed():
+        return False
+    return True
+
+
 def format_iface_settings_label(iface: NetFace) -> str:
     """
     One-line label for the Settings network combo (shown to user).
@@ -263,10 +309,14 @@ def good_mac(mac):
     """
     return mac.upper().replace('-', ':')
 
-def get_my_ip(iface_name):
+def get_my_ip(iface_name, *, allow_default_route_fallback: bool = True):
     """
     Get interface IP address (cross-platform)
     iface_name must be the Scapy/pcap name (e.g., \\Device\\NPF_{GUID} on Windows, en0 on macOS)
+
+    When *allow_default_route_fallback* is False, do not return another NIC's
+    default-route source IP. Callers that mean "is this adapter live?" must pass
+    False — otherwise a disconnected hotspot NIC inherits the Wi‑Fi address.
     """
     try:
         conf.route.resync()
@@ -295,16 +345,17 @@ def get_my_ip(iface_name):
             return src_ip
 
     # Fallback: use the default route (first non-loopback source IP)
-    try:
-        route_result = conf.route.route("0.0.0.0")
-        if len(route_result) >= 2 and route_result[1] not in invalid_ips:
-            src_ip = str(route_result[1])
-            if _ipv4_usable_for_lan(src_ip):
-                return src_ip
-            if _ipv4_valid(src_ip):
-                return src_ip
-    except Exception:
-        pass
+    if allow_default_route_fallback:
+        try:
+            route_result = conf.route.route("0.0.0.0")
+            if len(route_result) >= 2 and route_result[1] not in invalid_ips:
+                src_ip = str(route_result[1])
+                if _ipv4_usable_for_lan(src_ip):
+                    return src_ip
+                if _ipv4_valid(src_ip):
+                    return src_ip
+        except Exception:
+            pass
 
     # Last resort
     return '127.0.0.1'
@@ -1372,6 +1423,10 @@ def refresh_netface_live_ip(iface: NetFace) -> None:
     lip = _iface_live_ipv4(iface)
     if lip:
         iface.ip = lip
+        return
+    cur = str(getattr(iface, 'ip', None) or '').strip()
+    if _is_softap_ipv4(cur) and not _softap_bind_allowed():
+        iface.ip = '0.0.0.0'
 
 
 def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
@@ -1388,17 +1443,37 @@ def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
     return out
 
 
+def scapy_iface_token_ok(token) -> bool:
+    """False for empty / dummy ``NULL`` tokens that make Scapy raise ValueError."""
+    t = str(token or '').strip()
+    return bool(t) and t.upper() != 'NULL'
+
+
+def bind_scapy_conf_iface(token) -> bool:
+    """Set ``conf.iface`` when *token* is a real Npcap name. Never raises."""
+    if not scapy_iface_token_ok(token):
+        return False
+    try:
+        conf.iface = token
+        return True
+    except Exception:
+        return False
+
+
 def resolve_iface_my_ip(iface) -> str:
     """Best IPv4 for scanner Me/router topology — DHCP LAN over APIPA."""
     refresh_netface_live_ip(iface)
     guid = str(getattr(iface, 'guid', None) or '').strip()
-    ip = str(get_my_ip(guid) if guid else '') or ''
+    try:
+        ip = str(get_my_ip(guid, allow_default_route_fallback=False) if guid else '') or ''
+    except TypeError:
+        ip = str(get_my_ip(guid) if guid else '') or ''
     cached = str(getattr(iface, 'ip', None) or '').strip()
-    if _ipv4_usable_for_lan(ip):
+    if _ip_ok_for_bind(ip):
         return ip
-    if _ipv4_usable_for_lan(cached):
+    if _ip_ok_for_bind(cached):
         return cached
-    return ip if _ipv4_valid(ip) else cached
+    return ''
 
 
 def _pick_first_live_iface(ifaces):
@@ -1411,16 +1486,28 @@ def _pick_first_live_iface(ifaces):
 
 def _iface_live_ipv4(iface) -> str:
     """Current IPv4 on this Npcap iface (not the stale NetFace.ip cache)."""
+    if iface is not None and _iface_looks_softap(iface) and not _softap_bind_allowed():
+        return ''
     guid = str(getattr(iface, 'guid', None) or '').strip()
-    if not guid:
+    ip = ''
+    if guid:
+        try:
+            ip = str(get_my_ip(guid, allow_default_route_fallback=False) or '').strip()
+        except TypeError:
+            try:
+                ip = str(get_my_ip(guid) or '').strip()
+            except Exception:
+                ip = ''
+        except Exception:
+            ip = ''
+    if ip in ('0.0.0.0',):
         return ''
-    try:
-        ip = str(get_my_ip(guid) or '').strip()
-    except Exception:
-        return ''
-    if ip in ('0.0.0.0', '127.0.0.1') or not _ipv4_usable_for_lan(ip):
-        return ''
-    return ip
+    if _ip_ok_for_bind(ip):
+        return ip
+    cached = str(getattr(iface, 'ip', None) or '').strip()
+    if ip in ('127.0.0.1', '') and _ip_ok_for_bind(cached):
+        return cached
+    return ''
 
 
 def _iface_for_route_tokens(route_tokens, ifaces):
@@ -1618,6 +1705,8 @@ def pick_best_live_iface():
     best = None
     best_score = -1
     for iface in ifaces:
+        if _iface_looks_softap(iface) and not _softap_bind_allowed():
+            continue
         lip = _iface_live_ipv4(iface)
         if not lip or lip.startswith('169.254.') or not mac_address_is_usable(iface.mac):
             continue
@@ -1650,7 +1739,12 @@ def pick_best_live_iface():
 def repair_saved_iface_name(saved: str) -> str:
     """Map broken Settings labels / ghost bindings to the live default-route NIC."""
     name = str(saved or '').strip()
-    if not name or name == 'NULL' or _is_bad_iface_display_name(name):
+    if (
+        not name
+        or name == 'NULL'
+        or _is_bad_iface_display_name(name)
+        or (_iface_name_looks_softap(name) and not _softap_bind_allowed())
+    ):
         invalidate_ifaces_cache(full=True)
         best = pick_best_live_iface()
         if best is not None and best.name != 'NULL' and _iface_live_ipv4(best):
@@ -1675,10 +1769,10 @@ def repair_saved_iface_name(saved: str) -> str:
         if iface.name == name:
             want_ip = str(getattr(iface, 'ip', None) or '').strip()
             break
-    if want_ip and _ipv4_usable_for_lan(want_ip):
+    if want_ip and _ip_ok_for_bind(want_ip):
         for iface in ifaces:
             lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
-            if lip == want_ip and mac_address_is_usable(iface.mac):
+            if lip == want_ip and _ip_ok_for_bind(lip) and mac_address_is_usable(iface.mac):
                 return iface.name
     best = pick_best_live_iface()
     if best is not None and best.name != 'NULL' and _iface_live_ipv4(best):
@@ -1807,7 +1901,9 @@ def resolve_settings_iface_name(saved: str) -> str:
     name = str(saved or '').strip()
     if not name or name == 'NULL':
         return name
-    if _is_bad_iface_display_name(name):
+    if _is_bad_iface_display_name(name) or (
+        _iface_name_looks_softap(name) and not _softap_bind_allowed()
+    ):
         name = ''
     ifaces = list(get_ifaces_cached())
     want_ip = ''
@@ -1818,10 +1914,10 @@ def resolve_settings_iface_name(saved: str) -> str:
             return name
         want_ip = str(getattr(iface, 'ip', None) or '').strip()
         break
-    if want_ip and _ipv4_usable_for_lan(want_ip):
+    if want_ip and _ip_ok_for_bind(want_ip):
         for iface in ifaces:
             lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
-            if lip == want_ip and mac_address_is_usable(iface.mac):
+            if lip == want_ip and _ip_ok_for_bind(lip) and mac_address_is_usable(iface.mac):
                 return iface.name
     if not name:
         best = pick_best_live_iface()
@@ -1856,7 +1952,9 @@ def get_iface_by_name(name):
     if chosen is None:
         chosen = get_default_iface()
     refresh_netface_live_ip(chosen)
-    if not _iface_live_ipv4(chosen):
+    if not _iface_live_ipv4(chosen) or (
+        _iface_looks_softap(chosen) and not _softap_bind_allowed()
+    ):
         live = _pick_first_live_iface(ifaces)
         if live is not None:
             return live

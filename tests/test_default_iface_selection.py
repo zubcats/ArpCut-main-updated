@@ -72,6 +72,52 @@ class TestDefaultIfaceSelection(unittest.TestCase):
         mock_live.side_effect = _live
         self.assertEqual(resolve_settings_iface_name('Wi-Fi'), 'Wi-Fi')
 
+    @mock.patch('tools.utils.get_ifaces')
+    @mock.patch('tools.utils.pick_best_live_iface')
+    def test_repair_maps_hotspot_nic_to_wifi_when_clumsy_off(self, mock_pick, mock_list) -> None:
+        wifi = _face('Wi-Fi', '192.168.1.56')
+        lac = _face('Local Area Connection* 10', '192.168.137.1')
+        mock_list.return_value = [lac, wifi]
+        mock_pick.return_value = wifi
+        with (
+            mock.patch('tools.utils.invalidate_ifaces_cache'),
+            mock.patch('tools.utils._softap_bind_allowed', return_value=False),
+            mock.patch(
+                'tools.utils._iface_live_ipv4',
+                side_effect=lambda i: '192.168.1.56' if i.name == 'Wi-Fi' else '',
+            ),
+            mock.patch('tools.utils.mac_address_is_usable', return_value=True),
+        ):
+            repaired = repair_saved_iface_name('Local Area Connection* 10')
+        self.assertEqual(repaired, 'Wi-Fi')
+
+    def test_live_ipv4_ignores_softap_when_clumsy_off(self) -> None:
+        from tools.utils import _iface_live_ipv4
+
+        lac = _face('Local Area Connection* 10', '192.168.137.1')
+        with mock.patch('tools.utils._softap_bind_allowed', return_value=False):
+            self.assertEqual(_iface_live_ipv4(lac), '')
+
+    def test_live_ipv4_keeps_softap_when_clumsy_on(self) -> None:
+        from tools.utils import _iface_live_ipv4
+
+        lac = _face('Local Area Connection* 10', '192.168.137.1')
+        with (
+            mock.patch('tools.utils._softap_bind_allowed', return_value=True),
+            mock.patch('tools.utils.get_my_ip', return_value='192.168.137.1'),
+        ):
+            self.assertEqual(_iface_live_ipv4(lac), '192.168.137.1')
+
+    def test_resolve_iface_drops_stale_hotspot_ip_when_clumsy_off(self) -> None:
+        from tools.utils import resolve_iface_my_ip
+
+        lac = _face('Local Area Connection* 10', '192.168.137.1')
+        with (
+            mock.patch('tools.utils._softap_bind_allowed', return_value=False),
+            mock.patch('tools.utils.get_my_ip', return_value='192.168.137.1'),
+        ):
+            self.assertEqual(resolve_iface_my_ip(lac), '')
+
 
 if __name__ == '__main__':
     unittest.main()
