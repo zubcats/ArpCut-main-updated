@@ -79,8 +79,31 @@ class Scanner():
 
         self.my_ip = resolve_iface_my_ip(self.iface)
         self.my_mac = good_mac(self.iface.mac)
-        
-        self.perfix = self.my_ip.rsplit(".", 1)[0]
+        # Clumsy-off leftover: Settings may still name Local Area Connection* 10
+        # with 192.168.137.1 while the PC is on Wi‑Fi. Rebind to the home LAN NIC.
+        try:
+            from tools.utils import _is_softap_ipv4, _softap_bind_allowed, pick_best_live_iface
+
+            leftover = (not self.my_ip) or (
+                _is_softap_ipv4(self.my_ip) and not _softap_bind_allowed()
+            )
+        except Exception:
+            leftover = not self.my_ip
+        if leftover:
+            try:
+                best = pick_best_live_iface()
+            except Exception:
+                best = None
+            if best is not None and getattr(best, 'name', None) not in (None, '', 'NULL'):
+                self.iface = best
+                self.router_ip = get_gateway_ip(self.iface.guid)
+                self.router_mac = get_gateway_mac(
+                    self.iface.ip, self.router_ip, allow_scapy_probe=False
+                )
+                self.my_ip = resolve_iface_my_ip(self.iface)
+                self.my_mac = good_mac(self.iface.mac)
+
+        self.perfix = (self.my_ip or '0.0.0.0').rsplit(".", 1)[0]
         self.generate_ips()
 
     def sync_iface_for_victim_ip(self, victim_ip: str) -> bool:

@@ -365,6 +365,13 @@ def _start_license_runtime_validation(gui, icon) -> None:
 if __name__ == "__main__":
     if _sys.platform == 'win32' and not ensure_windows_elevated():
         exit(1)
+    if _sys.platform == 'win32':
+        try:
+            from tools.utils_gui import _ELEVATE_HANDOFF_ARG as _handoff_arg
+
+            argv[:] = [a for a in argv if a != _handoff_arg]
+        except Exception:
+            pass
 
     # Before QApplication: real per-monitor DPI so Win32 icon loads + GetDpiForWindow match the display.
     if _sys.platform == 'win32':

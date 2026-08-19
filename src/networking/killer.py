@@ -20,6 +20,7 @@ from tools.utils import (
     victim_endpoint_live_for_mitm,
     _lan_neighbor_mac_via_arp_probe,
     npcap_iface_tokens,
+    bind_scapy_conf_iface,
 )
 from constants import *
 from tools.crash_feedback import safe_daemon_target
@@ -432,8 +433,11 @@ def _lan_kill_priority_only() -> bool:
 class Killer:
     def __init__(self, router=DUMMY_ROUTER):
         self.iface = get_default_iface()
-        # Use guid (Scapy/pcap name) for conf.iface, not friendly name
-        conf.iface = self.iface.guid if self.iface.guid else self.iface.name
+        # Dummy ``NULL`` iface (no live NIC / Npcap empty) must not be assigned to
+        # conf.iface — Scapy raises ValueError and crashes startup (ZC-236TTZ).
+        bind_scapy_conf_iface(
+            getattr(self.iface, 'guid', None) or getattr(self.iface, 'name', None)
+        )
         # Home-LAN Kill/Lag uses the userspace MitmForwarder. Leaving kernel
         # forwarding ON lets Windows relay redirected frames and makes Kill only
         # partial. Clumsy/ICS enables forwarding itself when needed.
@@ -582,10 +586,7 @@ class Killer:
         self.iface = target
         self._close_socket()
         guid = self.iface.guid if getattr(self.iface, 'guid', None) else self.iface.name
-        try:
-            conf.iface = guid
-        except Exception:
-            pass
+        bind_scapy_conf_iface(guid)
         iface_ip = get_my_ip(guid)
         self.iface.ip = iface_ip
         self.iface.mac = good_mac(getattr(self.iface, 'mac', GLOBAL_MAC))

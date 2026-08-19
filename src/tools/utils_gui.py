@@ -1328,12 +1328,49 @@ from tools.frameless_chrome import register_window_surface_effects, sync_translu
 
 
 
+_ELEVATE_HANDOFF_ARG = '--zubcut-elevated'
+
+
+def _windows_token_is_elevated() -> bool:
+    """True when the process token is elevated (backup for IsUserAnAdmin false negatives)."""
+    if not sys.platform.startswith('win'):
+        return False
+    try:
+        advapi32 = ctypes.windll.advapi32
+        kernel32 = ctypes.windll.kernel32
+        token = ctypes.c_void_p()
+        if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+            return False
+
+        class TOKEN_ELEVATION(ctypes.Structure):
+            _fields_ = [('TokenIsElevated', ctypes.c_ulong)]
+
+        elevation = TOKEN_ELEVATION()
+        out_len = ctypes.c_ulong()
+        ok = advapi32.GetTokenInformation(
+            token,
+            20,  # TokenElevation
+            ctypes.byref(elevation),
+            ctypes.sizeof(elevation),
+            ctypes.byref(out_len),
+        )
+        kernel32.CloseHandle(token)
+        return bool(ok and elevation.TokenIsElevated)
+    except Exception:
+        return False
+
+
 def is_admin():
     """
     Check if current user is Admin
     """
     if sys.platform.startswith('win'):
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        try:
+            if bool(ctypes.windll.shell32.IsUserAnAdmin()):
+                return True
+        except Exception:
+            pass
+        return _windows_token_is_elevated()
     # On macOS/Linux, assume current user context (no UAC)
     return True
 
@@ -1341,6 +1378,11 @@ def is_admin():
 def _elevate_skip_requested() -> bool:
     v = os.environ.get('ZUBCUT_SKIP_ELEVATE', '').strip().lower()
     return v in ('1', 'true', 'yes', 'on')
+
+
+def _elevate_handoff_requested(argv=None) -> bool:
+    args = sys.argv if argv is None else argv
+    return _ELEVATE_HANDOFF_ARG in [str(a) for a in (args or [])]
 
 
 def spawn_windows_elevated(exe: str, params: str = '', cwd: str | None = None) -> bool:
@@ -1361,18 +1403,43 @@ def spawn_windows_elevated(exe: str, params: str = '', cwd: str | None = None) -
     return int(ret) > 32
 
 
-def _windows_relaunch_command() -> tuple[str, str, str]:
-    """(exe, params, cwd) for relaunching this ZubCut process elevated."""
+def _zubcut_relaunch_argv(*, handoff: bool = False) -> list[str]:
+    """Argv tail for a replacement ZubCut process (not including the interpreter/exe)."""
+    rest = [str(a) for a in sys.argv[1:] if str(a) != _ELEVATE_HANDOFF_ARG]
+    if getattr(sys, 'frozen', False):
+        tail = rest
+    else:
+        script = os.path.abspath(sys.argv[0]) if sys.argv else ''
+        tail = ([script] + rest) if script else rest
+    if handoff:
+        return [_ELEVATE_HANDOFF_ARG, *tail]
+    return tail
+
+
+def _windows_relaunch_command(*, handoff: bool = False) -> tuple[str, str, str]:
+    """(exe, params, cwd) for relaunching this ZubCut process."""
     from subprocess import list2cmdline
 
     exe = sys.executable
+    tail = _zubcut_relaunch_argv(handoff=handoff)
+    params = list2cmdline(tail) if tail else ''
     if getattr(sys, 'frozen', False):
         cwd = os.path.dirname(os.path.abspath(exe))
-        params = list2cmdline(sys.argv[1:]) if len(sys.argv) > 1 else ''
     else:
         cwd = os.getcwd()
-        params = list2cmdline(sys.argv[1:])
     return exe, params, cwd
+
+
+def _spawn_zubcut_same_token(exe: str, argv_tail: list[str], cwd: str) -> bool:
+    """Start a replacement process inheriting this process token (no UAC)."""
+    import subprocess
+
+    try:
+        subprocess.Popen([exe, *argv_tail], cwd=cwd or None, close_fds=True)
+        return True
+    except Exception as e:
+        print(f'restart_zubcut: failed to spawn process: {e}')
+        return False
 
 
 def ensure_windows_elevated() -> bool:
@@ -1385,8 +1452,21 @@ def ensure_windows_elevated() -> bool:
         return True
     if _elevate_skip_requested() or is_admin():
         return True
+    # Child of a previous runas that still is not Admin: do not prompt again.
+    if _elevate_handoff_requested():
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                f'{APP_DISPLAY_NAME} did not get Administrator rights after UAC.\n\n'
+                'Close this window, right-click ZubCut, and choose Run as administrator.',
+                f'{APP_DISPLAY_NAME} — Administrator required',
+                0x10,
+            )
+        except Exception:
+            pass
+        return False
 
-    exe, params, cwd = _windows_relaunch_command()
+    exe, params, cwd = _windows_relaunch_command(handoff=True)
     if not spawn_windows_elevated(exe, params, cwd):
         try:
             ctypes.windll.user32.MessageBoxW(
@@ -1404,28 +1484,25 @@ def ensure_windows_elevated() -> bool:
 
 def restart_zubcut(main_window=None) -> bool:
     """
-    Start a new elevated ZubCut process and quit this one.
+    Start a replacement ZubCut process and quit this one.
 
-    Settings Clumsy-mode toggle and similar flows must relaunch with ``runas`` so the new
-    instance is Administrator (WinDivert / ICS). A plain ``Popen`` from an elevated parent
-    does not always inherit the admin token on Windows.
+    When this process is already Administrator, inherit that token with Popen
+    (no second UAC). Nested ``runas`` from an elevated parent re-prompts UAC
+    on many PCs and can loop.
 
-    Release the single-instance mutex before spawn so the new process does not hit
-    "ZubCut is already running!" and exit while this one is still quitting.
+    Only use ``runas`` when this process is not elevated. Release the
+    single-instance mutex before spawn so the new process does not hit
+    "ZubCut is already running!" while this one is still quitting.
     """
     release_zubcut_single_instance()
-    if not sys.platform.startswith('win'):
-        import subprocess
-
-        exe, _params, cwd = _windows_relaunch_command()
-        try:
-            subprocess.Popen([exe, *sys.argv[1:]], cwd=cwd, close_fds=True)
-        except Exception as e:
-            print(f'restart_zubcut: failed to spawn process: {e}')
+    already_admin = bool(is_admin()) if sys.platform.startswith('win') else True
+    exe, params, cwd = _windows_relaunch_command(handoff=not already_admin)
+    argv_tail = _zubcut_relaunch_argv(handoff=not already_admin)
+    if not sys.platform.startswith('win') or already_admin:
+        if not _spawn_zubcut_same_token(exe, argv_tail, cwd):
             duplicate_zubcut()
             return False
     else:
-        exe, params, cwd = _windows_relaunch_command()
         if not spawn_windows_elevated(exe, params, cwd):
             duplicate_zubcut()
             try:
