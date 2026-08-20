@@ -59,6 +59,13 @@ Interface: 192.168.1.56 --- 0x8
         self.assertNotIn("224.0.0.22", ips)
         self.assertNotIn("224.0.0.251", ips)
 
+    def test_devices_appender_does_not_reference_undefined_unique(self) -> None:
+        import inspect
+
+        src = inspect.getsource(scan_mod.Scanner.devices_appender)
+        self.assertNotIn("if unique:", src)
+        self.assertNotIn("self.flush_arp()", src)
+
 
 if __name__ == "__main__":
     unittest.main()

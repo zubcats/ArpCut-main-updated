@@ -374,10 +374,6 @@ class Scanner():
         }
         sync_device_table(self, allow_subnet_ping=True)
 
-        # Clear arp cache to avoid duplicates next time
-        if unique:
-            self.flush_arp()
-
     def merge_client_hits(self, hits):
         """
         Add or update non-admin rows from probe result without discarding existing clients.

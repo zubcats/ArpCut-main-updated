@@ -521,6 +521,13 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertEqual(rows[0]['ip'], '192.168.137.2')
         self.assertEqual(rows[0]['mac'], 'AB:CD:EF:12:34:56')
 
+    def test_kill_all_requires_hotspot_block_success_before_marking_killed(self) -> None:
+        src = method_src('killAll')
+        self.assertIn("if self._apply_victim_block(prepared, 'both'):", src)
+        self.assertIn('self._set_killed_profile(prepared, True)', src)
+        fail_before_mark = src.split('self._set_killed_profile(prepared, True)', 1)[0]
+        self.assertIn('if self._apply_victim_block', fail_before_mark)
+
 
 if __name__ == '__main__':
     unittest.main()
