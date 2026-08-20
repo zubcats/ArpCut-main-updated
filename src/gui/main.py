@@ -121,11 +121,15 @@ class _UpdateStatusPollThread(QThread):
 
     done = pyqtSignal(bool, str)
 
+    def __init__(self, *, force_refresh: bool = False):
+        super().__init__()
+        self._force_refresh = bool(force_refresh)
+
     def run(self):
         from tools.updater_core import get_update_status
 
         try:
-            avail, label = get_update_status()
+            avail, label = get_update_status(force_refresh=self._force_refresh)
         except Exception:
             return
         # None = indeterminate (API/republish race); keep existing green hint.
@@ -2405,6 +2409,7 @@ class ZubCutApp(
     def _start_periodic_update_availability_poll(self):
         if not self._should_poll_update_availability():
             return
+        self._update_hint_available = False
         self._update_poll_timer = QTimer(self)
         self._update_poll_timer.setInterval(_UPDATE_POLL_INTERVAL_MS)
         self._update_poll_timer.timeout.connect(self._poll_remote_update_status_foreground)
@@ -2412,7 +2417,11 @@ class ZubCutApp(
         if app is not None:
             app.applicationStateChanged.connect(self._on_app_state_for_update_poll)
         self._sync_update_poll_timer_for_app_state()
-        QTimer.singleShot(8000, self._poll_remote_update_status_if_active)
+        # Do not require ApplicationActive here — frameless Windows often reports
+        # Inactive at startup, which previously skipped the check until focus
+        # changed (hours later, even after a full restart).
+        QTimer.singleShot(1500, self._poll_remote_update_status_startup)
+        QTimer.singleShot(8000, self._poll_remote_update_status_startup)
 
         self._update_daily_poll_timer = QTimer(self)
         self._update_daily_poll_timer.setInterval(_UPDATE_POLL_DAILY_MS)
@@ -2446,11 +2455,14 @@ class ZubCutApp(
             return
         self._poll_remote_update_status_foreground()
 
+    def _poll_remote_update_status_startup(self):
+        self._poll_remote_update_status(require_foreground=False, force_refresh=True)
+
     def _poll_remote_update_status_foreground(self):
         self._poll_remote_update_status(require_foreground=True)
 
     def _poll_remote_update_status_daily(self):
-        self._poll_remote_update_status(require_foreground=False)
+        self._poll_remote_update_status(require_foreground=False, force_refresh=True)
 
     def _update_status_poll_thread_is_running(self):
         """True if a poll worker is still alive and running (guards deleted C++ wrapper)."""
@@ -2469,7 +2481,7 @@ class ZubCutApp(
         if th is getattr(self, '_update_status_poll_thread', None):
             self._update_status_poll_thread = None
 
-    def _poll_remote_update_status(self, require_foreground=True):
+    def _poll_remote_update_status(self, require_foreground=True, force_refresh=False):
         if not self._should_poll_update_availability():
             return
         if require_foreground and not self._should_run_update_poll_now():
@@ -2477,7 +2489,7 @@ class ZubCutApp(
         if self._update_status_poll_thread_is_running():
             return
         # No parent: parenting QThread to the main window has caused lifetime/native issues on Windows.
-        poll = _UpdateStatusPollThread()
+        poll = _UpdateStatusPollThread(force_refresh=force_refresh)
         self._update_status_poll_thread = poll
         poll.done.connect(
             self._on_update_status_polled,
@@ -2489,6 +2501,7 @@ class ZubCutApp(
 
     def _on_update_status_polled(self, available, published_label):
         try:
+            self._update_hint_available = bool(available)
             sw = getattr(self, 'settings_window', None)
             if sw is not None:
                 sw.apply_update_banner_state(available, published_label)
@@ -2499,7 +2512,11 @@ class ZubCutApp(
 
     def _sync_settings_gear_update_hint(self):
         try:
-            if getattr(self.settings_window, '_update_available', False):
+            sw = getattr(self, 'settings_window', None)
+            hinted = bool(getattr(self, '_update_hint_available', False)) or bool(
+                getattr(sw, '_update_available', False)
+            )
+            if hinted:
                 self.btnSettings.setStyleSheet(_SETTINGS_BTN_UPDATE_STYLE)
                 self.btnSettings.setToolTip(
                     _SETTINGS_BTN_TIP

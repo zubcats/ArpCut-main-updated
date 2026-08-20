@@ -137,7 +137,7 @@ class _UpdateBannerPollThread(QThread):
         from tools.updater_core import get_update_status
 
         try:
-            avail, label = get_update_status()
+            avail, label = get_update_status(force_refresh=True)
         except Exception:
             return
         # None = indeterminate (API/republish race); keep existing green hint.
@@ -1200,13 +1200,6 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _schedule_update_banner_refresh(self) -> None:
         """Network update check off the GUI thread (never block Settings open)."""
-        main = getattr(self, 'app', None)
-        if main is not None and hasattr(main, '_poll_remote_update_status_if_active'):
-            try:
-                QTimer.singleShot(0, main._poll_remote_update_status_if_active)
-                return
-            except Exception:
-                pass
         prev = getattr(self, '_update_banner_poll_thread', None)
         if prev is not None:
             try:
@@ -1223,8 +1216,13 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             except Exception:
                 pass
             el = getattr(self, 'app', None)
-            if el is not None and hasattr(el, '_sync_settings_gear_update_hint'):
-                el._sync_settings_gear_update_hint()
+            if el is not None:
+                try:
+                    el._update_hint_available = bool(avail)
+                except Exception:
+                    pass
+                if hasattr(el, '_sync_settings_gear_update_hint'):
+                    el._sync_settings_gear_update_hint()
 
         poll.done.connect(_apply)
         poll.finished.connect(poll.deleteLater)

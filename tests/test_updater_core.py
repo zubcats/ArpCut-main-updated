@@ -348,6 +348,30 @@ class UpdaterCoreTest(unittest.TestCase):
         self.assertEqual(info.get('channel'), 'main')
         self.assertEqual(uc._build_info_from_release_payload({'body': 'Rolling installer.'}), {})
 
+    def test_get_update_status_force_refresh_bypasses_cache(self) -> None:
+        import tools.updater_core as uc
+
+        info = RemoteInstallerInfo(
+            updated_at=datetime(2026, 8, 20, 3, 0, tzinfo=timezone.utc),
+            download_url=_api_asset(77),
+            asset_id=77,
+            size=1,
+            remote_commit='newcommitabc',
+            remote_built_at='2026-08-20T03:00:00Z',
+        )
+        with patch.object(uc, 'APP_BUILD_TIME_ISO', '2026-08-19T10:00:00Z'), patch.object(
+            uc, 'APP_BUILD_COMMIT', 'oldcommitxyz'
+        ), patch.object(uc, 'UPDATE_CHANNEL', 'main'), patch.object(
+            uc,
+            'UPDATE_DOWNLOAD_URL_MAIN',
+            UPDATE_DOWNLOAD_URL_MAIN,
+        ), patch.object(uc, 'UPDATE_DOWNLOAD_URL_EXPERIMENTAL', ''), patch.object(
+            uc, '_cached_remote_installer_info', return_value=info
+        ) as cached:
+            available, _label = uc.get_update_status(force_refresh=True)
+        self.assertTrue(available)
+        cached.assert_called_with('main', force=True)
+
 
 if __name__ == '__main__':
     unittest.main()
