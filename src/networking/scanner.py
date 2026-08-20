@@ -91,6 +91,17 @@ class Scanner():
             leftover = not self.my_ip
         if leftover:
             try:
+                from tools.utils import (
+                    invalidate_ifaces_cache,
+                    pick_best_live_iface,
+                    try_rebind_npcap_to_live_windows_adapters,
+                )
+
+                try_rebind_npcap_to_live_windows_adapters()
+                invalidate_ifaces_cache(full=True)
+            except Exception:
+                pass
+            try:
                 best = pick_best_live_iface()
             except Exception:
                 best = None

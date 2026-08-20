@@ -19,6 +19,7 @@ from tools.win_locale import (
     ipconfig_line_is_adapter_header,
     ipconfig_line_is_gateway,
     ipconfig_line_is_host_ipv4,
+    ipconfig_line_is_physical_address,
     is_bad_iface_display_name,
     wlan_canonical_key,
     wlan_state_is_connected,
@@ -59,6 +60,18 @@ class TestWinLocale(unittest.TestCase):
         self.assertTrue(ipconfig_line_is_gateway('Passerelle par défaut. : 192.168.1.1'))
         self.assertTrue(ipconfig_line_is_gateway('Puerta de enlace predeterminada. : 192.168.1.1'))
         self.assertFalse(ipconfig_line_is_gateway('IPv4 Address. . . : 192.168.1.56'))
+
+    def test_ipconfig_physical_address_not_ipv6(self) -> None:
+        self.assertTrue(
+            ipconfig_line_is_physical_address(
+                'Physical Address. . . . . . . . . : E8-4E-06-AB-C4-28'
+            )
+        )
+        self.assertFalse(
+            ipconfig_line_is_physical_address(
+                'IPv6 Address. . . . . . . . . . . : 2605:59c0:46fe:1110:8a38:3434:d379:5fd7'
+            )
+        )
 
     def test_gateway_findstr_covers_locales(self) -> None:
         cmd = ipconfig_gateway_findstr_command()

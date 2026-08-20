@@ -150,6 +150,21 @@ def ipconfig_line_is_gateway(line: str) -> bool:
     return any(tok in low for tok in IPCONFIG_GATEWAY_LINE_TOKENS)
 
 
+IPCONFIG_PHYSICAL_ADDRESS_TOKENS = (
+    'physical address',
+    'physikalische adresse',
+    'adresse physique',
+    'direccion fisica',
+    'indirizzo fisico',
+)
+
+
+def ipconfig_line_is_physical_address(line: str) -> bool:
+    """True for Physical Address / MAC assignment lines — not IPv6 hex."""
+    low = fold_latin(line)
+    return any(tok in low for tok in IPCONFIG_PHYSICAL_ADDRESS_TOKENS)
+
+
 # findstr /c: list for "has a default gateway" probes
 IPCONFIG_GATEWAY_FINDSTR_ARGS = (
     '/c:"gateway"',

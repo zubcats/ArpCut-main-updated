@@ -194,6 +194,46 @@ Ethernet adapter Local Area Connection* 10:
             gw = _pick_windows_gateway(rows, iface_hint=r'\\Device\\NPF_{A373}', src_ip='')
         self.assertEqual(gw, '192.168.1.1')
 
+    def test_pick_windows_gateway_reads_ipv4_on_line_after_ipv6(self) -> None:
+        from tools.utils import _gateways_from_ipconfig_text, _pick_windows_gateway
+
+        text = """
+Wireless LAN adapter Wi-Fi:
+
+   IPv4 Address. . . . . . . . . . . : 192.168.1.56
+   Default Gateway . . . . . . . . . : fe80::7624:9fff:fe37:1eec%8
+                                       192.168.1.1
+"""
+        rows = _gateways_from_ipconfig_text(text)
+        self.assertEqual(rows, [('Wi-Fi', '192.168.1.56', '192.168.1.1')])
+        self.assertEqual(_pick_windows_gateway(rows, iface_hint='Wi-Fi', src_ip='192.168.1.56'), '192.168.1.1')
+
+    def test_merge_windows_live_ifaces_adds_wifi_when_npcap_list_is_empty(self) -> None:
+        from tools.utils import _merge_windows_live_ifaces
+
+        interface_map = {
+            'Wi-Fi': {
+                'ip': '192.168.1.56',
+                'mac': 'E8:4E:06:AB:C4:28',
+                'guid': None,
+            },
+            'Ethernet 2': {
+                'ip': '0.0.0.0',
+                'mac': '6C:2B:59:D1:F3:96',
+                'guid': None,
+            },
+        }
+        with mock.patch(
+            'tools.utils._windows_adapter_friendly_by_guid',
+            return_value={'{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi'},
+        ):
+            faces = _merge_windows_live_ifaces([], interface_map)
+        self.assertEqual(len(faces), 1)
+        self.assertEqual(faces[0].name, 'Wi-Fi')
+        self.assertEqual(faces[0].ip, '192.168.1.56')
+        self.assertEqual(faces[0].mac, 'E8:4E:06:AB:C4:28')
+        self.assertIn('5B106E08-62B0-4A70-B2AC-AEDD80B5B255', faces[0].guid.upper())
+
     def test_device_list_noise_helpers(self) -> None:
         from tools.utils import ipv4_is_device_list_noise, mac_is_device_list_noise
 
