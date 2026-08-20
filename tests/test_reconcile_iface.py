@@ -49,6 +49,7 @@ class TestReconcileIface(unittest.TestCase):
             mock.patch('tools.utils.get_iface_by_name', return_value=only),
             mock.patch('tools.utils.refresh_netface_live_ip'),
             mock.patch('tools.utils._iface_live_ipv4', return_value='192.168.1.44'),
+            mock.patch('tools.utils.repair_saved_iface_name', side_effect=lambda s: s),
             mock.patch('tools.utils_gui.get_settings', side_effect=_get_settings),
             mock.patch('tools.utils_gui.set_settings', side_effect=_set_settings),
         ):
@@ -99,6 +100,7 @@ class TestReconcileIface(unittest.TestCase):
             mock.patch('tools.utils.get_iface_by_name', return_value=wifi),
             mock.patch('tools.utils.refresh_netface_live_ip'),
             mock.patch('tools.utils._iface_live_ipv4', return_value='192.168.1.56'),
+            mock.patch('tools.utils.repair_saved_iface_name', side_effect=lambda s: s),
             mock.patch('tools.utils._softap_bind_allowed', return_value=False),
             mock.patch('tools.utils_gui.get_settings', side_effect=_get_settings),
             mock.patch('tools.utils_gui.set_settings', side_effect=_set_settings),

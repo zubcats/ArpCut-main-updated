@@ -135,6 +135,21 @@ def ipconfig_line_is_host_ipv4(line: str) -> bool:
     return any(tok in low for tok in IPCONFIG_HOST_IPV4_TOKENS)
 
 
+IPCONFIG_GATEWAY_LINE_TOKENS = (
+    'default gateway',
+    'standardgateway',  # DE
+    'passerelle',  # FR
+    'puerta de enlace',  # ES
+    'gateway predefinito',  # IT
+)
+
+
+def ipconfig_line_is_gateway(line: str) -> bool:
+    """True for Default Gateway assignment lines (EN/DE/FR/ES/IT)."""
+    low = fold_latin(line)
+    return any(tok in low for tok in IPCONFIG_GATEWAY_LINE_TOKENS)
+
+
 # findstr /c: list for "has a default gateway" probes
 IPCONFIG_GATEWAY_FINDSTR_ARGS = (
     '/c:"gateway"',
@@ -299,5 +314,11 @@ def is_bad_iface_display_name(s: str) -> bool:
         return True
     # netsh last-token truncation of "Local Area Connection* 10" → "10"
     if re.fullmatch(r'\d{1,3}', t):
+        return True
+    # Npcap leftover: Settings stored the raw adapter GUID instead of "Wi-Fi".
+    if re.fullmatch(
+        r'\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?',
+        t,
+    ):
         return True
     return False

@@ -132,7 +132,7 @@ class TestDefaultIfaceSelection(unittest.TestCase):
             shown = ifaces_for_settings_combo([lac, wifi])
         self.assertEqual([i.name for i in shown], ['Wi-Fi'])
 
-    def test_ambiguous_radio_mac_does_not_steal_wifi_ip(self) -> None:
+    def test_ambiguous_radio_mac_prefers_wifi_lan_over_hotspot_leftover(self) -> None:
         from tools.utils import _mac_match_ipconfig_adapter
 
         shared = 'E8:4E:06:AB:C4:28'
@@ -140,9 +140,10 @@ class TestDefaultIfaceSelection(unittest.TestCase):
             'Wi-Fi': {'ip': '192.168.1.56', 'mac': shared},
             'Local Area Connection* 10': {'ip': '0.0.0.0', 'mac': shared},
         }
-        name, info = _mac_match_ipconfig_adapter(shared, interface_map)
-        self.assertIsNone(name)
-        self.assertIsNone(info)
+        with mock.patch('tools.utils._softap_bind_allowed', return_value=False):
+            name, info = _mac_match_ipconfig_adapter(shared, interface_map)
+        self.assertEqual(name, 'Wi-Fi')
+        self.assertEqual(info['ip'], '192.168.1.56')
 
     def test_same_ip_prefers_wifi_over_softap(self) -> None:
         from tools.utils import _better_iface_for_same_ip
@@ -161,6 +162,47 @@ class TestDefaultIfaceSelection(unittest.TestCase):
             mock.patch('tools.utils.get_my_ip', return_value='192.168.137.1'),
         ):
             self.assertEqual(resolve_iface_my_ip(lac), '')
+
+    @mock.patch('tools.utils.get_ifaces_cached')
+    @mock.patch('tools.utils.pick_best_live_iface')
+    def test_resolve_remaps_raw_guid_to_wifi(self, mock_pick, mock_cached) -> None:
+        wifi = _face('Wi-Fi', '192.168.1.56')
+        mock_cached.return_value = [wifi]
+        mock_pick.return_value = wifi
+        with mock.patch('tools.utils._iface_live_ipv4', return_value='192.168.1.56'):
+            self.assertEqual(
+                resolve_settings_iface_name('A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC'),
+                'Wi-Fi',
+            )
+
+    def test_pick_windows_gateway_skips_hotspot_and_multicast(self) -> None:
+        from tools.utils import _gateways_from_ipconfig_text, _pick_windows_gateway
+
+        text = """
+Wireless LAN adapter Wi-Fi:
+
+   IPv4 Address. . . . . . . . . . . : 192.168.1.56
+   Default Gateway . . . . . . . . . : 192.168.1.1
+
+Ethernet adapter Local Area Connection* 10:
+
+   IPv4 Address. . . . . . . . . . . : 192.168.137.1
+   Default Gateway . . . . . . . . . : 0.0.0.0
+"""
+        rows = _gateways_from_ipconfig_text(text)
+        with mock.patch('tools.utils._softap_bind_allowed', return_value=False):
+            gw = _pick_windows_gateway(rows, iface_hint=r'\\Device\\NPF_{A373}', src_ip='')
+        self.assertEqual(gw, '192.168.1.1')
+
+    def test_device_list_noise_helpers(self) -> None:
+        from tools.utils import ipv4_is_device_list_noise, mac_is_device_list_noise
+
+        self.assertTrue(ipv4_is_device_list_noise('224.0.0.22'))
+        self.assertTrue(ipv4_is_device_list_noise('224.0.0.251'))
+        self.assertTrue(ipv4_is_device_list_noise('0.0.0.0'))
+        self.assertFalse(ipv4_is_device_list_noise('192.168.1.160'))
+        self.assertTrue(mac_is_device_list_noise('01:00:5e:00:00:16'))
+        self.assertFalse(mac_is_device_list_noise('74:24:9f:37:1e:ec'))
 
 
 if __name__ == '__main__':

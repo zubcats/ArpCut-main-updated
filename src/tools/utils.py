@@ -52,6 +52,26 @@ class _LazyScapyConf:
 
 conf = _LazyScapyConf()
 
+_ADAPTER_GUID_RE = re.compile(
+    r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})'
+)
+
+
+def _extract_adapter_guid(token: str) -> str:
+    """Bare uppercase GUID from an Npcap path, {GUID}, or Settings leftover."""
+    m = _ADAPTER_GUID_RE.search(str(token or ''))
+    return m.group(1).upper() if m else ''
+
+
+def _iface_token_matches(a, b) -> bool:
+    sa, sb = str(a or '').strip(), str(b or '').strip()
+    if not sa or not sb:
+        return False
+    if sa == sb:
+        return True
+    ga, gb = _extract_adapter_guid(sa), _extract_adapter_guid(sb)
+    return bool(ga and gb and ga == gb)
+
 
 def get_if_list():
     from scapy.all import get_if_list as _gil
@@ -228,11 +248,12 @@ def _prefer_windows_friendly_iface_name(*candidates: str) -> str:
 
 def _mac_match_ipconfig_adapter(scapy_mac: str, interface_map: dict):
     """
-    Map a Scapy MAC to ipconfig only when the match is unique.
+    Map a Scapy MAC to an ipconfig adapter.
 
     Wi-Fi and Microsoft Wi-Fi Direct (Local Area Connection* N) often share a
-    radio MAC. Taking the first hit steals Wi-Fi's IPv4 onto the hotspot leftover
-    and Settings then shows only ``10``.
+    radio MAC. Prefer the row with a real LAN IPv4 so leftover hotspot NICs
+    do not steal Wi‑Fi's address — and so a GUID-only Npcap binding still
+    gets 192.168.x.x instead of staying at 0.0.0.0.
     """
     want = good_mac(scapy_mac)
     if not want or want == GLOBAL_MAC:
@@ -242,9 +263,28 @@ def _mac_match_ipconfig_adapter(scapy_mac: str, interface_map: dict):
         mac = good_mac((info or {}).get('mac'))
         if mac and mac != GLOBAL_MAC and mac == want:
             hits.append((friendly, info))
-    if len(hits) != 1:
+    if not hits:
         return None, None
-    return hits[0]
+    if len(hits) == 1:
+        return hits[0]
+
+    ranked = []
+    for friendly, info in hits:
+        ip = str((info or {}).get('ip') or '').strip()
+        score = 0
+        if _ip_ok_for_bind(ip):
+            score += 20
+        if not _iface_name_looks_softap(friendly):
+            score += 15
+        if not _is_bad_iface_display_name(friendly):
+            score += 5
+        ranked.append((score, friendly, info))
+    ranked.sort(key=lambda row: -row[0])
+    if ranked[0][0] <= 0:
+        return None, None
+    if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
+        return None, None
+    return ranked[0][1], ranked[0][2]
 
 
 def _better_iface_for_same_ip(prev, face):
@@ -458,15 +498,25 @@ def get_gateway_ip(iface_name):
     invalid_gws = ('0.0.0.0', None)
     iface_name = iface_name or str(conf.iface)
     chosen_gw = None
+    src_hint = ''
+
+    try:
+        src_hint = str(get_my_ip(iface_name, allow_default_route_fallback=False) or '').strip()
+        if src_hint in ('127.0.0.1', '0.0.0.0'):
+            src_hint = ''
+    except Exception:
+        src_hint = ''
 
     try:
         for entry in conf.route.routes:
             if len(entry) >= 5:
                 dst, mask, gw, iface, src_ip = entry[:5]
-                # Prefer matches for our interface
-                if iface_name and iface != iface_name:
-                    continue
                 if gw in invalid_gws:
+                    continue
+                matched = (not iface_name) or _iface_token_matches(iface, iface_name)
+                if not matched and src_hint and str(src_ip) == src_hint:
+                    matched = True
+                if not matched:
                     continue
                 # Default route (dst == 0 and mask == 0) is ideal
                 if dst == 0 and mask == 0:
@@ -484,6 +534,11 @@ def get_gateway_ip(iface_name):
                 chosen_gw = result[2]
         except Exception:
             pass
+
+    if (not chosen_gw or chosen_gw in invalid_gws) and sys.platform.startswith('win'):
+        os_gw = windows_default_gateway_ip(iface_hint=str(iface_name or ''), src_ip=src_hint)
+        if os_gw:
+            return os_gw
 
     return chosen_gw or '0.0.0.0'
 
@@ -969,6 +1024,32 @@ def mac_address_is_usable(mac: str) -> bool:
     return bool(m and m not in (GLOBAL_MAC, '00:00:00:00:00:00'))
 
 
+def ipv4_is_device_list_noise(ip: str) -> bool:
+    """True for unspecified, loopback, multicast, or broadcast IPv4 scan hits."""
+    s = str(ip or '').strip()
+    if not _ipv4_valid(s):
+        return True
+    if s in ('0.0.0.0', '255.255.255.255', '127.0.0.1'):
+        return True
+    try:
+        first = int(s.split('.', 1)[0])
+    except (TypeError, ValueError):
+        return True
+    return first == 0 or first == 127 or first >= 224
+
+
+def mac_is_device_list_noise(mac: str) -> bool:
+    """True for empty, broadcast, or multicast (I/G bit) hardware addresses."""
+    m = good_mac(str(mac or '').strip())
+    if not mac_address_is_usable(m):
+        return True
+    try:
+        first = int(m.split(':', 1)[0], 16)
+    except (TypeError, ValueError, IndexError):
+        return True
+    return bool(first & 0x01)
+
+
 def goto(url):
     """
     Open url in default browser (cross-platform)
@@ -1210,35 +1291,20 @@ def get_ifaces():
                         ip = info['ip']
                         found_ip = True
             
-            # Fallback: try to get IP from scapy route table (always try this as fallback)
+            # Own routes only — never conf.route.route("0.0.0.0") which lets a
+            # ghost NPF inherit Wi‑Fi's address while the adapter still has no IPv4.
             if not found_ip:
-                # Method 1: Try default route for this iface (ignore TypeError on newer scapy)
                 try:
-                    route_result = conf.route.route("0.0.0.0", iface=scapy_name)
-                    if route_result and len(route_result) > 1:
-                        potential_ip = route_result[1]
-                        if potential_ip and potential_ip not in ('0.0.0.0', '127.0.0.1'):
-                            ip = _prefer_ipv4(ip, potential_ip)
-                            found_ip = True
-                except TypeError:
-                    # Newer scapy versions do not accept iface kwarg
-                    pass
+                    for route in conf.route.routes:
+                        # Route format: (dst, mask, gw, iface, ip)
+                        if len(route) >= 5 and _iface_token_matches(route[3], scapy_name):
+                            route_ip = route[4]
+                            if route_ip and route_ip not in ('0.0.0.0', '127.0.0.1'):
+                                ip = _prefer_ipv4(ip, route_ip)
+                                found_ip = True
+                                break
                 except Exception:
                     pass
-
-                # Method 2: Check all routes for this interface
-                if not found_ip:
-                    try:
-                        for route in conf.route.routes:
-                            # Route format: (dst, mask, gw, iface, ip)
-                            if len(route) >= 5 and route[3] == scapy_name:
-                                route_ip = route[4]
-                                if route_ip and route_ip not in ('0.0.0.0', '127.0.0.1'):
-                                    ip = _prefer_ipv4(ip, route_ip)
-                                    found_ip = True
-                                    break
-                    except Exception:
-                        pass
             
             # Skip only loopback interfaces, but include interfaces even if IP is 0.0.0.0
             # (they might be valid interfaces that just don't have an IP assigned)
@@ -1408,6 +1474,83 @@ def _ipconfig_line_is_host_ipv4(line: str) -> bool:
     from tools.win_locale import ipconfig_line_is_host_ipv4
 
     return ipconfig_line_is_host_ipv4(line)
+
+
+def _ipconfig_line_is_gateway(line: str) -> bool:
+    """True for Default Gateway lines (EN/DE/FR/ES/IT)."""
+    from tools.win_locale import ipconfig_line_is_gateway
+
+    return ipconfig_line_is_gateway(line)
+
+
+def _gateways_from_ipconfig_text(text: str) -> list:
+    """Return ``(adapter, host_ipv4, gateway_ipv4)`` rows from ``ipconfig`` text."""
+    rows = []
+    adapter = ''
+    host_ip = ''
+    for raw in (text or '').split('\n'):
+        line = (raw or '').strip()
+        if not line:
+            continue
+        if _ipconfig_line_is_adapter_header(line):
+            adapter = _ipconfig_adapter_name_from_header(line) or ''
+            host_ip = ''
+            continue
+        if not adapter:
+            continue
+        ip_m = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', line)
+        if not ip_m:
+            continue
+        ip = ip_m.group(1)
+        if not _ipv4_valid(ip):
+            continue
+        if _ipconfig_line_is_host_ipv4(line):
+            host_ip = ip
+        elif _ipconfig_line_is_gateway(line) and ip not in ('0.0.0.0', '127.0.0.1'):
+            rows.append((adapter, host_ip, ip))
+    return rows
+
+
+def _pick_windows_gateway(rows, iface_hint: str = '', src_ip: str = '') -> str:
+    usable = []
+    for adapter, host, gw in rows:
+        if not _ipv4_valid(gw) or gw in ('0.0.0.0', '127.0.0.1'):
+            continue
+        if _is_softap_ipv4(gw) and not _softap_bind_allowed():
+            continue
+        usable.append((adapter, host, gw))
+    if not usable:
+        return ''
+    hint = str(iface_hint or '').strip()
+    hint_guid = _extract_adapter_guid(hint)
+    src = str(src_ip or '').strip()
+    for adapter, host, gw in usable:
+        if hint and adapter == hint:
+            return gw
+        if hint_guid and _extract_adapter_guid(adapter) == hint_guid:
+            return gw
+    if src and _ipv4_valid(src):
+        for adapter, host, gw in usable:
+            if host == src:
+                return gw
+            if ipv4_same_link(src, gw) or (host and ipv4_same_link(src, host)):
+                return gw
+    return usable[0][2]
+
+
+def windows_default_gateway_ip(*, iface_hint: str = '', src_ip: str = '') -> str:
+    """OS default gateway when Scapy's route table misses this Npcap iface."""
+    if not sys.platform.startswith('win'):
+        return ''
+    try:
+        text = terminal('ipconfig') or ''
+    except Exception:
+        return ''
+    return _pick_windows_gateway(
+        _gateways_from_ipconfig_text(text),
+        iface_hint,
+        src_ip,
+    )
 
 
 def _mask_prefix_len(mask_value) -> int:
@@ -1923,6 +2066,13 @@ def reconcile_scanner_with_settings_iface(scanner, killer=None) -> str:
         ifaces = list(get_ifaces())
 
     saved = str(get_settings('iface') or '').strip()
+    try:
+        repaired = repair_saved_iface_name(saved)
+        if repaired and repaired != saved:
+            set_settings('iface', repaired)
+            saved = repaired
+    except Exception:
+        pass
     if len(ifaces) == 1:
         only = ifaces[0]
         # Do not pin Settings to a leftover hotspot NIC when Clumsy is off —
@@ -2004,9 +2154,9 @@ def resolve_settings_iface_name(saved: str) -> str:
             lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
             if lip == want_ip and _ip_ok_for_bind(lip) and mac_address_is_usable(iface.mac):
                 return iface.name
-    if not name:
-        best = pick_best_live_iface()
-        return best.name if best and best.name != 'NULL' else ''
+    best = pick_best_live_iface()
+    if best is not None and best.name != 'NULL' and _iface_live_ipv4(best):
+        return best.name
     return name
 
 
@@ -2024,6 +2174,16 @@ def get_iface_by_name(name):
             chosen = iface
             break
     if chosen is None:
+        want_guid = _extract_adapter_guid(name)
+        if want_guid:
+            for iface in ifaces:
+                got = _extract_adapter_guid(
+                    str(getattr(iface, 'guid', '') or '') or iface.name
+                )
+                if got == want_guid:
+                    chosen = iface
+                    break
+    if chosen is None:
         for sep in ('\u2014', '\u2013'):
             if sep in name:
                 stem = name.split(sep, 1)[0].strip()
@@ -2040,6 +2200,9 @@ def get_iface_by_name(name):
     if not _iface_live_ipv4(chosen) or (
         _iface_looks_softap(chosen) and not _softap_bind_allowed()
     ):
+        live = pick_best_live_iface()
+        if live is not None and live.name != 'NULL' and _iface_live_ipv4(live):
+            return live
         live = _pick_first_live_iface(ifaces)
         if live is not None:
             return live
