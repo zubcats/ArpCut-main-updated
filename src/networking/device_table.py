@@ -20,7 +20,7 @@ from networking.nicknames import (
     record_nickname_last_ip,
 )
 from tools.device_display import infer_network_device_type
-from tools.utils import good_mac, get_vendor
+from tools.utils import good_mac, get_vendor, ipv4_is_device_list_noise, mac_is_device_list_noise
 
 if TYPE_CHECKING:
     from networking.scanner import Scanner
@@ -206,7 +206,9 @@ def build_client_rows_from_scan(
     if mac_centric:
         by_mac: dict[str, _ClientEntry] = {}
         for ip, mac in hits:
-            if not mac or mac == GLOBAL_MAC:
+            if not mac or mac_is_device_list_noise(mac):
+                continue
+            if ipv4_is_device_list_noise(ip):
                 continue
             if ip in (router_ip, my_ip):
                 continue
@@ -237,7 +239,9 @@ def build_client_rows_from_scan(
     seen_profiles: set[str] = set()
     rows = []
     for ip, mac in hits:
-        if not mac or mac == GLOBAL_MAC:
+        if not mac or mac_is_device_list_noise(mac):
+            continue
+        if ipv4_is_device_list_noise(ip):
             continue
         if ip in (router_ip, my_ip):
             continue

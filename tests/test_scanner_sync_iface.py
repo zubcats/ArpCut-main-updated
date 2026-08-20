@@ -41,6 +41,24 @@ class TestScannerSyncIface(unittest.TestCase):
         self.assertEqual(scanner.iface.name, "Ethernet 2")
         self.assertEqual(scanner.router.get("ip"), "192.168.1.1")
 
+    def test_windows_arp_skips_multicast_when_me_ip_missing(self) -> None:
+        scanner = scan_mod.Scanner()
+        scanner.my_ip = "0.0.0.0"
+        scanner.perfix = "0.0.0"
+        text = """
+Interface: 192.168.1.56 --- 0x8
+  192.168.1.1           74-24-9f-37-1e-ec     dynamic
+  192.168.1.160         28-7e-80-0d-01-2c     dynamic
+  224.0.0.22            01-00-5e-00-00-16     static
+  224.0.0.251           01-00-5e-00-00-fb     static
+"""
+        hits = scanner._windows_parse_arp_table(text)
+        ips = {ip for ip, _mac in hits}
+        self.assertIn("192.168.1.160", ips)
+        self.assertIn("192.168.1.1", ips)
+        self.assertNotIn("224.0.0.22", ips)
+        self.assertNotIn("224.0.0.251", ips)
+
 
 if __name__ == "__main__":
     unittest.main()

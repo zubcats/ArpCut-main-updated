@@ -17,6 +17,7 @@ from tools.win_locale import (
     ipconfig_adapter_name_from_header,
     ipconfig_gateway_findstr_command,
     ipconfig_line_is_adapter_header,
+    ipconfig_line_is_gateway,
     ipconfig_line_is_host_ipv4,
     is_bad_iface_display_name,
     wlan_canonical_key,
@@ -51,6 +52,13 @@ class TestWinLocale(unittest.TestCase):
         self.assertFalse(
             ipconfig_line_is_host_ipv4('Puerta de enlace predeterminada. : 192.168.1.1')
         )
+
+    def test_ipconfig_gateway_locales(self) -> None:
+        self.assertTrue(ipconfig_line_is_gateway('Default Gateway . . : 192.168.1.1'))
+        self.assertTrue(ipconfig_line_is_gateway('Standardgateway. . : 192.168.1.1'))
+        self.assertTrue(ipconfig_line_is_gateway('Passerelle par défaut. : 192.168.1.1'))
+        self.assertTrue(ipconfig_line_is_gateway('Puerta de enlace predeterminada. : 192.168.1.1'))
+        self.assertFalse(ipconfig_line_is_gateway('IPv4 Address. . . : 192.168.1.56'))
 
     def test_gateway_findstr_covers_locales(self) -> None:
         cmd = ipconfig_gateway_findstr_command()
@@ -102,6 +110,8 @@ class TestWinLocale(unittest.TestCase):
         self.assertFalse(is_bad_iface_display_name('Ethernet 2'))
         self.assertTrue(is_bad_iface_display_name('10'))
         self.assertTrue(is_bad_iface_display_name('Interface-3'))
+        self.assertTrue(is_bad_iface_display_name('A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC'))
+        self.assertTrue(is_bad_iface_display_name('{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}'))
 
 
 class TestWlanParseLocalized(unittest.TestCase):

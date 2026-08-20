@@ -540,7 +540,9 @@ class Scanner():
             except (ValueError, TypeError):
                 continue
             mac = good_mac(m_mac.group(0))
-            if not mac or mac == GLOBAL_MAC:
+            if not mac or mac_is_device_list_noise(mac):
+                continue
+            if ipv4_is_device_list_noise(ip):
                 continue
             if restrict_subnet:
                 try:
@@ -596,7 +598,10 @@ class Scanner():
                     ip = re.findall(r'\(([^)]+)\)', line)[0]
                     macs = re.findall(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', line)
                     if macs:
-                        clean_result.append((ip, macs[0]))
+                        mac = good_mac(macs[0])
+                        if ipv4_is_device_list_noise(ip) or mac_is_device_list_noise(mac):
+                            continue
+                        clean_result.append((ip, mac))
                 except Exception:
                     continue
         self.devices_appender(clean_result)

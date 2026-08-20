@@ -112,6 +112,18 @@ if ($ifaceSaved) {
         Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             Where-Object { $_.InterfaceAlias -eq $ifaceSaved -and $_.IPAddress -notlike '127.*' }
     )
+    if ($savedAddrs.Count -eq 0 -and $ifaceSaved -match '^\{?[0-9A-Fa-f]{8}-([0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}\}?$') {
+        $guidNorm = $ifaceSaved.Trim('{}').ToUpperInvariant()
+        $adp = Get-NetAdapter -ErrorAction SilentlyContinue |
+            Where-Object { $_.InterfaceGuid.ToString().Trim('{}').ToUpperInvariant() -eq $guidNorm } |
+            Select-Object -First 1
+        if ($adp) {
+            $savedAddrs = @(
+                Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $adp.ifIndex -ErrorAction SilentlyContinue |
+                    Where-Object { $_.IPAddress -notlike '127.*' }
+            )
+        }
+    }
     if ($savedAddrs.Count -gt 0) {
         $savedIp = [string]$savedAddrs[0].IPAddress
         $savedApipa = $savedIp -like '169.254.*'

@@ -137,6 +137,23 @@ class TestDeviceTable(unittest.TestCase):
             )
         self.assertTrue(skip)
 
+    def test_home_lan_skips_multicast_arp_hits(self) -> None:
+        s = _FakeScanner()
+        hits = [
+            ('192.168.1.1', '74:24:9f:37:1e:ec'),
+            ('224.0.0.22', '01:00:5e:00:00:16'),
+            ('192.168.1.160', '28:7e:80:0d:01:2c'),
+        ]
+        with (
+            mock.patch.object(dt, 'clumsy_mac_centric_table', return_value=False),
+            mock.patch.object(dt, '_ics_prefix', return_value='192.168.137.'),
+            mock.patch('networking.device_table.Nicknames') as nick_cls,
+        ):
+            nick_cls.return_value.get_name.return_value = '-'
+            rows = dt.build_client_rows_from_scan(s, hits)
+        ips = {r['ip'] for r in rows}
+        self.assertEqual(ips, {'192.168.1.160'})
+
 
 if __name__ == '__main__':
     unittest.main()
