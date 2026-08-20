@@ -541,7 +541,7 @@ def _update_available_by_commit(remote: RemoteInstallerInfo | None) -> bool | No
     return remote_commit != local_commit
 
 
-def get_update_status():
+def get_update_status(*, force_refresh: bool = False):
     """
     Compare local CI build metadata to the latest channel installer online.
 
@@ -556,7 +556,7 @@ def get_update_status():
     if not url:
         return False, ''
 
-    remote_info = _cached_remote_installer_info(channel)
+    remote_info = _cached_remote_installer_info(channel, force=force_refresh)
     remote_dt = _remote_compare_datetime(remote_info, channel, url)
     if remote_dt is None and remote_info is None:
         return None, ''
