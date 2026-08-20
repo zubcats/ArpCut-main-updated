@@ -1,6 +1,6 @@
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QMessageBox as QMsg, QStyledItemDelegate, QStyle
-from PyQt5.QtCore import pyqtSignal, QEvent, QObject
+from PyQt5.QtCore import Qt, pyqtSignal, QEvent, QObject
 
 class Buttons:
     CANCEL = QMsg.Cancel
@@ -25,6 +25,34 @@ def colored_item(elmnt, c1, c2):
     """
     elmnt.setBackground(QColor(c1))
     elmnt.setForeground(QColor(c2))
+
+
+def scan_table_item_flags():
+    """Every scan-table cell stays enabled and selectable.
+
+    Me/Router use sage styling and reject Kill/Lag in the click handlers. If those
+    rows omit ItemIsSelectable, Qt 5.15 can trap currentIndex on them so later
+    clicks on a User/PS5 row never take selection.
+    """
+    return Qt.ItemIsEnabled | Qt.ItemIsSelectable
+
+
+def resolve_scan_table_click_row(n_rows, clicked_row, current_row=-1) -> int:
+    """Prefer the clicked row so a stale Me/Router currentIndex cannot mask a client click."""
+    try:
+        n = int(n_rows)
+        clicked = int(clicked_row)
+    except (TypeError, ValueError):
+        return -1
+    if 0 <= clicked < n:
+        return clicked
+    try:
+        current = int(current_row)
+    except (TypeError, ValueError):
+        return -1
+    if 0 <= current < n:
+        return current
+    return -1
 
 
 class TableRowNoCellFocusDelegate(QStyledItemDelegate):

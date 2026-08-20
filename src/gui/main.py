@@ -35,7 +35,15 @@ from networking.scanner import Scanner
 from networking.killer import Killer
 from networking.nicknames import nickname_profile_key, parse_nickname_profile_key
 
-from tools.qtools import colored_item, MsgType, Buttons, clickable, TableRowNoCellFocusDelegate
+from tools.qtools import (
+    colored_item,
+    MsgType,
+    Buttons,
+    clickable,
+    TableRowNoCellFocusDelegate,
+    scan_table_item_flags,
+    resolve_scan_table_click_row,
+)
 from tools.utils_gui import (
     set_settings,
     get_settings,
@@ -1544,10 +1552,7 @@ class ZubCutApp(
 
     def openKillFlows(self):
         """Live Kill monitor for the selected victim (in/out rates + cut vs not-in-path)."""
-        if not self.tableScan.selectedItems():
-            self.log('No device selected', 'red')
-            return
-        device = self.current_index()
+        device = self._get_selected_device()
         if not device or device.get('admin'):
             self.log('Select a client device (not Me/Router).', UI_LOG_RESTORE_FG)
             return
@@ -1820,14 +1825,35 @@ class ZubCutApp(
         return APP_DISPLAY_NAME
 
     def current_index(self):
-        return self.scanner.devices[self.tableScan.currentRow()]
-    
+        return self._get_selected_device()
+
+    def _scan_table_focus_column(self, preferred=0):
+        n = self.tableScan.columnCount()
+        if 0 <= preferred < n and not self.tableScan.isColumnHidden(preferred):
+            return preferred
+        for c in range(n):
+            if not self.tableScan.isColumnHidden(c):
+                return c
+        return 0
+
+    def _select_scan_table_row(self, row: int) -> None:
+        if row < 0 or row >= self.tableScan.rowCount():
+            return
+        col = self._scan_table_focus_column()
+        self.tableScan.selectRow(row)
+        self.tableScan.setCurrentCell(row, col)
+
     def cellClicked(self, row, column):
         """
         Copy selected cell data to clipboard
         """
-        # Get current row
-        device = self.current_index()
+        devices = getattr(self.scanner, 'devices', None) or []
+        row = resolve_scan_table_click_row(len(devices), row, self.tableScan.currentRow())
+        if row < 0:
+            return
+        device = devices[row]
+        if not device.get('admin'):
+            self._select_scan_table_row(row)
 
         keys_order = ['ip', 'mac', 'vendor', 'type', 'name']
         if column < 0 or column >= len(keys_order):
@@ -1840,13 +1866,28 @@ class ZubCutApp(
         self.lblcenter.setText(cell)
         copy(cell)
 
-    def deviceClicked(self):
+    def deviceClicked(self, item=None):
         """
         Disable per-device controls when an admin row is selected.
+
+        itemClicked passes the clicked cell. Prefer that row over currentRow —
+        Me/Router can keep currentIndex after a User click on Qt 5.15.
         """
-        device = self._get_selected_device()
+        clicked_row = -1
+        if item is not None:
+            try:
+                clicked_row = int(item.row())
+            except Exception:
+                clicked_row = -1
+        devices = getattr(self.scanner, 'devices', None) or []
+        row = resolve_scan_table_click_row(
+            len(devices), clicked_row, self.tableScan.currentRow()
+        )
+        device = devices[row] if row >= 0 else None
         if not device:
             return
+        if not device.get('admin'):
+            self._select_scan_table_row(row)
         not_enabled = not device.get('admin')
         self._refresh_selected_device_impairment_plan()
         self._reconcile_idle_mitm_state(quiet=True)
@@ -1874,16 +1915,26 @@ class ZubCutApp(
         self._repaint_all_table_rows_for_hover()
         self._schedule_table_selection_repaint()
 
-    def deviceDoubleClicked(self):
+    def deviceDoubleClicked(self, item=None):
         """
         Open device info window (when not admin)
         """
-        device = self.current_index()
-        if device['admin']:
+        clicked_row = -1
+        if item is not None:
+            try:
+                clicked_row = int(item.row())
+            except Exception:
+                clicked_row = -1
+        devices = getattr(self.scanner, 'devices', None) or []
+        row = resolve_scan_table_click_row(
+            len(devices), clicked_row, self.tableScan.currentRow()
+        )
+        device = devices[row] if row >= 0 else None
+        if not device or device.get('admin'):
             self.log('Admin device', color=UI_LOG_RESTORE_FG)
             return
         
-        self.device_window.load(device, self.tableScan.currentRow())
+        self.device_window.load(device, row)
         self.device_window.hide()
         self.device_window.show()
         self.device_window.setWindowState(Qt.WindowNoState)
@@ -1895,10 +1946,10 @@ class ZubCutApp(
         ql = QTableWidgetItem()
         ql.setText(text)
         ql.setTextAlignment(Qt.AlignCenter)
-        if selectable:
-            ql.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        else:
-            ql.setFlags(Qt.ItemIsEnabled)
+        # selectable is ignored: Me/Router must stay selectable so Qt can
+        # move currentIndex onto a User/PS5 row after a sage-row click.
+        _ = selectable
+        ql.setFlags(scan_table_item_flags())
 
         if colors:
             colored_item(ql, *colors)
@@ -2037,9 +2088,9 @@ class ZubCutApp(
             str(device.get('name', '')),
         ]
         for column, text in enumerate(texts):
-            if device['admin']:
+            if device.get('admin'):
                 admin_colors = [ADMIN_DEVICE_TABLE_ROW_BG, ADMIN_DEVICE_TABLE_ROW_FG]
-                self.fillTableCell(row, column, text, admin_colors, selectable=False)
+                self.fillTableCell(row, column, text, admin_colors)
             else:
                 if self._device_row_blocked_chrome(device):
                     kill_colors = (
@@ -2124,8 +2175,7 @@ class ZubCutApp(
                         restore_row = i
                         break
             if 0 <= restore_row < len(self.scanner.devices) and not self.scanner.devices[restore_row].get('admin'):
-                self.tableScan.selectRow(restore_row)
-                self.tableScan.setCurrentCell(restore_row, 0)
+                self._select_scan_table_row(restore_row)
                 self.deviceClicked()
             else:
                 self._updateKillButtonState()
@@ -2900,10 +2950,15 @@ class ZubCutApp(
 
     def _get_selected_device(self):
         """Current table row device (toolbar clicks clear selection; currentRow still identifies victim)."""
+        devices = getattr(self.scanner, 'devices', None) or []
         row = self.tableScan.currentRow()
-        if row < 0 or row >= len(self.scanner.devices):
-            return None
-        return self.scanner.devices[row]
+        if 0 <= row < len(devices):
+            return devices[row]
+        for ix in self.tableScan.selectedIndexes():
+            r = ix.row()
+            if 0 <= r < len(devices):
+                return devices[r]
+        return None
 
     def _get_device_by_mac(self, mac, ip=None):
         matches = [d for d in self.scanner.devices if d.get('mac') == mac]
