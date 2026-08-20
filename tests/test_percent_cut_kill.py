@@ -60,6 +60,23 @@ class TestPercentCutKill(unittest.TestCase):
         self.assertIn('stopPercentCut(log=True)', toggle)
         self.assertNotIn('_percent_cut_backend_active', toggle)
 
+    def test_stop_percent_cut_skips_when_already_off(self) -> None:
+        stop = method_src('stopPercentCut')
+        head = stop.split('_pctcut_instant_resume', 1)[0]
+        self.assertIn('if not self.percent_cut_active:', head)
+        self.assertLess(
+            head.index('if not self.percent_cut_active:'),
+            head.index('return'),
+        )
+
+    def test_pctcut_instant_resume_does_not_unpause_empty_or_kill_owned_gate(self) -> None:
+        resume = method_src('_pctcut_instant_resume')
+        self.assertIn('if not mac and not ip:', resume)
+        self.assertIn('_has_explicit_kill_active', resume)
+        unpause = resume[resume.index('keep_kill_pause'): resume.index('apply_percent_cut(0)')]
+        self.assertIn('clear_blocking_pause', unpause)
+        self.assertIn('if not keep_kill_pause:', unpause)
+
     def test_stop_percent_cut_uses_fast_unkill(self) -> None:
         src = self._main_py()
         stop = method_src('stopPercentCut')

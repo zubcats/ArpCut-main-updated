@@ -727,6 +727,8 @@ class ImpairmentBlocksMixin:
         """
         mac = str(mac or '').strip()
         ip = str(ip or '').strip()
+        if not mac and not ip:
+            return
         victim = None
         if mac:
             victim = self._victim_record_for_mac(mac)
@@ -751,13 +753,20 @@ class ImpairmentBlocksMixin:
             pass
 
         # Hotspot: clear cut mode so packets pass while the gate stays warm.
+        # Do not unpause if explicit Kill still owns this shared WinDivert gate.
         try:
             gate = getattr(self, '_ics_lag_gate', None)
             if gate is not None:
-                if hasattr(gate, 'clear_blocking_pause'):
-                    gate.clear_blocking_pause()
-                else:
-                    gate.set_blocking(False)
+                keep_kill_pause = False
+                try:
+                    keep_kill_pause = bool(self._has_explicit_kill_active())
+                except Exception:
+                    keep_kill_pause = False
+                if not keep_kill_pause:
+                    if hasattr(gate, 'clear_blocking_pause'):
+                        gate.clear_blocking_pause()
+                    else:
+                        gate.set_blocking(False)
                 gate.apply_percent_cut(0)
         except Exception:
             pass
