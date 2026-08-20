@@ -1146,6 +1146,135 @@ def get_ifaces_cached(*, max_age_s: float | None = None):
     return list(ifaces)
 
 
+def _npcap_device_name_for_win_guid(win_guid: str) -> str:
+    """Scapy/Npcap bind token for a Windows InterfaceGuid."""
+    g = _extract_adapter_guid(win_guid)
+    if not g:
+        return ''
+    return f'\\Device\\NPF_{{{g}}}'
+
+
+def _windows_live_lan_from_ipconfig(interface_map: dict) -> list[dict]:
+    """Connected LAN rows from ipconfig (name/mac/ip) plus PowerShell InterfaceGuid."""
+    rows: list[dict] = []
+    guid_names = _windows_adapter_friendly_by_guid()
+    for name, info in (interface_map or {}).items():
+        ip = str((info or {}).get('ip') or '').strip()
+        if not _ip_ok_for_bind(ip):
+            continue
+        if _iface_name_looks_softap(name) and not _softap_bind_allowed():
+            continue
+        mac = good_mac(str((info or {}).get('mac') or ''))
+        win_guid = ''
+        for gid, fname in guid_names.items():
+            if str(fname).strip() == str(name).strip():
+                win_guid = gid
+                break
+        rows.append(
+            {
+                'name': str(name).strip(),
+                'ip': ip,
+                'mac': mac,
+                'win_guid': win_guid,
+            }
+        )
+    return rows
+
+
+def _merge_windows_live_ifaces(faces: list, interface_map: dict) -> list:
+    """
+    Keep Npcap faces, and add Windows-connected NICs that Npcap did not advertise.
+
+    USB Wi-Fi replug leaves Npcap on a dead GUID (A373…) while Windows DHCP is on
+    a new InterfaceGuid (5B10…). Me/Router must still use the live Windows IP.
+    """
+    live = _windows_live_lan_from_ipconfig(interface_map)
+    if not live:
+        return list(faces or [])
+    out = list(faces or [])
+    by_name = {str(getattr(f, 'name', '') or '').strip(): f for f in out}
+    by_guid: dict[str, object] = {}
+    for face in out:
+        gid = _extract_adapter_guid(str(getattr(face, 'guid', '') or ''))
+        if gid:
+            by_guid[gid] = face
+
+    for row in live:
+        name = row['name']
+        gid = _extract_adapter_guid(row.get('win_guid') or '')
+        existing = by_guid.get(gid) if gid else None
+        if existing is None:
+            existing = by_name.get(name)
+        token = _npcap_device_name_for_win_guid(gid) or name
+        if existing is not None:
+            if _ip_ok_for_bind(row['ip']):
+                existing.ip = row['ip']
+            if mac_address_is_usable(row['mac']):
+                existing.mac = row['mac']
+            if token:
+                existing.guid = token
+            continue
+        face = NetFace(
+            {
+                'name': name,
+                'guid': token,
+                'mac': row['mac'] or GLOBAL_MAC,
+                'ips': [row['ip']],
+            }
+        )
+        out.append(face)
+        by_name[name] = face
+        if gid:
+            by_guid[gid] = face
+    return out
+
+
+_NPCAP_REBIND_TRIED = False
+
+
+def try_rebind_npcap_to_live_windows_adapters() -> bool:
+    """
+    Restart Npcap once if Windows has a live NIC whose InterfaceGuid is missing
+    from Npcap's adapter list (USB Wi-Fi unplug/replug).
+    """
+    global _NPCAP_REBIND_TRIED
+    if _NPCAP_REBIND_TRIED or not sys.platform.startswith('win'):
+        return False
+    _NPCAP_REBIND_TRIED = True
+    try:
+        live_guids = set()
+        for gid, name in _windows_adapter_friendly_by_guid().items():
+            if _iface_name_looks_softap(name) and not _softap_bind_allowed():
+                continue
+            g = _extract_adapter_guid(gid)
+            if g:
+                live_guids.add(g)
+        listed = {_extract_adapter_guid(n) for n in (get_if_list() or [])}
+        if not live_guids or live_guids & listed:
+            return False
+        r = run_command(
+            [
+                'powershell',
+                '-NoProfile',
+                '-WindowStyle',
+                'Hidden',
+                '-Command',
+                'Restart-Service -Name npcap -Force -ErrorAction SilentlyContinue; '
+                'Restart-Service -Name npf -Force -ErrorAction SilentlyContinue',
+            ],
+            shell=False,
+            timeout=20,
+        )
+        try:
+            conf.route.resync()
+        except Exception:
+            pass
+        invalidate_ifaces_cache(full=True)
+        return bool(r is not None)
+    except Exception:
+        return False
+
+
 def get_ifaces():
     """
     Get current working interfaces (cross-platform)
@@ -1176,10 +1305,17 @@ def get_ifaces():
                         }
                 elif current_adapter:
                     # Only the adapter's own IPv4 — skip gateway/DHCP/DNS/mask lines
-                    if not _ipconfig_line_is_host_ipv4(line):
-                        mac_match = re.search(r'([0-9A-Fa-f]{2}(?:[-:][0-9A-Fa-f]{2}){5})', line)
+                    if _ipconfig_line_is_physical_address(line):
+                        mac_match = re.search(
+                            r'([0-9A-Fa-f]{2}(?:[-:][0-9A-Fa-f]{2}){5})',
+                            line,
+                        )
                         if mac_match:
-                            interface_map[current_adapter]['mac'] = good_mac(mac_match.group(1))
+                            interface_map[current_adapter]['mac'] = good_mac(
+                                mac_match.group(1)
+                            )
+                        continue
+                    if not _ipconfig_line_is_host_ipv4(line):
                         continue
                     ip_match = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', line)
                     if ip_match:
@@ -1192,9 +1328,6 @@ def get_ifaces():
                                 )
                         except ValueError:
                             pass
-                    mac_match = re.search(r'([0-9A-Fa-f]{2}(?:[-:][0-9A-Fa-f]{2}){5})', line)
-                    if mac_match:
-                        interface_map[current_adapter]['mac'] = good_mac(mac_match.group(1))
         
         # Step 2: Get GUID mapping from netsh (may be localized - best effort)
         netsh_output = terminal('netsh interface show interface')
@@ -1222,6 +1355,7 @@ def get_ifaces():
         # Driver Easy / Npcap reinstall often leaves several ghost NPF_{GUID} bindings
         # on the same IPv4; keep the one with a real MAC (others are FF:FF:FF:FF:FF:FF).
         best_by_ip: dict[str, NetFace] = {}
+        npcap_faces: list[NetFace] = []
 
         for scapy_name in scapy_ifaces:
             if 'Loopback' in scapy_name:
@@ -1350,7 +1484,7 @@ def get_ifaces():
                 if mac_address_is_usable(mac) and not (
                     _iface_looks_softap(face) and not _softap_bind_allowed()
                 ):
-                    yield face
+                    npcap_faces.append(face)
                 continue
             # Skip ghost Npcap bindings (00:00… / FF:FF…) that share a live LAN IP with a real NIC.
             if not mac_address_is_usable(mac):
@@ -1360,7 +1494,8 @@ def get_ifaces():
             if not _ipv4_usable_for_lan(lip):
                 continue
             best_by_ip[lip] = _better_iface_for_same_ip(best_by_ip.get(lip), face)
-        for face in best_by_ip.values():
+        npcap_faces.extend(best_by_ip.values())
+        for face in _merge_windows_live_ifaces(npcap_faces, interface_map):
             yield face
     else:
         # macOS/Linux: Build iface dicts similar to Windows structure
@@ -1483,11 +1618,19 @@ def _ipconfig_line_is_gateway(line: str) -> bool:
     return ipconfig_line_is_gateway(line)
 
 
+def _ipconfig_line_is_physical_address(line: str) -> bool:
+    """True for Physical Address lines — IPv6 hex must not be treated as a MAC."""
+    from tools.win_locale import ipconfig_line_is_physical_address
+
+    return ipconfig_line_is_physical_address(line)
+
+
 def _gateways_from_ipconfig_text(text: str) -> list:
     """Return ``(adapter, host_ipv4, gateway_ipv4)`` rows from ``ipconfig`` text."""
     rows = []
     adapter = ''
     host_ip = ''
+    pending_gw = False
     for raw in (text or '').split('\n'):
         line = (raw or '').strip()
         if not line:
@@ -1495,19 +1638,28 @@ def _gateways_from_ipconfig_text(text: str) -> list:
         if _ipconfig_line_is_adapter_header(line):
             adapter = _ipconfig_adapter_name_from_header(line) or ''
             host_ip = ''
+            pending_gw = False
             continue
         if not adapter:
             continue
         ip_m = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', line)
-        if not ip_m:
-            continue
-        ip = ip_m.group(1)
-        if not _ipv4_valid(ip):
-            continue
+        ip = ip_m.group(1) if ip_m and _ipv4_valid(ip_m.group(1)) else ''
         if _ipconfig_line_is_host_ipv4(line):
-            host_ip = ip
-        elif _ipconfig_line_is_gateway(line) and ip not in ('0.0.0.0', '127.0.0.1'):
+            pending_gw = False
+            if ip:
+                host_ip = ip
+            continue
+        if _ipconfig_line_is_gateway(line):
+            if ip and ip not in ('0.0.0.0', '127.0.0.1'):
+                rows.append((adapter, host_ip, ip))
+                pending_gw = False
+            else:
+                # Dual-stack: "Default Gateway : fe80::…" then IPv4 on the next line.
+                pending_gw = True
+            continue
+        if pending_gw and ip and ip not in ('0.0.0.0', '127.0.0.1'):
             rows.append((adapter, host_ip, ip))
+            pending_gw = False
     return rows
 
 
@@ -1542,15 +1694,57 @@ def windows_default_gateway_ip(*, iface_hint: str = '', src_ip: str = '') -> str
     """OS default gateway when Scapy's route table misses this Npcap iface."""
     if not sys.platform.startswith('win'):
         return ''
+    rows = []
     try:
         text = terminal('ipconfig') or ''
+        rows = _gateways_from_ipconfig_text(text)
     except Exception:
-        return ''
-    return _pick_windows_gateway(
-        _gateways_from_ipconfig_text(text),
-        iface_hint,
-        src_ip,
-    )
+        rows = []
+    gw = _pick_windows_gateway(rows, iface_hint, src_ip)
+    if gw:
+        return gw
+    try:
+        rows = _windows_gateways_from_netroute()
+    except Exception:
+        rows = []
+    return _pick_windows_gateway(rows, iface_hint, src_ip)
+
+
+def _windows_gateways_from_netroute() -> list:
+    """``(adapter, host_ipv4, gateway_ipv4)`` from Get-NetRoute 0.0.0.0/0."""
+    if not sys.platform.startswith('win'):
+        return []
+    try:
+        r = run_command(
+            [
+                'powershell',
+                '-NoProfile',
+                '-WindowStyle',
+                'Hidden',
+                '-Command',
+                "Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' "
+                '-ErrorAction SilentlyContinue | ForEach-Object { '
+                '$a=$_.InterfaceAlias; $g=$_.NextHop; '
+                '$ip=(Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $a '
+                '-ErrorAction SilentlyContinue | Select-Object -First 1 '
+                '-ExpandProperty IPAddress); "$a|$ip|$g" }',
+            ],
+            shell=False,
+            timeout=8,
+        )
+    except Exception:
+        return []
+    rows = []
+    if r is None or r.returncode != 0 or not r.stdout:
+        return rows
+    for line in str(r.stdout).splitlines():
+        parts = [p.strip() for p in line.strip().split('|')]
+        if len(parts) != 3:
+            continue
+        adapter, host, gw = parts
+        if _ipv4_valid(gw) and gw not in ('0.0.0.0', '127.0.0.1'):
+            rows.append((adapter, host, gw))
+    return rows
 
 
 def _mask_prefix_len(mask_value) -> int:
