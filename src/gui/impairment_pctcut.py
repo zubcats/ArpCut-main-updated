@@ -444,6 +444,10 @@ class ImpairmentPctCutMixin:
 
     def stopPercentCut(self, log=True):
         """Paint OFF first (Dupe parity), then unkill/release MITM on this stack."""
+        if not self.percent_cut_active:
+            # Scan / Kill All always call this. Do not unpause the shared WinDivert
+            # gate that hotspot Kill still owns.
+            return
         prev_mac = self.percent_cut_device_mac
         prev_ip = getattr(self, 'percent_cut_device_ip', None)
         was_ui_on = bool(self.percent_cut_active)

@@ -527,6 +527,8 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('self._set_killed_profile(prepared, True)', src)
         fail_before_mark = src.split('self._set_killed_profile(prepared, True)', 1)[0]
         self.assertIn('if self._apply_victim_block', fail_before_mark)
+        self.assertIn('Kill All failed', src)
+        self.assertIn('failed_n', src)
 
 
 if __name__ == '__main__':

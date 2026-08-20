@@ -209,6 +209,8 @@ class ImpairmentKillMixin:
         if not self.connected():
             return
         
+        killed_n = 0
+        failed_n = 0
         for d in self.scanner.devices:
             if d.get('admin'):
                 continue
@@ -216,6 +218,9 @@ class ImpairmentKillMixin:
                 prepared = self._prepare_victim_for_impairment(d, fast=True)
                 if self._apply_victim_block(prepared, 'both'):
                     self._set_killed_profile(prepared, True)
+                    killed_n += 1
+                else:
+                    failed_n += 1
             else:
                 self._prepare_victim_for_impairment(d, fast=True)
                 self.killer.kill(d)
@@ -225,9 +230,18 @@ class ImpairmentKillMixin:
                     iface = 'en0'
                 _bg_block_ip(iface, d.get('ip'), 'both')
                 self._set_killed_profile(d, True)
+                killed_n += 1
         self._sync_killed_devices()
         self._write_remembered_killed_macs()
-        self.log('Killed All devices', UI_LOG_VICTIM_BLOCK_FG)
+        if failed_n and killed_n:
+            self.log(
+                f'Killed {killed_n} devices ({failed_n} failed)',
+                UI_LOG_VICTIM_BLOCK_FG,
+            )
+        elif failed_n:
+            self.log('Kill All failed — no devices were cut', 'red')
+        else:
+            self.log('Killed All devices', UI_LOG_VICTIM_BLOCK_FG)
 
         self.showDevices()
 

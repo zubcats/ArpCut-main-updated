@@ -2151,15 +2151,18 @@ class ZubCutApp(
         self.killer.rekill_stored(self.scanner.devices)
         self._sync_killed_devices()
         
-        # Re-apply remembered kills (LAN ARP only — never ARP-kill ICS / WinDivert victims).
+        # Re-apply remembered LAN ARP kills. Hotspot Kill is never stored in
+        # remembered MACs — restore it from the live Kill profile instead.
         remembered = (get_settings('killed') or []) if self.remember else []
         for rem_device in self.scanner.devices:
             if rem_device.get('admin'):
                 continue
             mac = str(rem_device.get('mac') or '').strip()
-            if not mac or mac not in remembered:
+            if not mac:
                 continue
-            if should_restore_remembered_kill(rem_device, self.scanner):
+            if mac in remembered and should_restore_remembered_kill(
+                rem_device, self.scanner
+            ):
                 # Cold post-scan ARP/router context — use full arm validation so
                 # remembered kills do not silently fail after rescan (fast_arm is
                 # for instant UI click paths).
@@ -2173,7 +2176,32 @@ class ZubCutApp(
                 mac, rem_device.get('ip'), rem_device
             ):
                 # WinDivert path — do not pass fast_arm (not accepted by ICS apply).
-                self._apply_victim_block(rem_device, 'both')
+                restored = False
+                try:
+                    gate = getattr(self, '_ics_lag_gate', None)
+                    want = str(rem_device.get('ip') or '').strip()
+                    if (
+                        gate is not None
+                        and gate.is_running()
+                        and want
+                        and str(getattr(gate, 'victim_ip', '') or '').strip() == want
+                    ):
+                        if hasattr(gate, 'pause_connection'):
+                            gate.pause_connection()
+                        else:
+                            gate.set_blocking(True, mode='pause')
+                        restored = bool(gate.is_running())
+                    else:
+                        restored = bool(self._apply_victim_block(rem_device, 'both'))
+                except Exception:
+                    restored = False
+                if not restored:
+                    self.log(
+                        f"Hotspot kill restore failed for "
+                        f"{rem_device.get('ip') or mac}.",
+                        'red',
+                    )
+                    self._set_killed_profile(rem_device, False)
 
         # Killer holds ARP for lag/dupe on LAN; explicit Kill uses killed_devices / ICS profiles.
         for mac, victim in self.killer.killed.items():

@@ -54,6 +54,15 @@ class TestRememberKillFilter(unittest.TestCase):
         self.assertNotIn('fast_arm=True', remember_chunk)
         self.assertIn('Remembered kill restore failed', remember_chunk)
 
+    def test_process_devices_restores_hotspot_kill_without_remembered_mac(self) -> None:
+        """WinDivert Kill is not in remembered MACs; rescan must still re-pause."""
+        block = method_src('processDevices')
+        self.assertNotIn('if not mac or mac not in remembered:', block)
+        ics_chunk = block.split('elif self._is_ics_downstream', 1)[1]
+        self.assertIn('pause_connection', ics_chunk)
+        self.assertIn('Hotspot kill restore failed', ics_chunk)
+        self.assertIn('_set_killed_profile(rem_device, False)', ics_chunk)
+
 
 class TestIcsKillGhostSync(unittest.TestCase):
     def test_sync_clears_ics_profiles_without_backend(self) -> None:
