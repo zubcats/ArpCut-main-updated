@@ -214,8 +214,8 @@ class ImpairmentKillMixin:
                 continue
             if self._uses_windivert(d):
                 prepared = self._prepare_victim_for_impairment(d, fast=True)
-                self._apply_victim_block(prepared, 'both')
-                self._set_killed_profile(prepared, True)
+                if self._apply_victim_block(prepared, 'both'):
+                    self._set_killed_profile(prepared, True)
             else:
                 self._prepare_victim_for_impairment(d, fast=True)
                 self.killer.kill(d)
