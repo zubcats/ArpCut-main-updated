@@ -52,6 +52,8 @@ class TestSettingsScrollSource(unittest.TestCase):
         self.assertIn('def _install_settings_scroll_shell', src)
         self.assertIn('zubcutSettingsScroll', src)
         self.assertIn('_capped_settings_window_height', src)
+        self.assertIn('listNetworkInterface', src)
+        self.assertIn('ifaces_for_settings_combo', src)
         block = src[
             src.index('def _finalize_settings_layout') : src.index(
                 'def _refresh_clumsy_settings_widgets'
@@ -66,6 +68,8 @@ class TestSettingsScrollSource(unittest.TestCase):
             src = f.read()
         self.assertIn('zubcutSettingsScroll', src)
         self.assertIn('zubcutSettingsScrollInner', src)
+        self.assertIn('listNetworkInterface', src)
+        self.assertIn('lblIfaceHint', src)
 
 
 if __name__ == '__main__':

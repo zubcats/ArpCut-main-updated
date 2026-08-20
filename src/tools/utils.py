@@ -209,6 +209,89 @@ def _ip_ok_for_bind(ip: str) -> bool:
     return True
 
 
+def _prefer_windows_friendly_iface_name(*candidates: str) -> str:
+    """Longest non-junk Windows adapter name (PowerShell GUID map beats truncated netsh)."""
+    best = ''
+    for raw in candidates:
+        s = str(raw or '').strip()
+        if not s or _is_bad_iface_display_name(s):
+            continue
+        if best and s != best and s in best:
+            continue
+        if best and best in s and len(s) > len(best):
+            best = s
+            continue
+        if len(s) > len(best):
+            best = s
+    return best
+
+
+def _mac_match_ipconfig_adapter(scapy_mac: str, interface_map: dict):
+    """
+    Map a Scapy MAC to ipconfig only when the match is unique.
+
+    Wi-Fi and Microsoft Wi-Fi Direct (Local Area Connection* N) often share a
+    radio MAC. Taking the first hit steals Wi-Fi's IPv4 onto the hotspot leftover
+    and Settings then shows only ``10``.
+    """
+    want = good_mac(scapy_mac)
+    if not want or want == GLOBAL_MAC:
+        return None, None
+    hits = []
+    for friendly, info in (interface_map or {}).items():
+        mac = good_mac((info or {}).get('mac'))
+        if mac and mac != GLOBAL_MAC and mac == want:
+            hits.append((friendly, info))
+    if len(hits) != 1:
+        return None, None
+    return hits[0]
+
+
+def _better_iface_for_same_ip(prev, face):
+    """When two Npcap bindings share an IPv4, keep the physical NIC over SoftAP."""
+    if prev is None:
+        return face
+    prev_soft = _iface_looks_softap(prev)
+    face_soft = _iface_looks_softap(face)
+    if prev_soft and not face_soft:
+        return face
+    if face_soft and not prev_soft:
+        return prev
+    if mac_address_is_usable(getattr(face, 'mac', None)) and not mac_address_is_usable(
+        getattr(prev, 'mac', None)
+    ):
+        return face
+    return prev
+
+
+def ifaces_for_settings_combo(ifaces):
+    """Adapters shown in Settings: hide leftover hotspot NICs unless Clumsy is on."""
+    rows = list(ifaces or [])
+    if not rows:
+        return []
+    if _softap_bind_allowed():
+        return rows
+    preferred = [iface for iface in rows if not _iface_looks_softap(iface)]
+    return preferred or rows
+
+
+def settings_iface_picker_hint(ifaces) -> str:
+    """Short Settings caption for the adapter list."""
+    rows = list(ifaces or [])
+    leftover_only = bool(rows) and all(_iface_looks_softap(i) for i in rows) and (
+        not _softap_bind_allowed()
+    )
+    if leftover_only:
+        return (
+            'Only a leftover Mobile Hotspot adapter is listed. '
+            'Reinstall Npcap with Wi‑Fi support, then restart ZubCut.'
+        )
+    return (
+        'This PC’s Wi‑Fi or Ethernet. '
+        'Leftover Mobile Hotspot adapters stay hidden unless Clumsy Mode is on.'
+    )
+
+
 def format_iface_settings_label(iface: NetFace) -> str:
     """
     One-line label for the Settings network combo (shown to user).
@@ -234,6 +317,8 @@ def format_iface_settings_label(iface: NetFace) -> str:
         bits.append(name)
     if ip:
         bits.append(ip)
+    elif _iface_looks_softap(iface):
+        bits.append('hotspot leftover')
     if mac and len(bits) < 2:
         bits.append(mac)
     if not bits:
@@ -1046,10 +1131,8 @@ def get_ifaces():
                     if guid_start >= 0 and guid_end > guid_start:
                         guid = line[guid_start+1:guid_end]
                         friendly = line[:guid_start].strip()
-                        # Take the last token as interface name (works for many locales)
-                        friendly_parts = friendly.split()
-                        if friendly_parts:
-                            friendly = friendly_parts[-1]
+                        # Keep the full adapter name. Last-token truncation turned
+                        # "Local Area Connection* 10" into Settings label "10".
                         guid_to_friendly[guid] = friendly
         
         # Step 3: Get Scapy interfaces and match with our map
@@ -1090,12 +1173,13 @@ def get_ifaces():
                         friendly_name = key
                         break
 
-            # Drop useless netsh/ipconfig labels (no PowerShell Get-NetAdapter: avoids spawning
-            # powershell.exe on every refresh; ipconfig + MAC match remains the source of truth).
-            if friendly_name and _is_bad_iface_display_name(friendly_name):
-                friendly_name = None
-            if not friendly_name and guid:
-                friendly_name = guid_names.get(_guid_lookup_key(guid))
+            # PowerShell GUID map is the source of truth (cached). Truncated netsh
+            # labels like "10" must not beat "Local Area Connection* 10" / "Wi-Fi".
+            ps_name = guid_names.get(_guid_lookup_key(guid)) if guid else None
+            if ps_name and not _is_bad_iface_display_name(ps_name):
+                friendly_name = ps_name
+            else:
+                friendly_name = _prefer_windows_friendly_iface_name(friendly_name) or None
 
             # Get IP and MAC
             ip = '0.0.0.0'
@@ -1116,15 +1200,15 @@ def get_ifaces():
             except Exception:
                 scapy_mac = None
 
-            # If we have a MAC, attempt to match friendly names from ipconfig
+            # Unique-MAC ipconfig match only. Wi-Fi Direct leftovers share the radio MAC;
+            # a first-hit match steals Wi-Fi's IPv4 and hides the real NIC in Settings.
             if not friendly_name and scapy_mac:
-                for friendly, info in interface_map.items():
-                    if info['mac'] != GLOBAL_MAC and good_mac(info['mac']) == good_mac(scapy_mac):
-                        friendly_name = friendly
-                        if info['ip'] not in ('0.0.0.0', '127.0.0.1'):
-                            ip = info['ip']
-                            found_ip = True
-                        break
+                friendly, info = _mac_match_ipconfig_adapter(scapy_mac, interface_map)
+                if friendly and info:
+                    friendly_name = friendly
+                    if info.get('ip') not in ('0.0.0.0', '127.0.0.1', None, ''):
+                        ip = info['ip']
+                        found_ip = True
             
             # Fallback: try to get IP from scapy route table (always try this as fallback)
             if not found_ip:
@@ -1161,10 +1245,10 @@ def get_ifaces():
             if ip == '127.0.0.1':
                 continue
             
-            # Final fallback: use get_my_ip with the Scapy name directly
+            # Final fallback: this adapter's own IPv4 only (never inherit Wi‑Fi via default route).
             if not found_ip or ip == '0.0.0.0':
                 try:
-                    potential_ip = get_my_ip(scapy_name)
+                    potential_ip = get_my_ip(scapy_name, allow_default_route_fallback=False)
                     if potential_ip and potential_ip != '0.0.0.0' and potential_ip != '127.0.0.1':
                         ip = _prefer_ipv4(ip, potential_ip)
                         found_ip = True
@@ -1197,7 +1281,9 @@ def get_ifaces():
             refresh_netface_live_ip(face)
             lip = str(face.ip or ip or '').strip()
             if lip in ('127.0.0.1', '0.0.0.0'):
-                if mac_address_is_usable(mac):
+                if mac_address_is_usable(mac) and not (
+                    _iface_looks_softap(face) and not _softap_bind_allowed()
+                ):
                     yield face
                 continue
             # Skip ghost Npcap bindings (00:00… / FF:FF…) that share a live LAN IP with a real NIC.
@@ -1207,11 +1293,7 @@ def get_ifaces():
             # do not treat them as the active LAN NIC (breaks Lag/Kill MITM on Wi‑Fi).
             if not _ipv4_usable_for_lan(lip):
                 continue
-            prev = best_by_ip.get(lip)
-            if prev is None:
-                best_by_ip[lip] = face
-            elif mac_address_is_usable(mac) and not mac_address_is_usable(prev.mac):
-                best_by_ip[lip] = face
+            best_by_ip[lip] = _better_iface_for_same_ip(best_by_ip.get(lip), face)
         for face in best_by_ip.values():
             yield face
     else:
@@ -1843,10 +1925,13 @@ def reconcile_scanner_with_settings_iface(scanner, killer=None) -> str:
     saved = str(get_settings('iface') or '').strip()
     if len(ifaces) == 1:
         only = ifaces[0]
-        refresh_netface_live_ip(only)
-        if only.name and only.name != 'NULL' and saved != only.name:
-            set_settings('iface', only.name)
-            saved = only.name
+        # Do not pin Settings to a leftover hotspot NIC when Clumsy is off —
+        # that is the "Network Interface stuck on 10" bug.
+        if not (_iface_looks_softap(only) and not _softap_bind_allowed()):
+            refresh_netface_live_ip(only)
+            if only.name and only.name != 'NULL' and saved != only.name:
+                set_settings('iface', only.name)
+                saved = only.name
 
     picked = get_iface_by_name(saved) if saved else None
     if picked is None or picked.name == 'NULL':

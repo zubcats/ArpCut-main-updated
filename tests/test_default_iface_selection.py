@@ -108,6 +108,50 @@ class TestDefaultIfaceSelection(unittest.TestCase):
         ):
             self.assertEqual(_iface_live_ipv4(lac), '192.168.137.1')
 
+    @mock.patch('tools.utils.get_ifaces')
+    @mock.patch('tools.utils.pick_best_live_iface')
+    def test_repair_maps_truncated_hotspot_index_to_wifi(self, mock_pick, mock_list) -> None:
+        wifi = _face('Wi-Fi', '192.168.1.56')
+        mock_list.return_value = [wifi]
+        mock_pick.return_value = wifi
+        with (
+            mock.patch('tools.utils.invalidate_ifaces_cache'),
+            mock.patch('tools.utils._softap_bind_allowed', return_value=False),
+            mock.patch('tools.utils._iface_live_ipv4', return_value='192.168.1.56'),
+            mock.patch('tools.utils.mac_address_is_usable', return_value=True),
+        ):
+            repaired = repair_saved_iface_name('10')
+        self.assertEqual(repaired, 'Wi-Fi')
+
+    def test_settings_combo_hides_hotspot_leftover_when_clumsy_off(self) -> None:
+        from tools.utils import ifaces_for_settings_combo
+
+        wifi = _face('Wi-Fi', '192.168.1.56')
+        lac = _face('Local Area Connection* 10', '0.0.0.0')
+        with mock.patch('tools.utils._softap_bind_allowed', return_value=False):
+            shown = ifaces_for_settings_combo([lac, wifi])
+        self.assertEqual([i.name for i in shown], ['Wi-Fi'])
+
+    def test_ambiguous_radio_mac_does_not_steal_wifi_ip(self) -> None:
+        from tools.utils import _mac_match_ipconfig_adapter
+
+        shared = 'E8:4E:06:AB:C4:28'
+        interface_map = {
+            'Wi-Fi': {'ip': '192.168.1.56', 'mac': shared},
+            'Local Area Connection* 10': {'ip': '0.0.0.0', 'mac': shared},
+        }
+        name, info = _mac_match_ipconfig_adapter(shared, interface_map)
+        self.assertIsNone(name)
+        self.assertIsNone(info)
+
+    def test_same_ip_prefers_wifi_over_softap(self) -> None:
+        from tools.utils import _better_iface_for_same_ip
+
+        wifi = _face('Wi-Fi', '192.168.1.56')
+        lac = _face('Local Area Connection* 10', '192.168.1.56')
+        self.assertEqual(_better_iface_for_same_ip(lac, wifi).name, 'Wi-Fi')
+        self.assertEqual(_better_iface_for_same_ip(wifi, lac).name, 'Wi-Fi')
+
     def test_resolve_iface_drops_stale_hotspot_ip_when_clumsy_off(self) -> None:
         from tools.utils import resolve_iface_my_ip
 

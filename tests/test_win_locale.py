@@ -99,6 +99,9 @@ class TestWinLocale(unittest.TestCase):
         self.assertTrue(is_bad_iface_display_name('connecté'))
         self.assertTrue(is_bad_iface_display_name('conectado'))
         self.assertFalse(is_bad_iface_display_name('Wi-Fi'))
+        self.assertFalse(is_bad_iface_display_name('Ethernet 2'))
+        self.assertTrue(is_bad_iface_display_name('10'))
+        self.assertTrue(is_bad_iface_display_name('Interface-3'))
 
 
 class TestWlanParseLocalized(unittest.TestCase):

@@ -33,3 +33,7 @@ class TestIfaceRepair(unittest.TestCase):
         ):
             name = repair_saved_iface_name('Description . . . . . . . . . . .')
         self.assertEqual(name, 'Wi-Fi')
+
+    def test_truncated_hotspot_index_is_bad_label(self) -> None:
+        self.assertTrue(_is_bad_iface_display_name('10'))
+        self.assertFalse(_is_bad_iface_display_name('Wi-Fi'))
