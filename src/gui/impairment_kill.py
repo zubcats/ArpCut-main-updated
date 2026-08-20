@@ -105,11 +105,11 @@ class ImpairmentKillMixin:
         if not self.connected():
             return
         
-        if not self.tableScan.selectedItems():
+        device = self._get_selected_device()
+        if not device:
             self.log('No device selected', 'red')
             return
 
-        device = self.current_index()
         if device.get('admin'):
             self.log('Cannot kill Router / Me', UI_LOG_VICTIM_BLOCK_FG)
             return
@@ -167,12 +167,14 @@ class ImpairmentKillMixin:
         if not self.connected():
             return
         
-        if not self.tableScan.selectedItems():
+        device = self._get_selected_device()
+        if not device:
             self.log('No device selected', 'red')
             return
+        if device.get('admin'):
+            self.log('Cannot kill Router / Me', UI_LOG_VICTIM_BLOCK_FG)
+            return
 
-        device = self.current_index()
-            
         if not self._kill_ui_shows_on(device['mac'], device.get('ip'), device):
             self.log('Device is already unkilled', 'red')
             return
