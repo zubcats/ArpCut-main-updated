@@ -112,9 +112,11 @@ function CloseRunningApp: Boolean;
 var
   ResultCode: Integer;
 begin
+  { Do not use /T (tree). In-app Update starts Setup as a child of ZubCut.exe;
+    killing the tree also kills this installer and the download looks like a crash. }
   Result := Exec(
     ExpandConstant('{sys}\taskkill.exe'),
-    '/IM {#MyAppExeName} /F /T',
+    '/IM {#MyAppExeName} /F',
     '',
     SW_HIDE,
     ewWaitUntilTerminated,

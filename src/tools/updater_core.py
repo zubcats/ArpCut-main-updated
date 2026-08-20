@@ -1048,6 +1048,22 @@ def install_payload_ok(app_dir: str | None = None) -> bool:
         return False
 
 
+def _windows_job_breakaway_creationflags() -> int:
+    """
+    Flags so Setup/verifier survive ``quit_all``.
+
+    ZubCut is often in a Windows job that kills children on close. Starting
+    Setup *without* breakaway meant: download finishes → app exits → Inno dies
+    after creating its temp directory (see %TEMP%\\zubcut-update-install.log).
+    """
+    creationflags = 0
+    if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP'):
+        creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+    if hasattr(subprocess, 'CREATE_BREAKAWAY_FROM_JOB'):
+        creationflags |= subprocess.CREATE_BREAKAWAY_FROM_JOB
+    return creationflags
+
+
 def _write_update_verify_ps1(*, installer_path: str, app_dir: str) -> str:
     """
     Post-update verifier only — does not start Setup.
@@ -1130,7 +1146,8 @@ def launch_installer(tmp_path, *, no_ui=False):
     Default uses /SILENT so a small setup progress window is visible after the app exits.
 
     Setup is started directly from this process so elevation inherits from ZubCut
-    (RUNASADMIN). A separate verifier only watches for a missing ``python311.dll``.
+    (RUNASADMIN), then broken away from the GUI job so ``quit_all`` cannot kill it.
+    A separate verifier only watches for a missing ``python311.dll``.
     """
     try:
         from tools.updater_debug import updater_log
@@ -1167,8 +1184,12 @@ def launch_installer(tmp_path, *, no_ui=False):
             pass
 
     installer_abs = os.path.abspath(tmp_path)
-    # Direct child — must run before quit_all so admin token is inherited.
-    subprocess.Popen([installer_abs] + flags, close_fds=True)
+    # Direct child so the admin token is inherited — but break away from the
+    # GUI job. Without breakaway, quit_all killed Setup in the same job.
+    popen_kwargs = {'close_fds': True}
+    if sys.platform.startswith('win'):
+        popen_kwargs['creationflags'] = _windows_job_breakaway_creationflags()
+    subprocess.Popen([installer_abs] + flags, **popen_kwargs)
     try:
         from tools.updater_debug import updater_log
 
@@ -1189,13 +1210,8 @@ def launch_installer(tmp_path, *, no_ui=False):
                 updater_log('launch_installer: verify_waiter=%r app_dir=%r', ps1, app_dir)
             except Exception:
                 pass
-            # Break away from the GUI job so quit_all does not kill the verifier.
-            # Do NOT start Setup from this script (would drop elevation).
-            creationflags = 0
-            if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP'):
-                creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
-            if hasattr(subprocess, 'CREATE_BREAKAWAY_FROM_JOB'):
-                creationflags |= subprocess.CREATE_BREAKAWAY_FROM_JOB
+            # Same breakaway as Setup. Do NOT start Setup from this script
+            # (a non-elevated PowerShell would drop UAC).
             subprocess.Popen(
                 [
                     'powershell.exe',
@@ -1208,7 +1224,7 @@ def launch_installer(tmp_path, *, no_ui=False):
                     ps1,
                 ],
                 close_fds=True,
-                creationflags=creationflags,
+                creationflags=_windows_job_breakaway_creationflags(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

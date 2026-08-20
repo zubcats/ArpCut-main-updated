@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -104,10 +105,18 @@ class TestLaunchInstallerWaiter(unittest.TestCase):
             self.assertEqual(calls[0][0][0], os.path.abspath(installer))
             self.assertIn('/SILENT', calls[0][0])
             self.assertIn('/FORCECLOSEAPPLICATIONS', calls[0][0])
+            setup_flags = int(calls[0][1].get('creationflags') or 0)
+            self.assertTrue(
+                setup_flags & subprocess.CREATE_BREAKAWAY_FROM_JOB,
+                'Setup must break away from the GUI job or quit_all kills it',
+            )
+            self.assertTrue(setup_flags & subprocess.CREATE_NEW_PROCESS_GROUP)
             # Optional verify waiter is separate and does not re-launch setup.
             if len(calls) > 1:
                 self.assertEqual(calls[1][0][0], 'powershell.exe')
                 self.assertIn('-File', calls[1][0])
+                waiter_flags = int(calls[1][1].get('creationflags') or 0)
+                self.assertTrue(waiter_flags & subprocess.CREATE_BREAKAWAY_FROM_JOB)
 
 
 class TestInnoSetupGuards(unittest.TestCase):
@@ -122,6 +131,8 @@ class TestInnoSetupGuards(unittest.TestCase):
         self.assertIn('RestoreInternalBackupIfNeeded', iss)
         self.assertIn('WaitUntilAppClosed', iss)
         self.assertIn('taskkill.exe', iss)
+        self.assertIn('/IM {#MyAppExeName} /F', iss)
+        self.assertNotIn('/F /T', iss)
         self.assertIn('ZubCut is still running', iss)
         self.assertNotIn('Tries < 180', iss)
         self.assertIn('Close ZubCut completely and retry the update', iss)
