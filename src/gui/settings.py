@@ -13,6 +13,9 @@ from PyQt5.QtWidgets import (
     QWidget,
     QSizePolicy,
     QProgressDialog,
+    QListWidget,
+    QListWidgetItem,
+    QAbstractItemView,
 )
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtCore import Qt, QTimer, QEvent, QObject, QThread, pyqtSignal
@@ -34,6 +37,7 @@ from tools.utils import (
     get_iface_by_name,
     terminal,
     format_iface_settings_label,
+    ifaces_for_settings_combo,
 )
 
 from ui.ui_settings import Ui_MainWindow
@@ -299,22 +303,44 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.btnClumsyInstall.clicked.connect(self._on_clumsy_install_clicked)
 
     def _fix_network_interface_combo(self) -> None:
-        """ui_settings.py gives the combo a 9px min height — unusable/looks empty."""
-        from PyQt5.QtWidgets import QSizePolicy, QVBoxLayout
-
+        """Visible adapter list — combo popups fail in this frameless + scroll window."""
         combo = self.comboInterface
         combo.setMinimumHeight(30)
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        combo.hide()
         inner = getattr(self, 'horizontalLayoutWidget_2', None)
         gb = getattr(self, 'groupBox_4', None)
         if inner is not None:
-            inner.setMinimumHeight(34)
-        if gb is not None and gb.layout() is None and inner is not None:
+            inner.hide()
+        if gb is None:
+            return
+        if gb.layout() is None:
             lay = QVBoxLayout(gb)
             lay.setContentsMargins(10, 22, 10, 8)
-            lay.setSpacing(4)
-            lay.addWidget(inner)
-            gb.setMinimumHeight(max(78, gb.minimumHeight()))
+            lay.setSpacing(6)
+        else:
+            lay = gb.layout()
+        hint = QLabel(
+            'This PC’s Wi‑Fi or Ethernet. '
+            'Leftover Mobile Hotspot adapters stay hidden unless Clumsy Mode is on.',
+            gb,
+        )
+        hint.setObjectName('lblIfaceHint')
+        hint.setWordWrap(True)
+        hint.setStyleSheet('color: #9a9a9a;')
+        lst = QListWidget(gb)
+        lst.setObjectName('listNetworkInterface')
+        lst.setSelectionMode(QAbstractItemView.SingleSelection)
+        lst.setMinimumHeight(88)
+        lst.setMaximumHeight(148)
+        lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        lst.currentItemChanged.connect(self._sync_iface_combo_from_list)
+        self.lblIfaceHint = hint
+        self.listNetworkInterface = lst
+        self._iface_picker_guard = False
+        lay.addWidget(hint)
+        lay.addWidget(lst)
+        gb.setMinimumHeight(max(168, gb.minimumHeight()))
 
     def _relayout_misc_group(self) -> None:
         """Misc. group was a fixed-size child widget in ui_settings; expand for Clumsy rows."""
@@ -1025,13 +1051,21 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         saved = str(s.get('iface') or '').strip()
         display = resolve_settings_iface_name(saved) or saved
-        idx = self.comboInterface.findData(saved)
+        # Prefer the repaired live NIC. findData(saved) would keep a leftover
+        # hotspot adapter selected whenever it is still in the list.
+        idx = self.comboInterface.findData(display)
         if idx < 0:
-            idx = self.comboInterface.findData(display)
+            idx = self.comboInterface.findData(saved)
         if idx < 0:
             idx = self.comboInterface.findText(display, Qt.MatchFixedString)
         if idx >= 0:
             self.comboInterface.setCurrentIndex(idx)
+            self._select_iface_list_row(idx)
+        if display and display != saved:
+            try:
+                set_settings('iface', display)
+            except Exception:
+                pass
 
         self.keySeqKill.setKeySequence(keyseq_from_setting(s.get('key_kill'), Qt.Key_L))
         self.keySeqLag.setKeySequence(keyseq_from_setting(s.get('key_lag'), Qt.Key_M))
@@ -1247,27 +1281,85 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             return True
 
+    def _sync_iface_combo_from_list(self, current, _previous=None) -> None:
+        if getattr(self, '_iface_picker_guard', False) or current is None:
+            return
+        try:
+            name = str(current.data(Qt.UserRole) or '')
+        except Exception:
+            name = ''
+        if not name:
+            return
+        idx = self.comboInterface.findData(name)
+        if idx >= 0:
+            self.comboInterface.setCurrentIndex(idx)
+
+    def _select_iface_list_row(self, idx: int) -> None:
+        lst = getattr(self, 'listNetworkInterface', None)
+        if lst is None or idx < 0 or idx >= lst.count():
+            return
+        self._iface_picker_guard = True
+        try:
+            lst.setCurrentRow(idx)
+        finally:
+            self._iface_picker_guard = False
+
     def _apply_combo_ifaces(self, ifaces, *, preserve_selection: bool = True) -> bool:
-        """Populate network-interface combo; return True when at least one adapter was added."""
+        """Populate network-interface picker; return True when at least one adapter was added."""
+        from tools.utils import resolve_settings_iface_name, settings_iface_picker_hint
+
         saved = ''
         if preserve_selection:
             try:
                 saved = str(self.comboInterface.currentData() or '')
             except Exception:
                 pass
-        self.comboInterface.clear()
-        if not ifaces:
-            self.comboInterface.addItem('(no adapters found — check Npcap)', '')
-            return False
-        for iface in ifaces:
-            self.comboInterface.addItem(
-                format_iface_settings_label(iface),
-                iface.name,
-            )
-        if saved and ifaces:
-            idx = self.comboInterface.findData(saved)
+        if not saved:
+            try:
+                saved = str(get_settings('iface') or '')
+            except Exception:
+                saved = ''
+        shown = ifaces_for_settings_combo(ifaces)
+        lst = getattr(self, 'listNetworkInterface', None)
+        hint = getattr(self, 'lblIfaceHint', None)
+        self._iface_picker_guard = True
+        try:
+            self.comboInterface.clear()
+            if lst is not None:
+                lst.clear()
+            if not shown:
+                self.comboInterface.addItem('(no adapters found — check Npcap)', '')
+                if lst is not None:
+                    lst.addItem('(no adapters found — check Npcap)')
+                return False
+            for iface in shown:
+                label = format_iface_settings_label(iface)
+                self.comboInterface.addItem(label, iface.name)
+                if lst is not None:
+                    item = QListWidgetItem(label)
+                    item.setData(Qt.UserRole, iface.name)
+                    lst.addItem(item)
+            want = resolve_settings_iface_name(saved) or saved
+            idx = self.comboInterface.findData(want)
+            if idx < 0 and saved:
+                idx = self.comboInterface.findData(saved)
+            if idx < 0:
+                try:
+                    from tools.utils import pick_best_live_iface
+
+                    best = pick_best_live_iface()
+                    if best is not None:
+                        idx = self.comboInterface.findData(best.name)
+                except Exception:
+                    idx = -1
             if idx >= 0:
                 self.comboInterface.setCurrentIndex(idx)
+                if lst is not None:
+                    lst.setCurrentRow(idx)
+            if hint is not None:
+                hint.setText(settings_iface_picker_hint(shown))
+        finally:
+            self._iface_picker_guard = False
         return True
 
     def loadInterfaces(self, *, use_cache: bool = True):

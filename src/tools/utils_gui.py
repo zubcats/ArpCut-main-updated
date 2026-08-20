@@ -662,6 +662,40 @@ QDialog QComboBox::drop-down {{
     border: none;
     border-left: 1px solid {field_bd};
 }}
+QMainWindow#zubcutAuxiliaryWindow QComboBox::down-arrow,
+QDialog QComboBox::down-arrow {{
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDAgTDQuNSA2IEw5IDAgWiIvPjwvc3ZnPg==);
+    width: 9px;
+    height: 6px;
+}}
+QMainWindow#zubcutAuxiliaryWindow QComboBox {{
+    combobox-popup: 0;
+}}
+QMainWindow#zubcutAuxiliaryWindow QLabel#lblIfaceHint {{
+    color: {mute};
+    background-color: transparent;
+}}
+QMainWindow#zubcutAuxiliaryWindow QListWidget#listNetworkInterface {{
+    background-color: #000000;
+    color: {tx};
+    border: 1px solid {bd};
+    border-radius: 4px;
+    outline: none;
+    padding: 2px;
+    selection-background-color: {sel_bg};
+    selection-color: {sel_fg};
+}}
+QMainWindow#zubcutAuxiliaryWindow QListWidget#listNetworkInterface::item {{
+    padding: 6px 8px;
+    color: {tx};
+}}
+QMainWindow#zubcutAuxiliaryWindow QListWidget#listNetworkInterface::item:hover,
+QMainWindow#zubcutAuxiliaryWindow QListWidget#listNetworkInterface::item:selected,
+QMainWindow#zubcutAuxiliaryWindow QListWidget#listNetworkInterface::item:selected:active,
+QMainWindow#zubcutAuxiliaryWindow QListWidget#listNetworkInterface::item:selected:!active {{
+    background-color: {sel_bg};
+    color: {sel_fg};
+}}
 QMainWindow#zubcutAuxiliaryWindow QComboBox QAbstractItemView,
 QDialog QComboBox QAbstractItemView {{
     border: 1px solid {field_bd};

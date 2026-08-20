@@ -297,4 +297,7 @@ def is_bad_iface_display_name(s: str) -> bool:
         return True
     if re.match(r'^interface-\d+$', t):
         return True
+    # netsh last-token truncation of "Local Area Connection* 10" → "10"
+    if re.fullmatch(r'\d{1,3}', t):
+        return True
     return False
