@@ -208,7 +208,7 @@ Wireless LAN adapter Wi-Fi:
         self.assertEqual(rows, [('Wi-Fi', '192.168.1.56', '192.168.1.1')])
         self.assertEqual(_pick_windows_gateway(rows, iface_hint='Wi-Fi', src_ip='192.168.1.56'), '192.168.1.1')
 
-    def test_merge_windows_live_ifaces_skips_unlisted_guid_when_npcap_empty(self) -> None:
+    def test_merge_adds_windows_wifi_name_bind_when_npcap_empty(self) -> None:
         from tools.utils import _merge_windows_live_ifaces
 
         interface_map = {
@@ -235,9 +235,13 @@ Wireless LAN adapter Wi-Fi:
             mock.patch('tools.utils._npcap_listed_guids', return_value=set()),
         ):
             faces = _merge_windows_live_ifaces([], interface_map, listed_guids=set())
-        self.assertEqual(faces, [])
+        self.assertEqual(len(faces), 1)
+        self.assertEqual(faces[0].name, 'Wi-Fi')
+        self.assertEqual(faces[0].ip, '192.168.1.56')
+        self.assertEqual(faces[0].guid, 'Wi-Fi')
+        self.assertNotIn('5B106E08', str(faces[0].guid).upper())
 
-    def test_merge_does_not_paint_ghost_npcap_as_live_wifi(self) -> None:
+    def test_merge_replaces_ghost_npcap_with_windows_wifi_name_bind(self) -> None:
         from tools.utils import _merge_windows_live_ifaces
 
         ghost = _face('Wi-Fi', '169.254.151.57')
@@ -270,8 +274,10 @@ Wireless LAN adapter Wi-Fi:
                 listed_guids={'A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC'},
             )
         self.assertEqual(len(faces), 1)
-        self.assertTrue(str(faces[0].ip).startswith('169.254'))
-        self.assertIn('A3737896', faces[0].guid.upper())
+        self.assertEqual(faces[0].ip, '192.168.1.56')
+        self.assertEqual(faces[0].name, 'Wi-Fi')
+        self.assertEqual(faces[0].guid, 'Wi-Fi')
+        self.assertNotIn('A3737896', faces[0].guid.upper())
         self.assertNotIn('5B106E08', faces[0].guid.upper())
 
     def test_merge_overlays_live_ip_when_npcap_has_windows_guid(self) -> None:

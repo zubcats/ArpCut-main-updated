@@ -1355,6 +1355,8 @@ def _merge_windows_live_ifaces(faces: list, interface_map: dict, listed_guids=No
     NPF makes Kill/Lag L2-send into a dead binding while Me/Router look fine.
 
     Do not retarget ``guid`` to a Windows InterfaceGuid that Npcap did not list.
+    If Npcap has no matching GUID, keep a Settings row bound by friendly name
+    so the picker is not empty.
     """
     live = _windows_live_lan_from_ipconfig(interface_map)
     if not live:
@@ -1399,12 +1401,20 @@ def _merge_windows_live_ifaces(faces: list, interface_map: dict, listed_guids=No
             if token:
                 existing.guid = token
             continue
-        if not token:
+        # Live Windows NIC with no matching Npcap GUID: still show it in Settings
+        # (bind by friendly name). Never invent ``\\Device\\NPF_{unlisted}``.
+        bind = token or name
+        if not bind:
             continue
+        out = [
+            f
+            for f in out
+            if str(getattr(f, 'name', '') or '').strip() != name
+        ]
         face = NetFace(
             {
                 'name': name,
-                'guid': token,
+                'guid': bind,
                 'mac': mac or GLOBAL_MAC,
                 'ips': [row['ip']],
             }
