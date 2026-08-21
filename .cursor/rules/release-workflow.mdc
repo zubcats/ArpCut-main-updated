@@ -6,9 +6,9 @@ alwaysApply: true
 
 - `experimental` is testing. `main` is stable / production.
 - Default working branch: `experimental`. Routine commits and pushes go there unless the user named another branch.
-- Push to `main` only when the user asks (including **push to both**).
+- **Standing instruction (until the user says otherwise):** when a task is done, commit on `experimental` if there is work to commit, then **push to both**. Do not wait for a separate "push" / "push to both" message.
 - **Never cherry-pick between `experimental` and `main`.** That creates two SHAs for one change. After **push to both**, both branches should point at the **same commit** (same tree, same SHA). Installer/CI channel is chosen by branch name (`experimental-latest` vs `stable-latest`), not by keeping different file contents.
-- When the user says **push to both**:
+- When shipping **push to both**:
   1. Commit on `experimental` if there is work to commit.
   2. Push `origin/experimental`.
   3. Check out `main` and merge `experimental`:
