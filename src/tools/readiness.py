@@ -351,6 +351,8 @@ def collect_pc_readiness(
 
     name = str(iface_name or '').strip()
     ip = str(iface_ip or '').strip()
+    if ip in ('0.0.0.0', '127.0.0.1') or ip.startswith('169.254.'):
+        ip = ''
     if not name or name == 'NULL':
         findings.append(
             ReadinessFinding(
@@ -360,7 +362,7 @@ def collect_pc_readiness(
             )
         )
     else:
-        if not ip or ip.startswith('169.254.'):
+        if not ip:
             findings.append(
                 ReadinessFinding(
                     level='fail',
@@ -542,6 +544,8 @@ def collect_device_path_readiness(
     victim_ip = str(device.get('ip') or '').strip()
     victim_mac = str(device.get('mac') or '').strip()
     pc_ip = str(iface_ip or '').strip()
+    if pc_ip in ('0.0.0.0', '127.0.0.1') or pc_ip.startswith('169.254.'):
+        pc_ip = ''
     gw_ip = str(router_ip or '').strip()
     gw_mac = str(router_mac or '').strip()
 

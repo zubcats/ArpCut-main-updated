@@ -385,6 +385,25 @@ Wireless LAN adapter Wi-Fi:
         ):
             self.assertEqual(_iface_live_ipv4(ghost), '')
 
+    def test_resolve_iface_my_ip_uses_windows_name_when_npcap_guid_is_down(self) -> None:
+        from tools.utils import resolve_iface_my_ip
+
+        ghost = _face('Wi-Fi', '0.0.0.0')
+        ghost.guid = r'\Device\NPF_{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}'
+        with (
+            mock.patch('tools.utils.refresh_netface_live_ip'),
+            mock.patch('tools.utils.get_my_ip', return_value='0.0.0.0'),
+            mock.patch(
+                'tools.utils._windows_up_adapter_guids',
+                return_value={'5B106E08-62B0-4A70-B2AC-AEDD80B5B255'},
+            ),
+            mock.patch(
+                'tools.utils._windows_live_ipv4_for_name',
+                return_value='192.168.1.56',
+            ),
+        ):
+            self.assertEqual(resolve_iface_my_ip(ghost), '192.168.1.56')
+
 
     def test_live_ipv4_uses_overlay_when_pcap_ip_is_apipa(self) -> None:
         from tools.utils import _iface_live_ipv4

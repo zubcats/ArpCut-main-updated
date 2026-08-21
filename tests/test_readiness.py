@@ -90,6 +90,20 @@ class TestCollectPcReadiness(unittest.TestCase):
         self.assertIn('ZC-ADMIN', codes)
 
     @_apply_pc_clean_patches
+    def test_pc_fail_zero_ipv4_is_iface_not_route(self, *_mocks):
+        findings = collect_pc_readiness(
+            is_admin=True,
+            iface_name='Wi-Fi',
+            iface_ip='0.0.0.0',
+            router_ip='192.168.1.1',
+            router_mac='11:22:33:44:55:66',
+            probe_wifi=False,
+        )
+        codes = {f.code for f in findings}
+        self.assertIn('ZC-IFACE', codes)
+        self.assertNotIn('ZC-ROUTE', codes)
+
+    @_apply_pc_clean_patches
     def test_pc_warn_vpn_hvci_routes(self, *_mocks):
         # Override HVCI / routes from the clean stack via nested patches.
         with patch('tools.readiness.count_default_routes_ipv4', return_value=3), patch(
@@ -190,6 +204,16 @@ class TestCollectDevicePathReadiness(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].level, 'ok')
         self.assertIn('PS5', findings[0].message)
+
+    def test_zero_pc_ip_does_not_claim_wrong_subnet(self):
+        findings = collect_device_path_readiness(
+            {'ip': '192.168.1.165', 'mac': 'aa:bb:cc:dd:ee:ff'},
+            iface_ip='0.0.0.0',
+            router_ip='192.168.1.1',
+            router_mac='11:22:33:44:55:66',
+        )
+        codes = {f.code for f in findings if f.code}
+        self.assertNotIn('ZC-ROUTE', codes)
 
     def test_missing_macs_and_subnet(self):
         findings = collect_device_path_readiness(

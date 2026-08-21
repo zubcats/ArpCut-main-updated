@@ -1072,6 +1072,7 @@ _IFACES_CACHE_AT: float = 0.0
 _IFACES_CACHE_TTL_S = 45.0
 _WIN_ADAPTER_NAMES: dict[str, str] | None = None
 _WIN_UP_GUIDS: set[str] | None = None
+_WIN_LIVE_IP_BY_NAME: dict[str, str] | None = None
 
 
 def _guid_lookup_key(guid: str) -> str:
@@ -1165,6 +1166,70 @@ def _windows_live_guid_for_iface_name(name: str) -> str:
     return ''
 
 
+def _windows_live_ipv4_by_name() -> dict[str, str]:
+    """Friendly name → unicast IPv4 from Windows (Get-NetIPAddress)."""
+    global _WIN_LIVE_IP_BY_NAME
+    if _WIN_LIVE_IP_BY_NAME is not None:
+        return _WIN_LIVE_IP_BY_NAME
+    out: dict[str, str] = {}
+    if sys.platform.startswith('win'):
+        try:
+            r = run_command(
+                [
+                    'powershell',
+                    '-NoProfile',
+                    '-WindowStyle',
+                    'Hidden',
+                    '-Command',
+                    "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+                    "Where-Object { $_.IPAddress -notlike '169.254.*' "
+                    "-and $_.IPAddress -ne '127.0.0.1' } | "
+                    "ForEach-Object { $_.InterfaceAlias + '|' + $_.IPAddress }",
+                ],
+                shell=False,
+                timeout=8,
+            )
+            if r.returncode == 0 and r.stdout:
+                for line in str(r.stdout).splitlines():
+                    line = line.strip()
+                    if '|' not in line:
+                        continue
+                    alias, ip = line.split('|', 1)
+                    alias = alias.strip()
+                    ip = ip.strip()
+                    if alias and _ip_ok_for_bind(ip):
+                        out.setdefault(alias, ip)
+        except Exception:
+            pass
+    _WIN_LIVE_IP_BY_NAME = out
+    return out
+
+
+def _windows_live_ipv4_for_name(name: str) -> str:
+    """Windows IPv4 for a friendly adapter name like ``Wi-Fi``."""
+    want = str(name or '').strip()
+    if not want:
+        return ''
+    return str(_windows_live_ipv4_by_name().get(want) or '').strip()
+
+
+def _npcap_bind_is_live_up(iface) -> bool:
+    """False when this Npcap GUID is not a currently-Up Windows adapter."""
+    if iface is None or not sys.platform.startswith('win'):
+        return True
+    gid = _extract_adapter_guid(str(getattr(iface, 'guid', '') or ''))
+    if not gid:
+        return True
+    try:
+        up = {_extract_adapter_guid(g) for g in (_windows_up_adapter_guids() or ())}
+        up.discard('')
+    except Exception:
+        return True
+    if not up:
+        return True
+    return gid in up
+
+
 def _npcap_guid_ok_for_live_overlay(npcap_gid: str, live_gid: str, up_guids) -> bool:
     """True when this Npcap GUID is the live Windows NIC (not a same-name ghost)."""
     npcap_gid = _extract_adapter_guid(npcap_gid)
@@ -1205,12 +1270,13 @@ def _npcap_missing_live_up_guids(up_guids, listed_guids) -> set:
 
 def invalidate_ifaces_cache(*, full: bool = False) -> None:
     """Drop cached adapter list. ``full=True`` also refreshes Windows friendly names (PowerShell)."""
-    global _IFACES_CACHE, _IFACES_CACHE_AT, _WIN_ADAPTER_NAMES, _WIN_UP_GUIDS
+    global _IFACES_CACHE, _IFACES_CACHE_AT, _WIN_ADAPTER_NAMES, _WIN_UP_GUIDS, _WIN_LIVE_IP_BY_NAME
     _IFACES_CACHE = None
     _IFACES_CACHE_AT = 0.0
     if full:
         _WIN_ADAPTER_NAMES = None
         _WIN_UP_GUIDS = None
+        _WIN_LIVE_IP_BY_NAME = None
 
 
 def get_ifaces_cached(*, max_age_s: float | None = None):
@@ -2083,14 +2149,28 @@ def bind_scapy_conf_iface(token) -> bool:
 
 
 def resolve_iface_my_ip(iface) -> str:
-    """Best IPv4 for scanner Me/router topology — DHCP LAN over APIPA."""
+    """Best IPv4 for scanner Me/router topology — DHCP LAN over APIPA.
+
+    Npcap GUID may be a leftover bind. Prefer an Up Npcap IPv4, then Windows
+    ipconfig for this adapter name so Me/Ready are not stuck at 0.0.0.0.
+    """
     refresh_netface_live_ip(iface)
     guid = str(getattr(iface, 'guid', None) or '').strip()
     try:
         ip = str(get_my_ip(guid, allow_default_route_fallback=False) if guid else '') or ''
     except TypeError:
         ip = str(get_my_ip(guid) if guid else '') or ''
+    if ip in ('0.0.0.0',):
+        ip = ''
+    bind_live = _npcap_bind_is_live_up(iface)
+    if _ip_ok_for_bind(ip) and bind_live:
+        return ip
     cached = str(getattr(iface, 'ip', None) or '').strip()
+    if _ip_ok_for_bind(cached) and bind_live:
+        return cached
+    name_ip = _windows_live_ipv4_for_name(str(getattr(iface, 'name', '') or ''))
+    if _ip_ok_for_bind(name_ip):
+        return name_ip
     if _ip_ok_for_bind(ip):
         return ip
     if _ip_ok_for_bind(cached):

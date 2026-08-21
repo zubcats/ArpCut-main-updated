@@ -82,14 +82,21 @@ class Scanner():
         # Clumsy-off leftover: Settings may still name Local Area Connection* 10
         # with 192.168.137.1 while the PC is on Wi‑Fi. Rebind to the home LAN NIC.
         try:
-            from tools.utils import _is_softap_ipv4, _softap_bind_allowed, pick_best_live_iface
+            from tools.utils import (
+                _is_softap_ipv4,
+                _npcap_bind_is_live_up,
+                _softap_bind_allowed,
+                pick_best_live_iface,
+            )
 
             leftover = (not self.my_ip) or (
                 _is_softap_ipv4(self.my_ip) and not _softap_bind_allowed()
             )
+            bind_dead = not _npcap_bind_is_live_up(self.iface)
         except Exception:
             leftover = not self.my_ip
-        if leftover:
+            bind_dead = False
+        if leftover or bind_dead:
             try:
                 from tools.utils import (
                     invalidate_ifaces_cache,
