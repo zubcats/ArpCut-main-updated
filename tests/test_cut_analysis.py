@@ -139,6 +139,86 @@ class TestCutAnalysisScoring(unittest.TestCase):
         self.assertIn('FULL CUT DEEP DIVE (victim path)', blob)
         self.assertIn('victim connection FULLY SEVERED', blob)
         self.assertIn('Victim WAN path severed', blob)
+        self.assertIn('[PASS] AFTER ARP MITM cleared', blob)
+        self.assertNotIn('[FAIL] AFTER ARP MITM armed', blob)
+
+    def test_before_l2_not_ready_is_not_a_fail(self) -> None:
+        from tools import cut_analysis as ca
+
+        host = _live_host(l2_ready=False)
+        result = ca._eval_before(
+            ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(), host=host)
+        )
+        self.assertTrue(result.passed)
+        self.assertFalse(any('L2 socket' in f for f in result.failures))
+
+    def test_after_ping_refutes_not_a_live_ps5_header(self) -> None:
+        """Cold ARP / ICMP-silent BEFORE must not brand a pingable AFTER IP as a ghost PS5."""
+        from tools import cut_analysis as ca
+
+        host_before = _live_host(
+            l2_ready=False,
+            victim_ping_ok=False,
+            victim_in_arp=False,
+            victim_mac_match=False,
+            victim_on_lan=False,
+            selected_victim_ip='192.168.1.165',
+            selected_victim_mac='dc:e9:94:ab:e6:c4',
+        )
+        host_during = _live_host(
+            l2_ready=False,
+            victim_ping_ok=False,
+            victim_in_arp=True,
+            victim_mac_match=True,
+            victim_on_lan=True,
+            victim_arp_mac='dc:e9:94:ab:e6:c4',
+            selected_victim_ip='192.168.1.165',
+            selected_victim_mac='dc:e9:94:ab:e6:c4',
+        )
+        host_after = _live_host(
+            l2_ready=False,
+            victim_ping_ok=True,
+            victim_in_arp=True,
+            victim_mac_match=True,
+            victim_on_lan=True,
+            victim_arp_mac='dc:e9:94:ab:e6:c4',
+            selected_victim_ip='192.168.1.165',
+            selected_victim_mac='dc:e9:94:ab:e6:c4',
+        )
+        report = ca.score_phases(
+            flow='Kill',
+            victim_ip='192.168.1.165',
+            victim_mac='dc:e9:94:ab:e6:c4',
+            expect_full_cut=True,
+            before=ca.PhaseSample(
+                phase=ca.PHASE_BEFORE, sample=_sample(ipv4=0), host=host_before
+            ),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(ipv4=0, arp_victim=0),
+                host=host_during,
+                stack=ca.collect_stack_state(
+                    mitm_armed=True,
+                    forwarder_running=True,
+                    forwarder_hard_drop=True,
+                    fwd_packets_seen=0,
+                    fwd_packets_dropped=0,
+                    fwd_packets_forwarded=0,
+                    sample_window_ok=True,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=1),
+                host=host_after,
+                stack=ca.collect_stack_state(mitm_armed=False, forwarder_running=False),
+            ),
+        )
+        blob = '\n'.join(report.lines)
+        self.assertNotIn('NOT a live PS5 on LAN', blob)
+        self.assertIn('[PASS] AFTER ARP MITM cleared', blob)
+        self.assertEqual(report.overall, 'FAIL')
+
 
     def test_midcut_ping_arp_fail_with_wan_drops_is_success(self) -> None:
         """Hard-drop MITM breaks ZubCut ping/ARP view — must not false-FAIL a real cut."""

@@ -598,8 +598,30 @@ def _fmt_host(host: dict, *, label: str, soft_midcut_lan_probes: bool = False) -
     return lines
 
 
-def _fmt_stack(stack: dict, *, label: str, expect_full_cut: bool) -> List[str]:
+def _fmt_stack(
+    stack: dict, *, label: str, expect_full_cut: bool, expect_cleared: bool = False
+) -> List[str]:
     lines: List[str] = []
+    if expect_cleared:
+        if stack.get('use_windivert'):
+            lines.append(
+                f'[{"PASS" if not stack.get("windivert_paused") else "FAIL"}] '
+                f'{label} WinDivert restored (not paused)'
+            )
+            return lines
+        lines.append(
+            f'[{"PASS" if not stack.get("mitm_armed") else "FAIL"}] '
+            f'{label} ARP MITM cleared'
+        )
+        lines.append(
+            f'[{"PASS" if not stack.get("forwarder_running") else "WARN"}] '
+            f'{label} Npcap forwarder stopped'
+        )
+        if stack.get('forwarder_hard_drop'):
+            lines.append(
+                f'[FAIL] {label} forwarder still in hard-drop after OFF'
+            )
+        return lines
     if stack.get('use_windivert'):
         lines.append(
             f'[{"PASS" if stack.get("windivert_running") else "FAIL"}] '
@@ -792,8 +814,8 @@ def _eval_before(ps: Optional[PhaseSample]) -> PhaseResult:
         fails.append('Settings adapter not live on ZubCut PC')
     if not host.get('gateway_mac'):
         fails.append('gateway MAC unknown — MITM cannot arm cleanly')
-    if host.get('l2_ready') is False:
-        fails.append('Npcap L2 socket not ready')
+    # L2 is opened on Kill click — a closed socket during Analysis baseline is
+    # normal, not proof the adapter is broken.
     if host.get('victim_on_lan') is False:
         note = str(host.get('victim_liveness_note') or '').strip()
         live_at = str(host.get('victim_live_ip') or '').strip()
@@ -843,6 +865,11 @@ def _stale_offline_victim_message(
         # Pre-cut MAC mismatch with empty ARP is classic stale table row.
         if host.get('victim_mac_match') is False and host.get('victim_in_arp') is False:
             saw_offline = True
+    # AFTER ping success means the selected IP was live (PS5 often fails ping
+    # BEFORE when ARP is cold or Analysis sniffed a GUID Npcap does not list).
+    after_host = hosts[2] if len(hosts) >= 3 else None
+    if after_host and after_host.get('victim_ping_ok') is True:
+        return False, '', live_at
     if not saw_offline:
         return False, '', live_at
     if note:
@@ -1378,6 +1405,7 @@ def score_phases(
                     ps.stack or {},
                     label=ps.phase,
                     expect_full_cut=expect_full_cut if ps.phase == PHASE_DURING else False,
+                    expect_cleared=ps.phase == PHASE_AFTER,
                 )
             )
         if ps.phase == PHASE_DURING:

@@ -117,6 +117,18 @@ class Scanner():
         self.perfix = (self.my_ip or '0.0.0.0').rsplit(".", 1)[0]
         self.generate_ips()
 
+    def _scapy_iface_token(self) -> str:
+        """Npcap-listed bind token — never a Windows GUID that get_if_list() omitted."""
+        try:
+            toks = npcap_iface_tokens(self.iface)
+            if toks:
+                return str(toks[0])
+        except Exception:
+            pass
+        return str(
+            getattr(self.iface, 'guid', None) or getattr(self.iface, 'name', None) or ''
+        )
+
     def sync_iface_for_victim_ip(self, victim_ip: str) -> bool:
         """
         If victim_ip is on a different local interface than self.iface, rebind scanner
@@ -642,7 +654,7 @@ class Scanner():
         try:
             scan_result = arping(
                 target,
-                iface=self.iface.guid,  # Use guid (Scapy/pcap name), not name
+                iface=self._scapy_iface_token(),
                 verbose=0,
                 timeout=2,
             )
@@ -755,7 +767,7 @@ class Scanner():
         try:
             # 1) Try scapy arping to /32 (requires admin on Windows)
             if self.iface.name != 'NULL':
-                ans = arping(f"{ip}/32", iface=self.iface.guid, timeout=1, verbose=0)  # Use guid (Scapy/pcap name)
+                ans = arping(f"{ip}/32", iface=self._scapy_iface_token(), timeout=1, verbose=0)
                 rows = ans[0] if ans else []
                 hits = [(r[1].psrc, r[1].src) for r in rows]
                 if hits:
@@ -784,7 +796,7 @@ class Scanner():
         try:
             from scapy.all import IP, TCP, sr1
             for port in [53, 80, 443, 3074, 500, 88, 123]:
-                sr1(IP(dst=ip)/TCP(dport=port, flags='S'), timeout=0.5, verbose=0, iface=self.iface.guid)  # Use guid (Scapy/pcap name)
+                sr1(IP(dst=ip)/TCP(dport=port, flags='S'), timeout=0.5, verbose=0, iface=self._scapy_iface_token())
         except Exception:
             pass
 

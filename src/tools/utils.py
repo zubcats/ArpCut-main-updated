@@ -601,8 +601,6 @@ def _lan_neighbor_mac_via_arp_probe(
         tokens = npcap_iface_tokens(iface, iface_guid)
     except Exception:
         tokens = []
-    if not tokens and iface_guid:
-        tokens = [str(iface_guid)]
     if not tokens:
         tokens = ['']
     try:
@@ -1887,7 +1885,22 @@ def refresh_netface_live_ip(iface: NetFace) -> None:
 
 
 def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
-    """Ordered Npcap/Scapy bind tokens to try (GUID first, then friendly name)."""
+    """Ordered Npcap/Scapy bind tokens to try (GUID first, then friendly name).
+
+    Skip ``\\Device\\NPF_{Windows InterfaceGuid}`` when Npcap did not list that
+    adapter. Sniff/L2socket on that token fails with "Interface not found" and
+    Analysis then treats a live PS5 as a ghost row.
+    """
+    listed_names: set[str] | None = None
+    listed_guids: set[str] | None = None
+    try:
+        names = [str(n) for n in (get_if_list() or [])]
+        listed_names = set(names)
+        listed_guids = {_extract_adapter_guid(n) for n in names}
+        listed_guids.discard('')
+    except Exception:
+        listed_names = None
+        listed_guids = None
     out: list[str] = []
     for raw in (
         primary,
@@ -1895,8 +1908,15 @@ def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
         getattr(iface, 'name', None) if iface is not None else None,
     ):
         s = str(raw or '').strip()
-        if s and s != 'NULL' and s not in out:
-            out.append(s)
+        if not s or s == 'NULL' or s in out:
+            continue
+        guid = _extract_adapter_guid(s)
+        if listed_guids and guid and guid not in listed_guids:
+            continue
+        if listed_names is not None and ('NPF_' in s or s.startswith('\\Device\\')):
+            if s not in listed_names:
+                continue
+        out.append(s)
     return out
 
 
