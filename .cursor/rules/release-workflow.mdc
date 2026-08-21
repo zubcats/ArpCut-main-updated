@@ -4,13 +4,14 @@ alwaysApply: true
 
 # Release Workflow
 
-- Maintain separate update paths for `experimental` (testing) and `main` (stable / production ZubCut releases).
-- Track one active working branch at a time, and default all routine commits/pushes to that active branch.
-- Before each push, resolve the target branch using branch memory:
- 1) If the user explicitly requests a branch switch in this chat, use that branch and set it as active.
- 2) Otherwise, reuse the branch used by the last successful push in this chat session.
- 3) If there is no prior push in this chat session, use the current configured default active branch.
-- **Default active branch:** `experimental`. After making commits for the user’s work, **push to `origin/experimental` automatically** unless they asked to hold pushes, work offline-only, or target another branch.
-- Push to `main` only when the user explicitly asks (promotion / stable release path).
-- After a user requests a branch switch, assume all future routine commits/pushes go to the newly selected branch until instructed otherwise.
-- When promoting changes between branches, carry over only intended updates and preserve separation between update paths.
+- `experimental` is testing. `main` is stable / production.
+- Default working branch: `experimental`. Routine commits and pushes go there unless the user named another branch.
+- Push to `main` only when the user asks (including **push to both**).
+- **Never cherry-pick between `experimental` and `main`.** That creates two SHAs for one change.
+- When the user says **push to both**:
+  1. Commit on `experimental` if there is work to commit.
+  2. Push `origin/experimental`.
+  3. Check out `main` and **merge** `experimental` (fast-forward if possible; otherwise a merge commit).
+  4. Push `origin/main`.
+  5. Check out `experimental` again.
+- Do not force-push `main`.
