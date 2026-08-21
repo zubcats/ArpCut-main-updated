@@ -79,6 +79,39 @@ class TestHotspotPrefixDetect(unittest.TestCase):
             )
         )
 
+    def test_leftover_disconnected_direct_is_not_live_hotspot(self) -> None:
+        from tools import clumsy_inline as inline
+
+        class _Proc:
+            stdout = 'Hosted network settings\n    Status                 : Not started'
+            returncode = 0
+
+        listing = (
+            'Admin State    State          Type             Interface Name\n'
+            'Enabled        Connected      Dedicated        Wi-Fi\n'
+            'Enabled        Disconnected   Dedicated        Local Area Connection* 10'
+        )
+        with patch.object(inline.sys, 'platform', 'win32'), patch(
+            'tools.utils.terminal', return_value=listing
+        ), patch('tools.utils.run_command', return_value=_Proc()):
+            self.assertFalse(inline.windows_hotspot_session_live())
+
+    def test_connected_softap_is_live_hotspot(self) -> None:
+        from tools import clumsy_inline as inline
+
+        class _Proc:
+            stdout = 'Hosted network settings\n    Status                 : Not started'
+            returncode = 0
+
+        listing = (
+            'Admin State    State          Type             Interface Name\n'
+            'Enabled        Connected      Dedicated        Local Area Connection* 10'
+        )
+        with patch.object(inline.sys, 'platform', 'win32'), patch(
+            'tools.utils.terminal', return_value=listing
+        ), patch('tools.utils.run_command', return_value=_Proc()):
+            self.assertTrue(inline.windows_hotspot_session_live())
+
     def test_ics_prefix_for_ip(self) -> None:
         self.assertEqual(ics_prefix_for_ip('192.168.173.40'), '192.168.173.')
         self.assertEqual(ics_prefix_for_ip('192.168.137.40'), '192.168.137.')

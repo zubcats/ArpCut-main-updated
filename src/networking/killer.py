@@ -511,6 +511,12 @@ class Killer:
                 return self._socket
             self._socket = None
             self._socket_token = None
+            try:
+                from tools.windows_network_tune import ensure_npcap_ethernet_filter
+
+                ensure_npcap_ethernet_filter(str(getattr(self.iface, 'name', '') or ''))
+            except Exception:
+                pass
             for round_i in range(2):
                 for tok in self._iface_l2_tokens():
                     try:

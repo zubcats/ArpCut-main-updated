@@ -33,6 +33,7 @@ class TestNpcapPrewarm(unittest.TestCase):
         self.assertIn('for tok in self._iface_l2_tokens()', fn)
         self.assertIn('try_rebind_npcap_to_live_windows_adapters', fn)
         self.assertIn('range(2)', fn)
+        self.assertIn('ensure_npcap_ethernet_filter', fn)
 
     def test_prewarm_l2_socket_exists(self) -> None:
         src = self._killer_py()
@@ -60,6 +61,8 @@ class TestNpcapPrewarm(unittest.TestCase):
         self.assertIn('def maintain_windows_capture_stack', src)
         self.assertIn('def ensure_home_lan_mitm_forwarding_off', src)
         self.assertIn('INSECURE_NPCAP', src)
+        self.assertIn('Enable-NetAdapterBinding', src)
+        self.assertIn('def ensure_npcap_ethernet_filter', src)
         self.assertIn('Win10Pcap', src)
         self.assertIn('AllowComputerToTurnOffDevice', src)
         self.assertIn('I219|Ethernet Connection', src)

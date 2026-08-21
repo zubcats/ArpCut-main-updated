@@ -33,6 +33,7 @@ class TestCaptureStackReport(unittest.TestCase):
         )
         self.assertIn('[PASS] Npcap sniffer', text)
         self.assertIn('[PASS] Npcap L2 send socket', text)
+        self.assertIn('Npcap tokens:', text)
         self.assertNotIn('SCREENSHOT THIS SUMMARY', text)
 
     def test_format_skipped_not_admin(self) -> None:

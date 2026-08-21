@@ -93,10 +93,22 @@ def probe_capture_stack(
 
     try:
         from scapy.all import AsyncSniffer, conf
-        from tools.utils import npcap_iface_tokens
+        from tools.utils import (
+            invalidate_ifaces_cache,
+            npcap_iface_tokens,
+            try_rebind_npcap_to_live_windows_adapters,
+        )
+        from tools.windows_network_tune import ensure_npcap_ethernet_filter
     except Exception as exc:
         out['error'] = f'Scapy/Npcap not available: {exc}'
         return out
+
+    try:
+        ensure_npcap_ethernet_filter(str(getattr(face, 'name', '') or ''))
+        try_rebind_npcap_to_live_windows_adapters()
+        invalidate_ifaces_cache(full=True)
+    except Exception:
+        pass
 
     tokens = npcap_iface_tokens(face)
     out['tokens_tried'] = list(tokens)
@@ -149,6 +161,9 @@ def format_capture_stack_snippet(probe: dict[str, Any]) -> str:
         lines.append(f"[INFO] Sniff bound: {probe['sniff_iface']}")
     if l2_ok and probe.get('l2_iface'):
         lines.append(f"[INFO] L2 bound: {probe['l2_iface']}")
+    tokens = probe.get('tokens_tried') or []
+    if tokens:
+        lines.append('[INFO] Npcap tokens: ' + ' | '.join(str(t) for t in tokens[:4]))
     if not sniff_ok and probe.get('sniffer_error'):
         lines.append(f"[INFO] Sniffer error: {probe['sniffer_error']}")
     if sniff_ok and not l2_ok:

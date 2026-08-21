@@ -2133,6 +2133,7 @@ def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
     except Exception:
         listed_names = None
         listed_guids = None
+    listed_live = ''
     up: set[str] = set()
     live_gid = ''
     skip_softap: set[str] = set()
@@ -2149,8 +2150,15 @@ def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
         up = set()
         live_gid = ''
         skip_softap = set()
+    if live_gid and listed_names:
+        for n in listed_names:
+            if _extract_adapter_guid(n) == live_gid:
+                listed_live = n
+                break
     preferred: list[str] = []
-    if live_gid:
+    if listed_live:
+        preferred.append(listed_live)
+    elif live_gid:
         preferred.append(_npcap_device_name_for_win_guid(live_gid))
     out: list[str] = []
     deferred: list[str] = []

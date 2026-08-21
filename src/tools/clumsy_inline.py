@@ -180,19 +180,18 @@ def _netsh_interface_has_softap_nic(text: str) -> bool:
 
 
 def windows_hotspot_session_live() -> bool:
-    """True when Windows Mobile Hotspot / SoftAP is up, independent of Clumsy checkbox."""
+    """True when Windows Mobile Hotspot / SoftAP is actually up.
+
+    A leftover ``192.168.137.1`` on disconnected Wi-Fi Direct must not count —
+    that skipped Npcap maintenance and left LAN Kill unable to open the radio.
+    """
     if not sys.platform.startswith('win'):
         return False
     try:
-        if _detect_live_hotspot_prefix():
-            return True
-    except Exception:
-        pass
-    try:
         from tools.utils import run_command, terminal
 
-        ipcfg = terminal('ipconfig') or ''
-        if _ipconfig_has_softap_gateway(ipcfg):
+        listing = terminal('netsh interface show interface') or ''
+        if _netsh_interface_has_softap_nic(listing):
             return True
         hosted = run_command(
             ['netsh', 'wlan', 'show', 'hostednetwork'],
@@ -200,9 +199,6 @@ def windows_hotspot_session_live() -> bool:
             timeout=2,
         )
         if _netsh_hostednetwork_started(str(getattr(hosted, 'stdout', None) or '')):
-            return True
-        listing = terminal('netsh interface show interface') or ''
-        if _netsh_interface_has_softap_nic(listing):
             return True
     except Exception:
         return False

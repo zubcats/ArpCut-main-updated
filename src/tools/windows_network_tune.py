@@ -178,6 +178,32 @@ if (-not $pmOk) {{
     _run_powershell(ps)
 
 
+def ensure_npcap_ethernet_filter(iface_name: str = '') -> None:
+    """Enable Npcap's ethernet LWF on the live Up NIC (not Wi-Fi Direct).
+
+    Npcap often leaves ``INSECURE_NPCAP`` off on USB Wi-Fi and only enables
+    ``INSECURE_NPCAP_WIFI``. Scapy then has no ``\\Device\\NPF_{GUID}`` to
+    sniff/inject, so Kill and Quick Check fail with Interface not found.
+    """
+    if not sys.platform.startswith('win') or not _is_admin():
+        return
+    safe = _safe_adapter_name(iface_name)
+    if not safe:
+        return
+    ps = f"""
+$ErrorActionPreference = 'SilentlyContinue'
+$a = Get-NetAdapter -Name '{safe}' -ErrorAction SilentlyContinue
+if (-not $a -or $a.Status -ne 'Up') {{ return }}
+$desc = [string]$a.InterfaceDescription
+if ($a.Name -match 'Local Area Connection' -or $desc -match 'Direct|Hosted|Hotspot') {{ return }}
+$b = Get-NetAdapterBinding -Name $a.Name -ComponentID 'INSECURE_NPCAP' -ErrorAction SilentlyContinue
+if ($b -and -not $b.Enabled) {{
+  Enable-NetAdapterBinding -Name $a.Name -ComponentID 'INSECURE_NPCAP' | Out-Null
+}}
+"""
+    _run_powershell(ps)
+
+
 def maintain_windows_capture_stack(
     *,
     iface_name: str = '',
@@ -201,17 +227,22 @@ def maintain_windows_capture_stack(
     if not _is_admin():
         return
 
+    active = _safe_adapter_name(iface_name)
+    try:
+        ensure_npcap_ethernet_filter(active)
+    except Exception:
+        pass
+
     try:
         from tools.clumsy_inline import ics_forwarding_must_stay_on
 
         if ics_forwarding_must_stay_on():
             # Hotspot / ICS is live (Clumsy checkbox may be off). Do not flip
-            # forwarding, NIC power, or bindings — that drops the PC uplink.
+            # forwarding, NIC power, or other bindings — that drops the PC uplink.
             return
     except Exception:
         pass
 
-    active = _safe_adapter_name(iface_name)
     active_clause = f"$active = '{active}'" if active else '$active = $null'
 
     ps = f"""
