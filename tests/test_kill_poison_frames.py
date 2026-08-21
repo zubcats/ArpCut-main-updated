@@ -18,12 +18,13 @@ class TestKillPoisonFrames(unittest.TestCase):
             src = f.read()
         return src[src.index('def _poison_frames'): src.index('def _poison_arp_now')]
 
-    def test_poison_frames_source_has_no_wifi_broadcast(self) -> None:
+    def test_poison_frames_keep_unicast_and_wifi_victim_broadcast(self) -> None:
         block = self._poison_block()
-        self.assertNotIn('ff:ff:ff:ff:ff:ff', block)
-        self.assertIn('Unicast ARP poison only', block)
         self.assertIn("dst=victim['mac']", block)
         self.assertIn("dst=self.router['mac']", block)
+        self.assertIn('iface_is_wireless', block)
+        self.assertIn('ff:ff:ff:ff:ff:ff', block)
+        self.assertIn("pdst=victim['ip']", block)
 
     def test_poison_frames_include_request_and_reply(self) -> None:
         block = self._poison_block()

