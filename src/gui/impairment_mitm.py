@@ -1104,18 +1104,50 @@ class ImpairmentMitmMixin:
             stack = self._gather_cut_analysis_stack(
                 dev, cut_pct=pct, sample_window_ok=still_on
             )
-            gw_ip = str(host.get('gateway_ip') or '')
-            gw_mac = str(host.get('gateway_mac') or '')
-            sample = _sniff_cut_sample(
-                guid,
-                ip,
-                seconds=2.0,
-                local_mac=local_mac,
-                gateway_ip=gw_ip,
-                gateway_mac=gw_mac,
-                victim_mac=mac,
-                iface=iface,
-            )
+            fw = getattr(self.killer, 'forwarders', {}).get(mac) if mac else None
+            fw_live = bool(fw and getattr(fw, 'running', False))
+            if fw_live:
+                # A second Npcap sniff on this adapter starves the Kill forwarder
+                # (seen=0 / "Kill does nothing") while Analysis still sees ARP TX.
+                _time.sleep(1.65)
+                try:
+                    stack2 = self._gather_cut_analysis_stack(
+                        dev, cut_pct=pct, sample_window_ok=True
+                    )
+                    stack.update(stack2 or {})
+                except Exception:
+                    pass
+                seen = int(stack.get('fwd_packets_seen') or 0)
+                dropped = int(stack.get('fwd_packets_dropped') or 0)
+                sample = {
+                    'ok': True,
+                    'error': '',
+                    'ipv4': max(0, seen),
+                    'ipv6': 0,
+                    'arp': 0,
+                    'arp_victim': 0,
+                    'poison_arp_seen': 0,
+                    'victim_to_us': seen,
+                    'victim_wan_out_to_us': dropped,
+                    'victim_wan_bypass_gw': 0,
+                    'wan_return_bypass': 0,
+                    'victim_lan_ipv4': 0,
+                    'total': seen,
+                    'seconds': 1.65,
+                }
+            else:
+                gw_ip = str(host.get('gateway_ip') or '')
+                gw_mac = str(host.get('gateway_mac') or '')
+                sample = _sniff_cut_sample(
+                    guid,
+                    ip,
+                    seconds=2.0,
+                    local_mac=local_mac,
+                    gateway_ip=gw_ip,
+                    gateway_mac=gw_mac,
+                    victim_mac=mac,
+                    iface=iface,
+                )
             # Refresh forwarder counters after sniff if still armed.
             if mac and mac in getattr(self.killer, 'killed', {}):
                 try:
@@ -1408,13 +1440,15 @@ class ImpairmentMitmMixin:
         def _probe() -> None:
             import time
 
-            time.sleep(0.9)
+            time.sleep(1.2)
             if mac not in getattr(self.killer, 'killed', {}):
                 return
             try:
-                from tools.mitm_probe import count_victim_ip_packets, mitm_path_warning
-
-                seen = count_victim_ip_packets(guid, ip, 1.0)
+                fw = getattr(self.killer, 'forwarders', {}).get(mac)
+                if fw is not None and hasattr(fw, 'get_stats'):
+                    seen = int((fw.get_stats() or {}).get('packets_seen') or 0)
+                else:
+                    seen = int(getattr(fw, '_pkt_count', 0) or 0) if fw is not None else 0
             except Exception:
                 return
             if seen != 0:
@@ -1425,6 +1459,8 @@ class ImpairmentMitmMixin:
                     return
                 if self._retry_mitm_on_arp_iface(device, mac, ip, flow):
                     return
+                from tools.mitm_probe import mitm_path_warning
+
                 msg = mitm_path_warning(iface, ip)
                 self.log(f'{flow}: {msg}', 'red')
 

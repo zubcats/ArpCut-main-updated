@@ -824,6 +824,13 @@ class TestCutAnalysisWiring(unittest.TestCase):
     def test_mitm_probe_schedules_analysis(self) -> None:
         probe = method_src('_schedule_mitm_traffic_probe')
         self.assertIn('_schedule_cut_analysis_if_enabled', probe)
+        self.assertNotIn('count_victim_ip_packets', probe)
+        self.assertIn('get_stats', probe)
+
+    def test_during_skips_sniff_when_forwarder_live(self) -> None:
+        during = method_src('_schedule_cut_analysis_if_enabled')
+        self.assertIn('fw_live', during)
+        self.assertIn('starves the Kill forwarder', during)
 
     def test_logs_analysis_toggle(self) -> None:
         path = os.path.join(_SRC, 'gui', 'logs_window.py')

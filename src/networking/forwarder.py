@@ -177,6 +177,7 @@ class MitmForwarder:
                     filter=bpf,
                     prn=self._process_packet,
                     store=False,
+                    promisc=True,
                 )
                 self.sniffer.start()
                 self.iface = cand
