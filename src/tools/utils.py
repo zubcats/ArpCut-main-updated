@@ -1180,6 +1180,20 @@ def _npcap_guid_ok_for_live_overlay(npcap_gid: str, live_gid: str, up_guids) -> 
     return True
 
 
+def _npcap_guid_matches_windows_adapter(npcap_guid: str, friendly_name: str) -> bool:
+    """False when this NPF GUID is not the Windows NIC with *friendly_name*.
+
+    ``get_ifaces`` used to copy ipconfig's Wi-Fi IPv4 onto any Npcap face whose
+    PowerShell/netsh label was also ``Wi-Fi``, including a leftover USB bind.
+    Settings then showed 192.168.x while Kill L2-sent on the ghost GUID.
+    """
+    np = _extract_adapter_guid(npcap_guid)
+    live = _windows_live_guid_for_iface_name(friendly_name)
+    if np and live and np != live:
+        return False
+    return True
+
+
 def _npcap_missing_live_up_guids(up_guids, listed_guids) -> set:
     """Up Windows GUIDs that Npcap did not list (stale USB bind / need service restart)."""
     up = {_extract_adapter_guid(g) for g in (up_guids or ())}
@@ -1351,6 +1365,8 @@ def try_rebind_npcap_to_live_windows_adapters() -> bool:
     global _NPCAP_REBIND_TRIED
     if os.environ.get('PYTEST_CURRENT_TEST'):
         return False
+    if any(k.startswith('tests.') or k.startswith('test_') for k in sys.modules):
+        return False
     if _NPCAP_REBIND_TRIED or not sys.platform.startswith('win'):
         return False
     _NPCAP_REBIND_TRIED = True
@@ -1516,12 +1532,16 @@ def get_ifaces():
             else:
                 friendly_name = _prefer_windows_friendly_iface_name(friendly_name) or None
 
-            # Get IP and MAC
+            # Get IP and MAC — only from ipconfig when this NPF GUID is that Windows NIC.
             ip = '0.0.0.0'
             mac = GLOBAL_MAC
             found_ip = False
             
-            if friendly_name and friendly_name in interface_map:
+            if (
+                friendly_name
+                and friendly_name in interface_map
+                and _npcap_guid_matches_windows_adapter(guid or scapy_name, friendly_name)
+            ):
                 ip = interface_map[friendly_name]['ip']
                 mac = interface_map[friendly_name]['mac']
                 if ip != '0.0.0.0' and ip != '127.0.0.1':
@@ -1539,7 +1559,9 @@ def get_ifaces():
             # a first-hit match steals Wi-Fi's IPv4 and hides the real NIC in Settings.
             if not friendly_name and scapy_mac:
                 friendly, info = _mac_match_ipconfig_adapter(scapy_mac, interface_map)
-                if friendly and info:
+                if friendly and info and _npcap_guid_matches_windows_adapter(
+                    guid or scapy_name, friendly
+                ):
                     friendly_name = friendly
                     if info.get('ip') not in ('0.0.0.0', '127.0.0.1', None, ''):
                         ip = info['ip']
@@ -2089,6 +2111,15 @@ def _iface_live_ipv4(iface) -> str:
     if iface is not None and _iface_looks_softap(iface) and not _softap_bind_allowed():
         return ''
     guid = str(getattr(iface, 'guid', None) or '').strip()
+    gid = _extract_adapter_guid(guid)
+    if gid and sys.platform.startswith('win'):
+        try:
+            up = {_extract_adapter_guid(g) for g in (_windows_up_adapter_guids() or ())}
+            up.discard('')
+        except Exception:
+            up = set()
+        if up and gid not in up:
+            return ''
     ip = ''
     if guid:
         try:

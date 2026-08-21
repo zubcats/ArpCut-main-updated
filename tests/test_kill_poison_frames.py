@@ -25,6 +25,9 @@ class TestKillPoisonFrames(unittest.TestCase):
         self.assertIn('iface_is_wireless', block)
         self.assertIn('ff:ff:ff:ff:ff:ff', block)
         self.assertIn("pdst=victim['ip']", block)
+        self.assertIn('_poison_hwsrc', block)
+        self.assertIn('src=src', block)
+        self.assertIn('hwsrc=src', block)
 
     def test_poison_frames_include_request_and_reply(self) -> None:
         block = self._poison_block()

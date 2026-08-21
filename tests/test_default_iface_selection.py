@@ -359,6 +359,32 @@ Wireless LAN adapter Wi-Fi:
         )
         self.assertEqual(missing, {'5B106E08-62B0-4A70-B2AC-AEDD80B5B255'})
 
+    def test_npcap_guid_matches_windows_adapter(self) -> None:
+        from tools.utils import _npcap_guid_matches_windows_adapter
+
+        live = r'\Device\NPF_{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}'
+        ghost = r'\Device\NPF_{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}'
+        with mock.patch(
+            'tools.utils._windows_live_guid_for_iface_name',
+            return_value='5B106E08-62B0-4A70-B2AC-AEDD80B5B255',
+        ):
+            self.assertTrue(_npcap_guid_matches_windows_adapter(live, 'Wi-Fi'))
+            self.assertFalse(_npcap_guid_matches_windows_adapter(ghost, 'Wi-Fi'))
+
+    def test_live_ipv4_ignores_disconnected_npcap_guid(self) -> None:
+        from tools.utils import _iface_live_ipv4
+
+        ghost = _face('Wi-Fi', '192.168.1.56')
+        ghost.guid = r'\Device\NPF_{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}'
+        with (
+            mock.patch('tools.utils.get_my_ip', return_value='169.254.151.57'),
+            mock.patch(
+                'tools.utils._windows_up_adapter_guids',
+                return_value={'5B106E08-62B0-4A70-B2AC-AEDD80B5B255'},
+            ),
+        ):
+            self.assertEqual(_iface_live_ipv4(ghost), '')
+
 
     def test_live_ipv4_uses_overlay_when_pcap_ip_is_apipa(self) -> None:
         from tools.utils import _iface_live_ipv4
