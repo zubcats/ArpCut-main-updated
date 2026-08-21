@@ -208,7 +208,7 @@ Wireless LAN adapter Wi-Fi:
         self.assertEqual(rows, [('Wi-Fi', '192.168.1.56', '192.168.1.1')])
         self.assertEqual(_pick_windows_gateway(rows, iface_hint='Wi-Fi', src_ip='192.168.1.56'), '192.168.1.1')
 
-    def test_merge_adds_windows_wifi_name_bind_when_npcap_empty(self) -> None:
+    def test_merge_adds_windows_wifi_npf_token_when_npcap_empty(self) -> None:
         from tools.utils import _merge_windows_live_ifaces
 
         interface_map = {
@@ -238,8 +238,8 @@ Wireless LAN adapter Wi-Fi:
         self.assertEqual(len(faces), 1)
         self.assertEqual(faces[0].name, 'Wi-Fi')
         self.assertEqual(faces[0].ip, '192.168.1.56')
-        self.assertEqual(faces[0].guid, 'Wi-Fi')
-        self.assertNotIn('5B106E08', str(faces[0].guid).upper())
+        self.assertIn('5B106E08', str(faces[0].guid).upper())
+        self.assertNotIn('A3737896', str(faces[0].guid).upper())
 
     def test_merge_replaces_ghost_npcap_with_windows_wifi_name_bind(self) -> None:
         from tools.utils import _merge_windows_live_ifaces
@@ -276,9 +276,8 @@ Wireless LAN adapter Wi-Fi:
         self.assertEqual(len(faces), 1)
         self.assertEqual(faces[0].ip, '192.168.1.56')
         self.assertEqual(faces[0].name, 'Wi-Fi')
-        self.assertEqual(faces[0].guid, 'Wi-Fi')
+        self.assertIn('5B106E08', faces[0].guid.upper())
         self.assertNotIn('A3737896', faces[0].guid.upper())
-        self.assertNotIn('5B106E08', faces[0].guid.upper())
 
     def test_merge_overlays_live_ip_when_npcap_has_windows_guid(self) -> None:
         from tools.utils import _merge_windows_live_ifaces
@@ -311,7 +310,7 @@ Wireless LAN adapter Wi-Fi:
         self.assertEqual(faces[0].ip, '192.168.1.56')
         self.assertIn('5B106E08', faces[0].guid.upper())
 
-    def test_npcap_tokens_skip_unlisted_windows_guid(self) -> None:
+    def test_npcap_tokens_prefer_live_guid_not_wifi_name(self) -> None:
         from tools.utils import npcap_iface_tokens
 
         fake = r'\Device\NPF_{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}'
@@ -320,15 +319,23 @@ Wireless LAN adapter Wi-Fi:
         face.guid = fake
         with (
             mock.patch('tools.utils.get_if_list', return_value=[listed]),
-            mock.patch('tools.utils._windows_up_adapter_guids', return_value=set()),
+            mock.patch(
+                'tools.utils._windows_up_adapter_guids',
+                return_value={'5B106E08-62B0-4A70-B2AC-AEDD80B5B255'},
+            ),
             mock.patch(
                 'tools.utils._windows_adapter_friendly_by_guid',
-                return_value={'{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi'},
+                return_value={
+                    '{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi',
+                    '{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}': 'Local Area Connection* 10',
+                },
             ),
+            mock.patch('tools.utils._softap_bind_allowed', return_value=False),
         ):
             toks = npcap_iface_tokens(face)
-        self.assertNotIn(fake, toks)
-        self.assertIn('Wi-Fi', toks)
+        self.assertTrue(any('5B106E08' in t.upper() for t in toks))
+        self.assertTrue(all('A3737896' not in t.upper() for t in toks))
+        self.assertNotIn('Wi-Fi', toks)
 
     def test_npcap_tokens_prefer_live_up_guid(self) -> None:
         from tools.utils import npcap_iface_tokens
@@ -345,13 +352,32 @@ Wireless LAN adapter Wi-Fi:
             ),
             mock.patch(
                 'tools.utils._windows_adapter_friendly_by_guid',
-                return_value={'{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi'},
+                return_value={
+                    '{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi',
+                    '{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}': 'Local Area Connection* 10',
+                },
             ),
+            mock.patch('tools.utils._softap_bind_allowed', return_value=False),
         ):
             toks = npcap_iface_tokens(face)
         self.assertTrue(toks)
         self.assertIn('5B106E08', toks[0].upper())
         self.assertTrue(all('A3737896' not in t.upper() for t in toks))
+        self.assertNotIn('Wi-Fi', toks)
+
+    def test_direct_guid_looks_softap_even_when_named_wifi(self) -> None:
+        from tools.utils import _iface_looks_softap
+
+        face = _face('Wi-Fi', '192.168.1.56')
+        face.guid = r'\Device\NPF_{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}'
+        with mock.patch(
+            'tools.utils._windows_adapter_friendly_by_guid',
+            return_value={
+                '{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}': 'Local Area Connection* 10',
+                '{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi',
+            },
+        ):
+            self.assertTrue(_iface_looks_softap(face))
 
     def test_npcap_missing_live_up_guids(self) -> None:
         from tools.utils import _npcap_missing_live_up_guids

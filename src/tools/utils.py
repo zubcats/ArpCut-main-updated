@@ -205,9 +205,28 @@ def _iface_name_looks_softap(name: str) -> bool:
     return bool(blob) and any(n in blob for n in _SOFTAP_IFACE_NEEDLES)
 
 
+def _windows_softap_adapter_guids() -> set[str]:
+    """InterfaceGuids Windows names as Wi-Fi Direct / hosted-network / LAC*."""
+    out: set[str] = set()
+    try:
+        for raw, fname in (_windows_adapter_friendly_by_guid() or {}).items():
+            if _iface_name_looks_softap(str(fname or '')):
+                gid = _extract_adapter_guid(raw)
+                if gid:
+                    out.add(gid)
+    except Exception:
+        pass
+    return out
+
+
 def _iface_looks_softap(iface) -> bool:
     """True for the Wi-Fi Direct / hosted-network NIC used by Mobile Hotspot."""
-    return _iface_name_looks_softap(getattr(iface, 'name', None) or '')
+    if _iface_name_looks_softap(getattr(iface, 'name', None) or ''):
+        return True
+    gid = _extract_adapter_guid(str(getattr(iface, 'guid', '') or ''))
+    if gid and gid in _windows_softap_adapter_guids():
+        return True
+    return False
 
 
 def _softap_bind_allowed() -> bool:
@@ -1099,7 +1118,8 @@ def _windows_adapter_friendly_by_guid() -> dict[str, str]:
                     '-WindowStyle',
                     'Hidden',
                     '-Command',
-                    "Get-NetAdapter | ForEach-Object { $_.InterfaceGuid.ToString().ToUpper() + '|' + $_.Name }",
+                    "Get-NetAdapter -IncludeHidden | ForEach-Object { "
+                    "$_.InterfaceGuid.ToString().ToUpper() + '|' + $_.Name }",
                 ],
                 shell=False,
                 timeout=8,
@@ -1158,9 +1178,15 @@ def _windows_live_guid_for_iface_name(name: str) -> str:
     if not want:
         return ''
     try:
+        skip = set()
+        if not _softap_bind_allowed():
+            skip = _windows_softap_adapter_guids()
         for gid, fname in _windows_adapter_friendly_by_guid().items():
-            if str(fname).strip() == want:
-                return _extract_adapter_guid(gid)
+            if str(fname).strip() != want:
+                continue
+            extracted = _extract_adapter_guid(gid)
+            if extracted and extracted not in skip:
+                return extracted
     except Exception:
         return ''
     return ''
@@ -1355,8 +1381,9 @@ def _merge_windows_live_ifaces(faces: list, interface_map: dict, listed_guids=No
     NPF makes Kill/Lag L2-send into a dead binding while Me/Router look fine.
 
     Do not retarget ``guid`` to a Windows InterfaceGuid that Npcap did not list.
-    If Npcap has no matching GUID, keep a Settings row bound by friendly name
-    so the picker is not empty.
+    If Npcap has no matching GUID, keep a Settings row bound to that NIC's
+    ``\\Device\\NPF_{InterfaceGuid}`` (not the friendly name). ``Wi-Fi`` as a
+    bind token opens leftover Wi-Fi Direct on this PC.
     """
     live = _windows_live_lan_from_ipconfig(interface_map)
     if not live:
@@ -1401,9 +1428,10 @@ def _merge_windows_live_ifaces(faces: list, interface_map: dict, listed_guids=No
             if token:
                 existing.guid = token
             continue
-        # Live Windows NIC with no matching Npcap GUID: still show it in Settings
-        # (bind by friendly name). Never invent ``\\Device\\NPF_{unlisted}``.
-        bind = token or name
+        # Live Windows NIC with no matching Npcap GUID: still show it in Settings.
+        # Bind by that NIC's NPF token (not the friendly name). ``L2socket("Wi-Fi")``
+        # on this PC opens leftover Wi-Fi Direct ``A373…`` which shares the radio MAC.
+        bind = token or (_npcap_device_name_for_win_guid(gid) if gid else '') or name
         if not bind:
             continue
         out = [
@@ -1427,25 +1455,27 @@ def _merge_windows_live_ifaces(faces: list, interface_map: dict, listed_guids=No
     return out
 
 
-_NPCAP_REBIND_TRIED = False
+_NPCAP_REBIND_ATTEMPTS = 0
+_NPCAP_REBIND_MAX = 3
 
 
 def try_rebind_npcap_to_live_windows_adapters() -> bool:
     """
-    Restart Npcap once if Windows has an *Up* NIC whose InterfaceGuid is missing
+    Restart Npcap if Windows has an *Up* NIC whose InterfaceGuid is missing
     from Npcap's adapter list (USB Wi-Fi unplug/replug).
 
-    A disconnected ghost GUID still listed by Npcap must not count as a match —
-    that skipped the restart and left Kill sending on the dead binding.
+    A disconnected Wi-Fi Direct GUID still listed by Npcap must not count as a
+    match — that skipped the restart and left Kill sending on Direct.
     """
-    global _NPCAP_REBIND_TRIED
+    global _NPCAP_REBIND_ATTEMPTS
     if os.environ.get('PYTEST_CURRENT_TEST'):
         return False
     if any(k.startswith('tests.') or k.startswith('test_') for k in sys.modules):
         return False
-    if _NPCAP_REBIND_TRIED or not sys.platform.startswith('win'):
+    if not sys.platform.startswith('win'):
         return False
-    _NPCAP_REBIND_TRIED = True
+    if _NPCAP_REBIND_ATTEMPTS >= _NPCAP_REBIND_MAX:
+        return False
     try:
         missing = _npcap_missing_live_up_guids(
             _windows_up_adapter_guids(),
@@ -1453,6 +1483,7 @@ def try_rebind_npcap_to_live_windows_adapters() -> bool:
         )
         if not missing:
             return False
+        _NPCAP_REBIND_ATTEMPTS += 1
         r = run_command(
             [
                 'powershell',
@@ -1466,6 +1497,13 @@ def try_rebind_npcap_to_live_windows_adapters() -> bool:
             shell=False,
             timeout=20,
         )
+        try:
+            ifaces = getattr(conf, 'ifaces', None)
+            reload = getattr(ifaces, 'reload', None)
+            if callable(reload):
+                reload()
+        except Exception:
+            pass
         try:
             conf.route.resync()
         except Exception:
@@ -2080,13 +2118,10 @@ def refresh_netface_live_ip(iface: NetFace) -> None:
 def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
     """Ordered Npcap/Scapy bind tokens to try (live Windows GUID, then name).
 
-    Skip ``\\Device\\NPF_{Windows InterfaceGuid}`` when Npcap did not list that
-    adapter. Sniff/L2socket on that token fails with "Interface not found" and
-    Analysis then treats a live PS5 as a ghost row.
-
-    Prefer the Up Windows InterfaceGuid over a same-name ghost NPF (USB Wi-Fi
-    leftover). L2socket often *opens* on the ghost, so first-success bind must
-    not try the dead GUID first.
+    Never first-success bind ``Wi-Fi`` / leftover Direct ``A373…``. On this PC
+    those open Microsoft Wi-Fi Direct (same radio MAC) while the live USB NIC
+    is ``5B10…``. Prefer the Up Windows InterfaceGuid even when Npcap has not
+    listed it yet (Kill restarts Npcap and retries).
     """
     listed_names: set[str] | None = None
     listed_guids: set[str] | None = None
@@ -2100,6 +2135,7 @@ def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
         listed_guids = None
     up: set[str] = set()
     live_gid = ''
+    skip_softap: set[str] = set()
     try:
         if sys.platform.startswith('win'):
             up = {_extract_adapter_guid(g) for g in (_windows_up_adapter_guids() or ())}
@@ -2107,11 +2143,14 @@ def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
             live_gid = _windows_live_guid_for_iface_name(
                 str(getattr(iface, 'name', None) or '') if iface is not None else ''
             )
+            if not _softap_bind_allowed():
+                skip_softap = _windows_softap_adapter_guids()
     except Exception:
         up = set()
         live_gid = ''
+        skip_softap = set()
     preferred: list[str] = []
-    if live_gid and listed_guids and live_gid in listed_guids:
+    if live_gid:
         preferred.append(_npcap_device_name_for_win_guid(live_gid))
     out: list[str] = []
     deferred: list[str] = []
@@ -2127,12 +2166,21 @@ def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
             continue
         seen.add(s)
         guid = _extract_adapter_guid(s)
-        if listed_guids and guid and guid not in listed_guids:
+        if guid and guid in skip_softap:
             continue
-        if listed_names is not None and ('NPF_' in s or s.startswith('\\Device\\')):
-            if s not in listed_names:
-                continue
-        if up and guid and guid not in up:
+        if listed_guids and guid and guid not in listed_guids and guid != live_gid:
+            continue
+        if (
+            listed_names is not None
+            and ('NPF_' in s or s.startswith('\\Device\\'))
+            and s not in listed_names
+            and guid != live_gid
+        ):
+            continue
+        # Friendly name ``Wi-Fi`` opens Wi-Fi Direct when that NPF is listed.
+        if (not guid) and live_gid and (not _softap_bind_allowed()):
+            continue
+        if up and guid and guid not in up and guid != live_gid:
             deferred.append(s)
             continue
         out.append(s)

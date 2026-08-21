@@ -511,20 +511,32 @@ class Killer:
                 return self._socket
             self._socket = None
             self._socket_token = None
-            for tok in self._iface_l2_tokens():
-                try:
-                    self._socket = conf.L2socket(iface=tok)
-                    self._socket_token = tok
+            for round_i in range(2):
+                for tok in self._iface_l2_tokens():
                     try:
-                        conf.iface = tok
+                        self._socket = conf.L2socket(iface=tok)
+                        self._socket_token = tok
+                        try:
+                            conf.iface = tok
+                        except Exception:
+                            pass
+                        self._adopt_open_l2_token(tok)
+                        return self._socket
+                    except Exception:
+                        self._socket = None
+                        self._socket_token = None
+                        continue
+                if round_i == 0:
+                    try:
+                        from tools.utils import (
+                            invalidate_ifaces_cache,
+                            try_rebind_npcap_to_live_windows_adapters,
+                        )
+
+                        try_rebind_npcap_to_live_windows_adapters()
+                        invalidate_ifaces_cache(full=True)
                     except Exception:
                         pass
-                    self._adopt_open_l2_token(tok)
-                    return self._socket
-                except Exception:
-                    self._socket = None
-                    self._socket_token = None
-                    continue
             return None
     
     def _adopt_open_l2_token(self, tok: str) -> None:
@@ -532,6 +544,14 @@ class Killer:
         tok = str(tok or '').strip()
         if not tok or self.iface is None:
             return
+        try:
+            from tools.utils import _extract_adapter_guid, _windows_softap_adapter_guids, _softap_bind_allowed
+
+            gid = _extract_adapter_guid(tok)
+            if gid and (not _softap_bind_allowed()) and gid in _windows_softap_adapter_guids():
+                return
+        except Exception:
+            pass
         self.iface.guid = tok
         try:
             from scapy.all import get_if_hwaddr
