@@ -95,6 +95,18 @@ class ImpairmentBlocksMixin:
             try:
                 self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
                 self.killer.iface = self.scanner.iface
+                try:
+                    from tools.utils import mac_address_is_usable
+
+                    if not mac_address_is_usable(
+                        (getattr(self.killer, 'router', None) or {}).get('mac')
+                    ):
+                        self._refresh_router_mac_from_system_arp()
+                        self.killer.router = (
+                            getattr(self.scanner, 'router', None) or self.killer.router
+                        )
+                except Exception:
+                    pass
                 self.killer.disable_percent_cut(mac)
                 if not self.killer.l2_socket_ready():
                     self.killer.prewarm_l2_socket(join_ms=120)

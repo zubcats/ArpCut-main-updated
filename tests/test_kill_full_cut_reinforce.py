@@ -79,6 +79,7 @@ class TestKillFullCutReinforce(unittest.TestCase):
         reinforce_at = block.index('_reinforce_full_cut_async')
         self.assertLess(poison_at, cut_at)
         self.assertLess(cut_at, reinforce_at)
+        self.assertIn('_apply_lan_kill_full', block)
 
 
 if __name__ == '__main__':

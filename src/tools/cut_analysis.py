@@ -92,6 +92,59 @@ def _is_wan_ipv4(ip: str) -> bool:
     return bool(ip) and not _is_lan_ipv4(ip)
 
 
+def _npcap_safe_bind_tokens(iface_guid: str, iface=None) -> list[str]:
+    """Scapy/Npcap bind tokens that Npcap actually lists.
+
+    A Windows InterfaceGuid that is not in ``get_if_list()`` (live-IP overlay)
+    makes ``sniff()``/``arping()`` hang or steal the adapter, so Kill then
+    logs ``Npcap forwarder unavailable`` and ``router MAC unknown``.
+    """
+    raw = str(iface_guid or '').strip()
+    tokens: list[str] = []
+    listed: set[str] = set()
+    try:
+        from tools.utils import (
+            _extract_adapter_guid,
+            _npcap_listed_guids,
+            npcap_iface_tokens,
+        )
+    except Exception:
+        return [raw] if raw else []
+    try:
+        listed = {str(g).upper() for g in (_npcap_listed_guids() or ()) if g}
+    except Exception:
+        listed = set()
+    try:
+        candidates = list(npcap_iface_tokens(iface, raw) or [])
+    except Exception:
+        candidates = []
+    if raw and raw not in candidates:
+        candidates.append(raw)
+    for tok in candidates:
+        s = str(tok or '').strip()
+        if not s or s in tokens:
+            continue
+        guid = ''
+        try:
+            guid = str(_extract_adapter_guid(s) or '').upper()
+        except Exception:
+            guid = ''
+        if listed and guid and guid not in listed:
+            continue
+        tokens.append(s)
+    if tokens:
+        return tokens
+    if listed:
+        guid = ''
+        try:
+            guid = str(_extract_adapter_guid(raw) or '').upper()
+        except Exception:
+            guid = ''
+        if guid and guid not in listed:
+            return []
+    return [raw] if raw else []
+
+
 def _sniff_cut_sample(
     iface_guid: str,
     victim_ip: str,
@@ -101,6 +154,7 @@ def _sniff_cut_sample(
     gateway_ip: str = '',
     gateway_mac: str = '',
     victim_mac: str = '',
+    iface=None,
 ) -> dict[str, Any]:
     """Capture a short sample focused on the *victim's* path, not ZubCut-local view.
 
@@ -136,21 +190,33 @@ def _sniff_cut_sample(
     if not victim_ip or not iface_guid:
         out['error'] = 'missing iface or victim IP'
         return out
+    bind_tokens = _npcap_safe_bind_tokens(iface_guid, iface)
+    if not bind_tokens:
+        out['error'] = 'no Npcap bind token for Analysis sniff'
+        return out
     try:
         from scapy.all import ARP, Ether, IP, IPv6, sniff  # type: ignore
     except Exception as exc:
         out['error'] = f'scapy unavailable: {exc}'
         return out
     bpf = f'arp or host {victim_ip} or ip6'
-    try:
-        pkts = sniff(
-            filter=bpf,
-            iface=iface_guid,
-            timeout=max(0.4, float(seconds)),
-            store=True,
-        )
-    except Exception as exc:
-        out['error'] = f'sniff failed: {exc}'
+    pkts = None
+    last_exc: Exception | None = None
+    for tok in bind_tokens:
+        try:
+            pkts = sniff(
+                filter=bpf,
+                iface=tok,
+                timeout=max(0.4, float(seconds)),
+                store=True,
+            )
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+            continue
+    if pkts is None:
+        out['error'] = f'sniff failed: {last_exc}'
         return out
     out['ok'] = True
     out['total'] = len(pkts or [])

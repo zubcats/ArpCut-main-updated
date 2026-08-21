@@ -416,6 +416,120 @@ class ImpairmentKillMixin:
                 pass
 
 
+    def _apply_lan_kill_full(self, device, mac, _mark):
+        """Full LAN Kill ON: adapter reconcile, MITM prereqs, poison + forwarder."""
+        self._reconcile_network_adapter(log=True)
+        # fast=True: skip ~4s getmacbyip when ARP/router already warm.
+        self._ensure_network_context_for_victim(device, fast=True)
+        mac = str(device.get('mac') or mac).strip() or mac
+        _mark('lan_ensure_net_done')
+        self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
+        self.killer.disable_percent_cut(mac)
+        _mark('lan_disable_pctcut_done')
+        self._refresh_victim_mac_from_system_arp(device)
+        # One ICMP first — ARP fast-path inside mitm_prereqs_ok skips wait when warm.
+        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device, ping_attempts=1)
+        if not mitm_ok:
+            # One more pass after full topology refresh (cold ARP / wrong NIC).
+            try:
+                # GUI thread — never pay getmacbyip (~4s); OS ARP refresh follows.
+                self.scanner.refresh_local_topology(allow_scapy_probe=False)
+                self._refresh_router_mac_from_system_arp()
+                self._refresh_victim_mac_from_system_arp(device)
+                self.killer.router = (
+                    getattr(self.scanner, 'router', None) or self.killer.router
+                )
+                mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(
+                    device, ping_attempts=2
+                )
+            except Exception:
+                pass
+        if not mitm_ok:
+            try:
+                from tools.user_errors import format_error_code
+
+                reason = str(mitm_reason or '').lower()
+                if 'router mac' in reason or 'gateway' in reason:
+                    code = 'ZC-GWMAC'
+                elif 'victim mac' in reason or 'ps5' in reason:
+                    code = 'ZC-VMAC'
+                elif 'no network adapter' in reason or 'adapter mac' in reason:
+                    code = 'ZC-IFACE'
+                elif 'isolation' in reason:
+                    code = 'ZC-ISOLATION'
+                else:
+                    code = 'ZC-ROUTE'
+                self.log(
+                    f'Kill ON failed: {format_error_code(code, mitm_reason)}',
+                    'red',
+                )
+            except Exception:
+                self.log(
+                    f'Kill ON failed: {mitm_reason}',
+                    'red',
+                )
+            lip = str(device.get('ip') or '').strip()
+            lmac = str(device.get('mac') or '').strip()
+            if lip or lmac:
+                self.log(
+                    f'Kill target checked: {lip or "?"} ({lmac or "no MAC"}) — '
+                    'if that is not your PS5 right now, rescan and select the live row.',
+                    UI_LOG_RESTORE_FG,
+                )
+            return False, mac
+        self.killer.kill(device, wait_after=0.08)
+        mac = self._rekey_kill_bookkeeping(mac, device)
+        _mark('lan_killer_kill_done')
+        fw = self.killer.forwarders.get(mac)
+        if not (fw and getattr(fw, 'running', False)):
+            # Npcap capture failed but ARP poison is live — same
+            # ARP+firewall stack Lag/Dupe use (forwarder is best-effort).
+            self.killer.disable_percent_cut(mac)
+            try:
+                iface_name = (
+                    self.scanner.iface.name if self.scanner.iface else 'en0'
+                )
+            except Exception:
+                iface_name = 'en0'
+            _bg_block_ip(iface_name, device.get('ip'), 'both')
+            _mark('lan_bg_block_ip_done')
+            self._log_mitm_arm_status(device, action='Kill')
+            self.log(
+                'Kill ON (ARP only) for '
+                + str(device.get('ip') or '')
+                + ' — Npcap forwarder unavailable; cut may be partial '
+                '(lag without PS5 offline / red chain). Fix Npcap on this adapter.',
+                'red',
+            )
+            self._schedule_mitm_traffic_probe(device, flow='Kill')
+            return True, mac
+        self._log_mitm_arm_status(device, action='Kill')
+        try:
+            iface_name = (
+                self.scanner.iface.name if self.scanner.iface else 'en0'
+            )
+        except Exception:
+            iface_name = 'en0'
+        _bg_block_ip(iface_name, device.get('ip'), 'both')
+        _mark('lan_bg_block_ip_done')
+        self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
+        self._schedule_mitm_traffic_probe(device, flow='Kill')
+        return True, mac
+        if bool(get_settings('debug_kill_timing')):
+            _tk_t5 = _tk_time.perf_counter()
+            try:
+                direction = 'ON' if next_state else 'OFF'
+                self.log(
+                    f'[TOGGLE-KILL {direction}] profile={int((_tk_t1-_tk_t0)*1000)}ms '
+                    f'paint={int((_tk_t4-_tk_t1)*1000)}ms '
+                    f'schedule={int((_tk_t5-_tk_t4)*1000)}ms '
+                    f'total={int((_tk_t5-_tk_t0)*1000)}ms',
+                    'gray',
+                )
+            except Exception:
+                pass
+
+
     def _schedule_kill_command(self, mac, device, turn_on, source='unknown'):
         """Paint optimistic Kill UI first; run Npcap/ARP work on the next event-loop tick."""
         dev = dict(device)
@@ -543,151 +657,68 @@ class ImpairmentKillMixin:
                         _mark('lan_instant')
                         cut_ok = False
                         try:
-                            # Instant path first (same order as Killer.kill).
-                            self.killer.reassert_poison(device)
-                            cut_ok = bool(self.killer._apply_traffic_cut_sync(device))
-                        except Exception:
-                            cut_ok = False
-                        try:
-                            from networking.killer import (
-                                _lan_kill_priority_only,
-                                disable_ip_forwarding,
-                            )
+                            from tools.utils import mac_address_is_usable
 
-                            disable_ip_forwarding(
-                                priority_iface=getattr(
-                                    getattr(self.killer, 'iface', None), 'name', None
-                                ),
-                                priority_only=_lan_kill_priority_only(),
+                            router_ok = mac_address_is_usable(
+                                (getattr(self.killer, 'router', None) or {}).get('mac')
                             )
                         except Exception:
-                            pass
-                        try:
-                            # Background seal only — never before poison/cut above.
-                            self.killer._reinforce_full_cut_async(device)
-                        except Exception:
-                            pass
-                        try:
-                            iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
-                        except Exception:
-                            iface_name = 'en0'
-                        _bg_block_ip(iface_name, device.get('ip'), 'both')
-                        kill_applied = True
-                        fw = self.killer.forwarders.get(mac)
-                        fw_ok = bool(fw and getattr(fw, 'running', False)) or cut_ok
-                        self.log(
-                            'Kill ON for ' + str(device.get('ip') or ''),
-                            UI_LOG_VICTIM_BLOCK_FG,
-                        )
-                        if not fw_ok:
-                            self.log(
-                                'Kill ON (ARP only) — Npcap forwarder unavailable; '
-                                'cut may be partial until reinforce finishes.',
-                                'orange',
-                            )
-                        self._log_mitm_arm_status(device, action='Kill')
-                        self._schedule_mitm_traffic_probe(device, flow='Kill')
-                    else:
-                        _mark('lan_start')
-                        self._reconcile_network_adapter(log=True)
-                        # fast=True: skip ~4s getmacbyip when ARP/router already warm.
-                        self._ensure_network_context_for_victim(device, fast=True)
-                        mac = str(device.get('mac') or mac).strip() or mac
-                        _mark('lan_ensure_net_done')
-                        self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
-                        self.killer.disable_percent_cut(mac)
-                        _mark('lan_disable_pctcut_done')
-                        self._refresh_victim_mac_from_system_arp(device)
-                        # One ICMP first — ARP fast-path inside mitm_prereqs_ok skips wait when warm.
-                        mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device, ping_attempts=1)
-                        if not mitm_ok:
-                            # One more pass after full topology refresh (cold ARP / wrong NIC).
+                            router_ok = False
+                        if router_ok:
                             try:
-                                # GUI thread — never pay getmacbyip (~4s); OS ARP refresh follows.
-                                self.scanner.refresh_local_topology(allow_scapy_probe=False)
-                                self._refresh_router_mac_from_system_arp()
-                                self._refresh_victim_mac_from_system_arp(device)
-                                self.killer.router = (
-                                    getattr(self.scanner, 'router', None) or self.killer.router
+                                # Instant path first (same order as Killer.kill).
+                                self.killer.reassert_poison(device)
+                                cut_ok = bool(self.killer._apply_traffic_cut_sync(device))
+                            except Exception:
+                                cut_ok = False
+                            try:
+                                from networking.killer import (
+                                    _lan_kill_priority_only,
+                                    disable_ip_forwarding,
                                 )
-                                mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(
-                                    device, ping_attempts=2
+
+                                disable_ip_forwarding(
+                                    priority_iface=getattr(
+                                        getattr(self.killer, 'iface', None), 'name', None
+                                    ),
+                                    priority_only=_lan_kill_priority_only(),
                                 )
                             except Exception:
                                 pass
-                        if not mitm_ok:
                             try:
-                                from tools.user_errors import format_error_code
-
-                                reason = str(mitm_reason or '').lower()
-                                if 'router mac' in reason or 'gateway' in reason:
-                                    code = 'ZC-GWMAC'
-                                elif 'victim mac' in reason or 'ps5' in reason:
-                                    code = 'ZC-VMAC'
-                                elif 'no network adapter' in reason or 'adapter mac' in reason:
-                                    code = 'ZC-IFACE'
-                                elif 'isolation' in reason:
-                                    code = 'ZC-ISOLATION'
-                                else:
-                                    code = 'ZC-ROUTE'
-                                self.log(
-                                    f'Kill ON failed: {format_error_code(code, mitm_reason)}',
-                                    'red',
+                                # Background seal only — never before poison/cut above.
+                                self.killer._reinforce_full_cut_async(device)
+                            except Exception:
+                                pass
+                        fw = self.killer.forwarders.get(mac)
+                        fw_ok = bool(fw and getattr(fw, 'running', False)) or cut_ok
+                        if fw_ok and router_ok:
+                            try:
+                                iface_name = (
+                                    self.scanner.iface.name if self.scanner.iface else 'en0'
                                 )
                             except Exception:
-                                self.log(
-                                    f'Kill ON failed: {mitm_reason}',
-                                    'red',
-                                )
-                            lip = str(device.get('ip') or '').strip()
-                            lmac = str(device.get('mac') or '').strip()
-                            if lip or lmac:
-                                self.log(
-                                    f'Kill target checked: {lip or "?"} ({lmac or "no MAC"}) — '
-                                    'if that is not your PS5 right now, rescan and select the live row.',
-                                    UI_LOG_RESTORE_FG,
-                                )
-                            kill_applied = False
+                                iface_name = 'en0'
+                            _bg_block_ip(iface_name, device.get('ip'), 'both')
+                            kill_applied = True
+                            self.log(
+                                'Kill ON for ' + str(device.get('ip') or ''),
+                                UI_LOG_VICTIM_BLOCK_FG,
+                            )
+                            self._log_mitm_arm_status(device, action='Kill')
+                            self._schedule_mitm_traffic_probe(device, flow='Kill')
                         else:
-                            self.killer.kill(device, wait_after=0.08)
-                            mac = self._rekey_kill_bookkeeping(mac, device)
-                            _mark('lan_killer_kill_done')
-                            fw = self.killer.forwarders.get(mac)
-                            if not (fw and getattr(fw, 'running', False)):
-                                # Npcap capture failed but ARP poison is live — same
-                                # ARP+firewall stack Lag/Dupe use (forwarder is best-effort).
-                                self.killer.disable_percent_cut(mac)
-                                try:
-                                    iface_name = (
-                                        self.scanner.iface.name if self.scanner.iface else 'en0'
-                                    )
-                                except Exception:
-                                    iface_name = 'en0'
-                                _bg_block_ip(iface_name, device.get('ip'), 'both')
-                                _mark('lan_bg_block_ip_done')
-                                self._log_mitm_arm_status(device, action='Kill')
-                                self.log(
-                                    'Kill ON (ARP only) for '
-                                    + str(device.get('ip') or '')
-                                    + ' — Npcap forwarder unavailable; cut may be partial '
-                                    '(lag without PS5 offline / red chain). Fix Npcap on this adapter.',
-                                    'red',
-                                )
-                                kill_applied = True
-                                self._schedule_mitm_traffic_probe(device, flow='Kill')
-                            else:
-                                self._log_mitm_arm_status(device, action='Kill')
-                                try:
-                                    iface_name = (
-                                        self.scanner.iface.name if self.scanner.iface else 'en0'
-                                    )
-                                except Exception:
-                                    iface_name = 'en0'
-                                _bg_block_ip(iface_name, device.get('ip'), 'both')
-                                _mark('lan_bg_block_ip_done')
-                                self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
-                                kill_applied = True
-                                self._schedule_mitm_traffic_probe(device, flow='Kill')
+                            # Preblock left killed[] set, or Analysis/OFF emptied
+                            # the router MAC / Npcap socket. Do not log Kill ON.
+                            _mark('lan_start')
+                            kill_applied, mac = self._apply_lan_kill_full(
+                                device, mac, _mark
+                            )
+                    else:
+                        _mark('lan_start')
+                        kill_applied, mac = self._apply_lan_kill_full(
+                            device, mac, _mark
+                        )
             else:
                 # B1: mirror Kill ON's cross-flow stop set — if any of the other
                 # flows are still running on this victim (toggle-blocked logic

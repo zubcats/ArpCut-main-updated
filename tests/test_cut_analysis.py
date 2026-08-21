@@ -687,8 +687,11 @@ class TestCutAnalysisWiring(unittest.TestCase):
         self.assertIn('def _schedule_cut_analysis_if_enabled', src)
         self.assertIn('def _schedule_cut_analysis_after_off', src)
         self.assertIn('def _refresh_cut_analysis_baseline', src)
+        refresh = method_src('_refresh_cut_analysis_baseline')
+        self.assertIn('_kill_pending_profiles', refresh)
         begin = method_src('_begin_cut_analysis_session')
         self.assertIn('BEFORE', begin)
+        self.assertNotIn('_gather_cut_analysis_host', begin)
         during = method_src('_schedule_cut_analysis_if_enabled')
         self.assertIn('sleep(', during)
         after = method_src('_schedule_cut_analysis_after_off')
@@ -796,6 +799,47 @@ class TestCutAnalysisWiring(unittest.TestCase):
         block = src[src.index('logsDiagAnalysisBtn'): src.index('logsDiagAnalysisBtn:checked:hover')]
         self.assertNotIn('#19232D', block)
         self.assertNotIn('#1A72BB', block)
+
+
+class TestNpcapSafeBindTokens(unittest.TestCase):
+    def test_skips_windows_guid_not_listed_by_npcap(self) -> None:
+        from tools.cut_analysis import _npcap_safe_bind_tokens
+
+        fake = r'\Device\NPF_{5B106E08-AAAA-BBBB-CCCC-DDDDDDDDDDDD}'
+        with mock.patch(
+            'tools.utils._npcap_listed_guids',
+            return_value={'AAAAAAAA-1111-1111-1111-111111111111'},
+        ), mock.patch('tools.utils.npcap_iface_tokens', return_value=[fake]):
+            self.assertEqual(_npcap_safe_bind_tokens(fake), [])
+
+    def test_keeps_listed_npcap_guid(self) -> None:
+        from tools.cut_analysis import _npcap_safe_bind_tokens
+
+        tok = r'\Device\NPF_{AAAAAAAA-1111-1111-1111-111111111111}'
+        with mock.patch(
+            'tools.utils._npcap_listed_guids',
+            return_value={'AAAAAAAA-1111-1111-1111-111111111111'},
+        ), mock.patch('tools.utils.npcap_iface_tokens', return_value=[tok]):
+            self.assertEqual(_npcap_safe_bind_tokens(tok), [tok])
+
+    def test_empty_listed_keeps_token(self) -> None:
+        from tools.cut_analysis import _npcap_safe_bind_tokens
+
+        with mock.patch('tools.utils._npcap_listed_guids', return_value=set()), mock.patch(
+            'tools.utils.npcap_iface_tokens', return_value=['Wi-Fi']
+        ):
+            self.assertEqual(_npcap_safe_bind_tokens('Wi-Fi'), ['Wi-Fi'])
+
+    def test_sniff_does_not_open_unlisted_guid(self) -> None:
+        from tools import cut_analysis as ca
+
+        with mock.patch.object(ca, '_npcap_safe_bind_tokens', return_value=[]):
+            out = ca._sniff_cut_sample(
+                r'\Device\NPF_{5B106E08-AAAA-BBBB-CCCC-DDDDDDDDDDDD}',
+                '192.168.1.165',
+            )
+        self.assertFalse(out['ok'])
+        self.assertIn('no Npcap bind token', out['error'])
 
 
 if __name__ == '__main__':
