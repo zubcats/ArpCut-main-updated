@@ -208,7 +208,7 @@ Wireless LAN adapter Wi-Fi:
         self.assertEqual(rows, [('Wi-Fi', '192.168.1.56', '192.168.1.1')])
         self.assertEqual(_pick_windows_gateway(rows, iface_hint='Wi-Fi', src_ip='192.168.1.56'), '192.168.1.1')
 
-    def test_merge_windows_live_ifaces_adds_wifi_when_npcap_list_is_empty(self) -> None:
+    def test_merge_windows_live_ifaces_skips_unlisted_guid_when_npcap_empty(self) -> None:
         from tools.utils import _merge_windows_live_ifaces
 
         interface_map = {
@@ -223,16 +223,54 @@ Wireless LAN adapter Wi-Fi:
                 'guid': None,
             },
         }
-        with mock.patch(
-            'tools.utils._windows_adapter_friendly_by_guid',
-            return_value={'{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi'},
+        with (
+            mock.patch(
+                'tools.utils._windows_adapter_friendly_by_guid',
+                return_value={'{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi'},
+            ),
+            mock.patch('tools.utils._npcap_listed_guids', return_value=set()),
         ):
-            faces = _merge_windows_live_ifaces([], interface_map)
+            faces = _merge_windows_live_ifaces([], interface_map, listed_guids=set())
+        self.assertEqual(faces, [])
+
+    def test_merge_overlays_live_ip_without_replacing_npcap_guid(self) -> None:
+        from tools.utils import _merge_windows_live_ifaces
+
+        ghost = _face('Wi-Fi', '169.254.151.57')
+        ghost.guid = r'\Device\NPF_{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}'
+        interface_map = {
+            'Wi-Fi': {
+                'ip': '192.168.1.56',
+                'mac': 'E8:4E:06:AB:C4:28',
+                'guid': None,
+            },
+        }
+        with (
+            mock.patch(
+                'tools.utils._windows_adapter_friendly_by_guid',
+                return_value={'{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi'},
+            ),
+            mock.patch(
+                'tools.utils._npcap_listed_guids',
+                return_value={'A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC'},
+            ),
+        ):
+            faces = _merge_windows_live_ifaces(
+                [ghost],
+                interface_map,
+                listed_guids={'A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC'},
+            )
         self.assertEqual(len(faces), 1)
-        self.assertEqual(faces[0].name, 'Wi-Fi')
         self.assertEqual(faces[0].ip, '192.168.1.56')
-        self.assertEqual(faces[0].mac, 'E8:4E:06:AB:C4:28')
-        self.assertIn('5B106E08-62B0-4A70-B2AC-AEDD80B5B255', faces[0].guid.upper())
+        self.assertIn('A3737896', faces[0].guid.upper())
+        self.assertNotIn('5B106E08', faces[0].guid.upper())
+
+    def test_live_ipv4_uses_overlay_when_pcap_ip_is_apipa(self) -> None:
+        from tools.utils import _iface_live_ipv4
+
+        wifi = _face('Wi-Fi', '192.168.1.56')
+        with mock.patch('tools.utils.get_my_ip', return_value='169.254.151.57'):
+            self.assertEqual(_iface_live_ipv4(wifi), '192.168.1.56')
 
     def test_device_list_noise_helpers(self) -> None:
         from tools.utils import ipv4_is_device_list_noise, mac_is_device_list_noise

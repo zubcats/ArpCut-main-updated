@@ -1154,6 +1154,20 @@ def _npcap_device_name_for_win_guid(win_guid: str) -> str:
     return f'\\Device\\NPF_{{{g}}}'
 
 
+def _npcap_listed_guids() -> set:
+    """Adapter GUIDs Npcap will actually open (from get_if_list)."""
+    try:
+        names = get_if_list() or []
+    except Exception:
+        names = []
+    out = set()
+    for n in names:
+        g = _extract_adapter_guid(n)
+        if g:
+            out.add(g)
+    return out
+
+
 def _windows_live_lan_from_ipconfig(interface_map: dict) -> list[dict]:
     """Connected LAN rows from ipconfig (name/mac/ip) plus PowerShell InterfaceGuid."""
     rows: list[dict] = []
@@ -1181,44 +1195,56 @@ def _windows_live_lan_from_ipconfig(interface_map: dict) -> list[dict]:
     return rows
 
 
-def _merge_windows_live_ifaces(faces: list, interface_map: dict) -> list:
+def _merge_windows_live_ifaces(faces: list, interface_map: dict, listed_guids=None) -> list:
     """
-    Keep Npcap faces, and add Windows-connected NICs that Npcap did not advertise.
-
-    USB Wi-Fi replug leaves Npcap on a dead GUID (A373…) while Windows DHCP is on
-    a new InterfaceGuid (5B10…). Me/Router must still use the live Windows IP.
+    Overlay live Windows IP/MAC onto Npcap faces. Do not retarget ``guid`` to a
+    Windows InterfaceGuid that Npcap did not list — Kill/Lag L2-send on that
+    token and the cut becomes a no-op while Me/Router still look correct.
     """
     live = _windows_live_lan_from_ipconfig(interface_map)
     if not live:
         return list(faces or [])
+    if listed_guids is None:
+        listed_guids = _npcap_listed_guids()
+    listed = {str(g).upper() for g in (listed_guids or ()) if g}
     out = list(faces or [])
     by_name = {str(getattr(f, 'name', '') or '').strip(): f for f in out}
     by_guid: dict[str, object] = {}
+    by_mac: dict[str, object] = {}
     for face in out:
         gid = _extract_adapter_guid(str(getattr(face, 'guid', '') or ''))
         if gid:
             by_guid[gid] = face
+        mac = good_mac(getattr(face, 'mac', None) or '')
+        if mac_address_is_usable(mac):
+            by_mac.setdefault(mac, face)
 
     for row in live:
         name = row['name']
         gid = _extract_adapter_guid(row.get('win_guid') or '')
+        mac = good_mac(row.get('mac') or '')
         existing = by_guid.get(gid) if gid else None
         if existing is None:
             existing = by_name.get(name)
-        token = _npcap_device_name_for_win_guid(gid) or name
+        if existing is None and mac_address_is_usable(mac):
+            existing = by_mac.get(mac)
+        npcap_has_guid = bool(gid and gid in listed)
+        token = _npcap_device_name_for_win_guid(gid) if npcap_has_guid else ''
         if existing is not None:
             if _ip_ok_for_bind(row['ip']):
                 existing.ip = row['ip']
-            if mac_address_is_usable(row['mac']):
-                existing.mac = row['mac']
+            if mac_address_is_usable(mac):
+                existing.mac = mac
             if token:
                 existing.guid = token
+            continue
+        if not token:
             continue
         face = NetFace(
             {
                 'name': name,
                 'guid': token,
-                'mac': row['mac'] or GLOBAL_MAC,
+                'mac': mac or GLOBAL_MAC,
                 'ips': [row['ip']],
             }
         )
@@ -1226,6 +1252,8 @@ def _merge_windows_live_ifaces(faces: list, interface_map: dict) -> list:
         by_name[name] = face
         if gid:
             by_guid[gid] = face
+        if mac_address_is_usable(mac):
+            by_mac[mac] = face
     return out
 
 
@@ -1352,6 +1380,8 @@ def get_ifaces():
         # Step 3: Get Scapy interfaces and match with our map
         from scapy.all import get_if_hwaddr
         scapy_ifaces = get_if_list()
+        listed_guids = {_extract_adapter_guid(n) for n in (scapy_ifaces or [])}
+        listed_guids.discard('')
         # Driver Easy / Npcap reinstall often leaves several ghost NPF_{GUID} bindings
         # on the same IPv4; keep the one with a real MAC (others are FF:FF:FF:FF:FF:FF).
         best_by_ip: dict[str, NetFace] = {}
@@ -1489,13 +1519,21 @@ def get_ifaces():
             # Skip ghost Npcap bindings (00:00… / FF:FF…) that share a live LAN IP with a real NIC.
             if not mac_address_is_usable(mac):
                 continue
-            # Disconnected adapters (Bluetooth, unplugged Ethernet) often show APIPA only —
-            # do not treat them as the active LAN NIC (breaks Lag/Kill MITM on Wi‑Fi).
+            # Disconnected adapters (Bluetooth, unplugged Ethernet) often show APIPA only.
+            # Keep them for merge overlay — Npcap can still L2-send on that GUID after we
+            # copy the live Windows IP. Dropping them made merge invent a GUID Npcap
+            # cannot open, so Kill/Lag sent nowhere.
             if not _ipv4_usable_for_lan(lip):
+                if mac_address_is_usable(mac) and not (
+                    _iface_looks_softap(face) and not _softap_bind_allowed()
+                ):
+                    npcap_faces.append(face)
                 continue
             best_by_ip[lip] = _better_iface_for_same_ip(best_by_ip.get(lip), face)
         npcap_faces.extend(best_by_ip.values())
-        for face in _merge_windows_live_ifaces(npcap_faces, interface_map):
+        for face in _merge_windows_live_ifaces(
+            npcap_faces, interface_map, listed_guids=listed_guids
+        ):
             yield face
     else:
         # macOS/Linux: Build iface dicts similar to Windows structure
@@ -1920,11 +1958,13 @@ def _iface_live_ipv4(iface) -> str:
         except Exception:
             ip = ''
     if ip in ('0.0.0.0',):
-        return ''
+        ip = ''
     if _ip_ok_for_bind(ip):
         return ip
     cached = str(getattr(iface, 'ip', None) or '').strip()
-    if ip in ('127.0.0.1', '') and _ip_ok_for_bind(cached):
+    # Ghost Npcap GUID often reports APIPA while Windows ipconfig overlay has the LAN IP.
+    # Do not trust cached IP when pcap says disconnected (0.0.0.0 / empty).
+    if str(ip).startswith('169.254.') and _ip_ok_for_bind(cached):
         return cached
     return ''
 
