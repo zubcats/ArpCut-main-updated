@@ -388,9 +388,6 @@ if ($hotspotOn) {
 } else {
     $lines += '[INFO] Mobile Hotspot OFF (OK when Clumsy is off)'
 }
-if (-not $hotspotOn -and $hasIcsGw) {
-    $lines += '[INFO] Leftover ICS/hosted gateway still present (Settings hotspot is off)'
-}
 if ($dhcp67) {
     $lines += '[PASS] Hotspot DHCP listening (UDP 67)'
 } elseif ($clumsy -and $hotspotOn) {

@@ -84,6 +84,8 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
     def test_repair_preserves_ics_when_hotspot_active(self) -> None:
         src = inspect.getsource(ics.repair_clumsy_network_sharing)
         self.assertIn('$skipIcsReset = $hotspotWasOn', src)
+        self.assertIn('$hotspotWasOn = Test-TetheringOn', src)
+        self.assertNotIn('Test-MobileHotspotGateway) -or (Test-TetheringOn)', src)
         self.assertIn('Test-HotspotConsoleReady', src)
         self.assertIn('Apply-HotspotIcsCore', src)
         self.assertIn('Ensure-SharingServicesLight', src)
@@ -98,6 +100,18 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('clumsy_mode_enabled', src)
         self.assertNotIn('prepare_pc_mobile_hotspot', src)
         self.assertIn('Do not re-run hotspot prep', src)
+        self.assertIn('clear_stale_softap_when_tethering_off', src)
+
+    def test_clear_stale_softap_strips_137_when_tethering_off(self) -> None:
+        src = inspect.getsource(ics.clear_stale_softap_when_tethering_off)
+        self.assertIn('Remove-NetIPAddress', src)
+        self.assertIn('192.168.137.1', src)
+        self.assertIn('192.168.173.1', src)
+        self.assertIn('Test-TetheringOn', src)
+        self.assertIn('DisableSharing', src)
+        self.assertIn('netsh wlan stop hostednetwork', src)
+        self.assertNotIn('Disable-NetAdapter', src)
+        self.assertNotIn('Stop-Service', src)
 
     def test_prepare_skips_when_hotspot_already_ready(self) -> None:
         src = inspect.getsource(ics.prepare_pc_mobile_hotspot)
@@ -461,13 +475,22 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
             ics.reset_clumsy_mode_on_startup()
         sm.assert_called_once_with({'clumsy_persist_across_restart': False})
 
-    def test_maybe_repair_skips_when_no_state_file(self) -> None:
+    def test_maybe_repair_clears_softap_even_without_state_file(self) -> None:
+        from unittest.mock import patch
+
         path = ics.clumsy_ics_state_path()
         had = os.path.isfile(path)
         try:
             if had:
                 os.remove(path)
-            ics.maybe_repair_stale_clumsy_ics_on_startup()
+            with patch.object(ics, 'clumsy_mode_enabled', create=True), patch(
+                'tools.clumsy_inline.clumsy_mode_enabled', return_value=False
+            ), patch.object(ics, 'clear_stale_softap_when_tethering_off') as clear, patch.object(
+                ics, 'repair_clumsy_network_sharing'
+            ) as repair:
+                ics.maybe_repair_stale_clumsy_ics_on_startup()
+            clear.assert_called_once()
+            repair.assert_not_called()
         finally:
             if had and not os.path.isfile(path):
                 pass

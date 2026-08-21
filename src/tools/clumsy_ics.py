@@ -1547,7 +1547,7 @@ try {{
     }} catch {{}}
   }}
 
-  $hotspotWasOn = (Test-MobileHotspotGateway) -or (Test-TetheringOn)
+  $hotspotWasOn = Test-TetheringOn
 
   Ensure-SharingServicesLight
   Start-Sleep -Seconds 1
@@ -1594,8 +1594,6 @@ try {{
     exit 1
   }}
 
-  $mobileHotspotActive = (Test-MobileHotspotGateway) -or (Test-TetheringOn)
-
   if ($hotspotWasOn) {{
     if (-not (Test-HotspotConsoleReady)) {{
       $det = Detect-ClumsyConsolePath
@@ -1617,10 +1615,7 @@ try {{
       $msg = 'Clumsy disabled. Toggle Mobile Hotspot OFF then ON in Windows Settings if clients cannot connect.'
     }}
   }} else {{
-    $msg = @(
-      'Reset saved Internet Connection Sharing settings.'
-      'Turn Mobile hotspot ON in Windows Settings, then reconnect the PS5 to the PC hotspot Wi-Fi.'
-    ) -join ' '
+    $msg = 'Cleared leftover Internet Connection Sharing. Home LAN adapters unchanged.'
   }}
   JsonOut @{{ ok=$true; message=$msg }}
   exit 0
@@ -1769,14 +1764,96 @@ def reset_clumsy_mode_on_startup() -> None:
         pass
 
 
+def clear_stale_softap_when_tethering_off() -> Tuple[bool, str]:
+    """Drop ICS + 192.168.137.1 / 173.1 when Clumsy and Windows tethering are both off.
+
+    Leftover Direct adapters keep that gateway after Mobile Hotspot is toggled off.
+    ``Test-MobileHotspotGateway`` is true whenever .1 exists, so repair used to
+    skip cleanup forever. Tethering On / a *connected* Direct NIC is the only skip.
+    """
+    if os.name != 'nt':
+        return True, 'Non-Windows platform; skipping.'
+    try:
+        from tools.clumsy_inline import clumsy_mode_enabled
+
+        if clumsy_mode_enabled():
+            return True, 'Clumsy on; leaving SoftAP as-is.'
+    except Exception:
+        pass
+    if not _windows_is_admin():
+        return False, 'Run ZubCut as Administrator to clear leftover ICS addresses.'
+    script = _compose_ps_script(
+        _PS_HOTSPOT_HELPERS,
+        f"""
+$ErrorActionPreference = 'SilentlyContinue'
+function JsonOut([hashtable]$o) {{
+  $json = $o | ConvertTo-Json -Compress -Depth 8
+  Write-Output ('{_MARKER}' + $json)
+}}
+function SharingEnabledSafe($cfg) {{
+  if ($null -eq $cfg) {{ return $false }}
+  try {{
+    $v = $cfg.SharingEnabled
+    if ($null -eq $v) {{ return $false }}
+    if ($v -is [bool]) {{ return $v }}
+    try {{ return [bool][int]$v }} catch {{ return $false }}
+  }} catch {{ return $false }}
+}}
+function DisableSharingSafe([object]$cfg) {{
+  if ($null -eq $cfg) {{ return }}
+  if (-not (SharingEnabledSafe $cfg)) {{ return }}
+  for ($i = 0; $i -lt 3; $i++) {{
+    try {{ $cfg.DisableSharing(); return }} catch {{ Start-Sleep -Milliseconds 200 }}
+  }}
+}}
+try {{
+  $softapUp = [bool](Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
+    Where-Object {{
+      $_.Status -eq 'Up' -and ($_.InterfaceDescription -match 'Wi-Fi Direct|Hosted Network|Microsoft Hosted')
+    }} | Select-Object -First 1)
+  if ((Test-TetheringOn) -or $softapUp) {{
+    JsonOut @{{ ok=$true; skipped=$true }}
+    exit 0
+  }}
+  try {{
+    $share = New-Object -ComObject HNetCfg.HNetShare
+    foreach ($conn in @($share.EnumEveryConnection())) {{
+      try {{
+        $cfg = $share.INetSharingConfigurationForINetConnection($conn)
+        DisableSharingSafe $cfg
+      }} catch {{}}
+    }}
+  }} catch {{}}
+  netsh wlan stop hostednetwork | Out-Null
+  Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.IPAddress -in @('192.168.137.1','192.168.173.1') }} |
+    ForEach-Object {{
+      Remove-NetIPAddress -IPAddress $_.IPAddress -InterfaceIndex $_.InterfaceIndex -Confirm:$false -ErrorAction SilentlyContinue
+    }}
+  JsonOut @{{ ok=$true; cleared=$true }}
+  exit 0
+}} catch {{
+  $em = if ($null -ne $_.Exception) {{ $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }} else {{ $_ | Out-String }}
+  JsonOut @{{ ok=$false; error=$em }}
+  exit 1
+}}
+""",
+    )
+    ok, payload, raw = _run_powershell(script)
+    if ok:
+        if payload.get('skipped'):
+            return True, 'Windows tethering/Direct is up; left ICS as-is.'
+        return True, 'Cleared leftover ICS addresses.'
+    msg = str(payload.get('error') or '').strip() or str(raw or '').strip() or 'Clear failed.'
+    return False, msg
+
+
 def maybe_repair_stale_clumsy_ics_on_startup() -> None:
     """
     After Settings restart with Clumsy still on: re-apply hotspot/ICS prep.
-    If Clumsy is off but state file remains: repair ethernet paths; drop hotspot marker only.
+    If Clumsy is off: strip leftover 137.1/173.1 even when no state file exists.
     """
     if os.name != 'nt':
-        return
-    if not os.path.isfile(_STATE_PATH):
         return
     try:
         from tools.clumsy_inline import clumsy_mode_enabled
@@ -1786,6 +1863,12 @@ def maybe_repair_stale_clumsy_ics_on_startup() -> None:
             return
     except Exception:
         pass
+    try:
+        clear_stale_softap_when_tethering_off()
+    except Exception:
+        pass
+    if not os.path.isfile(_STATE_PATH):
+        return
     try:
         with open(_STATE_PATH, encoding='utf-8') as f:
             saved = json.load(f)
