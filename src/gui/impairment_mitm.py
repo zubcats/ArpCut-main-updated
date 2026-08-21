@@ -748,11 +748,19 @@ class ImpairmentMitmMixin:
                 ip_fwd = None
         vip = str((device or {}).get('ip') or '').strip() if isinstance(device, dict) else ''
         vmac = str((device or {}).get('mac') or '').strip() if isinstance(device, dict) else ''
+        arp_iface = guid
+        try:
+            from tools.cut_analysis import _npcap_safe_bind_tokens
+
+            toks = _npcap_safe_bind_tokens(guid, iface)
+            arp_iface = str(toks[0] if toks else '')
+        except Exception:
+            arp_iface = guid
         live = probe_victim_on_lan(
             vip,
             vmac,
             iface_ip=iface_ip,
-            arp_probe_iface=guid,
+            arp_probe_iface=arp_iface,
         )
         settings_live = None
         if iface_ip:
@@ -872,6 +880,12 @@ class ImpairmentMitmMixin:
                 return
         except Exception:
             pass
+        # Skip while Kill is arming — Analysis sniff on Npcap races the forwarder.
+        try:
+            if getattr(self, '_kill_pending_profiles', None):
+                return
+        except Exception:
+            pass
         device = self._cut_analysis_selected_device()
         if not isinstance(device, dict):
             return
@@ -907,6 +921,7 @@ class ImpairmentMitmMixin:
                 gateway_ip=str(host_snap.get('gateway_ip') or ''),
                 gateway_mac=str(host_snap.get('gateway_mac') or ''),
                 victim_mac=mac,
+                iface=iface_now,
             )
             if int(getattr(self, '_cut_analysis_baseline_gen', 0)) != gen:
                 return
@@ -961,7 +976,7 @@ class ImpairmentMitmMixin:
             before = PhaseSample(
                 phase=PHASE_BEFORE,
                 sample={'ok': False, 'error': 'no pre-cut baseline yet — keep Analysis ON a few seconds', 'ipv4': 0, 'ipv6': 0, 'arp': 0, 'arp_victim': 0, 'total': 0, 'seconds': 0},
-                host=self._gather_cut_analysis_host(dev),
+                host={},
                 stack={},
                 note='no rolling baseline frozen — Analysis needs a few idle seconds before the click',
             )
@@ -1099,6 +1114,7 @@ class ImpairmentMitmMixin:
                 gateway_ip=gw_ip,
                 gateway_mac=gw_mac,
                 victim_mac=mac,
+                iface=iface,
             )
             # Refresh forwarder counters after sniff if still armed.
             if mac and mac in getattr(self.killer, 'killed', {}):
@@ -1193,6 +1209,7 @@ class ImpairmentMitmMixin:
                 gateway_ip=str(host.get('gateway_ip') or ''),
                 gateway_mac=str(host.get('gateway_mac') or ''),
                 victim_mac=str(dev.get('mac') or live.get('mac') or ''),
+                iface=iface,
             )
             after = PhaseSample(
                 phase=PHASE_AFTER,

@@ -583,6 +583,9 @@ class Killer:
             return
         if same_iface:
             return
+        prev_router = dict(self.router) if isinstance(self.router, dict) else {}
+        prev_router_ip = str(prev_router.get('ip') or '').strip()
+        prev_router_mac = prev_router.get('mac')
         self.iface = target
         self._close_socket()
         guid = self.iface.guid if getattr(self.iface, 'guid', None) else self.iface.name
@@ -609,6 +612,16 @@ class Killer:
             except Exception:
                 pass
             router_mac = get_gateway_mac(iface_ip, router_ip, allow_scapy_probe=False)
+        # Kill OFF / Analysis can empty the ARP cache. Do not replace a known
+        # gateway MAC with GLOBAL_MAC or the next Kill cannot MITM.
+        if (
+            not mac_address_is_usable(router_mac)
+            and mac_address_is_usable(prev_router_mac)
+            and (not router_ip or not prev_router_ip or router_ip == prev_router_ip)
+        ):
+            router_mac = prev_router_mac
+            if not router_ip:
+                router_ip = prev_router_ip
         # Do not Scapy-probe here — this runs on the Kill click thread; GLOBAL_MAC
         # is handled by mitm_prereqs / background warm if still unknown.
         self.router = {
