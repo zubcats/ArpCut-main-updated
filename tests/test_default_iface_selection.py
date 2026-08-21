@@ -228,16 +228,21 @@ Wireless LAN adapter Wi-Fi:
                 'tools.utils._windows_adapter_friendly_by_guid',
                 return_value={'{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi'},
             ),
+            mock.patch(
+                'tools.utils._windows_up_adapter_guids',
+                return_value={'5B106E08-62B0-4A70-B2AC-AEDD80B5B255'},
+            ),
             mock.patch('tools.utils._npcap_listed_guids', return_value=set()),
         ):
             faces = _merge_windows_live_ifaces([], interface_map, listed_guids=set())
         self.assertEqual(faces, [])
 
-    def test_merge_overlays_live_ip_without_replacing_npcap_guid(self) -> None:
+    def test_merge_does_not_paint_ghost_npcap_as_live_wifi(self) -> None:
         from tools.utils import _merge_windows_live_ifaces
 
         ghost = _face('Wi-Fi', '169.254.151.57')
         ghost.guid = r'\Device\NPF_{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}'
+        ghost.mac = '00:11:22:33:44:55'
         interface_map = {
             'Wi-Fi': {
                 'ip': '192.168.1.56',
@@ -251,6 +256,10 @@ Wireless LAN adapter Wi-Fi:
                 return_value={'{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi'},
             ),
             mock.patch(
+                'tools.utils._windows_up_adapter_guids',
+                return_value={'5B106E08-62B0-4A70-B2AC-AEDD80B5B255'},
+            ),
+            mock.patch(
                 'tools.utils._npcap_listed_guids',
                 return_value={'A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC'},
             ),
@@ -261,9 +270,40 @@ Wireless LAN adapter Wi-Fi:
                 listed_guids={'A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC'},
             )
         self.assertEqual(len(faces), 1)
-        self.assertEqual(faces[0].ip, '192.168.1.56')
+        self.assertTrue(str(faces[0].ip).startswith('169.254'))
         self.assertIn('A3737896', faces[0].guid.upper())
         self.assertNotIn('5B106E08', faces[0].guid.upper())
+
+    def test_merge_overlays_live_ip_when_npcap_has_windows_guid(self) -> None:
+        from tools.utils import _merge_windows_live_ifaces
+
+        live = _face('Wi-Fi', '169.254.151.57')
+        live.guid = r'\Device\NPF_{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}'
+        live.mac = 'E8:4E:06:AB:C4:28'
+        interface_map = {
+            'Wi-Fi': {
+                'ip': '192.168.1.56',
+                'mac': 'E8:4E:06:AB:C4:28',
+                'guid': None,
+            },
+        }
+        listed = {'5B106E08-62B0-4A70-B2AC-AEDD80B5B255'}
+        with (
+            mock.patch(
+                'tools.utils._windows_adapter_friendly_by_guid',
+                return_value={'{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi'},
+            ),
+            mock.patch('tools.utils._windows_up_adapter_guids', return_value=listed),
+            mock.patch('tools.utils._npcap_listed_guids', return_value=listed),
+        ):
+            faces = _merge_windows_live_ifaces(
+                [live],
+                interface_map,
+                listed_guids=listed,
+            )
+        self.assertEqual(len(faces), 1)
+        self.assertEqual(faces[0].ip, '192.168.1.56')
+        self.assertIn('5B106E08', faces[0].guid.upper())
 
     def test_npcap_tokens_skip_unlisted_windows_guid(self) -> None:
         from tools.utils import npcap_iface_tokens
@@ -272,10 +312,52 @@ Wireless LAN adapter Wi-Fi:
         listed = r'\Device\NPF_{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}'
         face = _face('Wi-Fi', '192.168.1.56')
         face.guid = fake
-        with mock.patch('tools.utils.get_if_list', return_value=[listed]):
+        with (
+            mock.patch('tools.utils.get_if_list', return_value=[listed]),
+            mock.patch('tools.utils._windows_up_adapter_guids', return_value=set()),
+            mock.patch(
+                'tools.utils._windows_adapter_friendly_by_guid',
+                return_value={'{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi'},
+            ),
+        ):
             toks = npcap_iface_tokens(face)
         self.assertNotIn(fake, toks)
         self.assertIn('Wi-Fi', toks)
+
+    def test_npcap_tokens_prefer_live_up_guid(self) -> None:
+        from tools.utils import npcap_iface_tokens
+
+        face = _face('Wi-Fi', '192.168.1.56')
+        face.guid = r'\Device\NPF_{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}'
+        live = r'\Device\NPF_{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}'
+        ghost = r'\Device\NPF_{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}'
+        with (
+            mock.patch('tools.utils.get_if_list', return_value=[live, ghost]),
+            mock.patch(
+                'tools.utils._windows_up_adapter_guids',
+                return_value={'5B106E08-62B0-4A70-B2AC-AEDD80B5B255'},
+            ),
+            mock.patch(
+                'tools.utils._windows_adapter_friendly_by_guid',
+                return_value={'{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}': 'Wi-Fi'},
+            ),
+        ):
+            toks = npcap_iface_tokens(face)
+        self.assertTrue(toks)
+        self.assertIn('5B106E08', toks[0].upper())
+        self.assertTrue(all('A3737896' not in t.upper() for t in toks))
+
+    def test_npcap_missing_live_up_guids(self) -> None:
+        from tools.utils import _npcap_missing_live_up_guids
+
+        missing = _npcap_missing_live_up_guids(
+            {
+                '5B106E08-62B0-4A70-B2AC-AEDD80B5B255',
+                'A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC',
+            },
+            {'A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC'},
+        )
+        self.assertEqual(missing, {'5B106E08-62B0-4A70-B2AC-AEDD80B5B255'})
 
 
     def test_live_ipv4_uses_overlay_when_pcap_ip_is_apipa(self) -> None:

@@ -596,6 +596,26 @@ class ImpairmentMitmMixin:
                 f'{action} MITM armed on {iface}: victim {victim_mac} router {router_mac}',
                 UI_LOG_VICTIM_BLOCK_FG,
             )
+            try:
+                from tools.utils import (
+                    _extract_adapter_guid,
+                    _windows_live_guid_for_iface_name,
+                )
+
+                face = getattr(self.scanner, 'iface', None)
+                live_gid = _windows_live_guid_for_iface_name(
+                    str(getattr(face, 'name', '') or '')
+                )
+                bound_gid = _extract_adapter_guid(str(getattr(face, 'guid', '') or ''))
+                if live_gid and bound_gid and live_gid != bound_gid:
+                    self.log(
+                        f'{action} ON: Npcap is bound to {bound_gid[:8]}…, not the live '
+                        f'Windows adapter {live_gid[:8]}… — poison is going out the '
+                        'wrong NIC. Restart Npcap and confirm Settings matches the live adapter.',
+                        'orange',
+                    )
+            except Exception:
+                pass
             # Defer forwarding probe — never stall the Kill click path.
             if sys.platform.startswith('win'):
                 try:
@@ -1426,7 +1446,7 @@ class ImpairmentMitmMixin:
         )
 
     def _schedule_mitm_traffic_probe(self, device, *, flow: str = 'Kill') -> None:
-        """After MITM arms, warn if no victim IP traffic reaches this NIC (common on Wi‑Fi → Ethernet)."""
+        """After MITM arms, warn if no victim IP traffic reaches this NIC."""
         if not isinstance(device, dict):
             return
         mac = str(device.get('mac') or '').strip()

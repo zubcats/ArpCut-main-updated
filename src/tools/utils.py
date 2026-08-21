@@ -1071,6 +1071,7 @@ _IFACES_CACHE: list | None = None
 _IFACES_CACHE_AT: float = 0.0
 _IFACES_CACHE_TTL_S = 45.0
 _WIN_ADAPTER_NAMES: dict[str, str] | None = None
+_WIN_UP_GUIDS: set[str] | None = None
 
 
 def _guid_lookup_key(guid: str) -> str:
@@ -1118,13 +1119,84 @@ def _windows_adapter_friendly_by_guid() -> dict[str, str]:
     return out
 
 
+def _windows_up_adapter_guids() -> set[str]:
+    """InterfaceGuids of adapters Windows reports as Up (not unplugged USB ghosts)."""
+    global _WIN_UP_GUIDS
+    if _WIN_UP_GUIDS is not None:
+        return _WIN_UP_GUIDS
+    out: set[str] = set()
+    if sys.platform.startswith('win'):
+        try:
+            r = run_command(
+                [
+                    'powershell',
+                    '-NoProfile',
+                    '-WindowStyle',
+                    'Hidden',
+                    '-Command',
+                    "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | "
+                    "ForEach-Object { $_.InterfaceGuid.ToString().ToUpper() }",
+                ],
+                shell=False,
+                timeout=8,
+            )
+            if r.returncode == 0 and r.stdout:
+                for line in str(r.stdout).splitlines():
+                    g = _extract_adapter_guid(line.strip())
+                    if g:
+                        out.add(g)
+        except Exception:
+            pass
+    _WIN_UP_GUIDS = out
+    return out
+
+
+def _windows_live_guid_for_iface_name(name: str) -> str:
+    """Windows InterfaceGuid for a friendly name like ``Wi-Fi``."""
+    want = str(name or '').strip()
+    if not want:
+        return ''
+    try:
+        for gid, fname in _windows_adapter_friendly_by_guid().items():
+            if str(fname).strip() == want:
+                return _extract_adapter_guid(gid)
+    except Exception:
+        return ''
+    return ''
+
+
+def _npcap_guid_ok_for_live_overlay(npcap_gid: str, live_gid: str, up_guids) -> bool:
+    """True when this Npcap GUID is the live Windows NIC (not a same-name ghost)."""
+    npcap_gid = _extract_adapter_guid(npcap_gid)
+    live_gid = _extract_adapter_guid(live_gid)
+    up = {_extract_adapter_guid(g) for g in (up_guids or ())}
+    up.discard('')
+    if not npcap_gid:
+        return not live_gid
+    if live_gid:
+        return npcap_gid == live_gid
+    if up:
+        return npcap_gid in up
+    return True
+
+
+def _npcap_missing_live_up_guids(up_guids, listed_guids) -> set:
+    """Up Windows GUIDs that Npcap did not list (stale USB bind / need service restart)."""
+    up = {_extract_adapter_guid(g) for g in (up_guids or ())}
+    listed = {_extract_adapter_guid(g) for g in (listed_guids or ())}
+    up.discard('')
+    listed.discard('')
+    return up - listed
+
+
 def invalidate_ifaces_cache(*, full: bool = False) -> None:
     """Drop cached adapter list. ``full=True`` also refreshes Windows friendly names (PowerShell)."""
-    global _IFACES_CACHE, _IFACES_CACHE_AT, _WIN_ADAPTER_NAMES
+    global _IFACES_CACHE, _IFACES_CACHE_AT, _WIN_ADAPTER_NAMES, _WIN_UP_GUIDS
     _IFACES_CACHE = None
     _IFACES_CACHE_AT = 0.0
     if full:
         _WIN_ADAPTER_NAMES = None
+        _WIN_UP_GUIDS = None
 
 
 def get_ifaces_cached(*, max_age_s: float | None = None):
@@ -1195,9 +1267,14 @@ def _windows_live_lan_from_ipconfig(interface_map: dict) -> list[dict]:
 
 def _merge_windows_live_ifaces(faces: list, interface_map: dict, listed_guids=None) -> list:
     """
-    Overlay live Windows IP/MAC onto Npcap faces. Do not retarget ``guid`` to a
-    Windows InterfaceGuid that Npcap did not list — Kill/Lag L2-send on that
-    token and the cut becomes a no-op while Me/Router still look correct.
+    Overlay live Windows IP/MAC onto the Npcap face for that same NIC.
+
+    Match by Windows InterfaceGuid (or MAC when that Npcap GUID is the live
+    GUID). Do not match by friendly name alone — a ghost USB Wi-Fi often shares
+    the name ``Wi-Fi`` with the live radio, and painting the live IP onto that
+    NPF makes Kill/Lag L2-send into a dead binding while Me/Router look fine.
+
+    Do not retarget ``guid`` to a Windows InterfaceGuid that Npcap did not list.
     """
     live = _windows_live_lan_from_ipconfig(interface_map)
     if not live:
@@ -1205,8 +1282,12 @@ def _merge_windows_live_ifaces(faces: list, interface_map: dict, listed_guids=No
     if listed_guids is None:
         listed_guids = _npcap_listed_guids()
     listed = {str(g).upper() for g in (listed_guids or ()) if g}
+    try:
+        up = {_extract_adapter_guid(g) for g in (_windows_up_adapter_guids() or ())}
+        up.discard('')
+    except Exception:
+        up = set()
     out = list(faces or [])
-    by_name = {str(getattr(f, 'name', '') or '').strip(): f for f in out}
     by_guid: dict[str, object] = {}
     by_mac: dict[str, object] = {}
     for face in out:
@@ -1222,10 +1303,12 @@ def _merge_windows_live_ifaces(faces: list, interface_map: dict, listed_guids=No
         gid = _extract_adapter_guid(row.get('win_guid') or '')
         mac = good_mac(row.get('mac') or '')
         existing = by_guid.get(gid) if gid else None
-        if existing is None:
-            existing = by_name.get(name)
         if existing is None and mac_address_is_usable(mac):
-            existing = by_mac.get(mac)
+            cand = by_mac.get(mac)
+            if cand is not None:
+                cand_gid = _extract_adapter_guid(str(getattr(cand, 'guid', '') or ''))
+                if _npcap_guid_ok_for_live_overlay(cand_gid, gid, up):
+                    existing = cand
         npcap_has_guid = bool(gid and gid in listed)
         token = _npcap_device_name_for_win_guid(gid) if npcap_has_guid else ''
         if existing is not None:
@@ -1247,7 +1330,6 @@ def _merge_windows_live_ifaces(faces: list, interface_map: dict, listed_guids=No
             }
         )
         out.append(face)
-        by_name[name] = face
         if gid:
             by_guid[gid] = face
         if mac_address_is_usable(mac):
@@ -1260,23 +1342,24 @@ _NPCAP_REBIND_TRIED = False
 
 def try_rebind_npcap_to_live_windows_adapters() -> bool:
     """
-    Restart Npcap once if Windows has a live NIC whose InterfaceGuid is missing
+    Restart Npcap once if Windows has an *Up* NIC whose InterfaceGuid is missing
     from Npcap's adapter list (USB Wi-Fi unplug/replug).
+
+    A disconnected ghost GUID still listed by Npcap must not count as a match —
+    that skipped the restart and left Kill sending on the dead binding.
     """
     global _NPCAP_REBIND_TRIED
+    if os.environ.get('PYTEST_CURRENT_TEST'):
+        return False
     if _NPCAP_REBIND_TRIED or not sys.platform.startswith('win'):
         return False
     _NPCAP_REBIND_TRIED = True
     try:
-        live_guids = set()
-        for gid, name in _windows_adapter_friendly_by_guid().items():
-            if _iface_name_looks_softap(name) and not _softap_bind_allowed():
-                continue
-            g = _extract_adapter_guid(gid)
-            if g:
-                live_guids.add(g)
-        listed = {_extract_adapter_guid(n) for n in (get_if_list() or [])}
-        if not live_guids or live_guids & listed:
+        missing = _npcap_missing_live_up_guids(
+            _windows_up_adapter_guids(),
+            get_if_list() or [],
+        )
+        if not missing:
             return False
         r = run_command(
             [
@@ -1309,7 +1392,11 @@ def get_ifaces():
     if sys.platform.startswith('win'):
         # Windows: Scapy returns GUIDs like \\Device\\NPF_{GUID}
         # We need to map these to friendly names and get IPs
-        
+        try:
+            try_rebind_npcap_to_live_windows_adapters()
+        except Exception:
+            pass
+
         # Step 1: Get interface info from ipconfig to map friendly names to IPs
         ipconfig_output = terminal('ipconfig /all')
         interface_map = {}  # friendly_name -> {ip, mac, guid}
@@ -1380,6 +1467,11 @@ def get_ifaces():
         scapy_ifaces = get_if_list()
         listed_guids = {_extract_adapter_guid(n) for n in (scapy_ifaces or [])}
         listed_guids.discard('')
+        try:
+            up_norm = {_extract_adapter_guid(g) for g in (_windows_up_adapter_guids() or ())}
+            up_norm.discard('')
+        except Exception:
+            up_norm = set()
         # Driver Easy / Npcap reinstall often leaves several ghost NPF_{GUID} bindings
         # on the same IPv4; keep the one with a real MAC (others are FF:FF:FF:FF:FF:FF).
         best_by_ip: dict[str, NetFace] = {}
@@ -1512,20 +1604,23 @@ def get_ifaces():
                 if mac_address_is_usable(mac) and not (
                     _iface_looks_softap(face) and not _softap_bind_allowed()
                 ):
-                    npcap_faces.append(face)
+                    gid_u = _extract_adapter_guid(scapy_name)
+                    if not up_norm or gid_u in up_norm:
+                        npcap_faces.append(face)
                 continue
             # Skip ghost Npcap bindings (00:00… / FF:FF…) that share a live LAN IP with a real NIC.
             if not mac_address_is_usable(mac):
                 continue
-            # Disconnected adapters (Bluetooth, unplugged Ethernet) often show APIPA only.
-            # Keep them for merge overlay — Npcap can still L2-send on that GUID after we
-            # copy the live Windows IP. Dropping them made merge invent a GUID Npcap
-            # cannot open, so Kill/Lag sent nowhere.
+            # APIPA/disconnected Npcap rows: keep only if Windows still says that
+            # GUID is Up (live radio whose pcap IPv4 is stale). Dropping Down
+            # ghosts stops merge from painting 192.168.x onto a dead USB bind.
             if not _ipv4_usable_for_lan(lip):
                 if mac_address_is_usable(mac) and not (
                     _iface_looks_softap(face) and not _softap_bind_allowed()
                 ):
-                    npcap_faces.append(face)
+                    gid_u = _extract_adapter_guid(scapy_name)
+                    if not up_norm or gid_u in up_norm:
+                        npcap_faces.append(face)
                 continue
             best_by_ip[lip] = _better_iface_for_same_ip(best_by_ip.get(lip), face)
         npcap_faces.extend(best_by_ip.values())
@@ -1885,11 +1980,15 @@ def refresh_netface_live_ip(iface: NetFace) -> None:
 
 
 def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
-    """Ordered Npcap/Scapy bind tokens to try (GUID first, then friendly name).
+    """Ordered Npcap/Scapy bind tokens to try (live Windows GUID, then name).
 
     Skip ``\\Device\\NPF_{Windows InterfaceGuid}`` when Npcap did not list that
     adapter. Sniff/L2socket on that token fails with "Interface not found" and
     Analysis then treats a live PS5 as a ghost row.
+
+    Prefer the Up Windows InterfaceGuid over a same-name ghost NPF (USB Wi-Fi
+    leftover). L2socket often *opens* on the ghost, so first-success bind must
+    not try the dead GUID first.
     """
     listed_names: set[str] | None = None
     listed_guids: set[str] | None = None
@@ -1901,22 +2000,46 @@ def npcap_iface_tokens(iface, primary: str | None = None) -> list[str]:
     except Exception:
         listed_names = None
         listed_guids = None
+    up: set[str] = set()
+    live_gid = ''
+    try:
+        if sys.platform.startswith('win'):
+            up = {_extract_adapter_guid(g) for g in (_windows_up_adapter_guids() or ())}
+            up.discard('')
+            live_gid = _windows_live_guid_for_iface_name(
+                str(getattr(iface, 'name', None) or '') if iface is not None else ''
+            )
+    except Exception:
+        up = set()
+        live_gid = ''
+    preferred: list[str] = []
+    if live_gid and listed_guids and live_gid in listed_guids:
+        preferred.append(_npcap_device_name_for_win_guid(live_gid))
     out: list[str] = []
+    deferred: list[str] = []
+    seen: set[str] = set()
     for raw in (
         primary,
+        *preferred,
         getattr(iface, 'guid', None) if iface is not None else None,
         getattr(iface, 'name', None) if iface is not None else None,
     ):
         s = str(raw or '').strip()
-        if not s or s == 'NULL' or s in out:
+        if not s or s == 'NULL' or s in seen:
             continue
+        seen.add(s)
         guid = _extract_adapter_guid(s)
         if listed_guids and guid and guid not in listed_guids:
             continue
         if listed_names is not None and ('NPF_' in s or s.startswith('\\Device\\')):
             if s not in listed_names:
                 continue
+        if up and guid and guid not in up:
+            deferred.append(s)
+            continue
         out.append(s)
+    if not out:
+        out.extend(deferred)
     return out
 
 

@@ -38,13 +38,8 @@ def mitm_path_warning(iface, victim_ip: str) -> str:
     """User-facing hint when MITM probe sees zero victim traffic."""
     victim_ip = str(victim_ip or '').strip()
     iface_name = str(getattr(iface, 'name', None) or 'this adapter')
-    if iface_is_wireless(iface):
-        return (
-            f'MITM armed on {iface_name} but no traffic from {victim_ip} reached this PC. '
-            'Many routers block Wi‑Fi → Ethernet ARP cut. Plug the PC into Ethernet, '
-            'put the PS5 on Wi‑Fi, or use Clumsy hotspot mode.'
-        )
     return (
         f'MITM armed on {iface_name} but no traffic from {victim_ip} reached this PC. '
-        'Rescan, confirm the victim IP/MAC, and check Npcap is on the active adapter.'
+        'Poison is not landing on the live adapter — confirm Settings is the NIC '
+        'Windows is using, restart Npcap, then rescan and Kill again.'
     )

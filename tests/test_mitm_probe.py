@@ -21,11 +21,14 @@ class TestMitmProbe(unittest.TestCase):
         self.assertTrue(iface_is_wireless(wifi))
         self.assertFalse(iface_is_wireless(eth))
 
-    def test_wifi_warning_mentions_topology(self) -> None:
+    def test_warning_names_adapter_and_victim(self) -> None:
         wifi = NetFace({'name': 'Wi-Fi', 'guid': 'g', 'mac': 'aa:bb:cc:dd:ee:ff', 'ips': ['192.168.1.56']})
         msg = mitm_path_warning(wifi, '192.168.1.248')
-        self.assertIn('Wi‑Fi', msg)
+        self.assertIn('Wi-Fi', msg)
         self.assertIn('192.168.1.248', msg)
+        self.assertIn('Npcap', msg)
+        self.assertNotIn('cannot cut', msg.lower())
+        self.assertNotIn('hotspot', msg.lower())
 
 
 if __name__ == '__main__':
