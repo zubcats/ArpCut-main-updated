@@ -265,6 +265,19 @@ Wireless LAN adapter Wi-Fi:
         self.assertIn('A3737896', faces[0].guid.upper())
         self.assertNotIn('5B106E08', faces[0].guid.upper())
 
+    def test_npcap_tokens_skip_unlisted_windows_guid(self) -> None:
+        from tools.utils import npcap_iface_tokens
+
+        fake = r'\Device\NPF_{5B106E08-62B0-4A70-B2AC-AEDD80B5B255}'
+        listed = r'\Device\NPF_{A3737896-1E6A-4AC6-9FEC-0E20BF3F15DC}'
+        face = _face('Wi-Fi', '192.168.1.56')
+        face.guid = fake
+        with mock.patch('tools.utils.get_if_list', return_value=[listed]):
+            toks = npcap_iface_tokens(face)
+        self.assertNotIn(fake, toks)
+        self.assertIn('Wi-Fi', toks)
+
+
     def test_live_ipv4_uses_overlay_when_pcap_ip_is_apipa(self) -> None:
         from tools.utils import _iface_live_ipv4
 
