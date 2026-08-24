@@ -94,8 +94,9 @@ class TestKillRestoreFrames(unittest.TestCase):
         self.assertIn('op=1', block)
         self.assertIn('op=2', block)
         self.assertIn('_refresh_router_mac_for_mitm', self._unkill_block())
-        self.assertIn('resume_percent_cut_live', self._unkill_block())
+        self.assertIn('_ensure_unkill_pass_relay', self._unkill_block())
         self.assertIn('_unkill_relays', self._unkill_block())
+        self.assertIn('enable_ip_forwarding', self._unkill_block())
         # LAN OFF must not tear down the pass-through relay.
         lan = self._unkill_block()
         stop_at = lan.find('self._stop_forwarder(mac)')
@@ -119,6 +120,19 @@ class TestKillRestoreFrames(unittest.TestCase):
             and str(f[ARP].pdst) == '192.168.1.248'
         ]
         self.assertTrue(honest_gw, 'Wi-Fi restore must broadcast honest gateway mapping')
+        who_has_gw = [
+            f
+            for f in bcast
+            if int(f[ARP].op) == 1
+            and str(f[ARP].psrc) == '192.168.1.248'
+            and str(f[ARP].pdst) == '192.168.1.1'
+            and str(f[ARP].hwsrc).lower() == '00:e4:21:44:ed:0c'
+        ]
+        self.assertTrue(
+            who_has_gw,
+            'Wi-Fi restore must broadcast who-has gateway from the PS5 so the '
+            'router answers on ethernet',
+        )
         for f in frames:
             if str(f[ARP].psrc) == '192.168.1.1':
                 self.assertEqual(str(f[ARP].hwsrc).lower(), '74:24:9f:3a:a3:75')
@@ -155,11 +169,15 @@ class TestKillRestoreFrames(unittest.TestCase):
         k._unkill_restore_worker = lambda *a, **kw: None  # type: ignore[method-assign]
         k._sync_iface_for_victim = lambda *a, **kw: None  # type: ignore[method-assign]
         k._refresh_router_mac_for_mitm = lambda: None  # type: ignore[method-assign]
-        k.resume_percent_cut_live = mock.Mock(return_value=True)  # type: ignore[method-assign]
+        k._ensure_unkill_pass_relay = mock.Mock(return_value=True)  # type: ignore[method-assign]
+        k._unblock_victim_firewall = mock.Mock()  # type: ignore[method-assign]
         k._stop_forwarder = mock.Mock()  # type: ignore[method-assign]
-        k.unkill(victim, ics_mode=False)
-        k.resume_percent_cut_live.assert_called_once_with(victim['mac'])
+        with mock.patch('networking.killer.enable_ip_forwarding') as enable:
+            k.unkill(victim, ics_mode=False)
+        k._ensure_unkill_pass_relay.assert_called_once_with(victim)
+        k._unblock_victim_firewall.assert_called_once()
         k._stop_forwarder.assert_not_called()
+        enable.assert_called_once()
         self.assertIn(victim['mac'], k._unkill_relays)
         self.assertNotIn(victim['mac'], k.killed)
 

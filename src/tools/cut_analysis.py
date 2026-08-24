@@ -588,7 +588,12 @@ def _fmt_host(host: dict, *, label: str, soft_midcut_lan_probes: bool = False) -
                 )
     fwd = host.get('ip_forwarding_on')
     if fwd is True:
-        lines.append(f'[FAIL] {label} Windows IP forwarding ON')
+        if str(label).strip().upper() == 'AFTER':
+            lines.append(
+                f'[INFO] {label} Windows IP forwarding on (Kill OFF kernel relay)'
+            )
+        else:
+            lines.append(f'[FAIL] {label} Windows IP forwarding ON')
     elif fwd is False:
         lines.append(f'[PASS] {label} Windows IP forwarding off')
     if host.get('admin_ok') is True:
@@ -613,13 +618,17 @@ def _fmt_stack(
             f'[{"PASS" if not stack.get("mitm_armed") else "FAIL"}] '
             f'{label} ARP MITM cleared'
         )
-        lines.append(
-            f'[{"PASS" if not stack.get("forwarder_running") else "WARN"}] '
-            f'{label} Npcap forwarder stopped'
-        )
         if stack.get('forwarder_hard_drop'):
             lines.append(
                 f'[FAIL] {label} forwarder still in hard-drop after OFF'
+            )
+        elif stack.get('forwarder_running'):
+            lines.append(
+                f'[PASS] {label} Npcap pass-through relay up after OFF'
+            )
+        else:
+            lines.append(
+                f'[PASS] {label} Npcap forwarder stopped'
             )
         return lines
     if stack.get('use_windivert'):
@@ -1232,13 +1241,12 @@ def _eval_after(
             fails.append('ARP MITM still armed after OFF — connection not restored')
         else:
             notes.append('ARP MITM cleared')
-        if stack.get('forwarder_running'):
-            fails.append('Npcap forwarder still running after OFF — connection not restored')
+        if stack.get('forwarder_hard_drop'):
+            fails.append('forwarder still in hard-drop after OFF — connection not restored')
+        elif stack.get('forwarder_running'):
+            notes.append('Npcap pass-through relay left up (mesh restore)')
         else:
             notes.append('forwarder cleared')
-    # Hard-drop flags left set after OFF is a restore leak (even if forwarder thread stopped).
-    if stack.get('forwarder_hard_drop'):
-        fails.append('forwarder still in hard-drop mode after OFF — connection not restored')
 
     # AFTER expects good connection again (especially when BEFORE had one).
     if host.get('victim_on_lan') is True:

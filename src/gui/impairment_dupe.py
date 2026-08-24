@@ -38,6 +38,48 @@ class ImpairmentDupeMixin:
         self.lblDupeCountdownMain.setText('')
 
 
+    def _dupe_cut_still_active(self, mac: str, ip: str) -> bool:
+        """True when ARP MITM or a hard-drop forwarder still owns this victim.
+
+        A 100% pass-through left up after Kill OFF is restore, not a cut.
+        """
+        killer = getattr(self, 'killer', None)
+        if killer is None:
+            return False
+        killed = getattr(killer, 'killed', {}) or {}
+        relays = getattr(killer, '_unkill_relays', ()) or ()
+        if mac and mac in killed:
+            return True
+        if ip:
+            for entry in list(killed.values()):
+                if isinstance(entry, dict) and str(entry.get('ip') or '').strip() == ip:
+                    return True
+        if mac and mac in relays:
+            return False
+
+        def _is_hard_cut(fw) -> bool:
+            if fw is None or not getattr(fw, 'running', False):
+                return False
+            try:
+                if bool(getattr(fw, 'drop_from_victim', False)):
+                    return True
+                return int(getattr(fw, 'pass_from_victim_pct', 100) or 100) <= 0
+            except Exception:
+                return True
+
+        fws = getattr(killer, 'forwarders', {}) or {}
+        if mac and _is_hard_cut(fws.get(mac)):
+            return True
+        if ip:
+            for fmac, fw in list(fws.items()):
+                if fmac in relays:
+                    continue
+                victim = killed.get(fmac) or {}
+                vip = str((victim or {}).get('ip') or '').strip()
+                if vip == ip and _is_hard_cut(fw):
+                    return True
+        return False
+
     def _log_dupe_restore_result(self, device) -> None:
         """After Dupe OFF, report whether MITM/forwarder actually cleared."""
         if not isinstance(device, dict):
@@ -45,25 +87,7 @@ class ImpairmentDupeMixin:
             return
         ip = str(device.get('ip') or '').strip()
         mac = str(device.get('mac') or '').strip()
-        still = False
-        if mac and (
-            mac in getattr(self.killer, 'killed', {})
-            or mac in getattr(self.killer, 'forwarders', {})
-        ):
-            still = True
-        elif ip:
-            for entry in list((getattr(self.killer, 'killed', {}) or {}).values()):
-                if isinstance(entry, dict) and str(entry.get('ip') or '').strip() == ip:
-                    still = True
-                    break
-            if not still:
-                for fmac, fw in list((getattr(self.killer, 'forwarders', {}) or {}).items()):
-                    victim = (getattr(self.killer, 'killed', {}) or {}).get(fmac) or {}
-                    if str((victim or {}).get('ip') or '').strip() == ip and getattr(
-                        fw, 'running', False
-                    ):
-                        still = True
-                        break
+        still = self._dupe_cut_still_active(mac, ip)
         if still:
             self._show_dupe_status(
                 f'Dupe OFF: cut still active on {ip} — press Dupe or Kill OFF, then rescan',

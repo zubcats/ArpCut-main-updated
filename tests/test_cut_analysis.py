@@ -695,6 +695,44 @@ class TestCutAnalysisScoring(unittest.TestCase):
         self.assertIn('AFTER  >>>  FAIL', '\n'.join(report.lines))
         self.assertIn('still armed', '\n'.join(report.lines).lower())
 
+    def test_after_pass_through_relay_is_success(self) -> None:
+        from tools import cut_analysis as ca
+
+        host = _live_host()
+        report = ca.score_phases(
+            flow='Kill',
+            victim_ip='192.168.1.248',
+            victim_mac='00:e4:21:44:ed:0c',
+            expect_full_cut=True,
+            before=ca.PhaseSample(phase=ca.PHASE_BEFORE, sample=_sample(), host=host),
+            during=ca.PhaseSample(
+                phase=ca.PHASE_DURING,
+                sample=_sample(victim_wan_out_to_us=8),
+                host=host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=True,
+                    forwarder_running=True,
+                    forwarder_hard_drop=True,
+                    fwd_packets_dropped=8,
+                    sample_window_ok=True,
+                ),
+            ),
+            after=ca.PhaseSample(
+                phase=ca.PHASE_AFTER,
+                sample=_sample(ipv4=0, arp_victim=40),
+                host=host,
+                stack=ca.collect_stack_state(
+                    mitm_armed=False,
+                    forwarder_running=True,
+                    forwarder_hard_drop=False,
+                ),
+            ),
+        )
+        text = '\n'.join(report.lines)
+        self.assertEqual(report.overall, 'SUCCESS')
+        self.assertIn('pass-through relay', text.lower())
+        self.assertNotIn('forwarder still running after OFF', text.lower())
+
     def test_percent_cut_success_without_full_cut(self) -> None:
         from tools import cut_analysis as ca
 
