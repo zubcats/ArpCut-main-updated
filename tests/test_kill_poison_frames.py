@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import unittest
+from unittest import mock
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 _SRC = os.path.join(_ROOT, 'src')
@@ -93,6 +94,13 @@ class TestKillRestoreFrames(unittest.TestCase):
         self.assertIn('op=1', block)
         self.assertIn('op=2', block)
         self.assertIn('_refresh_router_mac_for_mitm', self._unkill_block())
+        self.assertIn('resume_percent_cut_live', self._unkill_block())
+        self.assertIn('_unkill_relays', self._unkill_block())
+        # LAN OFF must not tear down the pass-through relay.
+        lan = self._unkill_block()
+        stop_at = lan.find('self._stop_forwarder(mac)')
+        self.assertGreater(stop_at, 0)
+        self.assertIn('if ics_mode:', lan[max(0, stop_at - 80) : stop_at])
 
     def test_wifi_restore_broadcasts_honest_gateway_to_victim(self) -> None:
         from scapy.all import ARP, Ether
@@ -134,6 +142,33 @@ class TestKillRestoreFrames(unittest.TestCase):
         k._send_packet = sent.append  # type: ignore[method-assign]
         k._restore_arp_now(victim, seq=1, repeats=1, delay_s=0)
         self.assertEqual(len(sent), len(k._restore_frames(victim)))
+
+    def test_lan_unkill_keeps_pass_through_relay(self) -> None:
+        k = self._killer(wifi=True)
+        k._unkill_relays = set()
+        victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
+        k.killed = {victim['mac']: victim}
+        k._op_seq = {victim['mac']: 0}
+        k.forwarders = {victim['mac']: mock.Mock(running=True)}
+        k.l2_socket_ready = lambda: False  # type: ignore[method-assign]
+        k.prewarm_l2_socket = lambda join_ms=0: False  # type: ignore[method-assign]
+        k._unkill_restore_worker = lambda *a, **kw: None  # type: ignore[method-assign]
+        k._sync_iface_for_victim = lambda *a, **kw: None  # type: ignore[method-assign]
+        k._refresh_router_mac_for_mitm = lambda: None  # type: ignore[method-assign]
+        k.resume_percent_cut_live = mock.Mock(return_value=True)  # type: ignore[method-assign]
+        k._stop_forwarder = mock.Mock()  # type: ignore[method-assign]
+        k.unkill(victim, ics_mode=False)
+        k.resume_percent_cut_live.assert_called_once_with(victim['mac'])
+        k._stop_forwarder.assert_not_called()
+        self.assertIn(victim['mac'], k._unkill_relays)
+        self.assertNotIn(victim['mac'], k.killed)
+
+    def test_idle_reconcile_skips_unkill_relays(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'impairment_mitm.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        start = src.index('def _reconcile_idle_mitm_state')
+        self.assertIn('_unkill_relays', src[start : start + 2000])
 
     def test_unkill_all_uses_per_device_unkill_for_lan(self) -> None:
         path = os.path.join(_SRC, 'networking', 'killer.py')

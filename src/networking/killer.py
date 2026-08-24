@@ -446,6 +446,10 @@ class Killer:
         self.storage = {}
         self.forwarders = {}
         self.pf_blocks = set()
+        # MACs that stay on a 100% MitmForwarder after Kill OFF. Starlink mesh
+        # often drops honest ARP restore, so stopping the relay black-holes the
+        # PS5 until its ARP times out.
+        self._unkill_relays = set()
         self._socket = None  # Persistent L2 socket
         self._socket_token: str | None = None  # Npcap bind token that opened _socket
         # Npcap/Scapy L2socket is not safe for concurrent send from Kill GUI + ARP worker.
@@ -805,6 +809,9 @@ class Killer:
         self._refresh_victim_mac_from_cache(victim)
         self._get_socket()
         mac = victim['mac']
+        relays = getattr(self, '_unkill_relays', None)
+        if isinstance(relays, set):
+            relays.discard(mac)
         # Reassert path: even if already marked killed, refresh victim record and restart
         # ARP worker generation so ON state recovers from stale/desynced workers.
         seq = self._next_op_seq(mac)
@@ -1331,7 +1338,8 @@ class Killer:
                 slept += step
 
         if victim['mac'] not in self.killed:
-            self._stop_forwarder(victim['mac'])
+            if victim['mac'] not in getattr(self, '_unkill_relays', ()):
+                self._stop_forwarder(victim['mac'])
 
     def unkill(self, victim, *, ics_mode=False):
         """
@@ -1347,10 +1355,22 @@ class Killer:
                 self._refresh_router_mac_for_mitm()
             except Exception:
                 pass
-        seq = self._next_op_seq(victim['mac'])
-        if victim['mac'] in self.killed:
-            self.killed.pop(victim['mac'])
-        self._stop_forwarder(victim['mac'])
+        mac = victim['mac']
+        if not ics_mode:
+            # Instant OFF: keep Npcap pass-through while the console still thinks
+            # this PC is the gateway. Stopping the forwarder here is what made
+            # mesh Wi‑Fi Kill OFF wait for ARP timeout.
+            self.resume_percent_cut_live(mac)
+            relays = getattr(self, '_unkill_relays', None)
+            if relays is None:
+                self._unkill_relays = set()
+                relays = self._unkill_relays
+            relays.add(mac)
+        seq = self._next_op_seq(mac)
+        if mac in self.killed:
+            self.killed.pop(mac)
+        if ics_mode:
+            self._stop_forwarder(mac)
         # Immediate ARP burst with no sleep — sleeps belong in @threaded _unkill_restore_worker
         # so the GUI thread returns instantly on Kill/Lag/Dupe OFF.
         # Never open a cold Npcap L2 socket on this thread (0.5–2s, or hang).
@@ -1534,7 +1554,8 @@ class Killer:
                 return
             self._restore_arp_now(victim, seq, repeats=repeats, delay_s=0.08)
         if self._op_seq.get(victim['mac']) == seq and victim['mac'] not in self.killed:
-            self._stop_forwarder(victim['mac'])
+            if victim['mac'] not in getattr(self, '_unkill_relays', ()):
+                self._stop_forwarder(victim['mac'])
             self._remove_pf_block(victim['ip'])
 
     def kill_all(self, device_list):

@@ -112,11 +112,14 @@ class ImpairmentIcsGateMixin:
             if not mac or mac in seen:
                 continue
             seen.add(mac)
-            try:
-                self.killer.disable_percent_cut(mac)
-            except Exception:
-                pass
             is_ics = self._is_ics_downstream(victim)
+            # LAN Kill OFF keeps the Npcap forwarder at 100% pass (unkill).
+            # Stopping it here black-holes a mesh PS5 whose ARP still points at this PC.
+            if is_ics:
+                try:
+                    self.killer.disable_percent_cut(mac)
+                except Exception:
+                    pass
             try:
                 self.killer.unkill(victim, ics_mode=is_ics)
             except Exception:

@@ -2330,6 +2330,8 @@ class ImpairmentMitmMixin:
             for mac, fw in list(getattr(self.killer, 'forwarders', {}).items()):
                 if mac in getattr(self.killer, 'killed', {}):
                     continue
+                if mac in getattr(self.killer, '_unkill_relays', ()):
+                    continue
                 if fw is not None and getattr(fw, 'running', False):
                     try:
                         self.killer.disable_percent_cut(mac)

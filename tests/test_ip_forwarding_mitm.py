@@ -66,10 +66,14 @@ class TestIpForwardingMitm(unittest.TestCase):
         k.killed = {}
         k.forwarders = {}
         k._op_seq = {}
+        k._unkill_relays = set()
+        k._socket = None
+        k._socket_lock = mock.MagicMock()
         victim = {'mac': 'AA:BB:CC:DD:EE:FF', 'ip': '192.168.1.165'}
         with (
             mock.patch.object(Killer, '_sync_iface_for_victim'),
             mock.patch.object(Killer, '_refresh_victim_mac_from_cache'),
+            mock.patch.object(Killer, '_get_socket'),
             mock.patch.object(Killer, '_next_op_seq', return_value=1),
             mock.patch.object(Killer, '_stop_forwarder'),
             mock.patch.object(Killer, '_poison_arp_now'),

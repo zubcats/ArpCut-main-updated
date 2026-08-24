@@ -58,6 +58,14 @@ class TestVictimTrafficRestore(unittest.TestCase):
         self.assertIn('_release_victim_arp_mitm_stack(victim)', off)
         self.assertIn('_ensure_network_context_for_victim(device, fast=True)', methods_through('_release_victim_arp_mitm_stack', '_ics_gate_allow_traffic'))
 
+    def test_lan_release_keeps_npcap_relay_for_unkill(self) -> None:
+        fn = methods_through('_release_victim_arp_mitm_stack', '_ics_gate_allow_traffic')
+        ics_at = fn.index('is_ics = self._is_ics_downstream(victim)')
+        disable_at = fn.index('disable_percent_cut')
+        self.assertLess(ics_at, disable_at)
+        guard = fn[ics_at:disable_at]
+        self.assertIn('if is_ics:', guard)
+
 
 if __name__ == '__main__':
     unittest.main()
