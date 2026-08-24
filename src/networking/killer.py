@@ -1341,6 +1341,12 @@ class Killer:
         in the background, so the UI does not race with _sync_killed_devices().
         """
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
+        if not ics_mode:
+            # Same-iface sync is a no-op; refresh gateway MAC so restore is honest.
+            try:
+                self._refresh_router_mac_for_mitm()
+            except Exception:
+                pass
         seq = self._next_op_seq(victim['mac'])
         if victim['mac'] in self.killed:
             self.killed.pop(victim['mac'])
@@ -1365,37 +1371,142 @@ class Killer:
         if mac in self.killed:
             return
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
+        if not ics_mode:
+            try:
+                self._refresh_router_mac_for_mitm()
+            except Exception:
+                pass
         seq = self._op_seq.get(mac, 0)
         if self.l2_socket_ready():
             self._restore_arp_now(victim, seq, repeats=2, delay_s=0)
         else:
             self.prewarm_l2_socket(join_ms=0)
 
+    def _restore_frames(self, victim):
+        """Honest ARP restore with the same delivery as poison (Wi‑Fi broadcast + req/reply).
+
+        Reply-only unicast restore cannot undo Wi‑Fi poison. Mesh APs often flood
+        L2 broadcast to ethernet (PS5 on the main router) but drop STA unicast, so
+        Kill lands and OFF waits for the console ARP timeout.
+
+        Ethernet source stays this PC's MAC (APs drop spoofed STA sources). ARP
+        ``hwsrc`` is the real gateway / victim MAC. Do **not** put this PC's MAC
+        in ``hwsrc`` for ``psrc=router`` — that is poison.
+        """
+        src = self._poison_hwsrc()
+        router_ip = str((self.router or {}).get('ip') or '').strip()
+        router_mac = good_mac((self.router or {}).get('mac') or '')
+        victim_ip = str((victim or {}).get('ip') or '').strip()
+        victim_mac = good_mac((victim or {}).get('mac') or '')
+        if not victim_ip or not mac_address_is_usable(victim_mac):
+            return []
+        frames = []
+        if router_ip and mac_address_is_usable(router_mac):
+            to_victim_req = Ether(src=src, dst=victim_mac) / ARP(
+                op=1,
+                psrc=router_ip,
+                hwsrc=router_mac,
+                pdst=victim_ip,
+                hwdst=victim_mac,
+            )
+            to_victim_reply = Ether(src=src, dst=victim_mac) / ARP(
+                op=2,
+                psrc=router_ip,
+                hwsrc=router_mac,
+                pdst=victim_ip,
+                hwdst=victim_mac,
+            )
+            to_router_req = Ether(src=src, dst=router_mac) / ARP(
+                op=1,
+                psrc=victim_ip,
+                hwsrc=victim_mac,
+                pdst=router_ip,
+                hwdst=router_mac,
+            )
+            to_router_reply = Ether(src=src, dst=router_mac) / ARP(
+                op=2,
+                psrc=victim_ip,
+                hwsrc=victim_mac,
+                pdst=router_ip,
+                hwdst=router_mac,
+            )
+            frames.extend(
+                [
+                    to_victim_req,
+                    to_victim_reply,
+                    to_router_req,
+                    to_router_reply,
+                    to_router_req,
+                    to_router_reply,
+                ]
+            )
+        try:
+            from tools.mitm_probe import iface_is_wireless
+
+            wifi = iface_is_wireless(self.iface)
+        except Exception:
+            wifi = False
+        if wifi:
+            bcast = 'ff:ff:ff:ff:ff:ff'
+            if router_ip and mac_address_is_usable(router_mac):
+                frames.extend(
+                    [
+                        Ether(src=src, dst=bcast)
+                        / ARP(
+                            op=1,
+                            psrc=router_ip,
+                            hwsrc=router_mac,
+                            pdst=victim_ip,
+                            hwdst=victim_mac,
+                        ),
+                        Ether(src=src, dst=bcast)
+                        / ARP(
+                            op=2,
+                            psrc=router_ip,
+                            hwsrc=router_mac,
+                            pdst=victim_ip,
+                            hwdst=victim_mac,
+                        ),
+                    ]
+                )
+            # GARP so the main router / mesh nodes relearn the PS5 MAC.
+            frames.extend(
+                [
+                    Ether(src=src, dst=bcast)
+                    / ARP(
+                        op=1,
+                        psrc=victim_ip,
+                        hwsrc=victim_mac,
+                        pdst=victim_ip,
+                        hwdst=bcast,
+                    ),
+                    Ether(src=src, dst=bcast)
+                    / ARP(
+                        op=2,
+                        psrc=victim_ip,
+                        hwsrc=victim_mac,
+                        pdst=victim_ip,
+                        hwdst=bcast,
+                    ),
+                ]
+            )
+        return frames
+
     def _restore_arp_now(self, victim, seq=0, repeats=1, delay_s=0.1):
         """Best-effort ARP restore; aborts if a newer op supersedes this sequence."""
-        to_victim = Ether(dst=victim['mac'])/ARP(
-            op=2,
-            psrc=self.router['ip'],
-            hwsrc=self.router['mac'],
-            pdst=victim['ip'],
-            hwdst=victim['mac']
-        )
-
-        to_router = Ether(dst=self.router['mac'])/ARP(
-            op=2,
-            psrc=victim['ip'],
-            hwsrc=victim['mac'],
-            pdst=self.router['ip'],
-            hwdst=self.router['mac']
-        )
-
         if self.iface.name == 'NULL':
             return
+        mac = str((victim or {}).get('mac') or '')
+        if not mac:
+            return
+        frames = self._restore_frames(victim)
+        if not frames:
+            return
         for _ in range(max(1, int(repeats))):
-            if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
+            if self._op_seq.get(mac) != seq or mac in self.killed:
                 break
-            self._send_packet(to_victim)
-            self._send_packet(to_router)
+            for frame in frames:
+                self._send_packet(frame)
             if delay_s > 0:
                 sleep(delay_s)
 
@@ -1403,14 +1514,16 @@ class Killer:
     def _unkill_restore_worker(self, victim, seq=0, *, quick=False):
         # Follow-up restore bursts so late poison frames do not re-break connectivity.
         # ICS hotspot uses a short plan — PS5 should recover in under ~300ms, not ~2s.
+        # LAN Wi‑Fi/mesh needs a later burst: console ARP often ignores the first replies.
         if quick:
             plan = ((0.0, 2), (0.08, 1))
         else:
             plan = (
-                (0.0, 2),
-                (0.25, 2),
-                (0.75, 2),
-                (1.5, 2),
+                (0.0, 3),
+                (0.2, 2),
+                (0.5, 2),
+                (1.0, 2),
+                (2.5, 3),
             )
         for wait_s, repeats in plan:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
@@ -1468,13 +1581,8 @@ class Killer:
                     except Exception:
                         pass
                 continue
-            mac = victim['mac']
-            seq = self._next_op_seq(mac)
-            self.killed.pop(mac, None)
-            # Immediate restore burst for OFF parity with per-device unkill (no GUI-thread sleep).
-            self._restore_arp_now(victim, seq, repeats=3, delay_s=0)
-            self._unkill_restore_worker(victim, seq)
-            self._stop_forwarder(mac)
+            # Same restore path as per-device OFF (Wi‑Fi broadcast + honest hwsrc).
+            self.unkill(victim, ics_mode=False)
         for ip in list(self.pf_blocks):
             self._remove_pf_block(ip)
         # Close persistent socket when done
