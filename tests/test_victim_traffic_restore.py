@@ -55,8 +55,12 @@ class TestVictimTrafficRestore(unittest.TestCase):
         src = self._main_py()
         kill = methods_through('_run_kill_command', '_schedule_kill_off_reinforce')
         off = kill[kill.index('else:'):]
-        self.assertIn('_release_victim_arp_mitm_stack(victim)', off)
-        self.assertIn('_ensure_network_context_for_victim(device, fast=True)', methods_through('_release_victim_arp_mitm_stack', '_ics_gate_allow_traffic'))
+        self.assertIn('_release_victim_arp_mitm_stack(', off)
+        self.assertIn('refresh_context=False', off)
+        self.assertIn(
+            '_ensure_network_context_for_victim(device, fast=True)',
+            methods_through('_release_victim_arp_mitm_stack', '_ics_gate_allow_traffic'),
+        )
 
     def test_lan_release_stops_npcap_forwarder(self) -> None:
         fn = methods_through('_release_victim_arp_mitm_stack', '_ics_gate_allow_traffic')
@@ -73,6 +77,13 @@ class TestVictimTrafficRestore(unittest.TestCase):
         self.assertNotIn('killer.killed', probe)
         self.assertIn('_ics_kill_profile_macs', probe)
         self.assertIn('_ics_windivert_busy', probe)
+
+    def test_kill_off_timer_does_not_reunkill(self) -> None:
+        fn = method_src('_schedule_kill_off_reinforce')
+        self.assertIn('reinforce_restore', fn)
+        lan = fn[fn.index('else:'):]
+        self.assertNotIn('self.killer.unkill(victim)', lan)
+        self.assertNotIn('_ensure_network_context_for_victim', lan)
 
 
 if __name__ == '__main__':

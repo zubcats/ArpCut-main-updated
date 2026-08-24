@@ -89,11 +89,9 @@ class TestKillRestoreFrames(unittest.TestCase):
         block = self._restore_block()
         self.assertIn('hwsrc=router_mac', block)
         self.assertIn('hwsrc=victim_mac', block)
-        self.assertIn('iface_is_wireless', block)
-        self.assertIn('ff:ff:ff:ff:ff:ff', block)
-        self.assertIn('op=1', block)
         self.assertIn('op=2', block)
-        self.assertIn('_refresh_router_mac_for_mitm', self._unkill_block())
+        self.assertNotIn('ff:ff:ff:ff:ff:ff', block)
+        self.assertNotIn('_refresh_router_mac_for_mitm', self._unkill_block())
         self.assertIn('self._stop_forwarder(mac)', self._unkill_block())
         self.assertNotIn('_ensure_unkill_pass_relay', self._unkill_block())
         self.assertNotIn('enable_ip_forwarding', self._unkill_block())
@@ -101,7 +99,7 @@ class TestKillRestoreFrames(unittest.TestCase):
         self.assertLess(lan.index('self._next_op_seq(mac)'), lan.index('self._stop_forwarder(mac)'))
         self.assertNotIn('_unkill_relays.add', lan)
 
-    def test_wifi_restore_broadcasts_honest_gateway_to_victim(self) -> None:
+    def test_restore_is_unicast_replies_only(self) -> None:
         from scapy.all import ARP, Ether
 
         k = self._killer(wifi=True)
@@ -109,32 +107,33 @@ class TestKillRestoreFrames(unittest.TestCase):
         frames = k._restore_frames(victim)
         self.assertTrue(frames)
         bcast = [f for f in frames if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff']
-        self.assertGreaterEqual(len(bcast), 2)
-        honest_gw = [
-            f
-            for f in bcast
-            if str(f[ARP].psrc) == '192.168.1.1'
-            and str(f[ARP].hwsrc).lower() == '74:24:9f:3a:a3:75'
-            and str(f[ARP].pdst) == '192.168.1.248'
-        ]
-        self.assertTrue(honest_gw, 'Wi-Fi restore must broadcast honest gateway mapping')
-        who_has_gw = [
-            f
-            for f in bcast
-            if int(f[ARP].op) == 1
-            and str(f[ARP].psrc) == '192.168.1.248'
-            and str(f[ARP].pdst) == '192.168.1.1'
-            and str(f[ARP].hwsrc).lower() == '00:e4:21:44:ed:0c'
-        ]
-        self.assertTrue(
-            who_has_gw,
-            'Wi-Fi restore must broadcast who-has gateway from the PS5 so the '
-            'router answers on ethernet',
-        )
+        self.assertEqual(bcast, [])
         for f in frames:
+            self.assertEqual(int(f[ARP].op), 2)
             if str(f[ARP].psrc) == '192.168.1.1':
                 self.assertEqual(str(f[ARP].hwsrc).lower(), '74:24:9f:3a:a3:75')
                 self.assertNotEqual(str(f[ARP].hwsrc).lower(), 'aa:aa:aa:aa:aa:aa')
+        to_router = [
+            f
+            for f in frames
+            if str(f[Ether].dst).lower() == '74:24:9f:3a:a3:75'
+            and str(f[ARP].psrc) == '192.168.1.248'
+            and str(f[ARP].hwsrc).lower() == '00:e4:21:44:ed:0c'
+        ]
+        self.assertGreaterEqual(len(to_router), 1)
+
+    def test_restore_uses_kill_on_gateway_when_cache_points_at_pc(self) -> None:
+        from scapy.all import ARP
+
+        k = self._killer(wifi=True)
+        k._restore_router = {'ip': '192.168.1.1', 'mac': '74:24:9F:3A:A3:75'}
+        k.router = {'ip': '192.168.1.1', 'mac': 'AA:AA:AA:AA:AA:AA'}
+        victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
+        frames = k._restore_frames(victim)
+        self.assertTrue(frames)
+        for f in frames:
+            if str(f[ARP].psrc) == '192.168.1.1':
+                self.assertEqual(str(f[ARP].hwsrc).lower(), '74:24:9f:3a:a3:75')
 
     def test_ethernet_restore_stays_unicast(self) -> None:
         from scapy.all import Ether
@@ -144,7 +143,7 @@ class TestKillRestoreFrames(unittest.TestCase):
         frames = k._restore_frames(victim)
         bcast = [f for f in frames if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff']
         self.assertEqual(bcast, [])
-        self.assertGreaterEqual(len(frames), 4)
+        self.assertGreaterEqual(len(frames), 2)
 
     def test_restore_now_sends_all_restore_frames(self) -> None:
         k = self._killer(wifi=True)

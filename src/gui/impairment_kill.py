@@ -739,7 +739,9 @@ class ImpairmentKillMixin:
                     # gateway via route fallback — see killer.py:123-126).
                     self._ics_emergency_release(victim, heal=True)
                     try:
-                        self._release_victim_arp_mitm_stack(victim)
+                        self._release_victim_arp_mitm_stack(
+                            victim, refresh_context=False
+                        )
                     except Exception:
                         pass
                     self.log('Kill OFF for ' + str(victim.get('ip', '')), UI_LOG_RESTORE_FG)
@@ -832,8 +834,8 @@ class ImpairmentKillMixin:
                         _bg_unblock_ip(victim.get('ip'))
                     self._ics_teardown_gate_if_idle(mac)
                 else:
-                    self._ensure_network_context_for_victim(victim)
-                    self.killer.unkill(victim)
+                    # Do not call unkill again — that bumps _op_seq and aborts the
+                    # restore worker that Kill OFF already started.
                     self.killer.reinforce_restore(victim)
             except Exception:
                 pass

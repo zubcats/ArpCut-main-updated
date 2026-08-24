@@ -453,6 +453,9 @@ class Killer:
         # Npcap/Scapy L2socket is not safe for concurrent send from Kill GUI + ARP worker.
         self._socket_lock = threading.RLock()
         self._op_seq = {}  # MAC -> operation generation to cancel stale workers
+        # Gateway MAC captured at Kill ON. Restore must not use a cache entry that
+        # points at this PC (poison reflection / Analysis ping).
+        self._restore_router = {}
 
     def _next_op_seq(self, mac):
         seq = int(self._op_seq.get(mac, 0)) + 1
@@ -715,6 +718,31 @@ class Killer:
                 return
             self.router['mac'] = mac
 
+    def _remember_restore_router(self) -> None:
+        """Keep the real gateway MAC from Kill ON for later honest restore."""
+        ip = str((self.router or {}).get('ip') or '').strip()
+        mac = good_mac((self.router or {}).get('mac') or '')
+        mine = good_mac(getattr(self.iface, 'mac', None) or '')
+        if ip and mac_address_is_usable(mac) and mac != mine:
+            self._restore_router = {'ip': ip, 'mac': mac}
+
+    def _restore_router_endpoint(self) -> tuple[str, str]:
+        """Gateway IP/MAC for restore. Never use this PC's MAC as the gateway."""
+        ip = str((self.router or {}).get('ip') or '').strip()
+        mac = good_mac((self.router or {}).get('mac') or '')
+        mine = good_mac(getattr(self.iface, 'mac', None) or '')
+        snap = getattr(self, '_restore_router', None) or {}
+        if (not mac_address_is_usable(mac) or mac == mine) and isinstance(snap, dict):
+            sip = str(snap.get('ip') or '').strip()
+            smac = good_mac(snap.get('mac') or '')
+            if sip:
+                ip = sip
+            if mac_address_is_usable(smac) and smac != mine:
+                mac = smac
+        if mine and mac == mine:
+            return ip, ''
+        return ip, mac
+
     def mitm_prereqs_ok(self, victim, *, ping_attempts: int = 1) -> tuple[bool, str]:
         """True when victim + router MACs are known enough to MITM on LAN."""
         if not isinstance(victim, dict):
@@ -810,6 +838,7 @@ class Killer:
         """
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         self._refresh_victim_mac_from_cache(victim)
+        self._remember_restore_router()
         self._get_socket()
         mac = victim['mac']
         relays = getattr(self, '_unkill_relays', None)
@@ -1389,12 +1418,6 @@ class Killer:
         in the background, so the UI does not race with _sync_killed_devices().
         """
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
-        if not ics_mode:
-            # Same-iface sync is a no-op; refresh gateway MAC so restore is honest.
-            try:
-                self._refresh_router_mac_for_mitm()
-            except Exception:
-                pass
         mac = victim['mac']
         seq = self._next_op_seq(mac)
         if mac in self.killed:
@@ -1424,11 +1447,6 @@ class Killer:
         if mac in self.killed:
             return
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
-        if not ics_mode:
-            try:
-                self._refresh_router_mac_for_mitm()
-            except Exception:
-                pass
         seq = self._op_seq.get(mac, 0)
         if self.l2_socket_ready():
             self._restore_arp_now(victim, seq, repeats=2, delay_s=0)
@@ -1436,126 +1454,41 @@ class Killer:
             self.prewarm_l2_socket(join_ms=0)
 
     def _restore_frames(self, victim):
-        """Honest ARP restore with the same delivery as poison (Wi‑Fi broadcast + req/reply).
+        """Honest unicast ARP replies — same restore that worked before mesh broadcasts.
 
-        Reply-only unicast restore cannot undo Wi‑Fi poison. Mesh APs often flood
-        L2 broadcast to ethernet (PS5 on the main router) but drop STA unicast, so
-        Kill lands and OFF waits for the console ARP timeout.
+        Broadcast / GARP / who-has-from-PS5 restore was added for Starlink mesh.
+        Those frames leave this PC as Ethernet source while claiming the console
+        IP, which re-teaches the router/AP that the PS5 is here. Analysis AFTER
+        already showed restore ARPs on the wire and still 0 WAN / return HTTPS
+        stuck on this PC.
 
-        Ethernet source stays this PC's MAC (APs drop spoofed STA sources). ARP
-        ``hwsrc`` is the real gateway / victim MAC. Do **not** put this PC's MAC
-        in ``hwsrc`` for ``psrc=router`` — that is poison.
+        Do not send restore if the gateway MAC has collapsed to this PC.
         """
         src = self._poison_hwsrc()
-        router_ip = str((self.router or {}).get('ip') or '').strip()
-        router_mac = good_mac((self.router or {}).get('mac') or '')
+        router_ip, router_mac = self._restore_router_endpoint()
         victim_ip = str((victim or {}).get('ip') or '').strip()
         victim_mac = good_mac((victim or {}).get('mac') or '')
         if not victim_ip or not mac_address_is_usable(victim_mac):
             return []
-        frames = []
-        if router_ip and mac_address_is_usable(router_mac):
-            to_victim_req = Ether(src=src, dst=victim_mac) / ARP(
-                op=1,
-                psrc=router_ip,
-                hwsrc=router_mac,
-                pdst=victim_ip,
-                hwdst=victim_mac,
-            )
-            to_victim_reply = Ether(src=src, dst=victim_mac) / ARP(
-                op=2,
-                psrc=router_ip,
-                hwsrc=router_mac,
-                pdst=victim_ip,
-                hwdst=victim_mac,
-            )
-            to_router_req = Ether(src=src, dst=router_mac) / ARP(
-                op=1,
-                psrc=victim_ip,
-                hwsrc=victim_mac,
-                pdst=router_ip,
-                hwdst=router_mac,
-            )
-            to_router_reply = Ether(src=src, dst=router_mac) / ARP(
-                op=2,
-                psrc=victim_ip,
-                hwsrc=victim_mac,
-                pdst=router_ip,
-                hwdst=router_mac,
-            )
-            frames.extend(
-                [
-                    to_victim_req,
-                    to_victim_reply,
-                    to_router_req,
-                    to_router_reply,
-                    to_router_req,
-                    to_router_reply,
-                ]
-            )
-        try:
-            from tools.mitm_probe import iface_is_wireless
-
-            wifi = iface_is_wireless(self.iface)
-        except Exception:
-            wifi = False
-        if wifi:
-            bcast = 'ff:ff:ff:ff:ff:ff'
-            if router_ip and mac_address_is_usable(router_mac):
-                frames.extend(
-                    [
-                        Ether(src=src, dst=bcast)
-                        / ARP(
-                            op=1,
-                            psrc=router_ip,
-                            hwsrc=router_mac,
-                            pdst=victim_ip,
-                            hwdst=victim_mac,
-                        ),
-                        Ether(src=src, dst=bcast)
-                        / ARP(
-                            op=2,
-                            psrc=router_ip,
-                            hwsrc=router_mac,
-                            pdst=victim_ip,
-                            hwdst=victim_mac,
-                        ),
-                        # Who-has gateway, tell the PS5 — mesh-floods onto ethernet
-                        # so the real router answers the console on the wired path
-                        # (Ether src == hwsrc). Direct honest ARP from this STA is
-                        # often ignored; this is how return traffic comes back.
-                        Ether(src=src, dst=bcast)
-                        / ARP(
-                            op=1,
-                            psrc=victim_ip,
-                            hwsrc=victim_mac,
-                            pdst=router_ip,
-                            hwdst='00:00:00:00:00:00',
-                        ),
-                    ]
-                )
-            # GARP so the main router / mesh nodes relearn the PS5 MAC.
-            frames.extend(
-                [
-                    Ether(src=src, dst=bcast)
-                    / ARP(
-                        op=1,
-                        psrc=victim_ip,
-                        hwsrc=victim_mac,
-                        pdst=victim_ip,
-                        hwdst=bcast,
-                    ),
-                    Ether(src=src, dst=bcast)
-                    / ARP(
-                        op=2,
-                        psrc=victim_ip,
-                        hwsrc=victim_mac,
-                        pdst=victim_ip,
-                        hwdst=bcast,
-                    ),
-                ]
-            )
-        return frames
+        if not router_ip or not mac_address_is_usable(router_mac):
+            return []
+        to_victim = Ether(src=src, dst=victim_mac) / ARP(
+            op=2,
+            psrc=router_ip,
+            hwsrc=router_mac,
+            pdst=victim_ip,
+            hwdst=victim_mac,
+        )
+        to_router = Ether(src=src, dst=router_mac) / ARP(
+            op=2,
+            psrc=victim_ip,
+            hwsrc=victim_mac,
+            pdst=router_ip,
+            hwdst=router_mac,
+        )
+        # Router-side twice: inbound MITM (return path) is what leaves the PS5
+        # looking killed after OFF if it is not undone.
+        return [to_victim, to_router, to_router]
 
     def _restore_arp_now(self, victim, seq=0, repeats=1, delay_s=0.1):
         """Best-effort ARP restore; aborts if a newer op supersedes this sequence."""

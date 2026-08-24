@@ -299,7 +299,24 @@ class ImpairmentPrepMixin:
             return True
         if fast and self._lan_mitm_stack_is_warm():
             self.killer.iface = self.scanner.iface
-            self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
+            scanner_router = getattr(self.scanner, 'router', None)
+            killer_router = getattr(self.killer, 'router', None)
+            mine = ''
+            try:
+                from tools.utils import good_mac, mac_address_is_usable
+
+                mine = good_mac(getattr(getattr(self.scanner, 'iface', None), 'mac', None) or '')
+                scan_mac = good_mac((scanner_router or {}).get('mac') or '')
+                if (
+                    isinstance(scanner_router, dict)
+                    and mac_address_is_usable(scan_mac)
+                    and scan_mac != mine
+                ):
+                    self.killer.router = scanner_router
+                elif killer_router is None:
+                    self.killer.router = scanner_router
+            except Exception:
+                self.killer.router = scanner_router or killer_router
             return True
         try:
             from tools.utils import resolve_live_lan_victim
@@ -374,7 +391,15 @@ class ImpairmentPrepMixin:
         prev_iface_guid = getattr(getattr(self.killer, 'iface', None), 'guid', None)
         new_iface_guid = getattr(self.scanner.iface, 'guid', None)
         self.killer.iface = self.scanner.iface
-        self.killer.router = self.scanner.router
+        try:
+            from tools.utils import good_mac, mac_address_is_usable as _mac_ok
+
+            mine = good_mac(getattr(self.scanner.iface, 'mac', None) or '')
+            scan_mac = good_mac((getattr(self.scanner, 'router', None) or {}).get('mac') or '')
+            if _mac_ok(scan_mac) and scan_mac != mine:
+                self.killer.router = self.scanner.router
+        except Exception:
+            self.killer.router = self.scanner.router
         if prev_iface_guid != new_iface_guid:
             self.killer._close_socket()
         try:

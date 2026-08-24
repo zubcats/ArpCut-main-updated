@@ -2829,7 +2829,12 @@ class ZubCutApp(
     def _refresh_router_mac_from_system_arp(self) -> None:
         """Populate scanner/killer router MAC from the OS ARP cache (fast ping if missing)."""
         try:
-            from tools.utils import lookup_mac_from_arp_table, mac_address_is_usable, run_command
+            from tools.utils import (
+                good_mac,
+                lookup_mac_from_arp_table,
+                mac_address_is_usable,
+                run_command,
+            )
 
             router_ip = str(
                 getattr(self.scanner, 'router_ip', None)
@@ -2851,6 +2856,11 @@ class ZubCutApp(
                     pass
                 mac = lookup_mac_from_arp_table(router_ip, iface_ip)
             if not mac_address_is_usable(mac):
+                return
+            mine = good_mac(
+                getattr(getattr(self.scanner, 'iface', None), 'mac', None) or ''
+            )
+            if mine and good_mac(mac) == mine:
                 return
             self.scanner.router_mac = mac
             if isinstance(getattr(self.scanner, 'router', None), dict):
