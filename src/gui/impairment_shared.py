@@ -6,7 +6,12 @@ import threading
 from PyQt5.QtWidgets import QAbstractSpinBox, QLineEdit, QPlainTextEdit, QTextEdit
 
 from tools.crash_feedback import safe_daemon_target
-from tools.pfctl import block_ip, unblock_ip
+from tools.pfctl import (
+    block_ip,
+    firewall_generation_bump,
+    firewall_generation_current,
+    unblock_ip,
+)
 
 import constants as _zcut_constants
 
@@ -47,9 +52,17 @@ def _dupe_net_run_unblock(ip: str) -> None:
 _FW_UI_WARNED = False
 
 
-def _dupe_net_run_block(iface: str, ip: str, direction: str):
+def _dupe_net_run_block(iface: str, ip: str, direction: str, epoch: int | None = None):
     try:
+        if epoch is not None and firewall_generation_current(ip) != int(epoch):
+            return None
         ok = block_ip(iface, ip, direction)
+        if epoch is not None and firewall_generation_current(ip) != int(epoch):
+            try:
+                unblock_ip(ip)
+            except Exception:
+                pass
+            return None
         if ok is False:
             try:
                 from tools.pfctl import last_error
@@ -116,6 +129,7 @@ def _bg_unblock_ip(ip: str | None) -> None:
     ip_s = str(ip).strip()
     if not ip_s:
         return
+    firewall_generation_bump(ip_s)
     try:
         threading.Thread(
             target=safe_daemon_target(_dupe_net_run_unblock, ip_s),
@@ -135,9 +149,10 @@ def _bg_block_ip(iface: str | None, ip: str | None, direction: str = 'both') -> 
         return
     iface_s = str(iface or 'en0').strip() or 'en0'
     direction_s = str(direction or 'both').strip() or 'both'
+    epoch = firewall_generation_bump(ip_s)
     try:
         threading.Thread(
-            target=safe_daemon_target(_dupe_net_run_block, iface_s, ip_s, direction_s),
+            target=safe_daemon_target(_dupe_net_run_block, iface_s, ip_s, direction_s, epoch),
             name='zubcut-blockip-bg',
             daemon=True,
         ).start()

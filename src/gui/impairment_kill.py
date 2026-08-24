@@ -504,14 +504,6 @@ class ImpairmentKillMixin:
             self._schedule_mitm_traffic_probe(device, flow='Kill')
             return True, mac
         self._log_mitm_arm_status(device, action='Kill')
-        try:
-            iface_name = (
-                self.scanner.iface.name if self.scanner.iface else 'en0'
-            )
-        except Exception:
-            iface_name = 'en0'
-        _bg_block_ip(iface_name, device.get('ip'), 'both')
-        _mark('lan_bg_block_ip_done')
         self.log('Kill ON for ' + device['ip'], UI_LOG_VICTIM_BLOCK_FG)
         self._schedule_mitm_traffic_probe(device, flow='Kill')
         return True, mac
@@ -693,13 +685,6 @@ class ImpairmentKillMixin:
                         fw = self.killer.forwarders.get(mac)
                         fw_ok = bool(fw and getattr(fw, 'running', False)) or cut_ok
                         if fw_ok and router_ok:
-                            try:
-                                iface_name = (
-                                    self.scanner.iface.name if self.scanner.iface else 'en0'
-                                )
-                            except Exception:
-                                iface_name = 'en0'
-                            _bg_block_ip(iface_name, device.get('ip'), 'both')
                             kill_applied = True
                             self.log(
                                 'Kill ON for ' + str(device.get('ip') or ''),

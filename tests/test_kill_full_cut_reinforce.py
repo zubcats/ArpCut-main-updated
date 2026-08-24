@@ -42,6 +42,7 @@ class TestKillFullCutReinforce(unittest.TestCase):
         self.assertIn('_apply_traffic_cut_sync', block)
         self.assertIn('disable_ip_forwarding', block)
         self.assertIn('_seal_hard_drop', block)
+        self.assertGreaterEqual(block.count('mac not in self.killed'), 3)
         self.assertNotIn('_next_op_seq', block)
         self.assertNotIn('self.kill(', block)
 
@@ -80,6 +81,30 @@ class TestKillFullCutReinforce(unittest.TestCase):
         self.assertLess(poison_at, cut_at)
         self.assertLess(cut_at, reinforce_at)
         self.assertIn('_apply_lan_kill_full', block)
+        self.assertNotIn('_bg_block_ip', block)
+
+    def test_lan_kill_full_skips_firewall_when_forwarder_live(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'impairment_kill.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        block = src[
+            src.index('def _apply_lan_kill_full') : src.index('def _schedule_kill_command')
+        ]
+        fallback = block[
+            block.index('Npcap capture failed but ARP poison is live') : block.index(
+                "self.log('Kill ON for '"
+            )
+        ]
+        self.assertIn('_bg_block_ip', fallback)
+        success = block[block.index("self.log('Kill ON for '") :]
+        self.assertNotIn('_bg_block_ip', success)
+
+    def test_seal_hard_drop_requires_killed(self) -> None:
+        path = os.path.join(_SRC, 'networking', 'killer.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        block = src[src.index('def _seal_hard_drop') : src.index('def reinforce_full_cut')]
+        self.assertIn('mac not in self.killed', block)
 
 
 if __name__ == '__main__':

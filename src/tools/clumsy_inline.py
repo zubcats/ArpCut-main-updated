@@ -600,6 +600,10 @@ def clumsy_ics_resolve_victim_ip(device, scanner: Optional['Scanner'] = None) ->
         return ip
     if not clumsy_mode_enabled() or not isinstance(device, dict):
         return ip
+    # A live home-LAN table IP must not be remapped via leftover hotspot ARP.
+    # Rescan if the console actually moved onto the PC hotspot.
+    if ip:
+        return ip
     mac = good_mac(device.get('mac'))
     if not mac or mac == GLOBAL_MAC:
         return ip

@@ -39,23 +39,17 @@ class ImpairmentDupeMixin:
 
 
     def _dupe_cut_still_active(self, mac: str, ip: str) -> bool:
-        """True when ARP MITM or a hard-drop forwarder still owns this victim.
-
-        A 100% pass-through left up after Kill OFF is restore, not a cut.
-        """
+        """True when ARP MITM or a hard-drop forwarder still owns this victim."""
         killer = getattr(self, 'killer', None)
         if killer is None:
             return False
         killed = getattr(killer, 'killed', {}) or {}
-        relays = getattr(killer, '_unkill_relays', ()) or ()
         if mac and mac in killed:
             return True
         if ip:
             for entry in list(killed.values()):
                 if isinstance(entry, dict) and str(entry.get('ip') or '').strip() == ip:
                     return True
-        if mac and mac in relays:
-            return False
 
         def _is_hard_cut(fw) -> bool:
             if fw is None or not getattr(fw, 'running', False):
@@ -72,8 +66,6 @@ class ImpairmentDupeMixin:
             return True
         if ip:
             for fmac, fw in list(fws.items()):
-                if fmac in relays:
-                    continue
                 victim = killed.get(fmac) or {}
                 vip = str((victim or {}).get('ip') or '').strip()
                 if vip == ip and _is_hard_cut(fw):

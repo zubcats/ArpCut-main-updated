@@ -590,7 +590,7 @@ def _fmt_host(host: dict, *, label: str, soft_midcut_lan_probes: bool = False) -
     if fwd is True:
         if str(label).strip().upper() == 'AFTER':
             lines.append(
-                f'[INFO] {label} Windows IP forwarding on (Kill OFF kernel relay)'
+                f'[INFO] {label} Windows IP forwarding on'
             )
         else:
             lines.append(f'[FAIL] {label} Windows IP forwarding ON')
@@ -624,7 +624,7 @@ def _fmt_stack(
             )
         elif stack.get('forwarder_running'):
             lines.append(
-                f'[PASS] {label} Npcap pass-through relay up after OFF'
+                f'[FAIL] {label} Npcap forwarder still running after OFF'
             )
         else:
             lines.append(
@@ -1244,7 +1244,7 @@ def _eval_after(
         if stack.get('forwarder_hard_drop'):
             fails.append('forwarder still in hard-drop after OFF — connection not restored')
         elif stack.get('forwarder_running'):
-            notes.append('Npcap pass-through relay left up (mesh restore)')
+            fails.append('Npcap forwarder still running after OFF — connection not restored')
         else:
             notes.append('forwarder cleared')
 

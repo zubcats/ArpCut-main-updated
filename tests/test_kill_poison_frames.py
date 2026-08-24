@@ -94,14 +94,12 @@ class TestKillRestoreFrames(unittest.TestCase):
         self.assertIn('op=1', block)
         self.assertIn('op=2', block)
         self.assertIn('_refresh_router_mac_for_mitm', self._unkill_block())
-        self.assertIn('_ensure_unkill_pass_relay', self._unkill_block())
-        self.assertIn('_unkill_relays', self._unkill_block())
-        self.assertIn('enable_ip_forwarding', self._unkill_block())
-        # LAN OFF must not tear down the pass-through relay.
+        self.assertIn('self._stop_forwarder(mac)', self._unkill_block())
+        self.assertNotIn('_ensure_unkill_pass_relay', self._unkill_block())
+        self.assertNotIn('enable_ip_forwarding', self._unkill_block())
         lan = self._unkill_block()
-        stop_at = lan.find('self._stop_forwarder(mac)')
-        self.assertGreater(stop_at, 0)
-        self.assertIn('if ics_mode:', lan[max(0, stop_at - 80) : stop_at])
+        self.assertLess(lan.index('self._next_op_seq(mac)'), lan.index('self._stop_forwarder(mac)'))
+        self.assertNotIn('_unkill_relays.add', lan)
 
     def test_wifi_restore_broadcasts_honest_gateway_to_victim(self) -> None:
         from scapy.all import ARP, Ether
@@ -157,7 +155,7 @@ class TestKillRestoreFrames(unittest.TestCase):
         k._restore_arp_now(victim, seq=1, repeats=1, delay_s=0)
         self.assertEqual(len(sent), len(k._restore_frames(victim)))
 
-    def test_lan_unkill_keeps_pass_through_relay(self) -> None:
+    def test_lan_unkill_stops_forwarder(self) -> None:
         k = self._killer(wifi=True)
         k._unkill_relays = set()
         victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
@@ -169,24 +167,33 @@ class TestKillRestoreFrames(unittest.TestCase):
         k._unkill_restore_worker = lambda *a, **kw: None  # type: ignore[method-assign]
         k._sync_iface_for_victim = lambda *a, **kw: None  # type: ignore[method-assign]
         k._refresh_router_mac_for_mitm = lambda: None  # type: ignore[method-assign]
-        k._ensure_unkill_pass_relay = mock.Mock(return_value=True)  # type: ignore[method-assign]
         k._unblock_victim_firewall = mock.Mock()  # type: ignore[method-assign]
         k._stop_forwarder = mock.Mock()  # type: ignore[method-assign]
         with mock.patch('networking.killer.enable_ip_forwarding') as enable:
             k.unkill(victim, ics_mode=False)
-        k._ensure_unkill_pass_relay.assert_called_once_with(victim)
         k._unblock_victim_firewall.assert_called_once()
-        k._stop_forwarder.assert_not_called()
-        enable.assert_called_once()
-        self.assertIn(victim['mac'], k._unkill_relays)
+        k._stop_forwarder.assert_called_once_with(victim['mac'])
+        enable.assert_not_called()
+        self.assertNotIn(victim['mac'], k._unkill_relays)
         self.assertNotIn(victim['mac'], k.killed)
 
-    def test_idle_reconcile_skips_unkill_relays(self) -> None:
+    def test_seal_hard_drop_skips_when_not_killed(self) -> None:
+        k = self._killer(wifi=True)
+        mac = '00:e4:21:44:ed:0c'
+        fw = mock.Mock(running=True, drop_from_victim=False, drop_to_victim=False)
+        k.forwarders = {mac: fw}
+        k.killed = {}
+        self.assertFalse(k._seal_hard_drop(mac))
+        self.assertFalse(fw.drop_from_victim)
+
+    def test_idle_reconcile_stops_leftover_forwarders(self) -> None:
         path = os.path.join(_SRC, 'gui', 'impairment_mitm.py')
         with open(path, encoding='utf-8') as f:
             src = f.read()
         start = src.index('def _reconcile_idle_mitm_state')
-        self.assertIn('_unkill_relays', src[start : start + 2000])
+        block = src[start : start + 2500]
+        self.assertIn('disable_percent_cut', block)
+        self.assertNotIn('_unkill_relays', block)
 
     def test_unkill_all_uses_per_device_unkill_for_lan(self) -> None:
         path = os.path.join(_SRC, 'networking', 'killer.py')

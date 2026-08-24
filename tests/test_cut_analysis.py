@@ -695,7 +695,7 @@ class TestCutAnalysisScoring(unittest.TestCase):
         self.assertIn('AFTER  >>>  FAIL', '\n'.join(report.lines))
         self.assertIn('still armed', '\n'.join(report.lines).lower())
 
-    def test_after_pass_through_relay_is_success(self) -> None:
+    def test_after_forwarder_still_running_fails(self) -> None:
         from tools import cut_analysis as ca
 
         host = _live_host()
@@ -729,9 +729,9 @@ class TestCutAnalysisScoring(unittest.TestCase):
             ),
         )
         text = '\n'.join(report.lines)
-        self.assertEqual(report.overall, 'SUCCESS')
-        self.assertIn('pass-through relay', text.lower())
-        self.assertNotIn('forwarder still running after OFF', text.lower())
+        self.assertEqual(report.overall, 'FAIL')
+        self.assertIn('npcap forwarder still running after off', text.lower())
+        self.assertNotIn('pass-through relay', text.lower())
 
     def test_percent_cut_success_without_full_cut(self) -> None:
         from tools import cut_analysis as ca

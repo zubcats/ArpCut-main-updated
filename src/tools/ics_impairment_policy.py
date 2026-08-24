@@ -104,11 +104,20 @@ def classify_device_impairment(
                 topo = 'hotspot'
         except Exception:
             pass
+    table_on_ics = bool(table_ip) and victim_on_clumsy_ics_subnet(table_ip)
+    # A live home-LAN row (192.168.1.x) must stay ARP MITM. Leftover hotspot
+    # ARP for the same MAC used to steal Kill onto WinDivert and leave the
+    # console cut after OFF.
+    if table_ip and not table_on_ics:
+        resolved = table_ip
     on_downstream = victim_on_clumsy_ics_subnet(resolved)
-    # Hotspot session: console may be on PC hotspot while the scan table still shows home LAN IP.
-    # Only treat as downstream when the IP is on the ICS subnet or ARP finds an ICS address
-    # for this MAC — not when the PS5 has moved to router Wi‑Fi (Ethernet/Wi‑Fi handoff).
-    if not on_downstream and clumsy_hotspot_session_active() and not device.get('admin'):
+    # Only remap when the table has no IPv4 yet. Do not override a home-LAN IP.
+    if (
+        not on_downstream
+        and not table_ip
+        and clumsy_hotspot_session_active()
+        and not device.get('admin')
+    ):
         arp_ip = clumsy_ics_arp_ip_for_mac(scanner, str(device.get('mac') or ''))
         if arp_ip and victim_on_clumsy_ics_subnet(arp_ip):
             on_downstream = True

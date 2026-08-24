@@ -446,9 +446,7 @@ class Killer:
         self.storage = {}
         self.forwarders = {}
         self.pf_blocks = set()
-        # MACs that stay on a 100% MitmForwarder after Kill OFF. Starlink mesh
-        # often drops honest ARP restore, so stopping the relay black-holes the
-        # PS5 until its ARP times out.
+        # Leftover MACs from older keep-relay Kill OFF; discarded on kill/unkill.
         self._unkill_relays = set()
         self._socket = None  # Persistent L2 socket
         self._socket_token: str | None = None  # Npcap bind token that opened _socket
@@ -904,6 +902,8 @@ class Killer:
 
     def _seal_hard_drop(self, mac) -> bool:
         """Ensure a live forwarder hard-drops both directions (full Kill)."""
+        if not mac or mac not in self.killed:
+            return False
         fw = self.forwarders.get(mac)
         if not (fw and getattr(fw, 'running', False)):
             return False
@@ -937,8 +937,12 @@ class Killer:
             if mac not in self.killed or int(self._op_seq.get(mac, 0)) != seq:
                 return
             self.reassert_poison(victim, repeats=4)
+            if mac not in self.killed or int(self._op_seq.get(mac, 0)) != seq:
+                return
             if not self._seal_hard_drop(mac):
                 # Forwarder missing/dead — retry full cut (still post-instant).
+                if mac not in self.killed or int(self._op_seq.get(mac, 0)) != seq:
+                    return
                 self._apply_traffic_cut_sync(victim)
                 sealed = self._seal_hard_drop(mac)
             else:
@@ -973,14 +977,18 @@ class Killer:
         }
         if not snap.get('mac'):
             return
+        seq = int(self._op_seq.get(snap['mac'], 0))
 
         def _work() -> None:
             try:
                 # Yield so the instant arm returns / UI paints first.
                 sleep(0.02)
-                if snap.get('mac') not in self.killed:
+                mac = snap.get('mac')
+                if not mac or mac not in self.killed:
                     return
-                live = self.killed.get(snap['mac']) or snap
+                if int(self._op_seq.get(mac, 0)) != int(seq):
+                    return
+                live = self.killed.get(mac) or snap
                 self.reinforce_full_cut(live if isinstance(live, dict) else snap)
             except Exception:
                 try:
@@ -1244,41 +1252,6 @@ class Killer:
         except Exception:
             return False
 
-    def _ensure_unkill_pass_relay(self, victim) -> bool:
-        """100% Npcap relay after Kill OFF. Never leave a hard-drop running."""
-        mac = str((victim or {}).get('mac') or '').strip() if isinstance(victim, dict) else ''
-        if not mac:
-            return False
-        if self.resume_percent_cut_live(mac):
-            return True
-        if not isinstance(victim, dict):
-            return False
-        if not mac_address_is_usable((self.router or {}).get('mac')):
-            return False
-        tokens = npcap_iface_tokens(self.iface)
-        if not tokens:
-            return False
-        try:
-            self._get_socket()
-        except Exception:
-            pass
-        fw = MitmForwarder(debug=False)
-        fw.start(
-            victim=victim,
-            router=self.router,
-            iface_name=tokens[0],
-            iface_mac=getattr(self.iface, 'mac', None),
-            drop_from_victim=False,
-            drop_to_victim=False,
-            pass_from_victim_pct=100,
-            pass_to_victim_pct=100,
-            iface_alts=tokens[1:],
-        )
-        if not (fw and getattr(fw, 'running', False)):
-            return False
-        self.forwarders[mac] = fw
-        return True
-
     def _unblock_victim_firewall(self, victim) -> None:
         """Drop Kill's Windows Firewall / pf block immediately (do not wait on restore)."""
         ip = str((victim or {}).get('ip') or '').strip() if isinstance(victim, dict) else ''
@@ -1291,8 +1264,9 @@ class Killer:
 
         def _work():
             try:
-                from tools.pfctl import unblock_ip
+                from tools.pfctl import firewall_generation_bump, unblock_ip
 
+                firewall_generation_bump(ip)
                 unblock_ip(ip)
             except Exception:
                 pass
@@ -1404,8 +1378,8 @@ class Killer:
                 sleep(step)
                 slept += step
 
-        # Do not stop the Npcap forwarder here. unkill() owns teardown; racing
-        # this worker with Kill OFF was dropping the pass-through relay.
+        if victim['mac'] not in self.killed:
+            self._stop_forwarder(victim['mac'])
 
     def unkill(self, victim, *, ics_mode=False):
         """
@@ -1422,29 +1396,14 @@ class Killer:
             except Exception:
                 pass
         mac = victim['mac']
-        if not ics_mode:
-            # Instant OFF: flip the cut relay to 100% pass and leave it up.
-            # Analysis DURING proved PS5 WAN already hits this PC; stopping
-            # that relay (with IP forwarding still off) black-holes the
-            # console until ARP times out. Router ARP is often still poisoned,
-            # so return traffic also dies here unless we keep forwarding.
-            self._ensure_unkill_pass_relay(victim)
-            relays = getattr(self, '_unkill_relays', None)
-            if relays is None:
-                self._unkill_relays = set()
-                relays = self._unkill_relays
-            relays.add(mac)
-            self._unblock_victim_firewall(victim)
         seq = self._next_op_seq(mac)
         if mac in self.killed:
             self.killed.pop(mac)
-        if ics_mode:
-            self._stop_forwarder(mac)
-        elif not self.killed:
-            enable_ip_forwarding(
-                priority_iface=getattr(self.iface, 'name', None),
-                priority_only=True,
-            )
+        relays = getattr(self, '_unkill_relays', None)
+        if isinstance(relays, set):
+            relays.discard(mac)
+        self._unblock_victim_firewall(victim)
+        self._stop_forwarder(mac)
         # Immediate ARP burst with no sleep — sleeps belong in @threaded _unkill_restore_worker
         # so the GUI thread returns instantly on Kill/Lag/Dupe OFF.
         # Never open a cold Npcap L2 socket on this thread (0.5–2s, or hang).
@@ -1640,8 +1599,7 @@ class Killer:
                 return
             self._restore_arp_now(victim, seq, repeats=repeats, delay_s=0.08)
         if self._op_seq.get(victim['mac']) == seq and victim['mac'] not in self.killed:
-            if victim['mac'] not in getattr(self, '_unkill_relays', ()):
-                self._stop_forwarder(victim['mac'])
+            self._stop_forwarder(victim['mac'])
             self._remove_pf_block(victim['ip'])
 
     def kill_all(self, device_list):

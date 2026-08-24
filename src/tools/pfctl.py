@@ -1,9 +1,31 @@
 import sys
 import re
+import threading
 from subprocess import PIPE
 
 ANCHOR = 'com.zubcut'
 _LAST_ERR = ''
+_fw_gen_lock = threading.Lock()
+_fw_gen: dict[str, int] = {}
+
+
+def firewall_generation_bump(ip: str) -> int:
+    """Invalidate in-flight block_ip work for this IP (Kill OFF vs late Kill ON)."""
+    key = str(ip or '').strip()
+    if not key:
+        return 0
+    with _fw_gen_lock:
+        n = int(_fw_gen.get(key, 0)) + 1
+        _fw_gen[key] = n
+        return n
+
+
+def firewall_generation_current(ip: str) -> int:
+    key = str(ip or '').strip()
+    if not key:
+        return 0
+    with _fw_gen_lock:
+        return int(_fw_gen.get(key, 0))
 
 # Regex for valid IPv4
 _IP_RE = re.compile(r'^(\d{1,3}\.){3}\d{1,3}$')

@@ -58,13 +58,21 @@ class TestVictimTrafficRestore(unittest.TestCase):
         self.assertIn('_release_victim_arp_mitm_stack(victim)', off)
         self.assertIn('_ensure_network_context_for_victim(device, fast=True)', methods_through('_release_victim_arp_mitm_stack', '_ics_gate_allow_traffic'))
 
-    def test_lan_release_keeps_npcap_relay_for_unkill(self) -> None:
+    def test_lan_release_stops_npcap_forwarder(self) -> None:
         fn = methods_through('_release_victim_arp_mitm_stack', '_ics_gate_allow_traffic')
+        self.assertIn('self.killer.disable_percent_cut(mac)', fn)
+        self.assertNotIn('LAN Kill OFF keeps the Npcap forwarder', fn)
         ics_at = fn.index('is_ics = self._is_ics_downstream(victim)')
         disable_at = fn.index('disable_percent_cut')
         self.assertLess(ics_at, disable_at)
-        guard = fn[ics_at:disable_at]
-        self.assertIn('if is_ics:', guard)
+        self.assertNotIn('if is_ics:', fn[ics_at:disable_at])
+
+    def test_ics_emergency_does_not_treat_lan_killed_as_ics(self) -> None:
+        block = methods_through('_ics_emergency_release', '_ics_teardown_gate_if_idle')
+        probe = block[block.index('has_ics_state'): block.index('if not plan.is_ics_downstream')]
+        self.assertNotIn('killer.killed', probe)
+        self.assertIn('_ics_kill_profile_macs', probe)
+        self.assertIn('_ics_windivert_busy', probe)
 
 
 if __name__ == '__main__':

@@ -113,13 +113,10 @@ class ImpairmentIcsGateMixin:
                 continue
             seen.add(mac)
             is_ics = self._is_ics_downstream(victim)
-            # LAN Kill OFF keeps the Npcap forwarder at 100% pass (unkill).
-            # Stopping it here black-holes a mesh PS5 whose ARP still points at this PC.
-            if is_ics:
-                try:
-                    self.killer.disable_percent_cut(mac)
-                except Exception:
-                    pass
+            try:
+                self.killer.disable_percent_cut(mac)
+            except Exception:
+                pass
             try:
                 self.killer.unkill(victim, ics_mode=is_ics)
             except Exception:
@@ -253,11 +250,7 @@ class ImpairmentIcsGateMixin:
         self._stop_ics_lag_gate(join_timeout=0.35)
         if heal and resolved_ip:
             # F3: only schedule hotspot heal pulses when victim is actually on
-            # the ICS downstream subnet. _ics_emergency_release now reaches
-            # this code path for LAN Kill OFF too (via the has_ics_state probe)
-            # — without this guard we'd queue 4 inert QTimer pulses per LAN
-            # Kill OFF (each pulse early-returns inside restore_ics_hotspot_
-            # connectivity on victim_on_clumsy_ics_subnet).
+            # the ICS downstream subnet. LAN Kill OFF must not enter this path.
             try:
                 on_ics = bool(victim_on_clumsy_ics_subnet(resolved_ip))
             except Exception:
@@ -296,7 +289,8 @@ class ImpairmentIcsGateMixin:
         mac = str(device.get('mac') or '').strip()
         self._ics_hotspot_windivert_teardown(device, heal=heal)
         if mac:
-            self.killer.killed.pop(mac, None)
+            if mac in getattr(self, '_ics_kill_profile_macs', set()):
+                self.killer.killed.pop(mac, None)
             self._ics_kill_profile_macs.discard(mac)
             self._set_killed_profile(device, False)
 
@@ -330,7 +324,8 @@ class ImpairmentIcsGateMixin:
         Plan-drift safe: if the victim hopped LAN ↔ hotspot between ON and OFF
         the current plan no longer matches what we laid down. We still tear down
         whatever ICS state actually exists (gate, _ics_kill_profile_macs,
-        killer.killed entry, firewall) rather than gating on plan.is_ics_downstream.
+        WinDivert, firewall) rather than gating on plan.is_ics_downstream.
+        LAN ARP Kill (`killer.killed` only) is not ICS — do not steal that OFF.
         """
         if not isinstance(device, dict):
             return
@@ -346,7 +341,6 @@ class ImpairmentIcsGateMixin:
                 mac
                 and (
                     mac in getattr(self, '_ics_kill_profile_macs', set())
-                    or mac in self.killer.killed
                     or self._ics_windivert_busy(mac)
                 )
             )

@@ -45,6 +45,14 @@ class PfctlPurgeTests(unittest.TestCase):
         self.assertFalse(pfctl._zubcut_rule_is_attack('ZubCut-ICS-DHCP-Subnet-In'))
         self.assertFalse(pfctl._zubcut_rule_is_attack('ZubCut-Hotspot-Subnet-In'))
 
+    def test_firewall_generation_invalidates_stale_blocks(self) -> None:
+        ip = '192.168.1.248'
+        a = pfctl.firewall_generation_bump(ip)
+        self.assertEqual(pfctl.firewall_generation_current(ip), a)
+        b = pfctl.firewall_generation_bump(ip)
+        self.assertGreater(b, a)
+        self.assertNotEqual(pfctl.firewall_generation_current(ip), a)
+
     def test_subprocess_text_decode_never_raises_on_bad_bytes(self) -> None:
         from tools.utils import subprocess_text_kwargs
 
