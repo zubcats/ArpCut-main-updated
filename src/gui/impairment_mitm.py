@@ -1245,19 +1245,30 @@ class ImpairmentMitmMixin:
                 return
             if live.get('finalized') or live.get('report_saved'):
                 return
-            from tools.cut_analysis import PHASE_AFTER, PhaseSample, _empty_cut_sample
+            from tools.cut_analysis import PHASE_AFTER, PhaseSample, _sniff_cut_sample
 
+            iface = getattr(self.scanner, 'iface', None)
+            guid = str(getattr(iface, 'guid', None) or '').strip()
+            local_mac = str(getattr(iface, 'mac', None) or '').strip()
+            ip = str(dev.get('ip') or live.get('ip') or '').strip()
             host = self._gather_cut_analysis_host(dev)
             stack = self._gather_cut_analysis_stack(dev, cut_pct=pct)
-            # AFTER sniff on this Wi‑Fi NIC steals Npcap from restore/pass-through
-            # (~1s after OFF). Stack/host only — do not open a second sniffer.
-            sample = _empty_cut_sample(reason='after_off_skip_npcap')
+            sample = _sniff_cut_sample(
+                guid,
+                ip,
+                seconds=1.8,
+                local_mac=local_mac,
+                gateway_ip=str(host.get('gateway_ip') or ''),
+                gateway_mac=str(host.get('gateway_mac') or ''),
+                victim_mac=str(dev.get('mac') or live.get('mac') or ''),
+                iface=iface,
+            )
             after = PhaseSample(
                 phase=PHASE_AFTER,
                 sample=sample,
                 host=host,
                 stack=stack,
-                note='flow OFF — restore check (no Npcap sniff)',
+                note='flow OFF — restore check',
             )
             live = getattr(self, '_cut_analysis_session', None)
             if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:
@@ -2320,16 +2331,6 @@ class ImpairmentMitmMixin:
                 if mac in getattr(self.killer, 'killed', {}):
                     continue
                 if fw is not None and getattr(fw, 'running', False):
-                    until = 0.0
-                    try:
-                        until = float(
-                            (getattr(self.killer, '_restore_pass_until', None) or {}).get(
-                                mac, 0
-                            )
-                            or 0
-                        )
-                    except Exception:
-                        until = 0.0
                     pass_all = False
                     try:
                         from networking.killer import _forwarder_is_pass_all
@@ -2337,7 +2338,7 @@ class ImpairmentMitmMixin:
                         pass_all = _forwarder_is_pass_all(fw)
                     except Exception:
                         pass_all = False
-                    if pass_all and until and time.monotonic() < until:
+                    if pass_all:
                         continue
                     try:
                         self.killer.disable_percent_cut(mac)

@@ -1518,13 +1518,22 @@ class Killer:
             return False
         return True
 
+    def _hold_restore_pass(self, mac) -> None:
+        """Keep leftover MITM in 100% pass until the next Kill/Dupe ON."""
+        if not mac:
+            return
+        if not isinstance(getattr(self, '_restore_pass_until', None), dict):
+            self._restore_pass_until = {}
+        # Far-future hold so idle reconcile cannot drop a still-needed relay.
+        self._restore_pass_until[mac] = monotonic() + (24.0 * 3600.0)
+
     def _ensure_restore_pass(self, victim, seq) -> None:
         """Flip leftover MITM to 100% pass so OFF is not a black hole."""
         mac = str((victim or {}).get('mac') or '') if isinstance(victim, dict) else ''
         if not mac or mac in self.killed:
             return
         if self.resume_percent_cut_live(mac):
-            self._arm_restore_pass_stop(mac, seq)
+            self._hold_restore_pass(mac)
             return
         snap = {
             'mac': (victim or {}).get('mac'),
@@ -1536,10 +1545,10 @@ class Killer:
             if self._op_seq.get(mac) != seq or mac in self.killed:
                 return
             if self.resume_percent_cut_live(mac):
-                self._arm_restore_pass_stop(mac, seq)
+                self._hold_restore_pass(mac)
                 return
             if self._start_restore_pass_forwarder(snap):
-                self._arm_restore_pass_stop(mac, seq)
+                self._hold_restore_pass(mac)
 
         try:
             threading.Thread(

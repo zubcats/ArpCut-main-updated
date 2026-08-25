@@ -859,8 +859,6 @@ class TestCutAnalysisWiring(unittest.TestCase):
         self.assertIn('sleep(', during)
         after = method_src('_schedule_cut_analysis_after_off')
         self.assertIn('PHASE_AFTER', after)
-        self.assertIn('_empty_cut_sample', after)
-        self.assertNotIn('_sniff_cut_sample', after)
 
     def test_single_final_report_requires_all_phases(self) -> None:
         src = load_main_window_source()

@@ -14,20 +14,18 @@ class TestRestorePassHold(unittest.TestCase):
         with open(path, encoding='utf-8') as fh:
             return fh.read()
 
-    def test_restore_pass_waits_for_quiet_not_fixed_60s(self) -> None:
+    def test_lan_off_holds_pass_through_until_next_on(self) -> None:
         src = self._killer_py()
-        self.assertIn('_RESTORE_PASS_MIN_S = 180.0', src)
-        self.assertIn('_RESTORE_PASS_QUIET_S = 45.0', src)
+        ensure = src[src.index('def _ensure_restore_pass') : src.index('def _unblock_victim_firewall')]
+        self.assertIn('_hold_restore_pass', ensure)
+        self.assertNotIn('_arm_restore_pass_stop', ensure)
         self.assertNotIn('_RESTORE_PASS_S = 60.0', src)
-        self.assertNotIn('_RESTORE_PASS_MAX_S', src)
-        arm = src[src.index('def _arm_restore_pass_stop') : src.index('def _start_restore_pass_forwarder')]
-        self.assertIn('_restore_pass_seen', arm)
-        self.assertIn('_forwarder_is_pass_all', arm)
-        self.assertIn('_RESTORE_PASS_BUSY_SLIDE_S', arm)
-        self.assertIn('Never stop while leftover MITM is still delivering', src)
-        self.assertIn('packets_seen', src[src.index('def _restore_pass_seen') : src.index('def _arm_restore_pass_stop')])
-        self.assertNotIn('sleep(_RESTORE_PASS_S)', arm)
-        self.assertNotIn('while monotonic() - started < _RESTORE_PASS_MIN_S', arm)
+        mitm = os.path.join(_SRC, 'gui', 'impairment_mitm.py')
+        with open(mitm, encoding='utf-8') as fh:
+            rec = fh.read()
+        rec = rec[rec.index('def _reconcile_idle_mitm_state') :]
+        self.assertIn('if pass_all:', rec)
+        self.assertNotIn('if pass_all and until', rec)
 
     def test_wifi_restore_broadcasts_consistent_router_sa(self) -> None:
         src = self._killer_py()

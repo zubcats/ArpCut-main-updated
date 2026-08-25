@@ -202,14 +202,14 @@ class TestKillRestoreFrames(unittest.TestCase):
         k._unblock_victim_firewall = mock.Mock()  # type: ignore[method-assign]
         k._stop_forwarder = mock.Mock()  # type: ignore[method-assign]
         k.resume_percent_cut_live = mock.Mock(return_value=True)  # type: ignore[method-assign]
-        k._arm_restore_pass_stop = mock.Mock()  # type: ignore[method-assign]
+        k._hold_restore_pass = mock.Mock()  # type: ignore[method-assign]
         k._pin_local_gateway_neighbor_async = mock.Mock()  # type: ignore[method-assign]
         with mock.patch('networking.killer.enable_ip_forwarding') as enable:
             k.unkill(victim, ics_mode=False)
         k._unblock_victim_firewall.assert_called_once()
         k._stop_forwarder.assert_not_called()
         k.resume_percent_cut_live.assert_called_once_with(victim['mac'])
-        k._arm_restore_pass_stop.assert_called_once()
+        k._hold_restore_pass.assert_called_once()
         k._pin_local_gateway_neighbor_async.assert_called_once()
         enable.assert_not_called()
         self.assertNotIn(victim['mac'], k._unkill_relays)
