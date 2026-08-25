@@ -196,7 +196,11 @@ _forwarding_priority_only: bool = False
 
 # After Kill OFF, leftover MITM still delivers frames here until ARP expires.
 # Keep a 100% pass-through (never hard-drop) so WAN is not black-holed.
-_RESTORE_PASS_S = 60.0
+# Never stop while leftover MITM is still delivering packets here. Hold at
+# least MIN even if the console is idle (no WAN), then stop after QUIET.
+_RESTORE_PASS_MIN_S = 180.0
+_RESTORE_PASS_QUIET_S = 45.0
+_RESTORE_PASS_BUSY_SLIDE_S = 45.0
 
 
 def _forwarder_is_pass_all(fw) -> bool:
@@ -470,6 +474,7 @@ class Killer:
         self._unkill_relays = set()
         # MAC -> monotonic deadline for post-OFF 100% pass-through.
         self._restore_pass_until = {}
+        self._restore_pass_gen = {}
         self._socket = None  # Persistent L2 socket
         self._socket_token: str | None = None  # Npcap bind token that opened _socket
         # Npcap/Scapy L2socket is not safe for concurrent send from Kill GUI + ARP worker.
@@ -1373,25 +1378,95 @@ class Killer:
             (self._restore_pass_until or {}).pop(mac, None)
         except Exception:
             pass
+        try:
+            if isinstance(getattr(self, '_restore_pass_gen', None), dict):
+                self._restore_pass_gen[mac] = int(self._restore_pass_gen.get(mac, 0)) + 1
+        except Exception:
+            pass
+
+    def _restore_pass_seen(self, mac) -> int:
+        fw = (getattr(self, 'forwarders', None) or {}).get(mac)
+        if fw is None:
+            return 0
+        try:
+            stats = fw.get_stats() if hasattr(fw, 'get_stats') else None
+            if isinstance(stats, dict):
+                return int(stats.get('packets_seen') or 0) + int(
+                    stats.get('packets_forwarded') or 0
+                )
+        except Exception:
+            pass
+        try:
+            return int(getattr(fw, '_pkt_count', 0) or 0) + int(
+                getattr(fw, '_fwd_count', 0) or 0
+            )
+        except Exception:
+            return 0
 
     def _arm_restore_pass_stop(self, mac, seq) -> None:
-        """Stop the post-OFF pass-through after ARP has had time to expire."""
+        """Keep 100% pass-through until leftover MITM is unused.
+
+        A fixed 60s stop was the 'came back then died again' hole: restore ARP
+        can land for a moment, then we drop the relay while the router still
+        sends PS5 WAN here. Do not force-stop a still-busy path.
+        """
         if not mac:
             return
         if not isinstance(getattr(self, '_restore_pass_until', None), dict):
             self._restore_pass_until = {}
-        self._restore_pass_until[mac] = monotonic() + _RESTORE_PASS_S
+        if not isinstance(getattr(self, '_restore_pass_gen', None), dict):
+            self._restore_pass_gen = {}
+        gen = int(self._restore_pass_gen.get(mac, 0)) + 1
+        self._restore_pass_gen[mac] = gen
+        started = monotonic()
+        self._restore_pass_until[mac] = started + _RESTORE_PASS_MIN_S
 
-        def _work() -> None:
-            sleep(_RESTORE_PASS_S)
+        def _still_ours() -> bool:
             if self._op_seq.get(mac) != seq or mac in self.killed:
-                return
-            until = (getattr(self, '_restore_pass_until', None) or {}).get(mac, 0)
+                return False
+            return int((getattr(self, '_restore_pass_gen', None) or {}).get(mac, 0)) == gen
+
+        def _slide_until(deadline: float) -> None:
             try:
-                if until and monotonic() < float(until) - 0.25:
-                    return
+                self._restore_pass_until[mac] = float(deadline)
             except Exception:
                 pass
+
+        def _work() -> None:
+            last_seen = self._restore_pass_seen(mac)
+            quiet_since = None
+            while _still_ours():
+                now = monotonic()
+                fw = (getattr(self, 'forwarders', None) or {}).get(mac)
+                if fw is None or not getattr(fw, 'running', False):
+                    if now - started < 5.0:
+                        sleep(0.25)
+                        continue
+                    break
+                if not _forwarder_is_pass_all(fw):
+                    if mac not in self.killed:
+                        self._stop_forwarder(mac)
+                    return
+                seen = self._restore_pass_seen(mac)
+                if seen != last_seen:
+                    last_seen = seen
+                    quiet_since = None
+                    # Still in use — never let idle reconcile drop this relay.
+                    _slide_until(now + _RESTORE_PASS_BUSY_SLIDE_S)
+                else:
+                    if quiet_since is None:
+                        quiet_since = now
+                    held = now - started
+                    quiet_for = now - quiet_since
+                    if held < _RESTORE_PASS_MIN_S:
+                        _slide_until(started + _RESTORE_PASS_MIN_S)
+                    elif quiet_for >= _RESTORE_PASS_QUIET_S:
+                        break
+                    else:
+                        _slide_until(now + _RESTORE_PASS_QUIET_S)
+                sleep(1.0)
+            if not _still_ours():
+                return
             try:
                 (self._restore_pass_until or {}).pop(mac, None)
             except Exception:
@@ -1791,6 +1866,8 @@ class Killer:
         if quick:
             plan = ((0.0, 2), (0.08, 1))
         else:
+            # Gaps (not wall-clock). Stretch honest ARP through the min hold
+            # and past typical router neighbor timeouts.
             plan = (
                 (0.0, 3),
                 (0.2, 2),
@@ -1798,6 +1875,11 @@ class Killer:
                 (1.0, 2),
                 (2.5, 3),
                 (5.0, 3),
+                (10.0, 2),
+                (20.0, 2),
+                (40.0, 2),
+                (80.0, 2),
+                (120.0, 2),
             )
         for wait_s, repeats in plan:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:

@@ -44,11 +44,12 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   LAN ping + "forwarder cleared".
 - **Right:** On OFF: flip the live forwarder to 100% pass
   (`pass_all_live`), send honest restore ARP (including the same
-  victim-targeted broadcast poison used), then stop the pass-through
-  after a short grace. `_seal_hard_drop` must no-op when the MAC is
-  not in `killed`. Idle reconcile must not kill that pass-through
-  before the grace ends. Do not treat “operator PC internet” as the
-  broken path unless the operator said that PC lost WAN.
+  victim-targeted broadcast poison used), and keep that pass-through
+  until leftover MITM is unused: hold at least a few minutes (idle
+  console has no WAN), and never drop a still-busy relay. A fixed
+  short stop is the “came back then died again” hole. `_seal_hard_drop`
+  must no-op when the MAC is not in `killed`. Idle reconcile must not
+  kill a still-busy pass-through.
 - **Wrong:** Finish a poison burst after unkill, or queue `block_ip`
   while the Npcap dropper is already live. Early Dupe/Kill OFF then
   looks restored and dies again when the trailing frames/firewall land.
