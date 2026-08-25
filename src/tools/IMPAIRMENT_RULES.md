@@ -15,6 +15,12 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 - **Right:** Unicast request+reply to victim MAC and router MAC, plus
   Wi‑Fi victim-targeted broadcast copies so isolation still delivers the
   cut. Do not broadcast ``psrc=victim_ip`` (that GARP re-poisons the router).
+- **Mesh Wi‑Fi PC + ethernet PS5 (Starlink router / mesh node):** ON and
+  OFF are the same ARP stack. Instant OFF worked when both were on the
+  same AP because unicast restore landed. On this split, only the flooded
+  broadcast reaches the console. Restore must use that same broadcast,
+  with honest ``hwsrc=router_mac`` and a consistent Ether src — not a
+  second theory for Dupe vs Kill.
 
 ## Clumsy enable must not break a working hotspot
 

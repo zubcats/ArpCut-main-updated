@@ -1737,15 +1737,16 @@ class Killer:
             self.prewarm_l2_socket(join_ms=0)
 
     def _restore_frames(self, victim):
-        """Honest gateway restore (unicast + Wi‑Fi broadcast with real router MAC).
+        """Undo poison with the same delivery Kill/Dupe ON used.
 
-        Poison is unicast-only so this PC is not taught that it is the gateway.
-        Restore still uses victim-targeted L2 broadcast with ``hwsrc=router_mac``
-        so an ethernet console behind isolation can unlearn a leftover mapping.
+        This PC is on mesh Wi‑Fi; the PS5 is on router ethernet. Isolation
+        drops STA unicast, which is why ON uses victim-targeted L2 broadcast.
+        Unicast-only restore never reaches the console.
 
-        Also send victim-destined copies whose Ethernet source is the real
-        router MAC (some stacks ignore ARP when Ether src != hwsrc). The AP
-        may drop a spoofed SA; harmless if it does.
+        Poison broadcast is consistent (Ether src == hwsrc == this PC). A
+        restore broadcast that keeps this PC as Ether src and the router as
+        hwsrc is the shape many stacks ignore. Also flood the honest pair
+        (Ether src == hwsrc == router MAC) on the same broadcast path.
 
         Do not broadcast ``psrc=victim_ip`` from this PC — that re-teaches
         the router the PS5 is here.
@@ -1829,6 +1830,22 @@ class Killer:
                         hwdst=victim_mac,
                     ),
                     Ether(src=src, dst=bcast)
+                    / ARP(
+                        op=2,
+                        psrc=router_ip,
+                        hwsrc=router_mac,
+                        pdst=victim_ip,
+                        hwdst=victim_mac,
+                    ),
+                    Ether(src=router_mac, dst=bcast)
+                    / ARP(
+                        op=1,
+                        psrc=router_ip,
+                        hwsrc=router_mac,
+                        pdst=victim_ip,
+                        hwdst=victim_mac,
+                    ),
+                    Ether(src=router_mac, dst=bcast)
                     / ARP(
                         op=2,
                         psrc=router_ip,

@@ -881,8 +881,8 @@ class ImpairmentKillMixin:
                         _bg_unblock_ip(victim.get('ip'))
                     self._ics_teardown_gate_if_idle(mac)
                 else:
-                    self._ensure_network_context_for_victim(victim)
-                    self.killer.unkill(victim)
+                    # Do not call unkill again — that bumps _op_seq and aborts
+                    # the restore worker OFF already started (Kill/Dupe same stack).
                     self.killer.reinforce_restore(victim)
             except Exception:
                 pass

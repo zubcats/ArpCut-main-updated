@@ -121,7 +121,11 @@ class TestKillRestoreFrames(unittest.TestCase):
         frames = k._restore_frames(victim)
         self.assertTrue(frames)
         bcast = [f for f in frames if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff']
-        self.assertEqual(len(bcast), 2)
+        self.assertEqual(len(bcast), 4)
+        as_router = [
+            f for f in bcast if str(f[Ether].src).lower() == '74:24:9f:3a:a3:75'
+        ]
+        self.assertEqual(len(as_router), 2)
         for f in bcast:
             self.assertEqual(str(f[ARP].psrc), '192.168.1.1')
             self.assertEqual(str(f[ARP].hwsrc).lower(), '74:24:9f:3a:a3:75')

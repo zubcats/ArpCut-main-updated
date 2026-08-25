@@ -29,6 +29,25 @@ class TestRestorePassHold(unittest.TestCase):
         self.assertNotIn('sleep(_RESTORE_PASS_S)', arm)
         self.assertNotIn('while monotonic() - started < _RESTORE_PASS_MIN_S', arm)
 
+    def test_wifi_restore_broadcasts_consistent_router_sa(self) -> None:
+        src = self._killer_py()
+        block = src[src.index('def _restore_frames') : src.index('def _restore_arp_now')]
+        self.assertIn("Ether(src=router_mac, dst=bcast)", block)
+        self.assertIn('hwsrc=router_mac', block)
+        self.assertIn('Undo poison with the same delivery', block)
+
+    def test_flow_off_reinforce_does_not_unkill_again(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'impairment_kill.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        block = src[
+            src.index('def _schedule_flow_off_reinforce') : src.index(
+                'def _kill_ui_shows_on'
+            )
+        ]
+        self.assertIn('reinforce_restore', block)
+        self.assertNotIn('self.killer.unkill(victim)', block)
+
     def test_lan_restore_arp_covers_pass_through_window(self) -> None:
         src = self._killer_py()
         worker = src[src.index('def _unkill_restore_worker') : src.index('def kill_all')]
