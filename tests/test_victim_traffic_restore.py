@@ -62,14 +62,13 @@ class TestVictimTrafficRestore(unittest.TestCase):
             methods_through('_release_victim_arp_mitm_stack', '_ics_gate_allow_traffic'),
         )
 
-    def test_lan_release_stops_npcap_forwarder(self) -> None:
+    def test_lan_release_leaves_npcap_for_restore_pass(self) -> None:
         fn = methods_through('_release_victim_arp_mitm_stack', '_ics_gate_allow_traffic')
         self.assertIn('self.killer.disable_percent_cut(mac)', fn)
-        self.assertNotIn('LAN Kill OFF keeps the Npcap forwarder', fn)
         ics_at = fn.index('is_ics = self._is_ics_downstream(victim)')
         disable_at = fn.index('disable_percent_cut')
         self.assertLess(ics_at, disable_at)
-        self.assertNotIn('if is_ics:', fn[ics_at:disable_at])
+        self.assertIn('if is_ics:', fn[ics_at:disable_at])
 
     def test_ics_emergency_does_not_treat_lan_killed_as_ics(self) -> None:
         block = methods_through('_ics_emergency_release', '_ics_teardown_gate_if_idle')

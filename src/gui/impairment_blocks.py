@@ -436,15 +436,12 @@ class ImpairmentBlocksMixin:
             )
         except Exception:
             pass
+        if mac not in getattr(self.killer, 'killed', {}):
+            return
         try:
             self.killer._reinforce_full_cut_async(device)
         except Exception:
             pass
-        try:
-            iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
-        except Exception:
-            iface_name = 'en0'
-        _bg_block_ip(iface_name, device.get('ip'), direction)
         try:
             self._log_mitm_arm_status(device, action=action)
         except Exception:
@@ -455,6 +452,11 @@ class ImpairmentBlocksMixin:
             pass
         fw = getattr(self.killer, 'forwarders', {}).get(mac)
         if not (fw and getattr(fw, 'running', False)):
+            try:
+                iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
+            except Exception:
+                iface_name = 'en0'
+            _bg_block_ip(iface_name, device.get('ip'), direction)
             self.log(
                 f'{action} ON (ARP+firewall) for {device.get("ip", "")} — '
                 'Npcap forwarder unavailable; cut may be partial '
@@ -533,11 +535,6 @@ class ImpairmentBlocksMixin:
                 UI_LOG_VICTIM_BLOCK_FG,
             )
         else:
-            try:
-                iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
-            except Exception:
-                iface_name = 'en0'
-            _bg_block_ip(iface_name, device.get('ip'), direction)
             self.log(f'{flow} ON for {device.get("ip", "")}', UI_LOG_VICTIM_BLOCK_FG)
         self._log_mitm_arm_status(device, action=flow)
         self._schedule_mitm_traffic_probe(device, flow=flow)

@@ -32,6 +32,24 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   `disable_ip_forwarding(priority_iface=…)` (registry sync + background netsh). Startup
   may use `blocking=True`. Clumsy/ICS turns forwarding on when that path needs it.
 
+## Home LAN Kill OFF
+
+- **Wrong:** Stop the Npcap forwarder (or leave hard-drop) while the
+  victim/router still have poisoned ARP and kernel forwarding is off.
+  Frames still arrive here and die. Analysis AFTER then false-passes on
+  LAN ping + "forwarder cleared".
+- **Wrong:** Broadcast gateway impersonation on Kill ON (`psrc=router`
+  on `ff:ff:ff`) — this PC and every listening client lose internet for
+  minutes after a short toggle.
+- **Right:** Unicast poison only. On OFF: flip the live forwarder to
+  100% pass (`pass_all_live`), send honest restore ARP, pin this PC's
+  gateway neighbor, then stop the pass-through after a short grace.
+  `_seal_hard_drop` must no-op when the MAC is not in `killed`. Idle
+  reconcile must not kill that pass-through before the grace ends.
+- **Wrong:** Finish a poison burst after unkill, or queue `block_ip`
+  while the Npcap dropper is already live. Early Dupe/Kill OFF then
+  looks restored and dies again when the trailing frames/firewall land.
+
 ## Home LAN Kill — instant cut first
 
 - **Wrong:** Blocking probes, forwarding netsh, or “reinforce” work **before** the first

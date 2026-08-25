@@ -113,10 +113,11 @@ class ImpairmentIcsGateMixin:
                 continue
             seen.add(mac)
             is_ics = self._is_ics_downstream(victim)
-            try:
-                self.killer.disable_percent_cut(mac)
-            except Exception:
-                pass
+            if is_ics:
+                try:
+                    self.killer.disable_percent_cut(mac)
+                except Exception:
+                    pass
             try:
                 self.killer.unkill(victim, ics_mode=is_ics)
             except Exception:

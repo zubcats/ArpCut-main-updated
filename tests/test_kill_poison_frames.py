@@ -1,4 +1,4 @@
-"""LAN Kill poison/restore frames: unicast + Wi‑Fi broadcast, request + reply."""
+"""LAN Kill poison/restore frames: unicast poison, honest restore, request + reply."""
 from __future__ import annotations
 
 import os
@@ -34,16 +34,29 @@ class TestKillPoisonFrames(unittest.TestCase):
             src = f.read()
         return src[src.index('def _poison_frames'): src.index('def _poison_arp_now')]
 
-    def test_poison_frames_keep_unicast_and_wifi_victim_broadcast(self) -> None:
+    def test_poison_frames_are_unicast_only(self) -> None:
         block = self._poison_block()
         self.assertIn("dst=victim['mac']", block)
         self.assertIn("dst=self.router['mac']", block)
-        self.assertIn('iface_is_wireless', block)
-        self.assertIn('ff:ff:ff:ff:ff:ff', block)
         self.assertIn("pdst=victim['ip']", block)
         self.assertIn('_poison_hwsrc', block)
         self.assertIn('src=src', block)
         self.assertIn('hwsrc=src', block)
+        self.assertNotIn('iface_is_wireless', block)
+        self.assertNotIn('frames.extend', block)
+        self.assertNotIn("'ff:ff:ff:ff:ff:ff'", block)
+
+    def test_poison_send_aborts_mid_burst_after_unkill(self) -> None:
+        path = os.path.join(_SRC, 'networking', 'killer.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        now = src[src.index('def _poison_arp_now('): src.index('def _poison_arp_now_async')]
+        worker = src[src.index('def _kill_arp_worker'): src.index('def unkill(')]
+        self.assertIn('victim[\'mac\'] not in self.killed', now)
+        self.assertIn('for frame in frames:', now)
+        self.assertLess(now.index('for frame in frames:'), now.rindex('not in self.killed'))
+        self.assertIn('for frame in frames:', worker)
+        self.assertIn('self._op_seq.get(victim[\'mac\']) != seq', worker)
 
     def test_poison_frames_include_request_and_reply(self) -> None:
         block = self._poison_block()
@@ -94,9 +107,12 @@ class TestKillRestoreFrames(unittest.TestCase):
         self.assertIn('ff:ff:ff:ff:ff:ff', block)
         self.assertNotIn("psrc=victim_ip", block[block.index("if wifi"):] if 'if wifi' in block else '')
         self.assertNotIn('_refresh_router_mac_for_mitm', self._unkill_block())
-        self.assertIn('self._stop_forwarder(mac)', self._unkill_block())
         lan = self._unkill_block()
-        self.assertLess(lan.index('self._next_op_seq(mac)'), lan.index('self._stop_forwarder(mac)'))
+        self.assertIn('_ensure_restore_pass', lan)
+        self.assertIn('_pin_local_gateway_neighbor_async', lan)
+        self.assertLess(lan.index('self._next_op_seq(mac)'), lan.index('_ensure_restore_pass'))
+        ics = lan[lan.index('if ics_mode:'): lan.index('else:')]
+        self.assertIn('self._stop_forwarder(mac)', ics)
 
     def test_wifi_restore_broadcasts_honest_gateway_like_poison(self) -> None:
         from scapy.all import ARP, Ether
@@ -154,9 +170,20 @@ class TestKillRestoreFrames(unittest.TestCase):
         k._restore_arp_now(victim, seq=1, repeats=1, delay_s=0)
         self.assertEqual(len(sent), len(k._restore_frames(victim)))
 
-    def test_lan_unkill_stops_forwarder(self) -> None:
+    def test_wifi_poison_has_no_gateway_broadcast(self) -> None:
+        from scapy.all import Ether
+
+        k = self._killer(wifi=True)
+        victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
+        frames = k._poison_frames(victim)
+        bcast = [f for f in frames if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff']
+        self.assertEqual(bcast, [])
+        self.assertGreaterEqual(len(frames), 4)
+
+    def test_lan_unkill_flips_to_pass_through(self) -> None:
         k = self._killer(wifi=True)
         k._unkill_relays = set()
+        k._restore_pass_until = {}
         victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
         k.killed = {victim['mac']: victim}
         k._op_seq = {victim['mac']: 0}
@@ -168,10 +195,16 @@ class TestKillRestoreFrames(unittest.TestCase):
         k._refresh_router_mac_for_mitm = lambda: None  # type: ignore[method-assign]
         k._unblock_victim_firewall = mock.Mock()  # type: ignore[method-assign]
         k._stop_forwarder = mock.Mock()  # type: ignore[method-assign]
+        k.resume_percent_cut_live = mock.Mock(return_value=True)  # type: ignore[method-assign]
+        k._arm_restore_pass_stop = mock.Mock()  # type: ignore[method-assign]
+        k._pin_local_gateway_neighbor_async = mock.Mock()  # type: ignore[method-assign]
         with mock.patch('networking.killer.enable_ip_forwarding') as enable:
             k.unkill(victim, ics_mode=False)
         k._unblock_victim_firewall.assert_called_once()
-        k._stop_forwarder.assert_called_once_with(victim['mac'])
+        k._stop_forwarder.assert_not_called()
+        k.resume_percent_cut_live.assert_called_once_with(victim['mac'])
+        k._arm_restore_pass_stop.assert_called_once()
+        k._pin_local_gateway_neighbor_async.assert_called_once()
         enable.assert_not_called()
         self.assertNotIn(victim['mac'], k._unkill_relays)
         self.assertNotIn(victim['mac'], k.killed)
@@ -190,8 +223,9 @@ class TestKillRestoreFrames(unittest.TestCase):
         with open(path, encoding='utf-8') as f:
             src = f.read()
         start = src.index('def _reconcile_idle_mitm_state')
-        block = src[start : start + 2500]
+        block = src[start : start + 4000]
         self.assertIn('disable_percent_cut', block)
+        self.assertIn('_restore_pass_until', block)
         self.assertNotIn('_unkill_relays', block)
 
     def test_unkill_all_uses_per_device_unkill_for_lan(self) -> None:

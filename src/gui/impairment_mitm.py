@@ -2331,6 +2331,25 @@ class ImpairmentMitmMixin:
                 if mac in getattr(self.killer, 'killed', {}):
                     continue
                 if fw is not None and getattr(fw, 'running', False):
+                    until = 0.0
+                    try:
+                        until = float(
+                            (getattr(self.killer, '_restore_pass_until', None) or {}).get(
+                                mac, 0
+                            )
+                            or 0
+                        )
+                    except Exception:
+                        until = 0.0
+                    pass_all = False
+                    try:
+                        from networking.killer import _forwarder_is_pass_all
+
+                        pass_all = _forwarder_is_pass_all(fw)
+                    except Exception:
+                        pass_all = False
+                    if pass_all and until and time.monotonic() < until:
+                        continue
                     try:
                         self.killer.disable_percent_cut(mac)
                     except Exception:

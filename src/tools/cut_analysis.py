@@ -624,7 +624,8 @@ def _fmt_stack(
             )
         elif stack.get('forwarder_running'):
             lines.append(
-                f'[FAIL] {label} Npcap forwarder still running after OFF'
+                f'[INFO] {label} Npcap restore pass-through still running '
+                '(not a leftover cut)'
             )
         else:
             lines.append(
@@ -1244,7 +1245,7 @@ def _eval_after(
         if stack.get('forwarder_hard_drop'):
             fails.append('forwarder still in hard-drop after OFF — connection not restored')
         elif stack.get('forwarder_running'):
-            fails.append('Npcap forwarder still running after OFF — connection not restored')
+            notes.append('forwarder passing through after OFF (restore assist)')
         else:
             notes.append('forwarder cleared')
 

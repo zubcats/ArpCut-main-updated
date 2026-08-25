@@ -470,6 +470,11 @@ class ImpairmentDupeMixin:
                                 'Dupe block failed — rescan, pick Wi‑Fi in Settings if PC is on Wi‑Fi'
                             )
                 else:
+                    if (
+                        not self.dupe_active
+                        or int(getattr(self, '_dupe_start_gen', 0)) != arm_gen
+                    ):
+                        return
                     dev = dict(dev)
                     mac = str(dev.get('mac') or '').strip()
                     if mac:
@@ -491,6 +496,11 @@ class ImpairmentDupeMixin:
                     self.dupe_device_ip = dev.get('ip') or self.dupe_device_ip
                     # Instant cut already ran in preblock — seal after (Kill re-ON parity).
                     if not plan.use_windivert:
+                        if (
+                            not self.dupe_active
+                            or int(getattr(self, '_dupe_start_gen', 0)) != arm_gen
+                        ):
+                            return
                         self._seal_lan_mitm_after_instant_cut(
                             dev, block_dir, action='Dupe'
                         )
@@ -500,6 +510,11 @@ class ImpairmentDupeMixin:
                     'Dupe preblock did not stick — arming full MITM…',
                     UI_LOG_VICTIM_BLOCK_FG,
                 )
+            if (
+                not self.dupe_active
+                or int(getattr(self, '_dupe_start_gen', 0)) != arm_gen
+            ):
+                return
             dev = self._prepare_victim_for_impairment(dev, fast=True)
             if not self._arm_victim_mitm_like_kill(dev, block_dir, flow='Dupe'):
                 raise RuntimeError(
