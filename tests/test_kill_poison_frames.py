@@ -34,17 +34,16 @@ class TestKillPoisonFrames(unittest.TestCase):
             src = f.read()
         return src[src.index('def _poison_frames'): src.index('def _poison_arp_now')]
 
-    def test_poison_frames_are_unicast_only(self) -> None:
+    def test_poison_frames_keep_unicast_and_wifi_victim_broadcast(self) -> None:
         block = self._poison_block()
         self.assertIn("dst=victim['mac']", block)
         self.assertIn("dst=self.router['mac']", block)
+        self.assertIn('iface_is_wireless', block)
+        self.assertIn('ff:ff:ff:ff:ff:ff', block)
         self.assertIn("pdst=victim['ip']", block)
         self.assertIn('_poison_hwsrc', block)
         self.assertIn('src=src', block)
         self.assertIn('hwsrc=src', block)
-        self.assertNotIn('iface_is_wireless', block)
-        self.assertNotIn('frames.extend', block)
-        self.assertNotIn("'ff:ff:ff:ff:ff:ff'", block)
 
     def test_poison_send_aborts_mid_burst_after_unkill(self) -> None:
         path = os.path.join(_SRC, 'networking', 'killer.py')
@@ -170,15 +169,18 @@ class TestKillRestoreFrames(unittest.TestCase):
         k._restore_arp_now(victim, seq=1, repeats=1, delay_s=0)
         self.assertEqual(len(sent), len(k._restore_frames(victim)))
 
-    def test_wifi_poison_has_no_gateway_broadcast(self) -> None:
-        from scapy.all import Ether
+    def test_wifi_poison_broadcasts_are_victim_targeted(self) -> None:
+        from scapy.all import ARP, Ether
 
         k = self._killer(wifi=True)
         victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
         frames = k._poison_frames(victim)
         bcast = [f for f in frames if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff']
-        self.assertEqual(bcast, [])
-        self.assertGreaterEqual(len(frames), 4)
+        self.assertEqual(len(bcast), 2)
+        for f in bcast:
+            self.assertEqual(str(f[ARP].pdst), '192.168.1.248')
+            self.assertEqual(str(f[ARP].hwdst).lower(), '00:e4:21:44:ed:0c')
+            self.assertEqual(str(f[ARP].psrc), '192.168.1.1')
 
     def test_lan_unkill_flips_to_pass_through(self) -> None:
         k = self._killer(wifi=True)

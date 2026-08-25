@@ -5,12 +5,16 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 
 ## Home LAN ARP
 
-- **Wrong:** Broadcast gateway impersonation (`Ether(dst=ff:ff:ff…)` with `psrc=router`)
-  on Kill/Lag — every listening client learns “PC = gateway” and can lose internet.
 - **Wrong:** Unicast ARP *reply* (`op=2`) only — some stacks ignore unsolicited replies,
   so Kill logs ON but never cuts.
-- **Right:** Unicast poison only (`_poison_frames` → victim MAC + router MAC), with both
-  ARP *request* (`op=1`) and *reply* (`op=2`) to each.
+- **Wrong:** Dropping victim-targeted Wi‑Fi broadcast poison on this mesh
+  (`pdst=victim` on `ff:ff:ff`) because of a guess that the operator PC
+  lost internet. The ethernet PS5 never sees STA unicast; DURING captures
+  only showed a cut while those copies existed. The operator PC staying
+  online is not a reason to remove them.
+- **Right:** Unicast request+reply to victim MAC and router MAC, plus
+  Wi‑Fi victim-targeted broadcast copies so isolation still delivers the
+  cut. Do not broadcast ``psrc=victim_ip`` (that GARP re-poisons the router).
 
 ## Clumsy enable must not break a working hotspot
 
@@ -38,14 +42,13 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   victim/router still have poisoned ARP and kernel forwarding is off.
   Frames still arrive here and die. Analysis AFTER then false-passes on
   LAN ping + "forwarder cleared".
-- **Wrong:** Broadcast gateway impersonation on Kill ON (`psrc=router`
-  on `ff:ff:ff`) — this PC and every listening client lose internet for
-  minutes after a short toggle.
-- **Right:** Unicast poison only. On OFF: flip the live forwarder to
-  100% pass (`pass_all_live`), send honest restore ARP, pin this PC's
-  gateway neighbor, then stop the pass-through after a short grace.
-  `_seal_hard_drop` must no-op when the MAC is not in `killed`. Idle
-  reconcile must not kill that pass-through before the grace ends.
+- **Right:** On OFF: flip the live forwarder to 100% pass
+  (`pass_all_live`), send honest restore ARP (including the same
+  victim-targeted broadcast poison used), then stop the pass-through
+  after a short grace. `_seal_hard_drop` must no-op when the MAC is
+  not in `killed`. Idle reconcile must not kill that pass-through
+  before the grace ends. Do not treat “operator PC internet” as the
+  broken path unless the operator said that PC lost WAN.
 - **Wrong:** Finish a poison burst after unkill, or queue `block_ip`
   while the Npcap dropper is already live. Early Dupe/Kill OFF then
   looks restored and dies again when the trailing frames/firewall land.
