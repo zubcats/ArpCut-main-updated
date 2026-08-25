@@ -145,6 +145,27 @@ def _npcap_safe_bind_tokens(iface_guid: str, iface=None) -> list[str]:
     return [raw] if raw else []
 
 
+def _empty_cut_sample(*, reason: str = '') -> dict[str, Any]:
+    """AFTER must not open a second Npcap sniff on the MITM radio."""
+    return {
+        'ok': True,
+        'error': '',
+        'skipped': str(reason or 'after_restore'),
+        'ipv4': 0,
+        'ipv6': 0,
+        'arp': 0,
+        'arp_victim': 0,
+        'poison_arp_seen': 0,
+        'victim_to_us': 0,
+        'victim_wan_out_to_us': 0,
+        'victim_wan_bypass_gw': 0,
+        'wan_return_bypass': 0,
+        'victim_lan_ipv4': 0,
+        'total': 0,
+        'seconds': 0.0,
+    }
+
+
 def _sniff_cut_sample(
     iface_guid: str,
     victim_ip: str,

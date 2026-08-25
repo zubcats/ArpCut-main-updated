@@ -1245,30 +1245,19 @@ class ImpairmentMitmMixin:
                 return
             if live.get('finalized') or live.get('report_saved'):
                 return
-            from tools.cut_analysis import PHASE_AFTER, PhaseSample, _sniff_cut_sample
+            from tools.cut_analysis import PHASE_AFTER, PhaseSample, _empty_cut_sample
 
-            iface = getattr(self.scanner, 'iface', None)
-            guid = str(getattr(iface, 'guid', None) or '').strip()
-            local_mac = str(getattr(iface, 'mac', None) or '').strip()
-            ip = str(dev.get('ip') or live.get('ip') or '').strip()
             host = self._gather_cut_analysis_host(dev)
             stack = self._gather_cut_analysis_stack(dev, cut_pct=pct)
-            sample = _sniff_cut_sample(
-                guid,
-                ip,
-                seconds=1.8,
-                local_mac=local_mac,
-                gateway_ip=str(host.get('gateway_ip') or ''),
-                gateway_mac=str(host.get('gateway_mac') or ''),
-                victim_mac=str(dev.get('mac') or live.get('mac') or ''),
-                iface=iface,
-            )
+            # AFTER sniff on this Wi‑Fi NIC steals Npcap from restore/pass-through
+            # (~1s after OFF). Stack/host only — do not open a second sniffer.
+            sample = _empty_cut_sample(reason='after_off_skip_npcap')
             after = PhaseSample(
                 phase=PHASE_AFTER,
                 sample=sample,
                 host=host,
                 stack=stack,
-                note='flow OFF — restore check',
+                note='flow OFF — restore check (no Npcap sniff)',
             )
             live = getattr(self, '_cut_analysis_session', None)
             if not isinstance(live, dict) or int(live.get('gen') or 0) != gen:

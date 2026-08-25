@@ -1883,20 +1883,13 @@ class Killer:
         if quick:
             plan = ((0.0, 2), (0.08, 1))
         else:
-            # Gaps (not wall-clock). Stretch honest ARP through the min hold
-            # and past typical router neighbor timeouts.
+            # Short then silence. The PS5 is on router ethernet; Starlink can
+            # answer ARP on that wire if we stop flooding from mesh Wi‑Fi.
+            # A 1s follow-up burst was the "came back then died" hole.
             plan = (
                 (0.0, 3),
                 (0.2, 2),
-                (0.5, 2),
-                (1.0, 2),
-                (2.5, 3),
-                (5.0, 3),
-                (10.0, 2),
-                (20.0, 2),
-                (40.0, 2),
-                (80.0, 2),
-                (120.0, 2),
+                (0.45, 2),
             )
         for wait_s, repeats in plan:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:

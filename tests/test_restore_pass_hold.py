@@ -48,12 +48,13 @@ class TestRestorePassHold(unittest.TestCase):
         self.assertIn('reinforce_restore', block)
         self.assertNotIn('self.killer.unkill(victim)', block)
 
-    def test_lan_restore_arp_covers_pass_through_window(self) -> None:
+    def test_lan_restore_arp_is_short_then_silent(self) -> None:
         src = self._killer_py()
         worker = src[src.index('def _unkill_restore_worker') : src.index('def kill_all')]
-        self.assertIn('(120.0, 2)', worker)
-        self.assertIn('(80.0, 2)', worker)
-        self.assertIn('(10.0, 2)', worker)
+        self.assertIn('(0.45, 2)', worker)
+        self.assertNotIn('(120.0, 2)', worker)
+        self.assertNotIn('(80.0, 2)', worker)
+        self.assertNotIn('(1.0, 2)', worker)
 
 
 if __name__ == '__main__':

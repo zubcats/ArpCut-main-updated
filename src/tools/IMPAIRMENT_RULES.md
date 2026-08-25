@@ -18,9 +18,10 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 - **Mesh Wi‑Fi PC + ethernet PS5 (Starlink router / mesh node):** ON and
   OFF are the same ARP stack. Instant OFF worked when both were on the
   same AP because unicast restore landed. On this split, only the flooded
-  broadcast reaches the console. Restore must use that same broadcast,
-  with honest ``hwsrc=router_mac`` and a consistent Ether src — not a
-  second theory for Dupe vs Kill.
+  broadcast reaches the console. One short honest broadcast, then
+  **silence** so the Starlink router can answer on ethernet. Minutes of
+  follow-up ARP (or Analysis AFTER opening Npcap on this Wi‑Fi NIC)
+  overwrite that and die about a second later. Not a second Dupe theory.
 
 ## Clumsy enable must not break a working hotspot
 
