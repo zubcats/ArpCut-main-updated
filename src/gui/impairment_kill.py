@@ -421,6 +421,8 @@ class ImpairmentKillMixin:
         self._reconcile_network_adapter(log=True)
         # fast=True: skip ~4s getmacbyip when ARP/router already warm.
         self._ensure_network_context_for_victim(device, fast=True)
+        if not self._killed_profile_on(device):
+            return False, mac
         mac = str(device.get('mac') or mac).strip() or mac
         _mark('lan_ensure_net_done')
         self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
@@ -477,6 +479,8 @@ class ImpairmentKillMixin:
                     UI_LOG_RESTORE_FG,
                 )
             return False, mac
+        if not self._killed_profile_on(device):
+            return False, mac
         self.killer.kill(device, wait_after=0.08)
         mac = self._rekey_kill_bookkeeping(mac, device)
         _mark('lan_killer_kill_done')
@@ -525,15 +529,18 @@ class ImpairmentKillMixin:
     def _schedule_kill_command(self, mac, device, turn_on, source='unknown'):
         """Paint optimistic Kill UI first; run Npcap/ARP work on the next event-loop tick."""
         dev = dict(device)
+        mac_s = str(mac)
+        next_seq = int(self._kill_intent_seq.get(mac_s, 0)) + 1
+        self._kill_intent_seq[mac_s] = next_seq
         QTimer.singleShot(
             0,
-            lambda m=str(mac), d=dev, on=bool(turn_on), src=str(source): self._run_kill_command(
-                m, d, on, src
+            lambda m=mac_s, d=dev, on=bool(turn_on), src=str(source), seq=next_seq: self._run_kill_command(
+                m, d, on, src, seq
             ),
         )
 
 
-    def _run_kill_command(self, mac, device, turn_on, source='unknown'):
+    def _run_kill_command(self, mac, device, turn_on, source='unknown', intent_seq=None):
         """Immediate explicit command path: one click => one kill/unkill command."""
         import time as _kill_time
         _kill_dbg = bool(get_settings('debug_kill_timing'))
@@ -563,9 +570,12 @@ class ImpairmentKillMixin:
                 self._kill_device_snapshot = snapshot_map
             snapshot_map[mac] = dict(device)
             actual_on = mac in self.killer.killed
-            next_seq = int(self._kill_intent_seq.get(mac, 0)) + 1
-            self._kill_intent_seq[mac] = next_seq
-            my_seq = next_seq
+            if intent_seq is None:
+                next_seq = int(self._kill_intent_seq.get(mac, 0)) + 1
+                self._kill_intent_seq[mac] = next_seq
+                my_seq = next_seq
+            else:
+                my_seq = int(intent_seq)
 
             def _superseded() -> bool:
                 return int(self._kill_intent_seq.get(mac, 0)) != my_seq
@@ -646,59 +656,62 @@ class ImpairmentKillMixin:
                                 'red',
                             )
                     elif turn_on and mac in self.killer.killed:
-                        _mark('lan_instant')
-                        cut_ok = False
-                        try:
-                            from tools.utils import mac_address_is_usable
-
-                            router_ok = mac_address_is_usable(
-                                (getattr(self.killer, 'router', None) or {}).get('mac')
-                            )
-                        except Exception:
-                            router_ok = False
-                        if router_ok:
-                            try:
-                                # Instant path first (same order as Killer.kill).
-                                self.killer.reassert_poison(device)
-                                cut_ok = bool(self.killer._apply_traffic_cut_sync(device))
-                            except Exception:
-                                cut_ok = False
-                            try:
-                                from networking.killer import (
-                                    _lan_kill_priority_only,
-                                    disable_ip_forwarding,
-                                )
-
-                                disable_ip_forwarding(
-                                    priority_iface=getattr(
-                                        getattr(self.killer, 'iface', None), 'name', None
-                                    ),
-                                    priority_only=_lan_kill_priority_only(),
-                                )
-                            except Exception:
-                                pass
-                            try:
-                                # Background seal only — never before poison/cut above.
-                                self.killer._reinforce_full_cut_async(device)
-                            except Exception:
-                                pass
-                        fw = self.killer.forwarders.get(mac)
-                        fw_ok = bool(fw and getattr(fw, 'running', False)) or cut_ok
-                        if fw_ok and router_ok:
-                            kill_applied = True
-                            self.log(
-                                'Kill ON for ' + str(device.get('ip') or ''),
-                                UI_LOG_VICTIM_BLOCK_FG,
-                            )
-                            self._log_mitm_arm_status(device, action='Kill')
-                            self._schedule_mitm_traffic_probe(device, flow='Kill')
+                        if _superseded() or not self._killed_profile_on(device):
+                            _mark('lan_instant_aborted')
                         else:
-                            # Preblock left killed[] set, or Analysis/OFF emptied
-                            # the router MAC / Npcap socket. Do not log Kill ON.
-                            _mark('lan_start')
-                            kill_applied, mac = self._apply_lan_kill_full(
-                                device, mac, _mark
-                            )
+                            _mark('lan_instant')
+                            cut_ok = False
+                            try:
+                                from tools.utils import mac_address_is_usable
+
+                                router_ok = mac_address_is_usable(
+                                    (getattr(self.killer, 'router', None) or {}).get('mac')
+                                )
+                            except Exception:
+                                router_ok = False
+                            if router_ok:
+                                try:
+                                    # Instant path first (same order as Killer.kill).
+                                    self.killer.reassert_poison(device)
+                                    cut_ok = bool(self.killer._apply_traffic_cut_sync(device))
+                                except Exception:
+                                    cut_ok = False
+                                try:
+                                    from networking.killer import (
+                                        _lan_kill_priority_only,
+                                        disable_ip_forwarding,
+                                    )
+
+                                    disable_ip_forwarding(
+                                        priority_iface=getattr(
+                                            getattr(self.killer, 'iface', None), 'name', None
+                                        ),
+                                        priority_only=_lan_kill_priority_only(),
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    # Background seal only — never before poison/cut above.
+                                    self.killer._reinforce_full_cut_async(device)
+                                except Exception:
+                                    pass
+                            fw = self.killer.forwarders.get(mac)
+                            fw_ok = bool(fw and getattr(fw, 'running', False)) or cut_ok
+                            if fw_ok and router_ok:
+                                kill_applied = True
+                                self.log(
+                                    'Kill ON for ' + str(device.get('ip') or ''),
+                                    UI_LOG_VICTIM_BLOCK_FG,
+                                )
+                                self._log_mitm_arm_status(device, action='Kill')
+                                self._schedule_mitm_traffic_probe(device, flow='Kill')
+                            else:
+                                # Preblock left killed[] set, or Analysis/OFF emptied
+                                # the router MAC / Npcap socket. Do not log Kill ON.
+                                _mark('lan_start')
+                                kill_applied, mac = self._apply_lan_kill_full(
+                                    device, mac, _mark
+                                )
                     else:
                         _mark('lan_start')
                         kill_applied, mac = self._apply_lan_kill_full(

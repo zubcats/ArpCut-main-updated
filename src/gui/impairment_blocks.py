@@ -20,6 +20,27 @@ from gui.impairment_shared import (
 
 
 class ImpairmentBlocksMixin:
+    def _mitm_arm_still_wanted(self, device, *, flow: str = 'Kill') -> bool:
+        """False after Kill/Dupe/Lag OFF so delayed arm/probe cannot re-cut."""
+        if not isinstance(device, dict):
+            return False
+        mac = str(device.get('mac') or '').strip()
+        flow_s = str(flow or 'Kill').strip()
+        if flow_s == 'Dupe':
+            if not bool(getattr(self, 'dupe_active', False)):
+                return False
+            pin = str(getattr(self, 'dupe_device_mac', None) or '').strip()
+            return (not pin) or pin == mac
+        if flow_s == 'Lag':
+            if not bool(getattr(self, 'lag_active', False)):
+                return False
+            pin = str(getattr(self, 'lag_device_mac', None) or '').strip()
+            return (not pin) or pin == mac
+        try:
+            return bool(self._killed_profile_on(device))
+        except Exception:
+            return bool(mac and mac in getattr(self.killer, 'killed', {}))
+
     def _flow_instant_preblock(
         self, device, direction: str = 'both', *, flow: str = 'Lag'
     ) -> bool:
@@ -438,6 +459,8 @@ class ImpairmentBlocksMixin:
             pass
         if mac not in getattr(self.killer, 'killed', {}):
             return
+        if not self._mitm_arm_still_wanted(device, flow=action):
+            return
         try:
             self.killer._reinforce_full_cut_async(device)
         except Exception:
@@ -452,6 +475,10 @@ class ImpairmentBlocksMixin:
             pass
         fw = getattr(self.killer, 'forwarders', {}).get(mac)
         if not (fw and getattr(fw, 'running', False)):
+            if mac not in getattr(self.killer, 'killed', {}) or not self._mitm_arm_still_wanted(
+                device, flow=action
+            ):
+                return
             try:
                 iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
             except Exception:
@@ -502,16 +529,22 @@ class ImpairmentBlocksMixin:
         plan = self._impairment_plan_for(device)
         if not plan.use_arp_mitm:
             return False
+        if not self._mitm_arm_still_wanted(device, flow=flow):
+            return False
         self._ensure_network_context_for_victim(device, fast=True)
+        if not self._mitm_arm_still_wanted(device, flow=flow):
+            return False
         if flow == 'Dupe':
             self._sync_dupe_device_identity(device)
         mac = str(device.get('mac') or '').strip()
         self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
-        self.killer.disable_percent_cut(mac)
         mitm_ok, mitm_reason = self.killer.mitm_prereqs_ok(device, ping_attempts=1)
         if not mitm_ok:
             self.log(f'{flow} MITM blocked: {mitm_reason}', 'red')
             return False
+        if not self._mitm_arm_still_wanted(device, flow=flow):
+            return False
+        self.killer.disable_percent_cut(mac)
         if mac in self.killer.killed:
             self.killer.reassert_poison(device)
             try:
@@ -520,6 +553,13 @@ class ImpairmentBlocksMixin:
                 pass
         else:
             self.killer.kill(device, wait_after=0.08, traffic_cut=True)
+        if not self._mitm_arm_still_wanted(device, flow=flow):
+            if mac in getattr(self.killer, 'killed', {}):
+                try:
+                    self.killer.unkill(device)
+                except Exception:
+                    pass
+            return False
         mac = self._rekey_kill_bookkeeping(mac, device)
         fw = self.killer.forwarders.get(mac)
         if not (fw and getattr(fw, 'running', False)):

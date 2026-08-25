@@ -479,6 +479,8 @@ class Killer:
         self._socket_token: str | None = None  # Npcap bind token that opened _socket
         # Npcap/Scapy L2socket is not safe for concurrent send from Kill GUI + ARP worker.
         self._socket_lock = threading.RLock()
+        # Serialize hard-drop vs OFF pass-all so in-flight reinforce cannot reseal after unkill.
+        self._cut_lock = threading.RLock()
         self._op_seq = {}  # MAC -> operation generation to cancel stale workers
         # Gateway MAC captured at Kill ON. Restore must not use a cache entry that
         # points at this PC (poison reflection / Analysis ping).
@@ -488,6 +490,37 @@ class Killer:
         seq = int(self._op_seq.get(mac, 0)) + 1
         self._op_seq[mac] = seq
         return seq
+
+    def _cut_gate(self):
+        lock = getattr(self, '_cut_lock', None)
+        if lock is None:
+            lock = threading.RLock()
+            self._cut_lock = lock
+        return lock
+
+    def _killed_keys_for_victim(self, victim) -> list:
+        """Every ``killed`` key for this host (MAC case / ARP-refresh aliases)."""
+        if not isinstance(victim, dict):
+            return []
+        want_mac = good_mac(str(victim.get('mac') or ''))
+        want_ip = str(victim.get('ip') or '').strip()
+        keys = []
+        seen = set()
+        for key, entry in list((getattr(self, 'killed', None) or {}).items()):
+            if key in seen:
+                continue
+            rec = entry if isinstance(entry, dict) else {}
+            got_mac = good_mac(str(rec.get('mac') or key or ''))
+            got_ip = str(rec.get('ip') or '').strip()
+            key_mac = good_mac(str(key or ''))
+            if want_mac and (got_mac == want_mac or key_mac == want_mac):
+                keys.append(key)
+                seen.add(key)
+                continue
+            if want_ip and got_ip and got_ip == want_ip:
+                keys.append(key)
+                seen.add(key)
+        return keys
     
     def _iface_l2_tokens(self) -> list[str]:
         if not self.iface or getattr(self.iface, 'name', None) in (None, '', 'NULL'):
@@ -986,7 +1019,10 @@ class Killer:
             except Exception:
                 pass
             return False
-        self.apply_percent_cut(victim, pass_percent=0)
+        # Never arm a new Kill from this path. After OFF, ``apply_percent_cut``
+        # used to see an empty ``killed`` and call ``kill()`` — restore then
+        # instant re-cut (same hole as Dupe).
+        self.apply_percent_cut(victim, pass_percent=0, arm_if_needed=False)
         fw = self.forwarders.get(mac)
         return bool(fw and getattr(fw, 'running', False))
 
@@ -1015,19 +1051,36 @@ class Killer:
 
     def _seal_hard_drop(self, mac) -> bool:
         """Ensure a live forwarder hard-drops both directions (full Kill)."""
-        if not mac or mac not in self.killed:
+        if not mac:
             return False
-        fw = self.forwarders.get(mac)
-        if not (fw and getattr(fw, 'running', False)):
-            return False
-        try:
-            fw.drop_from_victim = True
-            fw.drop_to_victim = True
-            fw.pass_from_victim_pct = 0
-            fw.pass_to_victim_pct = 0
+        with self._cut_gate():
+            if mac not in self.killed:
+                return False
+            fw = self.forwarders.get(mac)
+            if not (fw and getattr(fw, 'running', False)):
+                return False
+            try:
+                fw.drop_from_victim = True
+                fw.drop_to_victim = True
+                fw.pass_from_victim_pct = 0
+                fw.pass_to_victim_pct = 0
+            except Exception:
+                return False
+            # OFF can pop ``killed`` and ``pass_all_live`` between the check and
+            # the writes. Undo so the brief restore cannot be resealed.
+            if mac not in self.killed:
+                try:
+                    if hasattr(fw, 'pass_all_live'):
+                        fw.pass_all_live()
+                    else:
+                        fw.drop_from_victim = False
+                        fw.drop_to_victim = False
+                        fw.pass_from_victim_pct = 100
+                        fw.pass_to_victim_pct = 100
+                except Exception:
+                    pass
+                return False
             return True
-        except Exception:
-            return False
 
     def reinforce_full_cut(self, victim, *, rounds=4):
         """
@@ -1298,24 +1351,33 @@ class Killer:
         except Exception:
             pass
 
-    def apply_percent_cut(self, victim, pass_percent=100, debug=False):
+    def apply_percent_cut(self, victim, pass_percent=100, debug=False, *, arm_if_needed=True):
         """
         Keep MITM active and forward only a percentage of packets (both directions).
+
+        ``arm_if_needed=False`` (Kill/Dupe cut + reinforce): never call ``kill()``
+        if OFF already cleared ``killed``. That re-arm is the restore-then-recut hole.
+        Percent Cut ON keeps the default so a 100% cut can still start MITM.
         """
         mac = victim.get('mac') if isinstance(victim, dict) else None
         if not mac:
             return False
+        pass_percent = max(0, min(100, int(pass_percent)))
         if mac not in self.killed:
+            if not arm_if_needed:
+                return False
             # 0.0: Percent Cut ON must feel instant (Lag/Kill preblock parity).
             self.kill(victim, wait_after=0.0, traffic_cut=False)
         else:
             # Reuse a live hard-drop forwarder — stop+restart races Dupe/Kill OFF
             # (Npcap close vs new AsyncSniffer) and can freeze the GUI.
-            pass_percent = max(0, min(100, int(pass_percent)))
             if pass_percent <= 0 and self._seal_hard_drop(mac):
                 return True
+            if mac not in self.killed:
+                return False
             self._stop_forwarder(mac)
-        pass_percent = max(0, min(100, int(pass_percent)))
+        if pass_percent <= 0 and mac not in self.killed and not arm_if_needed:
+            return False
         pass_from_victim = pass_percent
         pass_to_victim = pass_percent
 
@@ -1339,9 +1401,18 @@ class Killer:
             pass_to_victim_pct=pass_to_victim,
             iface_alts=tokens[1:],
         )
+        if pass_percent <= 0 and mac not in self.killed and not arm_if_needed:
+            try:
+                fw.stop()
+            except Exception:
+                pass
+            return False
         self.forwarders[mac] = fw
         if not (fw and getattr(fw, 'running', False)):
             self.forwarders.pop(mac, None)
+            return False
+        if pass_percent <= 0 and mac not in self.killed and not arm_if_needed:
+            self._stop_forwarder(mac)
             return False
         # Seal kernel relay after the forwarder is live — never before the cut.
         disable_ip_forwarding(
@@ -1355,6 +1426,10 @@ class Killer:
 
     def resume_percent_cut_live(self, mac) -> bool:
         """Set forwarder to 100% pass without stopping Npcap (instant OFF feel)."""
+        with self._cut_gate():
+            return self._resume_percent_cut_live_unlocked(mac)
+
+    def _resume_percent_cut_live_unlocked(self, mac) -> bool:
         mac = str(mac or '').strip()
         if not mac:
             return False
@@ -1527,13 +1602,17 @@ class Killer:
         # Far-future hold so idle reconcile cannot drop a still-needed relay.
         self._restore_pass_until[mac] = monotonic() + (24.0 * 3600.0)
 
-    def _ensure_restore_pass(self, victim, seq) -> None:
+    def _ensure_restore_pass(self, victim, seq, *, extra_macs=None) -> None:
         """Flip leftover MITM to 100% pass so OFF is not a black hole."""
         mac = str((victim or {}).get('mac') or '') if isinstance(victim, dict) else ''
         if not mac or mac in self.killed:
             return
+        extra = [m for m in (extra_macs or []) if m and m != mac]
         if self.resume_percent_cut_live(mac):
             self._hold_restore_pass(mac)
+            for m in extra:
+                self.resume_percent_cut_live(m)
+            self._reassert_restore_pass(mac, seq, extra)
             return
         snap = {
             'mac': (victim or {}).get('mac'),
@@ -1546,14 +1625,49 @@ class Killer:
                 return
             if self.resume_percent_cut_live(mac):
                 self._hold_restore_pass(mac)
+                self._reassert_restore_pass(mac, seq, extra)
                 return
             if self._start_restore_pass_forwarder(snap):
                 self._hold_restore_pass(mac)
+                self._reassert_restore_pass(mac, seq, extra)
 
         try:
             threading.Thread(
                 target=safe_daemon_target(_work),
                 name='zubcut-restore-pass',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    def _reassert_restore_pass(self, mac, seq, extra_macs=None) -> None:
+        """Beat in-flight reinforce/probe that reseals hard-drop after OFF."""
+        mac = str(mac or '').strip()
+        if not mac:
+            return
+        macs = []
+        seen = set()
+        for m in [mac] + list(extra_macs or []):
+            s = str(m or '').strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            macs.append(s)
+
+        def _work() -> None:
+            for delay_s in (0.05, 0.25, 1.35):
+                sleep(delay_s)
+                if int(self._op_seq.get(mac, 0) or 0) != int(seq) or mac in self.killed:
+                    return
+                for m in macs:
+                    if m in self.killed:
+                        return
+                    self.resume_percent_cut_live(m)
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-restore-pass-hold',
                 daemon=True,
             ).start()
         except Exception:
@@ -1706,18 +1820,34 @@ class Killer:
         """
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         mac = victim['mac']
-        seq = self._next_op_seq(mac)
-        if mac in self.killed:
-            self.killed.pop(mac)
-        relays = getattr(self, '_unkill_relays', None)
-        if isinstance(relays, set):
-            relays.discard(mac)
+        alias_keys = self._killed_keys_for_victim(victim)
+        seq = 0
+        with self._cut_gate():
+            seen = set()
+            for key in list(alias_keys) + [mac]:
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                seq = self._next_op_seq(key)
+                self.killed.pop(key, None)
+            if not seq:
+                seq = self._next_op_seq(mac)
+            relays = getattr(self, '_unkill_relays', None)
+            if isinstance(relays, set):
+                for key in seen:
+                    relays.discard(key)
+            if not ics_mode:
+                for key in seen:
+                    self._resume_percent_cut_live_unlocked(key)
         self._unblock_victim_firewall(victim)
         if ics_mode:
             self._cancel_restore_pass(mac)
             self._stop_forwarder(mac)
+            for key in alias_keys:
+                if key != mac:
+                    self._stop_forwarder(key)
         else:
-            self._ensure_restore_pass(victim, seq)
+            self._ensure_restore_pass(victim, seq, extra_macs=alias_keys)
             self._pin_local_gateway_neighbor_async()
         # Immediate ARP burst with no sleep — sleeps belong in @threaded _unkill_restore_worker
         # so the GUI thread returns instantly on Kill/Lag/Dupe OFF.

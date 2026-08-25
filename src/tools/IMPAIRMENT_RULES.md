@@ -59,6 +59,12 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 - **Wrong:** Finish a poison burst after unkill, or queue `block_ip`
   while the Npcap dropper is already live. Early Dupe/Kill OFF then
   looks restored and dies again when the trailing frames/firewall land.
+- **Wrong:** `apply_percent_cut(0)` calling `kill()` when `killed` is
+  already empty. In-flight reinforce/probe after OFF does that: pass-all
+  restore, then `kill()` re-poisons and hard-drops. Same hole for Kill
+  and Dupe. Cut/reinforce must use `arm_if_needed=False`. `_seal_hard_drop`
+  must revert if OFF won the race. Probe/arm must abort when `_op_seq`
+  changed or the flow is OFF.
 
 ## Home LAN Kill — instant cut first
 

@@ -109,7 +109,7 @@ class TestKillRestoreFrames(unittest.TestCase):
         lan = self._unkill_block()
         self.assertIn('_ensure_restore_pass', lan)
         self.assertIn('_pin_local_gateway_neighbor_async', lan)
-        self.assertLess(lan.index('self._next_op_seq(mac)'), lan.index('_ensure_restore_pass'))
+        self.assertLess(lan.index('self._next_op_seq'), lan.index('_ensure_restore_pass'))
         ics = lan[lan.index('if ics_mode:'): lan.index('else:')]
         self.assertIn('self._stop_forwarder(mac)', ics)
 
@@ -223,6 +223,32 @@ class TestKillRestoreFrames(unittest.TestCase):
         k.killed = {}
         self.assertFalse(k._seal_hard_drop(mac))
         self.assertFalse(fw.drop_from_victim)
+
+    def test_apply_percent_cut_after_off_does_not_rearm(self) -> None:
+        k = self._killer(wifi=True)
+        victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
+        k.killed = {}
+        k.kill = mock.Mock()  # type: ignore[method-assign]
+        self.assertFalse(k.apply_percent_cut(victim, pass_percent=0, arm_if_needed=False))
+        k.kill.assert_not_called()
+
+    def test_seal_hard_drop_reverts_after_unkill(self) -> None:
+        k = self._killer(wifi=True)
+        mac = '00:e4:21:44:ed:0c'
+        fw = mock.Mock(running=True, drop_from_victim=False, drop_to_victim=False)
+        fw.pass_all_live = mock.Mock()
+        k.forwarders = {mac: fw}
+
+        class _RaceDict(dict):
+            def __contains__(self, key, _n=[0]):
+                _n[0] += 1
+                if _n[0] == 1:
+                    return True
+                return False
+
+        k.killed = _RaceDict({mac: {'mac': mac}})
+        self.assertFalse(k._seal_hard_drop(mac))
+        fw.pass_all_live.assert_called()
 
     def test_idle_reconcile_keeps_pass_through_forwarders(self) -> None:
         path = os.path.join(_SRC, 'gui', 'impairment_mitm.py')

@@ -1453,6 +1453,7 @@ class ImpairmentMitmMixin:
         ip = str(device.get('ip') or '').strip()
         iface = getattr(self.scanner, 'iface', None)
         guid = str(getattr(iface, 'guid', None) or '').strip()
+        seq = int((getattr(self.killer, '_op_seq', None) or {}).get(mac, 0) or 0)
         if not mac or not ip or not guid:
             self._schedule_cut_analysis_if_enabled(device, flow=flow)
             return
@@ -1462,6 +1463,8 @@ class ImpairmentMitmMixin:
 
             time.sleep(1.2)
             if mac not in getattr(self.killer, 'killed', {}):
+                return
+            if int((getattr(self.killer, '_op_seq', None) or {}).get(mac, 0) or 0) != seq:
                 return
             try:
                 fw = getattr(self.killer, 'forwarders', {}).get(mac)
@@ -1476,6 +1479,8 @@ class ImpairmentMitmMixin:
 
             def _on_main() -> None:
                 if mac not in getattr(self.killer, 'killed', {}):
+                    return
+                if int((getattr(self.killer, '_op_seq', None) or {}).get(mac, 0) or 0) != seq:
                     return
                 if self._retry_mitm_on_arp_iface(device, mac, ip, flow):
                     return
@@ -1532,6 +1537,10 @@ class ImpairmentMitmMixin:
                 break
             if target is None:
                 return False
+            if mac not in getattr(self.killer, 'killed', {}):
+                return False
+            if not self._mitm_arm_still_wanted(device, flow=flow):
+                return False
             self.scanner.iface = target
             try:
                 from tools.utils import refresh_netface_live_ip
@@ -1540,6 +1549,10 @@ class ImpairmentMitmMixin:
             except Exception:
                 pass
             self._ensure_network_context_for_victim(device, fast=False)
+            if mac not in getattr(self.killer, 'killed', {}):
+                return False
+            if not self._mitm_arm_still_wanted(device, flow=flow):
+                return False
             self.killer.iface = self.scanner.iface
             self.killer.router = getattr(self.scanner, 'router', None) or self.killer.router
             self.killer.reassert_poison(device)
@@ -1547,6 +1560,8 @@ class ImpairmentMitmMixin:
                 self.killer._apply_traffic_cut_sync(device)
             except Exception:
                 pass
+            if mac not in getattr(self.killer, 'killed', {}):
+                return True
             try:
                 iface_name = self.scanner.iface.name if self.scanner.iface else 'en0'
             except Exception:

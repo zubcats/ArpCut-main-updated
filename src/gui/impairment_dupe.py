@@ -517,6 +517,11 @@ class ImpairmentDupeMixin:
                 return
             dev = self._prepare_victim_for_impairment(dev, fast=True)
             if not self._arm_victim_mitm_like_kill(dev, block_dir, flow='Dupe'):
+                if (
+                    not self.dupe_active
+                    or int(getattr(self, '_dupe_start_gen', 0)) != arm_gen
+                ):
+                    return
                 raise RuntimeError(
                     'Dupe block failed — rescan, pick Wi‑Fi in Settings if PC is on Wi‑Fi'
                 )
