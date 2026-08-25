@@ -224,14 +224,15 @@ class TestKillRestoreFrames(unittest.TestCase):
         self.assertFalse(k._seal_hard_drop(mac))
         self.assertFalse(fw.drop_from_victim)
 
-    def test_idle_reconcile_stops_leftover_forwarders(self) -> None:
+    def test_idle_reconcile_keeps_pass_through_forwarders(self) -> None:
         path = os.path.join(_SRC, 'gui', 'impairment_mitm.py')
         with open(path, encoding='utf-8') as f:
             src = f.read()
         start = src.index('def _reconcile_idle_mitm_state')
         block = src[start : start + 4000]
         self.assertIn('disable_percent_cut', block)
-        self.assertIn('_restore_pass_until', block)
+        self.assertIn('if pass_all:', block)
+        self.assertNotIn('_restore_pass_until', block)
         self.assertNotIn('_unkill_relays', block)
 
     def test_unkill_all_uses_per_device_unkill_for_lan(self) -> None:
