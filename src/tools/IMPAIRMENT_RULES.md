@@ -53,9 +53,16 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   victim-targeted broadcast poison used), and keep that pass-through
   until leftover MITM is unused: hold at least a few minutes (idle
   console has no WAN), and never drop a still-busy relay. A fixed
-  short stop is the “came back then died again” hole. `_seal_hard_drop`
+  short stop is the “came back then died again” hole. A 24h / until-next-ON
+  hold is lasting lag: WAN still hairpins through this PC. `_seal_hard_drop`
   must no-op when the MAC is not in `killed`. Idle reconcile must not
   kill a still-busy pass-through.
+- **Wrong:** Rewrite promiscuous copies of native victim↔router frames, or
+  our own Npcap reinjects. That duplicates the real path and leaves the
+  console laggy after OFF without a red chain.
+- **Right:** The MITM forwarder only rewrites frames whose Ethernet dst is
+  this PC (leftover poison). Native copies and echo of our own sends are
+  ignored, and `_restore_pass_seen` must not count them.
 - **Wrong:** Finish a poison burst after unkill, or queue `block_ip`
   while the Npcap dropper is already live. Early Dupe/Kill OFF then
   looks restored and dies again when the trailing frames/firewall land.

@@ -14,18 +14,27 @@ class TestRestorePassHold(unittest.TestCase):
         with open(path, encoding='utf-8') as fh:
             return fh.read()
 
-    def test_lan_off_holds_pass_through_until_next_on(self) -> None:
+    def test_lan_off_stops_pass_through_when_leftover_mitm_is_quiet(self) -> None:
         src = self._killer_py()
         ensure = src[src.index('def _ensure_restore_pass') : src.index('def _unblock_victim_firewall')]
-        self.assertIn('_hold_restore_pass', ensure)
-        self.assertNotIn('_arm_restore_pass_stop', ensure)
+        self.assertIn('_arm_restore_pass_stop', ensure)
+        self.assertNotIn('_hold_restore_pass', src)
+        self.assertNotIn('24.0 * 3600.0', src)
         self.assertNotIn('_RESTORE_PASS_S = 60.0', src)
+        arm = src[src.index('def _arm_restore_pass_stop') : src.index('def _start_restore_pass_forwarder')]
+        self.assertIn('_stop_restore_pass_forwarders', arm)
         mitm = os.path.join(_SRC, 'gui', 'impairment_mitm.py')
         with open(mitm, encoding='utf-8') as fh:
             rec = fh.read()
         rec = rec[rec.index('def _reconcile_idle_mitm_state') :]
         self.assertIn('if pass_all:', rec)
         self.assertNotIn('if pass_all and until', rec)
+        fwd = os.path.join(_SRC, 'networking', 'forwarder.py')
+        with open(fwd, encoding='utf-8') as fh:
+            fsrc = fh.read()
+        self.assertIn('def _l2_addressed_to_us', fsrc)
+        process = fsrc[fsrc.index('def _process_packet') : fsrc.index('def _note_send_error')]
+        self.assertLess(process.index('_l2_addressed_to_us'), process.index('self._pkt_count += 1'))
 
     def test_wifi_restore_broadcasts_consistent_router_sa(self) -> None:
         src = self._killer_py()
@@ -101,6 +110,7 @@ class TestRestorePassHold(unittest.TestCase):
         src = self._killer_py()
         worker = src[src.index('def _unkill_restore_worker') : src.index('def kill_all')]
         self.assertIn('(0.45, 2)', worker)
+        self.assertIn('(2.5, 2)', worker)
         self.assertNotIn('(120.0, 2)', worker)
         self.assertNotIn('(80.0, 2)', worker)
         self.assertNotIn('(1.0, 2)', worker)

@@ -1478,15 +1478,24 @@ class Killer:
         except Exception:
             return 0
 
-    def _arm_restore_pass_stop(self, mac, seq) -> None:
+    def _arm_restore_pass_stop(self, mac, seq, extra_macs=None) -> None:
         """Keep 100% pass-through until leftover MITM is unused.
 
         A fixed 60s stop was the 'came back then died again' hole: restore ARP
         can land for a moment, then we drop the relay while the router still
-        sends PS5 WAN here. Do not force-stop a still-busy path.
+        sends PS5 WAN here. Do not force-stop a still-busy path. Do not keep
+        the sniffer forever — leftover MITM through this PC is lasting lag.
         """
         if not mac:
             return
+        extras = []
+        seen_m = {str(mac)}
+        for raw in extra_macs or []:
+            key = str(raw or '').strip()
+            if not key or key in seen_m:
+                continue
+            seen_m.add(key)
+            extras.append(key)
         if not isinstance(getattr(self, '_restore_pass_until', None), dict):
             self._restore_pass_until = {}
         if not isinstance(getattr(self, '_restore_pass_gen', None), dict):
@@ -1520,7 +1529,7 @@ class Killer:
                     break
                 if not _forwarder_is_pass_all(fw):
                     if mac not in self.killed:
-                        self._stop_forwarder(mac)
+                        self._stop_restore_pass_forwarders(mac, extras)
                     return
                 seen = self._restore_pass_seen(mac)
                 if seen != last_seen:
@@ -1547,7 +1556,7 @@ class Killer:
             except Exception:
                 pass
             if mac not in self.killed:
-                self._stop_forwarder(mac)
+                self._stop_restore_pass_forwarders(mac, extras)
 
         try:
             threading.Thread(
@@ -1593,14 +1602,11 @@ class Killer:
             return False
         return True
 
-    def _hold_restore_pass(self, mac) -> None:
-        """Keep leftover MITM in 100% pass until the next Kill/Dupe ON."""
-        if not mac:
-            return
-        if not isinstance(getattr(self, '_restore_pass_until', None), dict):
-            self._restore_pass_until = {}
-        # Far-future hold so idle reconcile cannot drop a still-needed relay.
-        self._restore_pass_until[mac] = monotonic() + (24.0 * 3600.0)
+    def _stop_restore_pass_forwarders(self, mac, extra_macs=None) -> None:
+        self._stop_forwarder(mac)
+        for key in extra_macs or []:
+            if key and key not in self.killed:
+                self._stop_forwarder(key)
 
     def _ensure_restore_pass(self, victim, seq, *, extra_macs=None) -> None:
         """Flip leftover MITM to 100% pass so OFF is not a black hole."""
@@ -1609,7 +1615,7 @@ class Killer:
             return
         extra = [m for m in (extra_macs or []) if m and m != mac]
         if self.resume_percent_cut_live(mac):
-            self._hold_restore_pass(mac)
+            self._arm_restore_pass_stop(mac, seq, extra)
             for m in extra:
                 self.resume_percent_cut_live(m)
             self._reassert_restore_pass(mac, seq, extra)
@@ -1624,11 +1630,11 @@ class Killer:
             if self._op_seq.get(mac) != seq or mac in self.killed:
                 return
             if self.resume_percent_cut_live(mac):
-                self._hold_restore_pass(mac)
+                self._arm_restore_pass_stop(mac, seq, extra)
                 self._reassert_restore_pass(mac, seq, extra)
                 return
             if self._start_restore_pass_forwarder(snap):
-                self._hold_restore_pass(mac)
+                self._arm_restore_pass_stop(mac, seq, extra)
                 self._reassert_restore_pass(mac, seq, extra)
 
         try:
@@ -2022,13 +2028,13 @@ class Killer:
         if quick:
             plan = ((0.0, 2), (0.08, 1))
         else:
-            # Short then silence. The PS5 is on router ethernet; Starlink can
-            # answer ARP on that wire if we stop flooding from mesh Wi‑Fi.
-            # A 1s follow-up burst was the "came back then died" hole.
+            # Short honest bursts, then one later pass so the ethernet PS5 can
+            # cache the real gateway after late poison. Do not keep flooding.
             plan = (
                 (0.0, 3),
                 (0.2, 2),
                 (0.45, 2),
+                (2.5, 2),
             )
         for wait_s, repeats in plan:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:

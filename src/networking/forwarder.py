@@ -16,6 +16,10 @@ _MAX_DELAY_QUEUE_PACKETS = 2000
 _MAX_SHAPING_KBPS = 10_000_000.0
 
 
+def _mac_key(value) -> str:
+    return str(value or '').strip().lower().replace('-', ':')
+
+
 class MitmForwarder:
     """
     Simple user-space forwarder that optionally drops traffic in one direction.
@@ -408,8 +412,26 @@ class MitmForwarder:
             return True
         return random.randint(1, 100) <= pct
 
+    def _l2_addressed_to_us(self, pkt) -> bool:
+        """Only leftover MITM (frames sent to this PC) should be rewritten.
+
+        Promiscuous Npcap also sees native victim↔router copies and our own
+        reinjects. Rewriting those duplicates the real path and leaves lag
+        after Kill/Dupe OFF without a full red chain.
+        """
+        mine = _mac_key(self.my_mac)
+        if not mine:
+            return True
+        src = _mac_key(pkt[Ether].src)
+        dst = _mac_key(pkt[Ether].dst)
+        if src == mine:
+            return False
+        return dst == mine
+
     def _process_packet(self, pkt):
         if not self.running or not pkt.haslayer(IP) or not pkt.haslayer(Ether):
+            return
+        if not self._l2_addressed_to_us(pkt):
             return
 
         ip_layer = pkt[IP]
