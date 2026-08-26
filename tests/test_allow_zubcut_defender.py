@@ -1,4 +1,4 @@
-"""Defender allow helper is a standalone Admin script, not inside setup."""
+"""Defender exclusions: standalone Admin script plus best-effort setup hook."""
 from __future__ import annotations
 
 import os
@@ -8,12 +8,19 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 
 class TestAllowZubCutDefender(unittest.TestCase):
-    def test_helper_is_not_in_installer(self) -> None:
+    def test_setup_adds_install_dir_exclusion(self) -> None:
         iss_path = os.path.join(_ROOT, 'installer', 'ZubCut.iss')
         with open(iss_path, encoding='utf-8') as fh:
             iss = fh.read()
-        self.assertNotIn('Add-MpPreference', iss)
-        self.assertNotIn('Allow-ZubCut-Defender', iss)
+        self.assertIn('procedure AddDefenderExclusionForApp', iss)
+        self.assertIn('Add-MpPreference -ExclusionPath', iss)
+        self.assertIn('ExclusionProcess', iss)
+        self.assertIn('AddDefenderExclusionForApp();', iss)
+        post = iss[iss.index('if CurStep = ssPostInstall') :]
+        self.assertLess(
+            post.index('MaybeWriteClumsyBundleFlag'),
+            post.index('AddDefenderExclusionForApp()'),
+        )
 
     def test_script_excludes_install_dir_before_setup(self) -> None:
         ps1 = os.path.join(_ROOT, 'tools', 'Allow-ZubCut-Defender.ps1')

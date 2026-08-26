@@ -384,6 +384,30 @@ begin
   Log('Wrote Clumsy bundle marker: ' + FlagPath);
 end;
 
+procedure AddDefenderExclusionForApp;
+var
+  ResultCode: Integer;
+  AppDir: String;
+  Args: String;
+begin
+  { Best-effort: unsigned PyInstaller builds get quarantined. Failures must not abort setup. }
+  AppDir := ExpandConstant('{app}');
+  StringChangeEx(AppDir, '''', '', True);
+  Args :=
+    '-NoProfile -ExecutionPolicy Bypass -Command "try { ' +
+    'Add-MpPreference -ExclusionPath ''' + AppDir + '''; ' +
+    'Add-MpPreference -ExclusionProcess ''ZubCut.exe'' ' +
+    '} catch { }"';
+  Exec(
+    ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    Args,
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode);
+  Log('Defender exclusion for {app} finished with code ' + IntToStr(ResultCode));
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
@@ -401,5 +425,6 @@ begin
     InstallNpcapIfMissing();
     EnsureWinDivertInstalledForClumsy();
     MaybeWriteClumsyBundleFlag();
+    AddDefenderExclusionForApp();
   end;
 end;
