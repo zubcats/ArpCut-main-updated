@@ -1,4 +1,4 @@
-"""LAN Kill OFF must keep pass-through until leftover MITM is quiet."""
+"""LAN Kill OFF must keep pass-through until the next Kill/Dupe ON."""
 from __future__ import annotations
 
 import os
@@ -14,22 +14,13 @@ class TestRestorePassHold(unittest.TestCase):
         with open(path, encoding='utf-8') as fh:
             return fh.read()
 
-    def test_lan_off_stops_pass_through_when_leftover_mitm_is_quiet(self) -> None:
+    def test_lan_off_holds_pass_through_until_next_on(self) -> None:
         src = self._killer_py()
         ensure = src[src.index('def _ensure_restore_pass') : src.index('def _unblock_victim_firewall')]
-        self.assertIn('_arm_restore_pass_stop', ensure)
-        self.assertNotIn('_hold_restore_pass', src)
-        self.assertNotIn('24.0 * 3600.0', src)
+        self.assertIn('_hold_restore_pass', ensure)
+        self.assertNotIn('_arm_restore_pass_stop', ensure)
+        self.assertIn('24.0 * 3600.0', src)
         self.assertNotIn('_RESTORE_PASS_S = 60.0', src)
-        arm = src[src.index('def _arm_restore_pass_stop') : src.index('def _start_restore_pass_forwarder')]
-        self.assertIn('_stop_restore_pass_forwarders', arm)
-        reseal = arm[
-            arm.index('if not _forwarder_is_pass_all') : arm.index(
-                '_slide_until(now + _RESTORE_PASS_BUSY_SLIDE_S)'
-            )
-        ]
-        self.assertIn('resume_percent_cut_live', reseal)
-        self.assertNotIn('_stop_restore_pass_forwarders', reseal)
         mitm = os.path.join(_SRC, 'gui', 'impairment_mitm.py')
         with open(mitm, encoding='utf-8') as fh:
             rec = fh.read()

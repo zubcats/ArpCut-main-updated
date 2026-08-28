@@ -50,26 +50,22 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   LAN ping + "forwarder cleared".
 - **Right:** On OFF: flip the live forwarder to 100% pass
   (`pass_all_live`), send honest restore ARP (including the same
-  victim-targeted broadcast poison used), and keep that pass-through
-  until leftover MITM is unused: hold at least a few minutes (idle
-  console has no WAN), and never drop a still-busy relay. A fixed
-  short stop is the “came back then died again” hole. A 24h / until-next-ON
-  hold is lasting lag: WAN still hairpins through this PC. `_seal_hard_drop`
-  must no-op when the MAC is not in `killed`. Idle reconcile must not
-  kill a still-busy pass-through.
+  victim-targeted broadcast poison used), and **keep that pass-through
+  until the next Kill/Dupe ON**. Auto-stopping the relay (quiet timer,
+  “not pass-all”, or `_arm_restore_pass_stop`) is the restore-then-red-chain
+  hole on mesh Wi‑Fi PC + ethernet PS5. `_seal_hard_drop` must no-op when
+  the MAC is not in `killed`. Idle reconcile must not kill a still-busy
+  pass-through.
 - **Wrong:** Rewrite promiscuous copies of native victim↔router frames, or
   our own Npcap reinjects. That duplicates the real path and leaves the
   console laggy after OFF without a red chain.
 - **Right:** The MITM forwarder only rewrites frames whose Ethernet dst is
   this PC (leftover poison). Native copies and echo of our own sends are
-  ignored, and `_restore_pass_seen` must not count them.
-- **Wrong:** `_arm_restore_pass_stop` tearing down the relay because the
-  forwarder is briefly not 100% pass (in-flight `_seal_hard_drop`). That is
-  restore-then-red-chain: OFF looks fine, then leftover poison has no relay.
-- **Right:** If OFF already cleared `killed` and the sniffer is not pass-all,
-  flip `pass_all_live` / `resume_percent_cut_live` and keep holding. Only stop
-  after leftover MITM is actually quiet. Same if `apply_percent_cut(0)` built a
-  hard-drop after OFF — keep it as pass-through, do not `_stop_forwarder`.
+  ignored. That is the leftover-lag fix — not tearing the relay down.
+- **Wrong:** `_arm_restore_pass_stop` tearing down the relay after OFF.
+- **Right:** `_hold_restore_pass` until next ON. If `apply_percent_cut(0)`
+  built a hard-drop after OFF, keep it as pass-through (`resume_percent_cut_live`),
+  do not `_stop_forwarder`.
 - **Wrong:** Finish a poison burst after unkill, or queue `block_ip`
   while the Npcap dropper is already live. Early Dupe/Kill OFF then
   looks restored and dies again when the trailing frames/firewall land.

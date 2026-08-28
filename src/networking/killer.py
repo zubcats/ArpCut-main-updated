@@ -1481,13 +1481,10 @@ class Killer:
             return 0
 
     def _arm_restore_pass_stop(self, mac, seq, extra_macs=None) -> None:
-        """Keep 100% pass-through until leftover MITM is unused.
+        """Do not call from LAN Kill/Dupe OFF — stopping this relay recuts.
 
-        A fixed 60s stop was the 'came back then died again' hole: restore ARP
-        can land for a moment, then we drop the relay while the router still
-        sends PS5 WAN here. Do not force-stop a still-busy path. Do not stop
-        just because an in-flight seal flipped hard-drop after OFF — restore
-        then red-chain. Flip back to pass-all and keep holding.
+        Home LAN OFF must use ``_hold_restore_pass`` until the next ON.
+        Auto-stop is the restore-then-red-chain hole on mesh + ethernet PS5.
         """
         if not mac:
             return
@@ -1616,6 +1613,25 @@ class Killer:
             if key and key not in self.killed:
                 self._stop_forwarder(key)
 
+    def _hold_restore_pass(self, mac) -> None:
+        """Keep leftover MITM in 100% pass until the next Kill/Dupe ON.
+
+        Auto-stopping this relay recuts the ethernet PS5 (restore then red
+        chain). Native-skip in the forwarder is what avoids leftover lag.
+        """
+        if not mac:
+            return
+        if not isinstance(getattr(self, '_restore_pass_until', None), dict):
+            self._restore_pass_until = {}
+        self._restore_pass_until[mac] = monotonic() + (24.0 * 3600.0)
+        # Cancel any quiet-stop worker so it cannot tear the relay down.
+        try:
+            if not isinstance(getattr(self, '_restore_pass_gen', None), dict):
+                self._restore_pass_gen = {}
+            self._restore_pass_gen[mac] = int(self._restore_pass_gen.get(mac, 0)) + 1
+        except Exception:
+            pass
+
     def _ensure_restore_pass(self, victim, seq, *, extra_macs=None) -> None:
         """Flip leftover MITM to 100% pass so OFF is not a black hole."""
         mac = str((victim or {}).get('mac') or '') if isinstance(victim, dict) else ''
@@ -1623,7 +1639,7 @@ class Killer:
             return
         extra = [m for m in (extra_macs or []) if m and m != mac]
         if self.resume_percent_cut_live(mac):
-            self._arm_restore_pass_stop(mac, seq, extra)
+            self._hold_restore_pass(mac)
             for m in extra:
                 self.resume_percent_cut_live(m)
             self._reassert_restore_pass(mac, seq, extra)
@@ -1638,11 +1654,11 @@ class Killer:
             if self._op_seq.get(mac) != seq or mac in self.killed:
                 return
             if self.resume_percent_cut_live(mac):
-                self._arm_restore_pass_stop(mac, seq, extra)
+                self._hold_restore_pass(mac)
                 self._reassert_restore_pass(mac, seq, extra)
                 return
             if self._start_restore_pass_forwarder(snap):
-                self._arm_restore_pass_stop(mac, seq, extra)
+                self._hold_restore_pass(mac)
                 self._reassert_restore_pass(mac, seq, extra)
 
         try:
@@ -1669,7 +1685,7 @@ class Killer:
             macs.append(s)
 
         def _work() -> None:
-            for delay_s in (0.05, 0.25, 1.35):
+            for delay_s in (0.05, 0.25, 1.35, 3.0):
                 sleep(delay_s)
                 if int(self._op_seq.get(mac, 0) or 0) != int(seq) or mac in self.killed:
                     return
