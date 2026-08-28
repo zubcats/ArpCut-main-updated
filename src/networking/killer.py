@@ -1412,7 +1412,9 @@ class Killer:
             self.forwarders.pop(mac, None)
             return False
         if pass_percent <= 0 and mac not in self.killed and not arm_if_needed:
-            self._stop_forwarder(mac)
+            # OFF won after we built a hard-drop sniffer. Keep it as pass-through
+            # — stopping leaves leftover poison with no relay (red chain returns).
+            self.resume_percent_cut_live(mac)
             return False
         # Seal kernel relay after the forwarder is live — never before the cut.
         disable_ip_forwarding(
@@ -1483,8 +1485,9 @@ class Killer:
 
         A fixed 60s stop was the 'came back then died again' hole: restore ARP
         can land for a moment, then we drop the relay while the router still
-        sends PS5 WAN here. Do not force-stop a still-busy path. Do not keep
-        the sniffer forever — leftover MITM through this PC is lasting lag.
+        sends PS5 WAN here. Do not force-stop a still-busy path. Do not stop
+        just because an in-flight seal flipped hard-drop after OFF — restore
+        then red-chain. Flip back to pass-all and keep holding.
         """
         if not mac:
             return
@@ -1528,9 +1531,14 @@ class Killer:
                         continue
                     break
                 if not _forwarder_is_pass_all(fw):
-                    if mac not in self.killed:
-                        self._stop_restore_pass_forwarders(mac, extras)
-                    return
+                    # In-flight Kill seal can flip hard-drop after OFF. Stopping
+                    # the relay here is the restore-then-red-chain hole. Flip
+                    # back to 100% pass and keep holding.
+                    if mac in self.killed:
+                        return
+                    self.resume_percent_cut_live(mac)
+                    sleep(0.25)
+                    continue
                 seen = self._restore_pass_seen(mac)
                 if seen != last_seen:
                     last_seen = seen
@@ -2028,13 +2036,13 @@ class Killer:
         if quick:
             plan = ((0.0, 2), (0.08, 1))
         else:
-            # Short honest bursts, then one later pass so the ethernet PS5 can
-            # cache the real gateway after late poison. Do not keep flooding.
+            # Short then silence. The PS5 is on router ethernet; Starlink can
+            # answer ARP on that wire if we stop flooding from mesh Wi‑Fi.
+            # A later follow-up burst was the "came back then died" hole.
             plan = (
                 (0.0, 3),
                 (0.2, 2),
                 (0.45, 2),
-                (2.5, 2),
             )
         for wait_s, repeats in plan:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:

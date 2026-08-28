@@ -63,6 +63,13 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 - **Right:** The MITM forwarder only rewrites frames whose Ethernet dst is
   this PC (leftover poison). Native copies and echo of our own sends are
   ignored, and `_restore_pass_seen` must not count them.
+- **Wrong:** `_arm_restore_pass_stop` tearing down the relay because the
+  forwarder is briefly not 100% pass (in-flight `_seal_hard_drop`). That is
+  restore-then-red-chain: OFF looks fine, then leftover poison has no relay.
+- **Right:** If OFF already cleared `killed` and the sniffer is not pass-all,
+  flip `pass_all_live` / `resume_percent_cut_live` and keep holding. Only stop
+  after leftover MITM is actually quiet. Same if `apply_percent_cut(0)` built a
+  hard-drop after OFF — keep it as pass-through, do not `_stop_forwarder`.
 - **Wrong:** Finish a poison burst after unkill, or queue `block_ip`
   while the Npcap dropper is already live. Early Dupe/Kill OFF then
   looks restored and dies again when the trailing frames/firewall land.

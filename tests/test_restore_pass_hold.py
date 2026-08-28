@@ -23,6 +23,13 @@ class TestRestorePassHold(unittest.TestCase):
         self.assertNotIn('_RESTORE_PASS_S = 60.0', src)
         arm = src[src.index('def _arm_restore_pass_stop') : src.index('def _start_restore_pass_forwarder')]
         self.assertIn('_stop_restore_pass_forwarders', arm)
+        reseal = arm[
+            arm.index('if not _forwarder_is_pass_all') : arm.index(
+                '_slide_until(now + _RESTORE_PASS_BUSY_SLIDE_S)'
+            )
+        ]
+        self.assertIn('resume_percent_cut_live', reseal)
+        self.assertNotIn('_stop_restore_pass_forwarders', reseal)
         mitm = os.path.join(_SRC, 'gui', 'impairment_mitm.py')
         with open(mitm, encoding='utf-8') as fh:
             rec = fh.read()
@@ -64,6 +71,9 @@ class TestRestorePassHold(unittest.TestCase):
         cut = src[src.index('def _apply_traffic_cut_sync') : src.index('def apply_traffic_cut')]
         self.assertIn('arm_if_needed=False', cut)
         self.assertIn('apply_percent_cut', cut)
+        after = apply[apply.index('self.forwarders[mac] = fw') :]
+        self.assertIn('resume_percent_cut_live', after)
+        self.assertNotIn('_stop_forwarder', after)
 
     def test_seal_hard_drop_reverts_if_unkill_won(self) -> None:
         src = self._killer_py()
@@ -110,7 +120,7 @@ class TestRestorePassHold(unittest.TestCase):
         src = self._killer_py()
         worker = src[src.index('def _unkill_restore_worker') : src.index('def kill_all')]
         self.assertIn('(0.45, 2)', worker)
-        self.assertIn('(2.5, 2)', worker)
+        self.assertNotIn('(2.5, 2)', worker)
         self.assertNotIn('(120.0, 2)', worker)
         self.assertNotIn('(80.0, 2)', worker)
         self.assertNotIn('(1.0, 2)', worker)
