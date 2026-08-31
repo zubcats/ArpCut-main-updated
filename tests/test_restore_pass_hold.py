@@ -107,14 +107,17 @@ class TestRestorePassHold(unittest.TestCase):
         self.assertIn('lan_instant_aborted', run)
         self.assertIn('intent_seq', run)
 
-    def test_lan_restore_arp_is_short_then_silent(self) -> None:
+    def test_lan_restore_arp_is_short_then_unicast_followup(self) -> None:
         src = self._killer_py()
         worker = src[src.index('def _unkill_restore_worker') : src.index('def kill_all')]
-        self.assertIn('(0.45, 2)', worker)
-        self.assertNotIn('(2.5, 2)', worker)
+        self.assertIn('(0.45, 2, False)', worker)
+        self.assertIn('(1.0, 2, True)', worker)
+        self.assertIn('(2.5, 2, True)', worker)
+        self.assertIn('(5.0, 2, True)', worker)
+        self.assertIn('unicast_only=unicast_only', worker)
+        self.assertNotIn('(2.5, 3)', worker)
         self.assertNotIn('(120.0, 2)', worker)
         self.assertNotIn('(80.0, 2)', worker)
-        self.assertNotIn('(1.0, 2)', worker)
 
 
 if __name__ == '__main__':

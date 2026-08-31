@@ -1905,12 +1905,12 @@ class Killer:
         else:
             self.prewarm_l2_socket(join_ms=0)
 
-    def _restore_frames(self, victim):
+    def _restore_frames(self, victim, *, unicast_only=False):
         """Undo poison with the same delivery Kill/Dupe ON used.
 
         This PC is on mesh Wi‑Fi; the PS5 is on router ethernet. Isolation
         drops STA unicast, which is why ON uses victim-targeted L2 broadcast.
-        Unicast-only restore never reaches the console.
+        Unicast-only restore never reaches that console.
 
         Poison broadcast is consistent (Ether src == hwsrc == this PC). A
         restore broadcast that keeps this PC as Ether src and the router as
@@ -1919,6 +1919,11 @@ class Killer:
 
         Do not broadcast ``psrc=victim_ip`` from this PC — that re-teaches
         the router the PS5 is here.
+
+        ``unicast_only``: later OFF follow-up for Wi‑Fi PC + Wi‑Fi PS5 on
+        the same AP. Trailing poison recuts after the short burst; STA
+        unicast restore lands there. Do not include broadcasts or
+        router-SA spoofs — those overwrite a wired PS5 on Starlink.
         """
         src = self._poison_hwsrc()
         router_ip, router_mac = self._restore_router_endpoint()
@@ -1970,6 +1975,17 @@ class Killer:
             pdst=victim_ip,
             hwdst=victim_mac,
         )
+        if unicast_only:
+            return [
+                to_victim_req,
+                to_victim_reply,
+                to_victim_req,
+                to_victim_reply,
+                to_router_req,
+                to_router_reply,
+                to_router_req,
+                to_router_reply,
+            ]
         frames = [
             to_victim_req,
             to_victim_reply,
@@ -2026,14 +2042,14 @@ class Killer:
             )
         return frames
 
-    def _restore_arp_now(self, victim, seq=0, repeats=1, delay_s=0.1):
+    def _restore_arp_now(self, victim, seq=0, repeats=1, delay_s=0.1, *, unicast_only=False):
         """Best-effort ARP restore; aborts if a newer op supersedes this sequence."""
         if self.iface.name == 'NULL':
             return
         mac = str((victim or {}).get('mac') or '')
         if not mac:
             return
-        frames = self._restore_frames(victim)
+        frames = self._restore_frames(victim, unicast_only=unicast_only)
         if not frames:
             return
         for _ in range(max(1, int(repeats))):
@@ -2048,26 +2064,34 @@ class Killer:
     def _unkill_restore_worker(self, victim, seq=0, *, quick=False):
         # Follow-up restore bursts so late poison frames do not re-break connectivity.
         # ICS hotspot uses a short plan — PS5 should recover in under ~300ms, not ~2s.
-        # LAN Wi‑Fi/mesh needs a later burst: console ARP often ignores the first replies.
         if quick:
-            plan = ((0.0, 2), (0.08, 1))
-        else:
-            # Short then silence. The PS5 is on router ethernet; Starlink can
-            # answer ARP on that wire if we stop flooding from mesh Wi‑Fi.
-            # A later follow-up burst was the "came back then died" hole.
             plan = (
-                (0.0, 3),
-                (0.2, 2),
-                (0.45, 2),
+                (0.0, 2, False),
+                (0.08, 1, False),
             )
-        for wait_s, repeats in plan:
+        else:
+            # Short honest burst (including Wi‑Fi broadcast / router-SA) so an
+            # isolated ethernet PS5 still hears OFF. Then unicast-only follow-up:
+            # same-AP Wi‑Fi PS5 needs that against trailing poison; a wired
+            # Starlink PS5 does not hear STA unicast, so we do not overwrite it.
+            plan = (
+                (0.0, 3, False),
+                (0.2, 2, False),
+                (0.45, 2, False),
+                (1.0, 2, True),
+                (2.5, 2, True),
+                (5.0, 2, True),
+            )
+        for wait_s, repeats, unicast_only in plan:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
                 return
             if wait_s > 0:
                 sleep(wait_s)
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
                 return
-            self._restore_arp_now(victim, seq, repeats=repeats, delay_s=0.08)
+            self._restore_arp_now(
+                victim, seq, repeats=repeats, delay_s=0.08, unicast_only=unicast_only
+            )
         if self._op_seq.get(victim['mac']) == seq and victim['mac'] not in self.killed:
             self._remove_pf_block(victim['ip'])
 

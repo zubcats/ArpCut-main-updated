@@ -173,6 +173,22 @@ class TestKillRestoreFrames(unittest.TestCase):
         k._restore_arp_now(victim, seq=1, repeats=1, delay_s=0)
         self.assertEqual(len(sent), len(k._restore_frames(victim)))
 
+    def test_unicast_followup_restore_skips_broadcast_and_router_sa(self) -> None:
+        from scapy.all import ARP, Ether
+
+        k = self._killer(wifi=True)
+        victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
+        frames = k._restore_frames(victim, unicast_only=True)
+        self.assertTrue(frames)
+        router = '74:24:9f:3a:a3:75'
+        pc = 'aa:aa:aa:aa:aa:aa'
+        for f in frames:
+            self.assertNotEqual(str(f[Ether].dst).lower(), 'ff:ff:ff:ff:ff:ff')
+            self.assertEqual(str(f[Ether].src).lower(), pc)
+            self.assertNotEqual(str(f[Ether].src).lower(), router)
+            if str(f[ARP].psrc) == '192.168.1.1':
+                self.assertEqual(str(f[ARP].hwsrc).lower(), router)
+
     def test_wifi_poison_broadcasts_are_victim_targeted(self) -> None:
         from scapy.all import ARP, Ether
 

@@ -19,8 +19,10 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   OFF are the same ARP stack. Instant OFF worked when both were on the
   same AP because unicast restore landed. On this split, only the flooded
   broadcast reaches the console. One short honest broadcast, then
-  silence so the Starlink router can answer on ethernet. Do not stop the
-  100% pass-through while leftover MITM may still be in use.
+  **unicast-only** follow-up (no later broadcast / router-SA flood) so a
+  same-AP Wi‑Fi PS5 still beats trailing poison and the Starlink wired
+  console is not overwritten. Do not stop the 100% pass-through while
+  leftover MITM may still be in use.
 
 ## Clumsy enable must not break a working hotspot
 
