@@ -78,7 +78,9 @@ class TestRestorePassHold(unittest.TestCase):
         unkill = src[src.index('def unkill') : src.index('def reinforce_restore')]
         self.assertIn('_killed_keys_for_victim', unkill)
         self.assertIn('_resume_percent_cut_live_unlocked', unkill)
-        self.assertIn('_reassert_restore_pass', src[src.index('def _ensure_restore_pass') : src.index('def _unblock_victim_firewall')])
+        self.assertIn('_unkill_restore_worker', unkill)
+        self.assertNotIn('self._restore_arp_now(', unkill)
+        self.assertIn('_restore_arp_now_async', src[src.index('def reinforce_restore') : src.index('def _restore_frames')])
 
     def test_probe_aborts_when_op_seq_changes(self) -> None:
         path = os.path.join(_SRC, 'gui', 'impairment_mitm.py')

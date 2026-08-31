@@ -58,6 +58,10 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   hole on mesh Wi‑Fi PC + ethernet PS5. `_seal_hard_drop` must no-op when
   the MAC is not in `killed`. Idle reconcile must not kill a still-busy
   pass-through.
+- **Wrong:** Sending restore ARP or opening Npcap on the Kill OFF click thread
+  (Wi‑Fi L2 send / ``conf.L2socket`` freeze the UI).
+- **Right:** Instant OFF = ``pass_all_live`` on the click; restore bursts stay
+  on ``_unkill_restore_worker``.
 - **Wrong:** Rewrite promiscuous copies of native victim↔router frames, or
   our own Npcap reinjects. That duplicates the real path and leaves the
   console laggy after OFF without a red chain.

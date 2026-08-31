@@ -1879,12 +1879,9 @@ class Killer:
         else:
             self._ensure_restore_pass(victim, seq, extra_macs=alias_keys)
             self._pin_local_gateway_neighbor_async()
-        # Immediate ARP burst with no sleep — sleeps belong in @threaded _unkill_restore_worker
-        # so the GUI thread returns instantly on Kill/Lag/Dupe OFF.
-        # Never open a cold Npcap L2 socket on this thread (0.5–2s, or hang).
-        if self.l2_socket_ready():
-            self._restore_arp_now(victim, seq, repeats=3, delay_s=0)
-        else:
+        # Never send restore ARP or open Npcap on this thread — Wi‑Fi L2 send
+        # and conf.L2socket block the UI. The worker's first burst is immediate.
+        if not self.l2_socket_ready():
             self.prewarm_l2_socket(join_ms=0)
         self._unkill_restore_worker(victim, seq, quick=ics_mode)
 
@@ -1892,18 +1889,17 @@ class Killer:
         """
         Extra best-effort restore packets for a victim that should already be OFF.
         Safe no-op when victim is currently killed again.
+        Must not send or rebind on the caller thread (Kill OFF GUI path).
         """
         mac = victim.get('mac') if isinstance(victim, dict) else None
         if not mac:
             return
         if mac in self.killed:
             return
-        self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         seq = self._op_seq.get(mac, 0)
-        if self.l2_socket_ready():
-            self._restore_arp_now(victim, seq, repeats=2, delay_s=0)
-        else:
+        if not self.l2_socket_ready():
             self.prewarm_l2_socket(join_ms=0)
+        self._restore_arp_now_async(victim, seq, repeats=2, unicast_only=True)
 
     def _restore_frames(self, victim, *, unicast_only=False):
         """Undo poison with the same delivery Kill/Dupe ON used.
@@ -2042,12 +2038,66 @@ class Killer:
             )
         return frames
 
-    def _restore_arp_now(self, victim, seq=0, repeats=1, delay_s=0.1, *, unicast_only=False):
-        """Best-effort ARP restore; aborts if a newer op supersedes this sequence."""
+    def _restore_arp_now_async(self, victim, seq=0, repeats=1, *, unicast_only=False):
+        """Background restore burst — never open Npcap / sendp on the GUI thread."""
+        if not isinstance(victim, dict):
+            return
+        snap = {
+            'mac': victim.get('mac'),
+            'ip': victim.get('ip'),
+            'vendor': victim.get('vendor'),
+        }
+
+        def _work() -> None:
+            if int(self._op_seq.get(snap.get('mac'), 0) or 0) != int(seq):
+                return
+            if snap.get('mac') in self.killed:
+                return
+            if not self.l2_socket_ready():
+                self._get_socket()
+            self._restore_arp_now(
+                snap,
+                seq,
+                repeats=repeats,
+                delay_s=0,
+                unicast_only=unicast_only,
+                allow_async=False,
+            )
+
+        try:
+            threading.Thread(
+                target=safe_daemon_target(_work),
+                name='zubcut-restore-arp',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    def _restore_arp_now(
+        self,
+        victim,
+        seq=0,
+        repeats=1,
+        delay_s=0.1,
+        *,
+        unicast_only=False,
+        allow_async=True,
+    ):
+        """Best-effort ARP restore; aborts if a newer op supersedes this sequence.
+
+        Uses only the cached L2 socket. Opening Npcap here freezes the UI.
+        """
         if self.iface.name == 'NULL':
             return
         mac = str((victim or {}).get('mac') or '')
         if not mac:
+            return
+        sock = self._socket
+        if sock is None or not self.l2_socket_ready():
+            if allow_async:
+                self._restore_arp_now_async(
+                    victim, seq, repeats=repeats, unicast_only=unicast_only
+                )
             return
         frames = self._restore_frames(victim, unicast_only=unicast_only)
         if not frames:
@@ -2055,8 +2105,20 @@ class Killer:
         for _ in range(max(1, int(repeats))):
             if self._op_seq.get(mac) != seq or mac in self.killed:
                 break
-            for frame in frames:
-                self._send_packet(frame)
+            try:
+                with self._socket_lock:
+                    for frame in frames:
+                        if self._op_seq.get(mac) != seq or mac in self.killed:
+                            return
+                        sock.send(frame)
+            except Exception:
+                with self._socket_lock:
+                    self._socket = None
+                if allow_async:
+                    self._restore_arp_now_async(
+                        victim, seq, repeats=repeats, unicast_only=unicast_only
+                    )
+                return
             if delay_s > 0:
                 sleep(delay_s)
 
@@ -2064,6 +2126,8 @@ class Killer:
     def _unkill_restore_worker(self, victim, seq=0, *, quick=False):
         # Follow-up restore bursts so late poison frames do not re-break connectivity.
         # ICS hotspot uses a short plan — PS5 should recover in under ~300ms, not ~2s.
+        if not self.l2_socket_ready():
+            self._get_socket()
         if quick:
             plan = (
                 (0.0, 2, False),
@@ -2090,7 +2154,12 @@ class Killer:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
                 return
             self._restore_arp_now(
-                victim, seq, repeats=repeats, delay_s=0.08, unicast_only=unicast_only
+                victim,
+                seq,
+                repeats=repeats,
+                delay_s=0,
+                unicast_only=unicast_only,
+                allow_async=False,
             )
         if self._op_seq.get(victim['mac']) == seq and victim['mac'] not in self.killed:
             self._remove_pf_block(victim['ip'])

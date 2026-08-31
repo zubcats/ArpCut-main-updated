@@ -109,6 +109,8 @@ class TestKillRestoreFrames(unittest.TestCase):
         lan = self._unkill_block()
         self.assertIn('_ensure_restore_pass', lan)
         self.assertIn('_pin_local_gateway_neighbor_async', lan)
+        self.assertIn('_unkill_restore_worker', lan)
+        self.assertNotIn('self._restore_arp_now(', lan)
         self.assertLess(lan.index('self._next_op_seq'), lan.index('_ensure_restore_pass'))
         ics = lan[lan.index('if ics_mode:'): lan.index('else:')]
         self.assertIn('self._stop_forwarder(mac)', ics)
@@ -169,7 +171,14 @@ class TestKillRestoreFrames(unittest.TestCase):
         victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
         k._op_seq[victim['mac']] = 1
         sent = []
-        k._send_packet = sent.append  # type: ignore[method-assign]
+
+        class _Sock:
+            closed = False
+
+            def send(self, frame):
+                sent.append(frame)
+
+        k._socket = _Sock()
         k._restore_arp_now(victim, seq=1, repeats=1, delay_s=0)
         self.assertEqual(len(sent), len(k._restore_frames(victim)))
 
