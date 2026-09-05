@@ -73,6 +73,12 @@ class ClumzyModeIsolationTests(unittest.TestCase):
         self.assertIn('gated_mitm_params', src)
         self.assertIn('all_enabled_timers_finished', src)
         self.assertNotIn('ics_windivert_shaper', src)
+        self.assertNotIn('btnAdvancedLag', src)
+        self.assertIn('Advanced Lag Settings', src)
+        self.assertIn('normalSpinMain', src)
+        self.assertIn('btnPercentCut', src)
+        self.assertIn('scan_easy_icon', src)
+        self.assertIn('settings_icon', src)
 
     def test_engine_network_type_is_extern(self) -> None:
         hdr = _read('native/clumzy_engine/src/common.h')

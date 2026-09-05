@@ -509,10 +509,6 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnClumsyInstall.show()
             self.btnClumsyInstall.setText('Install Clumzy Mode')
             self.lblClumsyPath.hide()
-        if shell:
-            for w in (getattr(self, 'labelKeyPctCut', None), getattr(self, 'keySeqPctCut', None)):
-                if w is not None:
-                    w.hide()
 
     def _update_clumsy_path_label(self) -> None:
         self.lblClumsyPath.setText(
