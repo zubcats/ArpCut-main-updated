@@ -115,7 +115,7 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
         self.settings_window = Settings(self, self.shell_icon)
         self.about_window = About(self, self.shell_icon)
-        self.advanced_lag_settings_dialog = AdvancedLagSettingsDialog(self, self.shell_icon)
+        self.advanced_lag_settings_dialog = AdvancedLagSettingsDialog(self)
         self.advanced_lag_settings_dialog._clumzy_engine_host = self
 
         self._engine = None

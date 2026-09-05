@@ -29,6 +29,19 @@ class ClumzyModeIsolationTests(unittest.TestCase):
         self.assertNotIn('gui.impairment', joined)
         self.assertNotIn('ics_windivert_shaper', joined)
 
+    def test_advanced_lag_dialog_constructed_like_main_window(self) -> None:
+        tree = ast.parse(_read('src/gui/clumzy_mode_window.py'))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == 'AdvancedLagSettingsDialog'
+        ]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0].args), 1)
+        self.assertFalse(calls[0].keywords)
+
     def test_startup_fork_exists_before_main_window(self) -> None:
         src = _read('src/zubcut.py')
         fork = src.index('run_clumzy_mode')
