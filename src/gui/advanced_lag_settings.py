@@ -270,10 +270,9 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         lay.setSpacing(6)
 
         main = QLabel(
-            'These controls work without Clumsy mode, but delay, loss, and bandwidth caps are '
-            'usually more precise and behave more predictably when Clumsy mode is enabled in '
-            'Settings—especially on Windows ICS and other shared-client links. '
-            'Loss % and bandwidth caps use one combined drop roll when both apply.',
+            'In Clumzy Mode these rows drive the Clumzy engine: delay is lag, loss is drop, '
+            'cap is bandwidth. Jitter is extra lag (Clumzy has no separate jitter module). '
+            'Each row can have its own timer and Repeat. Nothing applies until the victim toggle is on.',
             wrap,
         )
         main.setWordWrap(True)
@@ -539,6 +538,30 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
             repair_settings()
         except Exception:
             pass
+        if hasattr(main, 'apply_advanced_clumzy'):
+            if checked:
+                self._persist_mitm_ui()
+                if not self._has_valid_mitm_config():
+                    self._log(
+                        'Enable at least one row, tick In or Out, and set non-zero values, then turn the victim toggle on.',
+                        'red',
+                    )
+                    self._set_toggle_state(self._tog_victim_all, False)
+                    self._refresh_mitm_status()
+                    return
+                try:
+                    main.apply_advanced_clumzy(self.live_mitm_adv_settings())
+                except Exception as exc:
+                    self._log(f'Advanced Lag failed to start: {exc}', 'red')
+                    self._set_toggle_state(self._tog_victim_all, False)
+            else:
+                try:
+                    main.stop_advanced_clumzy()
+                except Exception as exc:
+                    self._log(f'Advanced Lag failed to stop: {exc}', 'red')
+                self._persist_mitm_ui()
+            self._refresh_mitm_status()
+            return
         if checked:
             self._persist_mitm_ui()
             if not self._has_valid_mitm_config():
@@ -566,6 +589,10 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
     def _on_mitm_stop(self) -> None:
         main = self.app
         if main is None:
+            return
+        if hasattr(main, 'stop_advanced_clumzy'):
+            main.stop_advanced_clumzy()
+            self._refresh_mitm_status()
             return
         main.stop_mitm_shaping(log=True)
         self._refresh_mitm_status()
@@ -1115,7 +1142,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         if self._lbl_clumsy_status is None:
             return
         if not sys.platform.startswith('win'):
-            self._lbl_clumsy_status.setText('Clumsy mode is only available on Windows.')
+            self._lbl_clumsy_status.setText('Clumzy Mode is only available on Windows.')
             self._lbl_clumsy_status.setStyleSheet('color: #9a9a9a; font-size: 11px; background-color: #000000;')
             return
         try:
@@ -1126,7 +1153,7 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
                 windivert_driver_installed,
             )
         except Exception:
-            self._lbl_clumsy_status.setText('Could not read Clumsy status.')
+            self._lbl_clumsy_status.setText('Could not read Clumzy Mode status.')
             self._lbl_clumsy_status.setStyleSheet('color: #c9a227; font-size: 11px; background-color: #000000;')
             return
         mode = clumsy_mode_enabled()
@@ -1134,12 +1161,16 @@ class AdvancedLagSettingsDialog(FramelessResizableMixin, QDialog):
         driver = windivert_driver_installed()
         ready = clumsy_runtime_ready()
         lines = [
-            f'Clumsy mode (Settings): {"on" if mode else "off"}',
+            f'Clumzy Mode (Settings): {"on" if mode else "off"}',
             f'WinDivert driver: {"present" if driver else "missing"}',
         ]
-        if getattr(sys, 'frozen', False):
-            lines.append(f'Portable clumsy bundle flag: {"yes" if bundle else "no"}')
-        lines.append(f'Ready for inline ICS row: {"yes" if ready and mode else "no"}')
+        if getattr(self.app, 'clumzy_mode_shell', False):
+            lines.append('Clumzy engine: Kill / Lag Switch / Dupe use Freeze on all forwarded hotspot packets.')
+            lines.append('Advanced Lag maps delay/loss/cap/jitter onto Clumzy modules (not ARP MITM).')
+        else:
+            if getattr(sys, 'frozen', False):
+                lines.append(f'Portable Clumzy bundle flag: {"yes" if bundle else "no"}')
+            lines.append(f'Ready for inline ICS row: {"yes" if ready and mode else "no"}')
         self._lbl_clumsy_status.setText('\n'.join(lines))
         if mode and ready:
             self._lbl_clumsy_status.setStyleSheet('color: #8fbcbb; font-size: 11px; background-color: #000000;')

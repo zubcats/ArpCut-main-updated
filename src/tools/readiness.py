@@ -422,7 +422,7 @@ def collect_pc_readiness(
                     level='warn',
                     code='ZC-WD',
                     message=(
-                        'Clumsy mode is ON but WinDivert is unavailable — hotspot cut '
+                        'Clumzy Mode is ON but WinDivert is unavailable — hotspot cut '
                         'needs Admin + a complete WinDivert bundle.'
                     ),
                 )

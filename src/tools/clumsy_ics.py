@@ -1741,25 +1741,21 @@ def rollback_clumsy_ics() -> Tuple[bool, str]:
 
 
 def reset_clumsy_mode_on_startup() -> None:
-    """
-    Clumsy is session-only across quit/relaunch: clear clumsy_mode on cold start.
+    """Keep Clumzy Mode across quit/relaunch.
 
-    Settings enables ICS then restarts ZubCut; a marker file (and legacy
-    clumsy_persist_across_restart) skips this once so the checkbox stays on.
+    A marker file (and legacy clumsy_persist_across_restart) is still consumed
+    after a Settings restart so the new process can take the single-instance lock.
+    The checkbox itself is no longer cleared on a cold start.
     """
     if os.name != 'nt':
         return
     try:
         from tools.utils_gui import import_settings_as_dict, set_settings_many
 
-        if consume_clumsy_settings_restart_pending():
-            return
+        consume_clumsy_settings_restart_pending()
         raw = import_settings_as_dict()
         if bool(raw.get('clumsy_persist_across_restart')):
             set_settings_many({'clumsy_persist_across_restart': False})
-            return
-        if bool(raw.get('clumsy_mode')):
-            set_settings_many({'clumsy_mode': False})
     except Exception:
         pass
 

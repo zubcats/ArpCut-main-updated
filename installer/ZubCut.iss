@@ -45,7 +45,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 ; Default is checked (omit Flags: unchecked). "checked" is not a valid [Tasks] flag in Inno Setup.
-Name: "clumsymode"; Description: "Clumsy mode (WinDivert for PC Mobile Hotspot lag)"; GroupDescription: "Optional:"
+Name: "clumsymode"; Description: "Clumzy Mode (Clumzy engine + WinDivert for PC Mobile Hotspot)"; GroupDescription: "Optional:"
 
 ; Onedir replace is handled in [Code] PrepareToInstall (wait for ZubCut.exe to exit,
 ; rename _internal → backup, restore if python311.dll is missing after copy).
@@ -57,10 +57,12 @@ Source: "..\dist\{#MyAppName}\*"; DestDir: "{app}"; Flags: ignoreversion recurse
 ; Bundle Npcap installer with setup. Place this file at installer\npcap-1.87.exe before compiling.
 Source: "..\installer\{#NpcapInstallerName}"; DestDir: "{tmp}"; Flags: deleteafterinstall ignoreversion skipifsourcedoesntexist
 ; WinDivert 2.x: run installer\fetch_windivert.ps1 before compile (required — ISCC fails if missing).
-; Installed only when the Clumsy mode task is selected (checked by default).
+; Installed only when the Clumzy mode task is selected (checked by default).
 Source: "..\installer\windivert\WinDivert.dll"; DestDir: "{app}\windivert"; Tasks: clumsymode; Flags: ignoreversion
 Source: "..\installer\windivert\WinDivert64.sys"; DestDir: "{app}\windivert"; Tasks: clumsymode; Flags: ignoreversion
 Source: "..\installer\windivert\WinDivert-LICENSE.txt"; DestDir: "{app}\windivert"; Tasks: clumsymode; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\native\clumzy_engine\out\clumzy_engine.dll"; DestDir: "{app}"; Tasks: clumsymode; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\native\clumzy_engine\out\clumzy_engine.dll"; DestDir: "{app}\windivert"; Tasks: clumsymode; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -358,12 +360,12 @@ begin
     Log('WinDivert installed under {app}\windivert');
     Exit;
   end;
-  Log('Clumsy mode selected but WinDivert files missing under {app}\windivert');
+  Log('Clumzy mode selected but WinDivert files missing under {app}\windivert');
   MsgBox(
-    'Clumsy mode was selected, but WinDivert could not be installed.' + #13#10 + #13#10 +
+    'Clumzy mode was selected, but WinDivert could not be installed.' + #13#10 + #13#10 +
     'Expected under:' + #13#10 +
     '  ' + ExpandConstant('{app}\windivert\') + #13#10 + #13#10 +
-    'Re-download ZubCut from the official build, keep "Clumsy mode" checked, and run setup as Administrator.',
+    'Re-download ZubCut from the official build, keep "Clumzy mode" checked, and run setup as Administrator.',
     mbError,
     MB_OK);
 end;

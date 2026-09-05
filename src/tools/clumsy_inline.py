@@ -731,15 +731,15 @@ def clumsy_windivert_unavailable_reason(device) -> str:
     if not sys.platform.startswith('win'):
         return 'Windows only'
     if not clumsy_mode_enabled():
-        return _zc('ZC-WD', 'enable Clumsy mode in Settings and restart ZubCut')
+        return _zc('ZC-WD', 'enable Clumzy Mode in Settings and restart ZubCut')
     if not _process_is_elevated():
         return _zc('ZC-ADMIN')
     if getattr(sys, 'frozen', False) and not clumsy_bundle_offered():
-        return _zc('ZC-WD', 'reinstall with Clumsy mode checked (WinDivert bundle)')
+        return _zc('ZC-WD', 'reinstall with Clumzy Mode checked (WinDivert bundle)')
     if not windivert_bundle_complete():
         return _zc(
             'ZC-WD',
-            'WinDivert.dll + WinDivert64.sys missing in ZubCut\\windivert (reinstall Clumsy mode)',
+            'WinDivert.dll + WinDivert64.sys missing in ZubCut\\windivert (reinstall Clumzy Mode)',
         )
     if not isinstance(device, dict):
         return 'no device selected'

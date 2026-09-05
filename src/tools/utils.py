@@ -347,7 +347,7 @@ def settings_iface_picker_hint(ifaces) -> str:
         )
     return (
         'This PC’s Wi‑Fi or Ethernet. '
-        'Leftover Mobile Hotspot adapters stay hidden unless Clumsy Mode is on.'
+        'Leftover Mobile Hotspot adapters stay hidden unless Clumzy Mode is on.'
     )
 
 

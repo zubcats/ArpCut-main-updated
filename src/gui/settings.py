@@ -276,22 +276,21 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         QTimer.singleShot(0, self._finalize_settings_layout)
 
     def _install_clumsy_controls(self):
-        self.chkClumsy = QCheckBox('Clumsy Mode', self.gridLayoutWidget_2)
+        self.chkClumsy = QCheckBox('Clumzy Mode', self.gridLayoutWidget_2)
         self.chkClumsy.setToolTip(
-            'Automates manual Clumsy-style sharing when your setup is already correct. '
-            'Detects: console on spare Ethernet (PC on Wi‑Fi or Ethernet to router), or console on PC Mobile Hotspot '
-            '(hotspot must already be ON). Enables sharing only if missing — does not turn hotspot on/off. '
-            'Run ZubCut as Administrator.'
+            'Restart ZubCut into Clumzy Mode: the Clumzy packet engine on Mobile Hotspot '
+            '(filter true, all forwarded packets). Normal ARP Kill is not used. '
+            'Turn Windows Mobile Hotspot ON first. Run ZubCut as Administrator.'
         )
-        self.lblClumsyPath = QLabel('Clumsy path: auto-detect when enabled', self.gridLayoutWidget_2)
+        self.lblClumsyPath = QLabel('Clumzy Mode uses the bundled Clumzy engine', self.gridLayoutWidget_2)
         self.lblClumsyPath.setWordWrap(True)
         self.lblClumsyPath.setToolTip(
-            'On enable ZubCut picks the intended path (Ethernet console or Mobile Hotspot) and applies ICS '
-            'only when needed. If nothing valid is configured, Clumsy mode fails with setup hints.'
+            'Clumzy Mode replaces the main window. Kill / Lag Switch / Dupe use Clumzy Freeze '
+            'on all hotspot traffic. Turn the checkbox off and restart to return to normal ZubCut.'
         )
-        self.btnClumsyInstall = QPushButton('Install Clumsy mode…', self.gridLayoutWidget_2)
+        self.btnClumsyInstall = QPushButton('Install Clumzy mode…', self.gridLayoutWidget_2)
         self.btnClumsyInstall.setToolTip(
-            'Downloads the latest experimental installer (includes optional WinDivert setup).'
+            'Downloads the latest experimental installer (includes Clumzy / WinDivert).'
         )
         self.gridLayout_3.addWidget(self.chkClumsy, 2, 0, 1, 2)
         self.gridLayout_3.addWidget(self.btnClumsyInstall, 2, 2, 1, 2)
@@ -322,7 +321,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             lay = gb.layout()
         hint = QLabel(
             'This PC’s Wi‑Fi or Ethernet. '
-            'Leftover Mobile Hotspot adapters stay hidden unless Clumsy Mode is on.',
+            'Leftover Mobile Hotspot adapters stay hidden unless Clumzy Mode is on.',
             gb,
         )
         hint.setObjectName('lblIfaceHint')
@@ -489,7 +488,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             clumsy_on = bool(self.chkClumsy.isChecked())
         except Exception:
             clumsy_on = False
-        sig = (bundle, driver_ok, incomplete, clumsy_on)
+        shell = bool(getattr(self.app, 'clumzy_mode_shell', False))
+        sig = (bundle, driver_ok, incomplete, clumsy_on, shell)
         if sig == getattr(self, '_clumsy_widgets_sig', None):
             return
         self._clumsy_widgets_sig = sig
@@ -502,18 +502,23 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         elif incomplete:
             self.chkClumsy.hide()
             self.btnClumsyInstall.show()
-            self.btnClumsyInstall.setText('Repair Clumsy / WinDivert')
+            self.btnClumsyInstall.setText('Repair Clumzy / WinDivert')
             self.lblClumsyPath.hide()
         else:
             self.chkClumsy.hide()
             self.btnClumsyInstall.show()
-            self.btnClumsyInstall.setText('Install Clumsy mode')
+            self.btnClumsyInstall.setText('Install Clumzy Mode')
             self.lblClumsyPath.hide()
+        if shell:
+            for w in (getattr(self, 'labelKeyPctCut', None), getattr(self, 'keySeqPctCut', None)):
+                if w is not None:
+                    w.hide()
 
     def _update_clumsy_path_label(self) -> None:
-        from tools.clumsy_ics import describe_clumsy_console_path
-
-        self.lblClumsyPath.setText(describe_clumsy_console_path())
+        self.lblClumsyPath.setText(
+            'Clumzy Mode: Clumzy engine on hotspot (all forwarded packets). '
+            'Turn Mobile Hotspot ON in Windows first.'
+        )
 
     def _on_clumsy_checkbox_changed(self, _state):
         if self._clumsy_toggle_guard:
@@ -530,7 +535,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         if MsgType.WARN(
             self,
             'Restart ZubCut',
-            'Changing Clumsy mode requires a full restart.\nRestart now?',
+            'Changing Clumzy Mode requires a full restart.\nRestart now?',
             Buttons.YES | Buttons.NO,
         ) == Buttons.NO:
             self._clumsy_toggle_guard = True
@@ -538,7 +543,16 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self._clumsy_toggle_guard = False
             return
         try:
-            self._begin_clumsy_mode_toggle(new_v, old_v)
+            from tools.clumsy_ics import mark_clumsy_settings_restart_pending
+
+            mark_clumsy_settings_restart_pending()
+            set_settings_many(
+                {
+                    'clumsy_persist_across_restart': True,
+                    'clumsy_mode': new_v,
+                }
+            )
+            restart_zubcut(self.app)
         except Exception as exc:
             from tools.user_errors import format_build_version_hint
 
@@ -551,8 +565,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
             MsgType.ERROR(
                 self,
-                'Clumsy Mode',
-                'ZubCut hit an error while changing Clumsy mode.\n\n'
+                'Clumzy Mode',
+                'ZubCut hit an error while changing Clumzy Mode.\n\n'
                 f'{exc}\n\n'
                 'Turn Mobile Hotspot ON in Windows Settings first, wait for it to start, '
                 'then try again. If this keeps happening, send the newest '
@@ -564,9 +578,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _begin_clumsy_mode_toggle(self, new_v: bool, old_v: bool) -> None:
         self._pending_clumsy_new = bool(new_v)
         self._pending_clumsy_old = bool(old_v)
-        label = 'Preparing Clumsy mode…' if new_v else 'Restoring network sharing…'
+        label = 'Preparing Clumzy Mode…' if new_v else 'Restoring network sharing…'
         dlg = QProgressDialog(label, None, 0, 0, self)
-        dlg.setWindowTitle('Clumsy Mode')
+        dlg.setWindowTitle('Clumzy Mode')
         dlg.setWindowModality(Qt.ApplicationModal)
         dlg.setCancelButton(None)
         dlg.setMinimumDuration(0)
@@ -607,8 +621,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 pass
             MsgType.ERROR(
                 self,
-                'Clumsy Mode',
-                'ZubCut hit an error while changing Clumsy mode.\n\n'
+                'Clumzy Mode',
+                'ZubCut hit an error while changing Clumzy Mode.\n\n'
                 f'{exc}\n\n'
                 'Turn Mobile Hotspot ON in Windows Settings first, wait for it to start, '
                 'then try again. If this keeps happening, send the newest '
@@ -634,8 +648,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
                 MsgType.WARN(
                     self,
-                    'Clumsy Mode',
-                    'Could not enable Clumsy mode.\n\n' + detail + format_build_version_hint(),
+                    'Clumzy Mode',
+                    'Could not enable Clumzy Mode.\n\n' + detail + format_build_version_hint(),
                     Buttons.OK,
                 )
                 self._clumsy_toggle_guard = True
@@ -659,7 +673,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 if (
                     MsgType.WARN(
                         self,
-                        'Clumsy Mode',
+                        'Clumzy Mode',
                         'Could not restore sharing automatically.\n\n'
                         + (detail or 'Unknown error.')
                         + '\n\nRun hotspot / sharing repair now?',
@@ -720,10 +734,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         if MsgType.WARN(
             None,
-            'Install Clumsy mode',
+            'Install Clumzy Mode',
             (
                 'This downloads the latest experimental ZubCut installer '
-                '(with optional WinDivert / Clumsy components).\n'
+                '(with optional WinDivert / Clumzy components).\n'
                 'Continue?'
             ),
             Buttons.YES | Buttons.NO,
@@ -776,7 +790,9 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def showEvent(self, event):
         super().showEvent(event)
         try:
-            if getattr(self, 'app', None) is not None:
+            if getattr(self, 'app', None) is not None and not getattr(
+                self.app, 'clumzy_mode_shell', False
+            ):
                 self.app._reconcile_network_adapter(log=False)
         except Exception:
             pass
@@ -895,6 +911,21 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 'clumsy_mode': clumsy_mode,
             }
         )
+
+        if getattr(self.app, 'clumzy_mode_shell', False):
+            if hasattr(self.app, 'refresh_keyboard_shortcuts_from_settings'):
+                try:
+                    self.app.refresh_keyboard_shortcuts_from_settings()
+                except Exception:
+                    pass
+            if not silent_apply:
+                MsgType.INFO(
+                    self,
+                    'Apply Settings',
+                    'New settings have been applied.',
+                )
+            self.close()
+            return
 
         old_iface = self.app.scanner.iface.name
         

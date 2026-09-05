@@ -492,11 +492,33 @@ if __name__ == "__main__":
 
             reset_clumsy_mode_on_startup()
             maybe_ensure_wlan_autoconfig_on_startup()
-            maybe_repair_stale_clumsy_ics_on_startup()
+            _clumzy_boot = False
+            try:
+                from tools.utils_gui import get_settings as _gs_boot
+
+                _clumzy_boot = bool(_gs_boot('clumsy_mode'))
+            except Exception:
+                _clumzy_boot = False
+            if not _clumzy_boot:
+                maybe_repair_stale_clumsy_ics_on_startup()
         except Exception:
             pass
     repair_settings()
     _validate_license_or_exit(icon)
+    _clumzy_on = False
+    try:
+        from tools.utils_gui import get_settings as _gs_mode
+
+        _clumzy_on = bool(_gs_mode('clumsy_mode'))
+    except Exception:
+        _clumzy_on = False
+    if _clumzy_on and _sys.platform.startswith('win'):
+        from gui.clumzy_mode_window import run_clumzy_mode
+
+        GUI = run_clumzy_mode(app, icon)
+        _start_license_runtime_validation(GUI, icon)
+        GUI.activateWindow()
+        exit(app.exec_())
     GUI = ZubCutApp(window_icon=icon)
     _start_license_runtime_validation(GUI, icon)
     GUI.show()

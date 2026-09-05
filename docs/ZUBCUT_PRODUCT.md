@@ -11,8 +11,8 @@
 
 | Goal | How |
 |------|-----|
-| PS5/console on PC hotspot | Clumsy mode → ICS setup (`clumsy_ics.py`) → scan → Kill/Lag/Dupe/Cut/Advanced |
-| Console on home router LAN | Clumsy off → ARP MITM + firewall (`killer.py`, `pfctl.py`) |
+| PS5/console on PC hotspot | Clumzy Mode → restart into Clumzy engine (`clumzy_mode_window.py`) → Kill/Lag/Dupe Freeze all forwarded packets |
+| Console on home router LAN | Clumzy Mode off → ARP MITM + firewall (`killer.py`, `pfctl.py`) |
 | Ethernet console → PC | Clumsy topology `ethernet` → WinDivert path as hotspot |
 | Licensed distribution | `license_offline` + Cloudflare sign-in worker |
 
@@ -49,6 +49,6 @@ Use `_impairment_plan_for`, `_victim_row`, `device_row_for_impairment` — not a
 ## User-visible features
 
 - Scan table, Kill, Lag, Dupe, Percent Cut, Advanced Lag  
-- Clumsy mode + hotspot vs ethernet topology  
+- Clumzy Mode (hotspot Clumzy engine) vs normal ARP ZubCut  
 - Settings, traffic monitor, nicknames, remember kill (LAN ARP MACs)  
 - Updater (stable / experimental), optional license sign-in  

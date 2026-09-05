@@ -12,3 +12,12 @@ foreach ($name in @('WinDivert.dll', 'WinDivert64.sys', 'WinDivert-LICENSE.txt')
     }
 }
 Write-Host "Staged WinDivert to $Dest"
+$Engine = Join-Path $Root 'native\clumzy_engine\out\clumzy_engine.dll'
+if (Test-Path -LiteralPath $Engine) {
+    Copy-Item -LiteralPath $Engine -Destination (Join-Path $Dest 'clumzy_engine.dll') -Force
+    $AppDir = Join-Path (Join-Path $Root 'dist') 'ZubCut'
+    if (Test-Path -LiteralPath $AppDir) {
+        Copy-Item -LiteralPath $Engine -Destination (Join-Path $AppDir 'clumzy_engine.dll') -Force
+    }
+    Write-Host "Staged clumzy_engine.dll"
+}

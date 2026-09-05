@@ -23,7 +23,7 @@ ERROR_CODES: dict[str, str] = {
     'ZC-GWMAC': 'Router MAC unknown — ARP MITM cannot arm. Check Npcap + cable/Wi‑Fi driver.',
     'ZC-VMAC': 'Victim MAC unknown — ping the device once, then Rescan.',
     'ZC-FWD': 'Windows IP forwarding still on — Kill may lag instead of full cut. Relaunch as Admin.',
-    'ZC-WD': 'WinDivert unavailable — Clumsy mode + Admin + bundle required for hotspot cut.',
+    'ZC-WD': 'WinDivert unavailable — Clumzy Mode + Admin + bundle required for hotspot cut.',
     'ZC-WD-HVCI': 'WinDivert blocked by Memory Integrity / HVCI / Smart App Control — turn Core Isolation off, or set Smart App Control to Off (Windows Security → App & browser control; recent 24H2/25H2 can toggle SAC without reinstall).',
     'ZC-ICS': 'Hotspot/ICS path not ready — enable Mobile Hotspot; wait for 192.168.137.x or 192.168.173.x client.',
     'ZC-FW': 'Windows Firewall rule apply failed — check Admin and third-party firewall/AV.',

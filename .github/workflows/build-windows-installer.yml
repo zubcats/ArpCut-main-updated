@@ -121,6 +121,10 @@ jobs:
           print("Refreshed APP_BUILD_TIME_ISO to", build_iso, "commit", commit[:12])
           PY
 
+      - name: Build Clumzy engine DLL
+        shell: cmd
+        run: tools\build_clumzy_engine.cmd
+
       - name: Build Windows EXE (PyInstaller via build.py)
         run: python build.py
 

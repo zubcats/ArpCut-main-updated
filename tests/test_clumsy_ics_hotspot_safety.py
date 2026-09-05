@@ -439,7 +439,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         self.assertIn('reset_clumsy_mode_on_startup', src)
         self.assertIn('ensure_wlan_autoconfig_healthy', inspect.getsource(ics))
 
-    def test_reset_clumsy_mode_on_startup_clears_setting(self) -> None:
+    def test_reset_clumsy_mode_on_startup_keeps_setting(self) -> None:
         from unittest.mock import patch
 
         with patch.object(ics.os, 'name', 'nt'), patch(
@@ -450,7 +450,7 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
             return_value={'clumsy_mode': True, 'clumsy_persist_across_restart': False},
         ), patch('tools.utils_gui.set_settings_many') as sm:
             ics.reset_clumsy_mode_on_startup()
-        sm.assert_called_once_with({'clumsy_mode': False})
+        sm.assert_not_called()
 
     def test_reset_clumsy_mode_skips_when_restart_marker_present(self) -> None:
         from unittest.mock import patch
@@ -458,6 +458,9 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         with patch.object(ics.os, 'name', 'nt'), patch(
             'tools.clumsy_ics.consume_clumsy_settings_restart_pending',
             return_value=True,
+        ), patch(
+            'tools.utils_gui.import_settings_as_dict',
+            return_value={'clumsy_mode': True, 'clumsy_persist_across_restart': False},
         ), patch('tools.utils_gui.set_settings_many') as sm:
             ics.reset_clumsy_mode_on_startup()
         sm.assert_not_called()

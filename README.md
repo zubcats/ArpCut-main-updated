@@ -25,7 +25,7 @@ Get the latest installer from **[Releases](https://github.com/zubcats/ZubCut/rel
 - Windows 10 or 11, 64-bit  
 - [Npcap](https://npcap.com/) (WinPcap-compatible mode; the installer can bundle Npcap if missing)  
 - **Administrator** (required for ARP, firewall, and WinDivert)  
-- For **hotspot / Clumsy mode**: enable Clumsy in Settings and install the bundled WinDivert files with the app  
+- For **hotspot / Clumzy Mode**: enable Clumzy Mode in Settings (ZubCut restarts into the Clumzy engine) and keep WinDivert checked in the installer
 
 Step-by-step download: see **`HOW-TO-DOWNLOAD-INSTALLER.txt`** in the repo root.
 
@@ -52,17 +52,17 @@ Maintainers: CI workflow **Build Release** / **Build Windows installer only** pu
 | **Percent Cut** | Partial packet loss (byte budget on hotspot path) |
 | **Advanced Lag** | Delay, jitter, cap, loss (WinDivert on hotspot; MITM forwarder on home LAN) |
 
-### Hotspot / Clumsy mode
+### Hotspot / Clumzy Mode
 
 For **PS5 → PC Mobile Hotspot** (PC on Ethernet or Wi‑Fi upstream):
 
-1. Turn on **Clumsy mode** in Settings and pick topology (hotspot or Ethernet-to-PC).  
-2. Let ZubCut apply ICS / hotspot setup.  
+1. Turn **Mobile Hotspot** on in Windows Settings.  
+2. Turn on **Clumzy Mode** in ZubCut Settings — ZubCut restarts into the Clumzy packet engine (not ARP Kill).  
 3. Connect the console to the PC hotspot SSID.  
-4. **Rescan** — the table should show the console on the hotspot subnet (e.g. `192.168.137.x`).  
-5. Use Kill / Lag / Dupe / Cut / Advanced — traffic is handled with **WinDivert** on the hotspot NIC (same idea as the Clumsy lag tool), not home-router ARP spoofing.
+4. Use **Kill / Lag Switch / Dupe** — they Freeze all forwarded hotspot packets (filter `true`). The device table is display-only.  
+5. **Advanced Lag** still works; it drives Clumzy lag/drop/bandwidth modules instead of ARP MITM.
 
-On a normal **home LAN** (no hotspot), ZubCut uses **ARP MITM** and Windows firewall rules for the same buttons.
+On a normal **home LAN** (Clumzy Mode off), ZubCut uses **ARP MITM** and Windows firewall rules for the same buttons.
 
 ### Other
 
