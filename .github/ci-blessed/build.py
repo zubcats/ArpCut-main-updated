@@ -91,6 +91,11 @@ def _stage_windivert_dist_if_present() -> None:
         if os.path.isfile(src):
             shutil.copy2(src, os.path.join(dest_dir, name))
     print(f"Staged WinDivert: {dest_dir}")
+    engine = os.path.join(_ROOT, 'native', 'clumzy_engine', 'out', 'clumzy_engine.dll')
+    if os.path.isfile(engine):
+        shutil.copy2(engine, os.path.join(dest_dir, 'clumzy_engine.dll'))
+        shutil.copy2(engine, os.path.join(_ROOT, 'dist', APP_BUNDLE_NAME, 'clumzy_engine.dll'))
+        print(f"Staged clumzy_engine.dll next to WinDivert and {APP_BUNDLE_NAME}.exe")
 
 
 def build():
@@ -112,6 +117,10 @@ def build():
         'gui.logs_window',
         'gui.license_signin',
         'gui.advanced_lag_settings',
+        'gui.clumzy_mode_window',
+        'tools.clumzy_engine',
+        'tools.clumzy_mode_profile',
+        'tools.clumzy_hotspot_view',
     ):
         cmd.extend(['--hidden-import', _gui_mod])
     for _excl in (
@@ -137,6 +146,9 @@ def build():
         _ico = _windows_pyinstaller_icon_path()
         cmd.extend(['--icon', os.path.relpath(_ico, _ROOT).replace('\\', '/')])
         cmd.extend(['--uac-admin'])  # Force admin elevation prompt
+        engine = os.path.join(_ROOT, 'native', 'clumzy_engine', 'out', 'clumzy_engine.dll')
+        if os.path.isfile(engine):
+            cmd.extend(['--add-binary', engine + ';.'])
     elif system == 'Darwin':  # macOS
         cmd.extend(['--onedir', '--windowed'])
         cmd.extend(['--add-data', 'exe/manuf:manuf'])

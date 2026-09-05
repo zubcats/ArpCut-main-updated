@@ -67,6 +67,10 @@ class ClumzyModeIsolationTests(unittest.TestCase):
         api = _read('native/clumzy_engine/src/clumzy_api.c')
         self.assertIn('int NetworkType', api)
 
+    def test_iup_stub_defines_default(self) -> None:
+        stub = _read('native/clumzy_engine/include/iup.h')
+        self.assertIn('#define IUP_DEFAULT 0', stub)
+
     def test_freeze_profile(self) -> None:
         import sys
 

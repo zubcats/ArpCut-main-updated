@@ -10,6 +10,10 @@ typedef struct Ihandle_ Ihandle;
 typedef int (*Icallback)(Ihandle *);
 typedef int (*IstateCallback)(Ihandle *, int);
 
+#define IUP_IGNORE (-1)
+#define IUP_DEFAULT 0
+#define IUP_CLOSE 1
+
 Ihandle *IupHbox(Ihandle *child, ...);
 Ihandle *IupToggle(const char *title, const char *action);
 Ihandle *IupLabel(const char *title);
