@@ -80,7 +80,7 @@ class ClumzyModeIsolationTests(unittest.TestCase):
         self.assertIn('_dim_unavailable_control', src)
         self.assertIn('_lag_allow_ms', src)
         self.assertIn('CYCLE_SETTLE_S', src)
-        self.assertIn("QLabel('Allow'", src)
+        self.assertIn("QLabel('Normal'", src)
         self.assertIn('spinLagAllowLocked', src)
 
     def test_settings_greys_unused_clumzy_controls(self) -> None:

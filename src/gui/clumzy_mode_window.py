@@ -405,7 +405,7 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             f'Allow/pause between Lag repeats is locked at {allow_ms} ms '
             '(Clumzy Repeat settle).'
         )
-        self.lblLagNormal = QLabel('Allow', self.groupLagInline)
+        self.lblLagNormal = QLabel('Normal', self.groupLagInline)
         self.lblLagNormal.setObjectName('lblLagAllow')
         self.lblLagNormal.setToolTip(allow_tip)
         self.lagTimingRow.addWidget(self.lblLagNormal)
