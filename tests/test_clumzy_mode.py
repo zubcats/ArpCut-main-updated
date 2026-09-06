@@ -77,8 +77,14 @@ class ClumzyModeIsolationTests(unittest.TestCase):
         self.assertIn('Advanced Lag Settings', src)
         self.assertIn('normalSpinMain', src)
         self.assertIn('btnPercentCut', src)
-        self.assertIn('scan_easy_icon', src)
-        self.assertIn('settings_icon', src)
+        self.assertIn('_dim_unavailable_control', src)
+        self.assertIn('Ping scan is not used in Clumzy Mode.', src)
+
+    def test_settings_greys_unused_clumzy_controls(self) -> None:
+        settings = _read('src/gui/settings.py')
+        self.assertIn('_apply_clumzy_unavailable_controls', settings)
+        self.assertIn('groupBox_4', settings)
+        self.assertIn('groupBox_2', settings)
 
     def test_engine_network_type_is_extern(self) -> None:
         hdr = _read('native/clumzy_engine/src/common.h')

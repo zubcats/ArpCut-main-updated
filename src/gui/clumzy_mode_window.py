@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QFrame,
+    QGraphicsOpacityEffect,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -173,9 +174,9 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             ),
             (
                 self.btnScanHard,
-                self.refresh_hotspot_table,
+                None,
                 scan_hard_icon,
-                'Refresh hotspot clients (display only).',
+                'Ping scan is not used in Clumzy Mode.',
             ),
             (
                 self.btnSettings,
@@ -191,13 +192,21 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             ),
         ):
             btn.setToolTip(btn_tip)
-            btn.clicked.connect(btn_func)
+            if btn_func is not None:
+                btn.clicked.connect(btn_func)
             btn.setAutoDefault(False)
             btn.setDefault(False)
             btn.setAttribute(Qt.WA_StyledBackground, True)
             if btn_icon is not None:
                 btn.setIcon(self.processIcon(btn_icon))
         self.btnAbout.setIcon(self.icon)
+        self._dim_unavailable_control(
+            self.btnScanHard,
+            'Ping scan is not used in Clumzy Mode.',
+        )
+        self.tableScan.setToolTip(
+            'Display only. Kill, Lag Switch, Dupe, and Percent Cut apply to all hotspot traffic.'
+        )
 
         sc_space = QShortcut(QKeySequence(Qt.Key_Space), self)
         sc_space.setContext(Qt.WindowShortcut)
@@ -291,7 +300,6 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._paint_buttons()
         _chrome_btns = (
             self.btnScanEasy,
-            self.btnScanHard,
             self.btnSettings,
             self.btnAbout,
             self.btnKill,
@@ -594,7 +602,6 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         st = app.style()
         for w in (
             self.btnScanEasy,
-            self.btnScanHard,
             self.btnSettings,
             self.btnAbout,
             self.btnKill,
@@ -654,6 +661,16 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _sync_settings_gear_update_hint(self) -> None:
         return
+
+    def _dim_unavailable_control(self, widget, tip: str) -> None:
+        """Grey out a control that has no Clumzy Mode backend."""
+        if widget is None:
+            return
+        widget.setEnabled(False)
+        widget.setToolTip(tip)
+        dim = QGraphicsOpacityEffect(widget)
+        dim.setOpacity(0.38)
+        widget.setGraphicsEffect(dim)
 
     def _on_main_flow_toggle_context_menu(self, pos) -> None:
         w = self.sender()

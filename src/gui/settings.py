@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
     QWidget,
     QSizePolicy,
     QProgressDialog,
+    QGraphicsOpacityEffect,
     QListWidget,
     QListWidgetItem,
     QAbstractItemView,
@@ -262,6 +263,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         # Defer first HEAD check so it does not run synchronously during main window construction.
         QTimer.singleShot(0, self._schedule_update_banner_refresh)
         QTimer.singleShot(0, self._refresh_clumsy_settings_widgets)
+        QTimer.singleShot(0, self._apply_clumzy_unavailable_controls)
         self.chkAutoupdate.setToolTip(
             'Automatic startup updates are not used. Use Install Latest Build below when you want to update.'
         )
@@ -509,6 +511,22 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             self.btnClumsyInstall.show()
             self.btnClumsyInstall.setText('Install Clumzy Mode')
             self.lblClumsyPath.hide()
+        self._apply_clumzy_unavailable_controls()
+
+    def _apply_clumzy_unavailable_controls(self) -> None:
+        """Grey out Settings pages that have no effect while Clumzy Mode is the shell."""
+        if not getattr(self.app, 'clumzy_mode_shell', False):
+            return
+        tip = 'Not used in Clumzy Mode. Turn Clumzy Mode off to use LAN scan settings.'
+        for w in (self.groupBox_4, self.groupBox_2):
+            if w is None:
+                continue
+            w.setEnabled(False)
+            w.setToolTip(tip)
+            if w.graphicsEffect() is None:
+                dim = QGraphicsOpacityEffect(w)
+                dim.setOpacity(0.45)
+                w.setGraphicsEffect(dim)
 
     def _update_clumsy_path_label(self) -> None:
         self.lblClumsyPath.setText(
@@ -800,6 +818,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         elif self.comboInterface.count() == 0:
             self._load_interfaces_background()
         self._refresh_clumsy_settings_widgets()
+        self._apply_clumzy_unavailable_controls()
         self._finalize_settings_layout()
         self._schedule_update_banner_refresh()
         el = getattr(self, 'app', None)
@@ -1107,6 +1126,7 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.chkClumsy.setChecked(clumsy_mode)
         self._clumsy_toggle_guard = False
         self._refresh_clumsy_settings_widgets()
+        self._apply_clumzy_unavailable_controls()
 
         self._apply_keybind_section_fonts()
         self.setStyleSheet(zubcut_dark_stylesheet())
