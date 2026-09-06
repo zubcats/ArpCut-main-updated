@@ -78,7 +78,8 @@ class ClumzyModeIsolationTests(unittest.TestCase):
         self.assertIn('normalSpinMain', src)
         self.assertIn('btnPercentCut', src)
         self.assertIn('_dim_unavailable_control', src)
-        self.assertIn('Ping scan is not used in Clumzy Mode.', src)
+        self.assertIn('_lag_allow_ms', src)
+        self.assertIn('CYCLE_SETTLE_S', src)
 
     def test_settings_greys_unused_clumzy_controls(self) -> None:
         settings = _read('src/gui/settings.py')
@@ -100,12 +101,19 @@ class ClumzyModeIsolationTests(unittest.TestCase):
         import sys
 
         sys.path.insert(0, _SRC)
-        from tools.clumzy_mode_profile import DROP_CHANCE_PCT, FILTER, LAG_MS, NETWORK_REMOTE
+        from tools.clumzy_mode_profile import (
+            CYCLE_SETTLE_S,
+            DROP_CHANCE_PCT,
+            FILTER,
+            LAG_MS,
+            NETWORK_REMOTE,
+        )
 
         self.assertEqual(FILTER, 'true')
         self.assertEqual(NETWORK_REMOTE, 2)
         self.assertEqual(LAG_MS, 100)
         self.assertEqual(DROP_CHANCE_PCT, 100.0)
+        self.assertEqual(CYCLE_SETTLE_S, 0.08)
 
     def test_hotspot_arp_parse_skips_gateway(self) -> None:
         import sys

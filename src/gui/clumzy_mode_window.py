@@ -52,6 +52,7 @@ from tools.branding import (
 from tools.clumzy_engine import load_clumzy_engine
 from tools.clumzy_hotspot_view import list_hotspot_clients
 from tools.clumzy_mode_profile import (
+    CYCLE_SETTLE_S,
     FILTER,
     NETWORK_REMOTE,
     apply_freeze,
@@ -398,13 +399,20 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lagSpinMain.setSuffix(' ms')
         self.lagTimingRow.addWidget(self.lagSpinMain)
         self.lagTimingRow.addSpacing(20)
-        self.lagTimingRow.addWidget(QLabel('Normal', self.groupLagInline))
+        self.lblLagNormal = QLabel('Normal', self.groupLagInline)
+        self.lagTimingRow.addWidget(self.lblLagNormal)
         self.normalSpinMain = QSpinBox(self.groupLagInline)
         self.normalSpinMain.setRange(1, 2147483647)
         self.normalSpinMain.setSingleStep(25)
-        self.normalSpinMain.setValue(1500)
+        self.normalSpinMain.setValue(self._lag_allow_ms())
         self.normalSpinMain.setSuffix(' ms')
         self.lagTimingRow.addWidget(self.normalSpinMain)
+        allow_tip = (
+            'Allow/pause between Lag repeats is locked to Clumzy\'s '
+            f'{self._lag_allow_ms()} ms settle.'
+        )
+        self._dim_unavailable_control(self.lblLagNormal, allow_tip)
+        self._dim_unavailable_control(self.normalSpinMain, allow_tip)
         self.groupLagInlineLayout.addLayout(self.lagTimingRow)
         self.lagDirRow = QHBoxLayout()
         self.lagDirBoth = QCheckBox('Both', self.groupLagInline)
@@ -539,23 +547,21 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         except Exception:
             pass
         try:
-            self.normalSpinMain.setValue(int(get_settings('clumzy_lag_normal_ms') or 1500))
-        except Exception:
-            pass
-        try:
             self.dupeSpinMain.setValue(int(get_settings('clumzy_dupe_timer_ms') or 5000))
         except Exception:
             pass
         self.lagSpinMain.valueChanged.connect(self._persist_timers)
-        self.normalSpinMain.valueChanged.connect(self._persist_timers)
         self.dupeSpinMain.valueChanged.connect(self._persist_timers)
+
+    @staticmethod
+    def _lag_allow_ms() -> int:
+        return max(1, int(CYCLE_SETTLE_S * 1000))
 
     def _persist_timers(self, *_args) -> None:
         try:
             set_settings_many(
                 {
                     'clumzy_lag_timer_ms': int(self.lagSpinMain.value()),
-                    'clumzy_lag_normal_ms': int(self.normalSpinMain.value()),
                     'clumzy_dupe_timer_ms': int(self.dupeSpinMain.value()),
                 }
             )
@@ -1088,7 +1094,7 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._paint_buttons()
         dir_text = {'both': 'all', 'in': 'incoming', 'out': 'outgoing'}[direction]
         self._log(
-            f'Lag switch ON: {lag_ms}ms lag ({dir_text}) / {int(self.normalSpinMain.value())}ms normal',
+            f'Lag switch ON: {lag_ms}ms lag ({dir_text}) / {self._lag_allow_ms()}ms allow (locked)',
             UI_LOG_VICTIM_BLOCK_FG,
         )
 
@@ -1138,7 +1144,7 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 except Exception:
                     pass
             self._lag_in_allow_phase = True
-            settle = max(1, int(self.normalSpinMain.value()))
+            settle = self._lag_allow_ms()
             self._cycle_timer.start(settle)
             self._arm_countdown(settle)
             return
