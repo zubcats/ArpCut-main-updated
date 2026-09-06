@@ -8,6 +8,7 @@ from PyQt5.QtCore import Qt, QSize, QTimer, QEvent, QObject
 from PyQt5.QtGui import QFont, QKeySequence, QIcon, QPixmap, QFontMetrics
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QAbstractSpinBox,
     QAction,
     QApplication,
     QCheckBox,
@@ -399,20 +400,25 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.lagSpinMain.setSuffix(' ms')
         self.lagTimingRow.addWidget(self.lagSpinMain)
         self.lagTimingRow.addSpacing(20)
-        self.lblLagNormal = QLabel('Normal', self.groupLagInline)
+        allow_ms = self._lag_allow_ms()
+        allow_tip = (
+            f'Allow/pause between Lag repeats is locked at {allow_ms} ms '
+            '(Clumzy Repeat settle).'
+        )
+        self.lblLagNormal = QLabel('Allow', self.groupLagInline)
+        self.lblLagNormal.setObjectName('lblLagAllow')
+        self.lblLagNormal.setToolTip(allow_tip)
         self.lagTimingRow.addWidget(self.lblLagNormal)
         self.normalSpinMain = QSpinBox(self.groupLagInline)
-        self.normalSpinMain.setRange(1, 2147483647)
-        self.normalSpinMain.setSingleStep(25)
-        self.normalSpinMain.setValue(self._lag_allow_ms())
+        self.normalSpinMain.setObjectName('spinLagAllowLocked')
+        self.normalSpinMain.setRange(allow_ms, allow_ms)
+        self.normalSpinMain.setValue(allow_ms)
         self.normalSpinMain.setSuffix(' ms')
+        self.normalSpinMain.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.normalSpinMain.setReadOnly(True)
+        self.normalSpinMain.setFocusPolicy(Qt.NoFocus)
+        self.normalSpinMain.setToolTip(allow_tip)
         self.lagTimingRow.addWidget(self.normalSpinMain)
-        allow_tip = (
-            'Allow/pause between Lag repeats is locked to Clumzy\'s '
-            f'{self._lag_allow_ms()} ms settle.'
-        )
-        self._dim_unavailable_control(self.lblLagNormal, allow_tip)
-        self._dim_unavailable_control(self.normalSpinMain, allow_tip)
         self.groupLagInlineLayout.addLayout(self.lagTimingRow)
         self.lagDirRow = QHBoxLayout()
         self.lagDirBoth = QCheckBox('Both', self.groupLagInline)
@@ -771,6 +777,14 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             'QGroupBox#groupLagInline QSpinBox::down-arrow, QGroupBox#groupDupeInline QSpinBox::down-arrow {'
             ' image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5IiBoZWlnaHQ9IjYiPjxwYXRoIGZpbGw9IiM5YTlhOWEiIGQ9Ik0wIDAgTDQuNSA2IEw5IDAgWiIvPjwvc3ZnPg==);'
             ' border: none; width: 9px; height: 6px; margin: 1px 1px 0 1px; }'
+            f'QLabel#lblLagAllow {{ color: {admin_bg}; }}'
+            f'QGroupBox#groupLagInline QSpinBox#spinLagAllowLocked,'
+            f'QGroupBox#groupLagInline QSpinBox#spinLagAllowLocked:disabled {{'
+            f' min-height: 24px; border: 1px solid {admin_bg}; border-radius: 4px;'
+            f' padding: 2px 6px; background-color: {field_bg}; color: {admin_bg}; }}'
+            'QGroupBox#groupLagInline QSpinBox#spinLagAllowLocked::up-button,'
+            'QGroupBox#groupLagInline QSpinBox#spinLagAllowLocked::down-button {'
+            ' width: 0px; border: none; }'
             f'QLabel#lblDupeCountdownMain, QLabel#lblLagCountdownMain {{ color: {sel_bg}; font-weight: bold; }}'
         )
         self.groupLagInline.setStyleSheet(panel_style)
