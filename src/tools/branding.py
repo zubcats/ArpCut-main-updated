@@ -13,6 +13,8 @@ from tools.logo_shell_crop import shell_content_fraction_for_target_px
 _ICON_FILE = 'zubcut_icon.png'
 # Windows: same multi-res file PyInstaller uses for the .exe; better DWM / taskbar preview than PNG QIcon.
 _SHELL_ICO_FILE = 'zubcut_shell.ico'
+# HWND taskbar / Aero Peek only — Clumzy white mark. Caption, tray, About stay zubcut_shell.ico.
+_TASKBAR_ICO_FILE = 'clumzy-icon.ico'
 # HWND class icons only (taskbar + Aero Peek title-bar chip via WM_SETICON). Custom caption / tray / toolbar
 # use full QIcon pixmaps. Lower fraction = smaller glyph inside the shell square so circular masks do not clip.
 SHELL_HWND_ICON_INNER_FRACTION = 0.84
@@ -85,18 +87,27 @@ def zubcut_png_candidates():
 
 def zubcut_shell_ico_candidates():
     """Search paths for zubcut_shell.ico (mirrors zubcut_png_candidates)."""
+    return _ico_candidates(_SHELL_ICO_FILE)
+
+
+def zubcut_taskbar_ico_candidates():
+    """Search paths for the white Clumzy taskbar .ico."""
+    return _ico_candidates(_TASKBAR_ICO_FILE)
+
+
+def _ico_candidates(filename: str):
     here = os.path.dirname(os.path.abspath(__file__))
     src_dir = os.path.dirname(here)
     root = os.path.dirname(src_dir)
     c = [
-        os.path.join(root, 'exe', _SHELL_ICO_FILE),
-        os.path.normpath(os.path.join(src_dir, '..', 'exe', _SHELL_ICO_FILE)),
+        os.path.join(root, 'exe', filename),
+        os.path.normpath(os.path.join(src_dir, '..', 'exe', filename)),
     ]
     if getattr(sys, 'frozen', False):
         meipass = getattr(sys, '_MEIPASS', None)
         if meipass:
-            c.insert(0, os.path.join(meipass, _SHELL_ICO_FILE))
-        c.insert(0, os.path.join(os.path.dirname(sys.executable), _SHELL_ICO_FILE))
+            c.insert(0, os.path.join(meipass, filename))
+        c.insert(0, os.path.join(os.path.dirname(sys.executable), filename))
     seen = set()
     out = []
     for p in c:
@@ -116,6 +127,13 @@ def resolve_zubcut_png_path():
 
 def resolve_zubcut_shell_ico_path():
     for p in zubcut_shell_ico_candidates():
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def resolve_zubcut_taskbar_ico_path():
+    for p in zubcut_taskbar_ico_candidates():
         if os.path.isfile(p):
             return p
     return None
@@ -195,7 +213,10 @@ def qicon_is_empty(icon):
 
 
 def _windows_native_icon_source_path() -> str | None:
-    """Frozen builds: same PE as the desktop shortcut (best match). Dev: zubcut_shell.ico."""
+    """ExtractIconEx fallback for HWND icons. Prefer the white taskbar mark, not the .exe gold PE."""
+    ico = resolve_zubcut_taskbar_ico_path()
+    if ico and os.path.isfile(ico):
+        return os.path.abspath(ico)
     if getattr(sys, 'frozen', False) and getattr(sys, 'executable', None):
         exe = os.path.abspath(sys.executable)
         if os.path.isfile(exe):
@@ -391,8 +412,8 @@ def _win_hwnd_icon_pixel_sizes(window, hwnd: int, user32) -> tuple[int, int]:
 def install_windows_native_window_icons(window) -> bool:
     """
     Push Win32 small/large icons into the HWND (WM_SETICON + class icons).
-    Prefer LoadImage from zubcut_shell.ico at DPI-aware sizes (sharp taskbar on 125%/150%).
-    Fallback: ExtractIconEx from the .exe / path.
+    Prefer LoadImage from clumzy-icon.ico (white taskbar mark) at DPI-aware sizes.
+    Caption / tray / About keep zubcut_shell.ico via QIcon. Fallback: gold shell ico, then .exe.
     """
     if sys.platform != 'win32':
         return False
@@ -407,7 +428,8 @@ def install_windows_native_window_icons(window) -> bool:
     from ctypes import wintypes
 
     src = _windows_native_icon_source_path()
-    if not src:
+    ico = resolve_zubcut_taskbar_ico_path() or resolve_zubcut_shell_ico_path()
+    if not src and not ico:
         return False
 
     shell32 = ctypes.windll.shell32
@@ -419,22 +441,27 @@ def install_windows_native_window_icons(window) -> bool:
     GCL_HICONSM = -34
     IMAGE_ICON = 1
     LR_LOADFROMFILE = 0x0010
+    user32.LoadImageW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_wchar_p,
+        ctypes.c_uint,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint,
+    ]
+    user32.LoadImageW.restype = ctypes.c_void_p
 
     sm_px, lg_px = _win_hwnd_icon_pixel_sizes(window, hwnd, user32)
     h_sm = 0
     h_lg = 0
 
-    ico = resolve_zubcut_shell_ico_path()
     if ico and os.path.isfile(ico):
         ico_abs = os.path.abspath(ico)
-        h_sm = _hwnd_hicon_from_ico_padded(ico_abs, sm_px)
-        h_lg = _hwnd_hicon_from_ico_padded(ico_abs, lg_px)
-        if not h_sm:
-            h_sm = int(user32.LoadImageW(None, ico_abs, IMAGE_ICON, sm_px, sm_px, LR_LOADFROMFILE) or 0)
-        if not h_lg:
-            h_lg = int(user32.LoadImageW(None, ico_abs, IMAGE_ICON, lg_px, lg_px, LR_LOADFROMFILE) or 0)
+        # Clumzy white mark is already letterboxed for the shell square — load at native size.
+        h_sm = int(user32.LoadImageW(None, ico_abs, IMAGE_ICON, sm_px, sm_px, LR_LOADFROMFILE) or 0)
+        h_lg = int(user32.LoadImageW(None, ico_abs, IMAGE_ICON, lg_px, lg_px, LR_LOADFROMFILE) or 0)
 
-    if not h_sm or not h_lg:
+    if (not h_sm or not h_lg) and src:
         large = ctypes.c_void_p()
         small = ctypes.c_void_p()
         n = shell32.ExtractIconExW(src, 0, ctypes.byref(large), ctypes.byref(small), 1)

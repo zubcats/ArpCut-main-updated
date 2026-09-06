@@ -46,6 +46,7 @@ from gui.settings import Settings
 from tools.branding import (
     LOGO_UI_CONTENT_FRACTION,
     crop_logo_content,
+    install_windows_native_window_icons,
     load_application_qicon,
     load_shell_window_icon,
     qicon_is_empty,
@@ -1307,6 +1308,17 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._quitting = True
         self._stop_engine()
         QApplication.instance().quit()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if sys.platform == 'win32':
+            def _push_hwnd_icons():
+                install_windows_native_window_icons(self)
+
+            _push_hwnd_icons()
+            QTimer.singleShot(50, _push_hwnd_icons)
+            QTimer.singleShot(300, _push_hwnd_icons)
+            QTimer.singleShot(1200, _push_hwnd_icons)
 
     def closeEvent(self, event) -> None:
         self.quit_all()

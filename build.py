@@ -142,6 +142,7 @@ def build():
         cmd.extend(['--add-data', 'exe/manuf;manuf'])
         cmd.extend(['--add-data', 'exe/zubcut_icon.png;.'])
         cmd.extend(['--add-data', 'exe/zubcut_shell.ico;.'])
+        cmd.extend(['--add-data', 'exe/clumzy-icon.ico;.'])
         cmd.extend(['--collect-data', 'certifi'])
         _ico = _windows_pyinstaller_icon_path()
         cmd.extend(['--icon', os.path.relpath(_ico, _ROOT).replace('\\', '/')])

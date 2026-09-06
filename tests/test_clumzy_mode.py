@@ -117,6 +117,27 @@ class ClumzyModeIsolationTests(unittest.TestCase):
         self.assertEqual(DROP_CHANCE_PCT, 100.0)
         self.assertEqual(CYCLE_SETTLE_S, 0.08)
 
+    def test_taskbar_uses_clumzy_white_icon_not_shell(self) -> None:
+        branding = _read('src/tools/branding.py')
+        self.assertIn("_TASKBAR_ICO_FILE = 'clumzy-icon.ico'", branding)
+        self.assertIn("_SHELL_ICO_FILE = 'zubcut_shell.ico'", branding)
+        install = branding[branding.index('def install_windows_native_window_icons') :]
+        self.assertIn('resolve_zubcut_taskbar_ico_path', install)
+        shell_loader = branding[
+            branding.index('def load_shell_window_icon') : branding.index(
+                'def qicon_is_empty'
+            )
+        ]
+        self.assertIn('resolve_zubcut_shell_ico_path', shell_loader)
+        self.assertNotIn('resolve_zubcut_taskbar_ico_path', shell_loader)
+        self.assertTrue(os.path.isfile(os.path.join(_ROOT, 'exe', 'clumzy-icon.ico')))
+        build = _read('build.py')
+        self.assertIn('exe/clumzy-icon.ico;.', build)
+        self.assertIn('exe/zubcut_shell.ico;.', build)
+        window = _read('src/gui/clumzy_mode_window.py')
+        self.assertIn('install_windows_native_window_icons', window)
+        self.assertIn('self.setWindowIcon(self.shell_icon)', window)
+
     def test_hotspot_arp_parse_skips_gateway(self) -> None:
         import sys
 
