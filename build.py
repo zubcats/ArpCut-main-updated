@@ -5,6 +5,7 @@ Run: python build.py
 """
 
 import os
+import py_compile
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,19 @@ if _ROOT not in sys.path:
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 from constants import APP_BUNDLE_NAME
+
+
+def _ensure_packaged_sources_compile() -> None:
+    """Fail the installer before PyInstaller if a shipped module cannot be imported."""
+    rels = (
+        os.path.join('src', 'zubcut.py'),
+        os.path.join('src', 'gui', 'main.py'),
+        os.path.join('src', 'gui', 'clumzy_mode_window.py'),
+        os.path.join('src', 'gui', 'settings.py'),
+    )
+    for rel in rels:
+        py_compile.compile(os.path.join(_ROOT, rel), doraise=True)
+
 
 # All the imports PyInstaller is too dumb to find on its own
 HIDDEN_IMPORTS = [
@@ -100,6 +114,7 @@ def _stage_windivert_dist_if_present() -> None:
 
 def build():
     system = platform.system()
+    _ensure_packaged_sources_compile()
     
     # Base command (name must match constants.APP_BUNDLE_NAME for installer / autostart)
     # Use python -m PyInstaller so CI and venvs do not rely on a Scripts\pyinstaller.exe on PATH

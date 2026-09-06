@@ -114,6 +114,8 @@ class TestCustomerBuildExcludesAdmin(unittest.TestCase):
             src = f.read()
         self.assertIn("'gui.control_panel'", src)
         self.assertIn('--exclude-module', src)
+        self.assertIn('_ensure_packaged_sources_compile', src)
+        self.assertIn('py_compile.compile', src)
         self.assertNotIn("--collect-submodules', 'gui'", src.replace('"', "'"))
         self.assertNotIn('--collect-submodules", "gui"', src)
 
