@@ -125,7 +125,7 @@ class ClumzyModeIsolationTests(unittest.TestCase):
         self.assertIn('resolve_zubcut_taskbar_ico_path', install)
         shell_loader = branding[
             branding.index('def load_shell_window_icon') : branding.index(
-                'def qicon_is_empty'
+                'def load_tray_window_icon'
             )
         ]
         self.assertIn('resolve_zubcut_shell_ico_path', shell_loader)
@@ -137,6 +137,22 @@ class ClumzyModeIsolationTests(unittest.TestCase):
         window = _read('src/gui/clumzy_mode_window.py')
         self.assertIn('install_windows_native_window_icons', window)
         self.assertIn('self.setWindowIcon(self.shell_icon)', window)
+        self.assertIn('load_tray_window_icon', window)
+
+    def test_clumzy_mode_creates_system_tray(self) -> None:
+        src = _read('src/gui/clumzy_mode_window.py')
+        self.assertIn('QSystemTrayIcon', src)
+        self.assertIn('self.tray_icon.show()', src)
+        self.assertIn('load_tray_window_icon', src)
+        self.assertNotIn('self.tray_icon.setIcon(self.shell_icon)', src)
+        self.assertNotIn('openKillFlows', src)
+        branding = _read('src/tools/branding.py')
+        tray_loader = branding[
+            branding.index('def load_tray_window_icon') : branding.index('def qicon_is_empty')
+        ]
+        self.assertIn('resolve_zubcut_taskbar_ico_path', tray_loader)
+        main = _read('src/gui/main.py')
+        self.assertIn('load_tray_window_icon', main)
 
     def test_hotspot_arp_parse_skips_gateway(self) -> None:
         import sys

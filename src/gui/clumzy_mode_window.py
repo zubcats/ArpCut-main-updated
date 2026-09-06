@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QSystemTrayIcon,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -49,6 +50,7 @@ from tools.branding import (
     install_windows_native_window_icons,
     load_application_qicon,
     load_shell_window_icon,
+    load_tray_window_icon,
     qicon_is_empty,
 )
 from tools.clumzy_engine import load_clumzy_engine
@@ -62,6 +64,7 @@ from tools.clumzy_mode_profile import (
 from tools.frameless_chrome import FramelessResizableMixin, setup_frameless_main_window
 from tools.keybinds import keyseq_from_setting
 from tools.qtools import TableRowNoCellFocusDelegate
+from tools.tray_cleanup import hide_all_system_tray_icons
 from tools.utils_gui import (
     apply_app_global_dark_stylesheet,
     get_settings,
@@ -313,6 +316,8 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self._chrome_hover_filter = _ChromePushButtonHoverFilter(self, _chrome_btns)
         for _b in _chrome_btns:
             _b.installEventFilter(self._chrome_hover_filter)
+        self.from_tray = False
+        self._setup_system_tray()
         self.refresh_hotspot_table()
         if self._engine_error:
             self._log(self._engine_error, 'red')
@@ -947,6 +952,45 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
         self.about_window.show()
         self.about_window.raise_()
 
+    def _setup_system_tray(self) -> None:
+        show_option = QAction('Show', self)
+        hide_option = QAction('Hide', self)
+        quit_option = QAction('Quit', self)
+        show_option.triggered.connect(self.trayShowClicked)
+        hide_option.triggered.connect(self.hide_all)
+        quit_option.triggered.connect(self.quit_all)
+        tray_menu = QMenu()
+        theme_popup_menu(tray_menu)
+        tray_menu.addAction(show_option)
+        tray_menu.addAction(hide_option)
+        tray_menu.addSeparator()
+        tray_menu.addAction(quit_option)
+        self.tray_icon = QSystemTrayIcon(QApplication.instance())
+        tray_icon = load_tray_window_icon()
+        if qicon_is_empty(tray_icon):
+            tray_icon = self.shell_icon
+        self.tray_icon.setIcon(tray_icon)
+        self.tray_icon.setToolTip(APP_DISPLAY_NAME)
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
+        self.tray_icon.activated.connect(self.tray_clicked)
+        QApplication.instance().aboutToQuit.connect(hide_all_system_tray_icons)
+
+    def trayShowClicked(self) -> None:
+        self.show()
+        self.setWindowState(Qt.WindowNoState)
+        self.activateWindow()
+
+    def tray_clicked(self, event) -> None:
+        if event == QSystemTrayIcon.Trigger:
+            self.trayShowClicked()
+
+    def hide_all(self) -> None:
+        self.hide()
+        self.settings_window.hide()
+        self.about_window.hide()
+        self.advanced_lag_settings_dialog.hide()
+
     def open_advanced_lag(self) -> None:
         dlg = self.advanced_lag_settings_dialog
         dlg.show()
@@ -1307,6 +1351,9 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             return
         self._quitting = True
         self._stop_engine()
+        hide_all_system_tray_icons()
+        self.from_tray = True
+        self.close()
         QApplication.instance().quit()
 
     def showEvent(self, event) -> None:
@@ -1321,7 +1368,17 @@ class ClumzyModeWindow(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
             QTimer.singleShot(1200, _push_hwnd_icons)
 
     def closeEvent(self, event) -> None:
-        self.quit_all()
+        if self.from_tray:
+            hide_all_system_tray_icons()
+            event.accept()
+            return
+        self._quitting = True
+        self._stop_engine()
+        self.settings_window.close()
+        self.about_window.close()
+        self.advanced_lag_settings_dialog.close()
+        self.hide()
+        hide_all_system_tray_icons()
         event.accept()
 
 

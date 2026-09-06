@@ -13,7 +13,8 @@ from tools.logo_shell_crop import shell_content_fraction_for_target_px
 _ICON_FILE = 'zubcut_icon.png'
 # Windows: same multi-res file PyInstaller uses for the .exe; better DWM / taskbar preview than PNG QIcon.
 _SHELL_ICO_FILE = 'zubcut_shell.ico'
-# HWND taskbar / Aero Peek only — Clumzy white mark. Caption, tray, About stay zubcut_shell.ico.
+# HWND taskbar / Aero Peek / notification tray — Clumzy white mark.
+# Caption, About, and dialogs stay zubcut_shell.ico.
 _TASKBAR_ICO_FILE = 'clumzy-icon.ico'
 # HWND class icons only (taskbar + Aero Peek title-bar chip via WM_SETICON). Custom caption / tray / toolbar
 # use full QIcon pixmaps. Lower fraction = smaller glyph inside the shell square so circular masks do not clip.
@@ -189,7 +190,8 @@ def load_shell_application_qicon():
 
 def load_shell_window_icon():
     """
-    Full native shell asset (zubcut_shell.ico): tray, custom caption, dialogs that should match the .exe mark.
+    Gold native shell asset (zubcut_shell.ico): custom caption, About, dialogs, .exe mark.
+    Taskbar HWND and notification tray use load_tray_window_icon().
     """
     if sys.platform != 'win32':
         return load_shell_application_qicon()
@@ -201,6 +203,18 @@ def load_shell_window_icon():
             return icon
 
     return load_shell_application_qicon()
+
+
+def load_tray_window_icon():
+    """White Clumzy mark for the notification tray. Falls back to the gold shell icon."""
+    if sys.platform != 'win32':
+        return load_shell_window_icon()
+    ico = resolve_zubcut_taskbar_ico_path()
+    if ico:
+        icon = QIcon(ico)
+        if not qicon_is_empty(icon):
+            return icon
+    return load_shell_window_icon()
 
 
 def qicon_is_empty(icon):
@@ -413,7 +427,7 @@ def install_windows_native_window_icons(window) -> bool:
     """
     Push Win32 small/large icons into the HWND (WM_SETICON + class icons).
     Prefer LoadImage from clumzy-icon.ico (white taskbar mark) at DPI-aware sizes.
-    Caption / tray / About keep zubcut_shell.ico via QIcon. Fallback: gold shell ico, then .exe.
+    Caption / About keep zubcut_shell.ico via QIcon. Tray uses load_tray_window_icon().
     """
     if sys.platform != 'win32':
         return False

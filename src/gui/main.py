@@ -98,6 +98,7 @@ from tools.keybinds import keyseq_from_setting
 from tools.branding import (
     load_application_qicon,
     load_shell_window_icon,
+    load_tray_window_icon,
     install_windows_native_window_icons,
     qicon_is_empty,
     crop_logo_content,
@@ -1322,7 +1323,10 @@ class ZubCutApp(
         # Parent the tray to the QApplication, not the main window, so teardown order
         # does not drop the icon before hide() runs (reduces ghost icons on Windows).
         self.tray_icon = QSystemTrayIcon(QApplication.instance())
-        self.tray_icon.setIcon(self.shell_icon)
+        _tray_icon = load_tray_window_icon()
+        if qicon_is_empty(_tray_icon):
+            _tray_icon = self.shell_icon
+        self.tray_icon.setIcon(_tray_icon)
         self.tray_icon.setToolTip(APP_DISPLAY_NAME)
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.show()
@@ -2984,7 +2988,4 @@ class ZubCutApp(
         want_ip = (ip or '').strip()
         if want_ip:
             for device in matches:
-                if (device.get('ip') or '').strip() == want_ip:
-                    return device
-        return matches[0]
-
+      
