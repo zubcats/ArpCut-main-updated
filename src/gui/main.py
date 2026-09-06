@@ -2988,4 +2988,7 @@ class ZubCutApp(
         want_ip = (ip or '').strip()
         if want_ip:
             for device in matches:
-      
+                if (device.get('ip') or '').strip() == want_ip:
+                    return device
+        return matches[0]
+ 
