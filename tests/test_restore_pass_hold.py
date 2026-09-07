@@ -113,13 +113,31 @@ class TestRestorePassHold(unittest.TestCase):
         src = self._killer_py()
         worker = src[src.index('def _unkill_restore_worker') : src.index('def kill_all')]
         self.assertIn('(0.45, 2, False)', worker)
+        self.assertIn('(0.7, 2, True)', worker)
         self.assertIn('(1.0, 2, True)', worker)
         self.assertIn('(2.5, 2, True)', worker)
         self.assertIn('(5.0, 2, True)', worker)
+        self.assertIn('(8.0, 2, True)', worker)
         self.assertIn('unicast_only=unicast_only', worker)
+        self.assertIn('self._get_socket()', worker)
         self.assertNotIn('(2.5, 3)', worker)
         self.assertNotIn('(120.0, 2)', worker)
         self.assertNotIn('(80.0, 2)', worker)
+        restore = src[src.index('def _restore_arp_now(') : src.index('def _unkill_restore_worker')]
+        self.assertIn('allow_async=False', restore)
+        self.assertIn('_send_restore_frames_fallback', restore)
+        self.assertIn('self._get_socket()', restore)
+
+    def test_kill_off_reinforces_later_unicast(self) -> None:
+        path = os.path.join(_SRC, 'gui', 'impairment_kill.py')
+        with open(path, encoding='utf-8') as fh:
+            src = fh.read()
+        run = src[src.index('def _run_kill_command') : src.index('def _schedule_kill_off_reinforce')]
+        self.assertIn('_schedule_kill_off_reinforce(mac, my_seq, 25)', run)
+        self.assertIn('_schedule_kill_off_reinforce(mac, my_seq, 100)', run)
+        self.assertIn('_schedule_kill_off_reinforce(mac, my_seq, 400)', run)
+        self.assertIn('_schedule_kill_off_reinforce(mac, my_seq, 1500)', run)
+        self.assertIn('_schedule_kill_off_reinforce(mac, my_seq, 4000)', run)
 
 
 if __name__ == '__main__':

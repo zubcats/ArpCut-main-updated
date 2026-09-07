@@ -182,6 +182,31 @@ class TestKillRestoreFrames(unittest.TestCase):
         k._restore_arp_now(victim, seq=1, repeats=1, delay_s=0)
         self.assertEqual(len(sent), len(k._restore_frames(victim)))
 
+    def test_restore_now_worker_opens_cold_socket(self) -> None:
+        k = self._killer(wifi=True)
+        victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
+        k._op_seq[victim['mac']] = 1
+        sent = []
+
+        class _Sock:
+            closed = False
+
+            def send(self, frame):
+                sent.append(frame)
+
+        k._socket = None
+        k.l2_socket_ready = lambda: bool(k._socket)  # type: ignore[method-assign]
+
+        def _open():
+            k._socket = _Sock()
+            return k._socket
+
+        k._get_socket = _open  # type: ignore[method-assign]
+        k._restore_arp_now(
+            victim, seq=1, repeats=1, delay_s=0, allow_async=False
+        )
+        self.assertEqual(len(sent), len(k._restore_frames(victim)))
+
     def test_unicast_followup_restore_skips_broadcast_and_router_sa(self) -> None:
         from scapy.all import ARP, Ether
 

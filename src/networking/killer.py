@@ -2085,7 +2085,10 @@ class Killer:
     ):
         """Best-effort ARP restore; aborts if a newer op supersedes this sequence.
 
-        Uses only the cached L2 socket. Opening Npcap here freezes the UI.
+        The Kill OFF click thread must pass ``allow_async=True`` so a cold
+        Npcap bind cannot freeze the UI. The restore worker passes
+        ``allow_async=False`` and must actually send: retry the L2 socket
+        and fall back to ``sendp`` the same way poison does.
         """
         if self.iface.name == 'NULL':
             return
@@ -2098,29 +2101,72 @@ class Killer:
                 self._restore_arp_now_async(
                     victim, seq, repeats=repeats, unicast_only=unicast_only
                 )
-            return
+                return
+            sock = self._get_socket()
+            if sock is None or not self.l2_socket_ready():
+                sock = None
         frames = self._restore_frames(victim, unicast_only=unicast_only)
         if not frames:
             return
         for _ in range(max(1, int(repeats))):
             if self._op_seq.get(mac) != seq or mac in self.killed:
                 break
-            try:
-                with self._socket_lock:
-                    for frame in frames:
-                        if self._op_seq.get(mac) != seq or mac in self.killed:
-                            return
-                        sock.send(frame)
-            except Exception:
-                with self._socket_lock:
-                    self._socket = None
-                if allow_async:
-                    self._restore_arp_now_async(
-                        victim, seq, repeats=repeats, unicast_only=unicast_only
-                    )
+            sent = False
+            if sock is not None:
+                try:
+                    with self._socket_lock:
+                        for frame in frames:
+                            if self._op_seq.get(mac) != seq or mac in self.killed:
+                                return
+                            sock.send(frame)
+                    sent = True
+                except Exception:
+                    with self._socket_lock:
+                        self._socket = None
+                    sock = None
+                    if allow_async:
+                        self._restore_arp_now_async(
+                            victim, seq, repeats=repeats, unicast_only=unicast_only
+                        )
+                        return
+                    sock = self._get_socket()
+                    if sock is not None:
+                        try:
+                            with self._socket_lock:
+                                for frame in frames:
+                                    if (
+                                        self._op_seq.get(mac) != seq
+                                        or mac in self.killed
+                                    ):
+                                        return
+                                    sock.send(frame)
+                            sent = True
+                        except Exception:
+                            with self._socket_lock:
+                                self._socket = None
+                            sock = None
+            if not sent and not allow_async:
+                self._send_restore_frames_fallback(frames, mac, seq)
+            elif not sent:
                 return
             if delay_s > 0:
                 sleep(delay_s)
+
+    def _send_restore_frames_fallback(self, frames, mac, seq) -> None:
+        """sendp fallback when the cached L2 socket cannot restore (worker only)."""
+        try:
+            from scapy.all import sendp
+        except Exception:
+            return
+        for tok in self._iface_l2_tokens():
+            try:
+                for frame in frames:
+                    if self._op_seq.get(mac) != seq or mac in self.killed:
+                        return
+                    sendp(frame, iface=tok, verbose=0)
+                return
+            except Exception:
+                continue
 
     @threaded
     def _unkill_restore_worker(self, victim, seq=0, *, quick=False):
@@ -2142,9 +2188,11 @@ class Killer:
                 (0.0, 3, False),
                 (0.2, 2, False),
                 (0.45, 2, False),
+                (0.7, 2, True),
                 (1.0, 2, True),
                 (2.5, 2, True),
                 (5.0, 2, True),
+                (8.0, 2, True),
             )
         for wait_s, repeats, unicast_only in plan:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
@@ -2153,6 +2201,11 @@ class Killer:
                 sleep(wait_s)
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
                 return
+            if not self.l2_socket_ready():
+                self._get_socket()
+            if not self.l2_socket_ready():
+                sleep(0.05)
+                self._get_socket()
             self._restore_arp_now(
                 victim,
                 seq,

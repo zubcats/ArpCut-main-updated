@@ -62,6 +62,13 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   (Wi‑Fi L2 send / ``conf.L2socket`` freeze the UI).
 - **Right:** Instant OFF = ``pass_all_live`` on the click; restore bursts stay
   on ``_unkill_restore_worker``.
+- **Wrong:** ``_restore_arp_now(..., allow_async=False)`` returning without
+  sending when the cached L2 socket is cold. Poison recovers via
+  ``_send_packet`` / ``sendp``; restore used to skip every burst, leaving
+  the same-AP Wi‑Fi PS5 poisoned until it toggled Wi‑Fi.
+- **Right:** The restore worker retries ``_get_socket()`` per burst and
+  falls back to ``sendp``. Do not put that bind/send on the GUI click
+  thread.
 - **Wrong:** Rewrite promiscuous copies of native victim↔router frames, or
   our own Npcap reinjects. That duplicates the real path and leaves the
   console laggy after OFF without a red chain.
