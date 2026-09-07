@@ -39,26 +39,10 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 - **Wrong:** `netsh interface ipv4 set global forwarding=…` — invalid; does nothing.
 - **Wrong:** Re-enable kernel forwarding after startup clean / Killer idle — Windows then
   relays MITM'd frames and Kill becomes a **partial** cut while Lag still “works a bit”.
-- **Wrong:** Synchronous PowerShell / forwarding netsh on the Kill click **before**
-  poison — delay. Gateway pin is the exception: sync ``arp -s`` is milliseconds
-  and must beat the first isolation broadcast.
-- **Right:** Instant path = pin + poison + forwarder cut first; then
-  `disable_ip_forwarding(priority_iface=…)` (registry sync + background netsh).
-  Startup may use `blocking=True`. Clumsy/ICS turns forwarding on when that
-  path needs it.
-- **Wrong:** `netsh interface ipv4 set interface <Wi-Fi> forwarding=…` on the
-  operator STA (especially leftover SoftAP making `priority_only` target only
-  Wi-Fi). Realtek USB radios drop the AP; Kill OFF cannot reassociate.
-- **Right:** Registry `IPEnableRouter` + userspace forwarder still seal the cut.
-  Never `set interface forwarding=` on Wi-Fi / WLAN names or their Idx.
-- **Wrong:** `Restart-Service npcap/npf` from Kill `_get_socket` when the first
-  bind misses. That also drops USB Wi-Fi; OFF does not bring it back.
-- **Wrong:** Victim-targeted Wi-Fi broadcast (`pdst=victim` on `ff:ff:ff`) with
-  no local gateway pin. This PC learns `gateway IP → our MAC` and black-holes
-  its own uplink while the ethernet PS5 correctly dies.
-- **Right:** Keep those isolation broadcasts. Sync `arp -s` the real gateway on
-  the Wi-Fi STA **before** the first poison burst; thorough netsh neighbors
-  after. Pin Wi-Fi, never leftover SoftAP or APIPA Ethernet 2.
+- **Wrong:** Synchronous PowerShell / netsh on the Kill click **before** poison — delay.
+- **Right:** Instant path = poison + forwarder cut first; then
+  `disable_ip_forwarding(priority_iface=…)` (registry sync + background netsh). Startup
+  may use `blocking=True`. Clumsy/ICS turns forwarding on when that path needs it.
 
 ## Home LAN Kill OFF
 
