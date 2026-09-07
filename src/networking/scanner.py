@@ -27,7 +27,11 @@ from networking.device_table import (
 )
 from tools.clumsy_inline import clumsy_mode_enabled
 from tools.utils import *
-from tools.utils import _iface_live_ipv4  # star-import skips private names; sync_iface needs this
+from tools.utils import (  # star-import skips private names
+    _iface_live_ipv4,
+    _is_softap_ipv4,
+    _softap_bind_allowed,
+)
 from constants import *
 
 class Scanner():
@@ -46,13 +50,81 @@ class Scanner():
         self.qt_progress_signal = int
         self.qt_log_signal = print
     
-    def generate_ips(self):
+    def generate_ips(self, *, thorough: bool = False):
+        pf = (self.perfix or '').strip()
+        my = str(getattr(self, 'my_ip', None) or '').strip()
+        if thorough:
+            pf = self._lan_ping_prefix()
+            lo, hi = self._ping_last_octet_range()
+            self.ips = [
+                f'{pf}.{i}'
+                for i in range(lo, hi + 1)
+                if pf and f'{pf}.{i}' != my
+            ]
+            return
         try:
             n = int(self.device_count)
         except (TypeError, ValueError):
             n = 25
         n = max(1, min(255, n))
-        self.ips = [f'{self.perfix}.{i}' for i in range(1, n)]
+        self.ips = [f'{pf}.{i}' for i in range(1, n) if pf]
+
+    def _lan_ping_prefix(self) -> str:
+        """Home-LAN /24 prefix for Ping Scan — never leftover SoftAP 137/173."""
+        pf = (self.perfix or '').strip()
+        my = str(getattr(self, 'my_ip', None) or '').strip()
+        router = str(getattr(self, 'router_ip', None) or '').strip()
+        try:
+            leftover = (
+                (_is_softap_ipv4(my) or _is_softap_ipv4(f'{pf}.1' if pf else ''))
+                and not _softap_bind_allowed()
+            )
+        except Exception:
+            leftover = pf in ('192.168.137', '192.168.173') or my.startswith(
+                ('192.168.137.', '192.168.173.')
+            )
+        if leftover:
+            for candidate in (router,):
+                if candidate and not candidate.startswith(
+                    ('192.168.137.', '192.168.173.', '127.', '0.')
+                ):
+                    return candidate.rsplit('.', 1)[0]
+            return ''
+        return pf
+
+    def _ping_last_octet_range(self) -> tuple[int, int]:
+        """Inclusive last-octet sweep. /24 → 1..254 (skip net/broadcast)."""
+        try:
+            plen = int(iface_ipv4_prefix_len(getattr(self, 'iface', None), default=24))
+        except Exception:
+            plen = 24
+        plen = max(24, min(30, plen))
+        max_host = (1 << (32 - plen)) - 1
+        return 1, max(1, max_host - 1)
+
+    def _ping_source_ok(self, src: str) -> bool:
+        src = str(src or '').strip()
+        if not src or src in ('0.0.0.0', '127.0.0.1') or src.startswith('169.254.'):
+            return False
+        try:
+            if _is_softap_ipv4(src) and not _softap_bind_allowed():
+                return False
+        except Exception:
+            if src.startswith('192.168.137.') or src.startswith('192.168.173.'):
+                return False
+        return True
+
+    def _icmp_ping_argv(self, ip: str) -> list:
+        """Native ping argv: short wait, LAN source bind so SoftAP leftover cannot steal ICMP."""
+        ip = str(ip or '').strip()
+        if sys.platform.startswith('win'):
+            argv = ['ping', '-n', '1', '-w', '400']
+            src = str(getattr(self, 'my_ip', None) or '').strip()
+            if self._ping_source_ok(src):
+                argv.extend(['-S', src])
+            argv.append(ip)
+            return argv
+        return ['ping', '-c', '1', '-W', '1', ip]
 
     def init(self):
         """
@@ -698,52 +770,53 @@ class Scanner():
 
     def ping_scan(self):
         """
-        Ping all devices at once [CPU Killing function]
-           (All Threads will run at the same tine)
+        ICMP sweep of the live LAN prefix (not Settings Device Count).
+
+        Default Device Count is 25, so the old ``.1 .. .24`` list missed DHCP
+        consoles (.165 / .248). SoftAP leftover 137.1 must not become the prefix.
         """
         self.init()
         with self.__ping_done_lock:
             self.__ping_done = 0
-        
-        self.generate_ips()
+
+        self.generate_ips(thorough=True)
         total_ips = len(self.ips)
         self.ping_thread_pool()
-        
-        while True:
-            with self.__ping_done_lock:
-                done = self.__ping_done
-            # Add a sleep to overcome High CPU usage
-            sleep(.01)
-            self.qt_progress_signal(done)
-            if done >= total_ips:
-                break
-        
+        try:
+            self.qt_progress_signal(total_ips)
+        except Exception:
+            pass
         return True
-    
-    @threaded
+
     def ping_thread_pool(self):
-        """
-        Control maximum threads running at once
-        """
+        """Run the ICMP sweep on this thread (ScanThread) — no detached hang."""
         n = len(self.ips)
-        # Cap workers: hundreds of concurrent subprocess pings exhausts threads/handles on Windows.
-        cap = min(self.max_threads, n, int(os.environ.get('ZUBCUT_PING_POOL_CAP', '96')))
+        if n <= 0:
+            return
+        try:
+            cap = min(self.max_threads, n, int(os.environ.get('ZUBCUT_PING_POOL_CAP', '96')))
+        except (TypeError, ValueError):
+            cap = min(int(self.max_threads or 12), n, 96)
         workers = max(1, cap)
         with ThreadPoolExecutor(workers) as executor:
             for ip in self.ips:
                 executor.submit(self.ping, ip)
 
     def ping(self, ip):
-        """
-        Ping a specific ip with native command "ping -n"
-        """
-        if sys.platform.startswith('win'):
-            terminal(f'ping -n 1 {ip}', decode=False)
-        else:
-            # macOS: -W is millis for some ping variants; use higher timeout via -t if available
-            terminal(f'ping -c 1 {ip}', decode=False)
+        """Ping one IPv4 with a short timeout; always count the attempt."""
+        try:
+            argv = self._icmp_ping_argv(ip)
+            if argv and argv[-1]:
+                run_command(argv, shell=False, timeout=2)
+        except Exception:
+            pass
         with self.__ping_done_lock:
             self.__ping_done += 1
+            done = self.__ping_done
+        try:
+            self.qt_progress_signal(done)
+        except Exception:
+            pass
 
     def probe_ip(self, ip: str) -> Optional[tuple]:
         """

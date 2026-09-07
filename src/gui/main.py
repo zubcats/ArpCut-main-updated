@@ -2311,10 +2311,12 @@ class ZubCutApp(
         self.pgbar.setVisible(True)
         if self.taskbar_progress:
             self.taskbar_progress.setVisible(True)
-        self.pgbar.setMaximum(self.scanner.device_count)
+        # Ping Scan sweeps the /24 (1..254), not Settings Device Count (default 25).
+        scan_max = 254 if scan_type else self.scanner.device_count
+        self.pgbar.setMaximum(scan_max)
         if self.taskbar_progress:
-            self.taskbar_progress.setMaximum(self.scanner.device_count)
-        self.pgbar.setValue(self.scanner.device_count * (not scan_type))
+            self.taskbar_progress.setMaximum(scan_max)
+        self.pgbar.setValue(scan_max * (not scan_type))
         
         self.scan_thread.scanner = self.scanner
         self.scan_thread.scan_type = scan_type
