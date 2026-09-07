@@ -12,7 +12,6 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QWidget,
     QSizePolicy,
-    QProgressDialog,
     QGraphicsOpacityEffect,
     QListWidget,
     QListWidgetItem,
@@ -70,13 +69,7 @@ from tools.clumsy_inline import (
     clumsy_bundle_offered,
     windivert_driver_installed,
 )
-from tools.clumsy_ics import (
-    format_clumsy_ics_error,
-    mark_clumsy_settings_restart_pending,
-    read_clumsy_topology,
-    repair_clumsy_network_sharing,
-    rollback_clumsy_ics,
-)
+from tools.clumsy_ics import mark_clumsy_settings_restart_pending
 from tools.utils_gui import restart_zubcut
 
 _UPDATE_BTN_QSS_FALLBACK = (
@@ -145,30 +138,6 @@ class _UpdateBannerPollThread(QThread):
         if avail is None:
             return
         self.done.emit(bool(avail), str(label or ''))
-
-
-class _ClumsyIcsPrepThread(QThread):
-    """Run Clumsy ICS PowerShell off the Settings GUI thread (can take 30–60s)."""
-
-    finished = pyqtSignal(bool, str)
-
-    def __init__(self, enable: bool):
-        super().__init__()
-        self._enable = bool(enable)
-
-    def run(self):
-        try:
-            if self._enable:
-                from tools.clumsy_ics import ensure_clumsy_ics_enabled
-
-                ok, detail = ensure_clumsy_ics_enabled()
-            else:
-                from tools.clumsy_ics import repair_clumsy_network_sharing
-
-                ok, detail = repair_clumsy_network_sharing()
-            self.finished.emit(bool(ok), str(detail or ''))
-        except Exception as e:
-            self.finished.emit(False, str(e))
 
 
 class _WheelSafeComboBox(QComboBox):
@@ -280,9 +249,10 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
     def _install_clumsy_controls(self):
         self.chkClumsy = QCheckBox('Clumzy Mode', self.gridLayoutWidget_2)
         self.chkClumsy.setToolTip(
-            'Restart ZubCut into Clumzy Mode: the Clumzy packet engine on Mobile Hotspot '
+            'Restart ZubCut into Clumzy Mode: the Clumzy packet engine '
             '(filter true, all forwarded packets). Normal ARP Kill is not used. '
-            'Turn Windows Mobile Hotspot ON first. Run ZubCut as Administrator.'
+            'ZubCut does not turn on or repair Windows sharing or Mobile Hotspot. '
+            'Run ZubCut as Administrator.'
         )
         self.lblClumsyPath = QLabel('Clumzy Mode uses the bundled Clumzy engine', self.gridLayoutWidget_2)
         self.lblClumsyPath.setWordWrap(True)
@@ -530,8 +500,8 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
 
     def _update_clumsy_path_label(self) -> None:
         self.lblClumsyPath.setText(
-            'Clumzy Mode: Clumzy engine on hotspot (all forwarded packets). '
-            'Turn Mobile Hotspot ON in Windows first.'
+            'Clumzy Mode: bundled Clumzy engine. ZubCut does not change '
+            'Windows sharing or Mobile Hotspot.'
         )
 
     def _on_clumsy_checkbox_changed(self, _state):
@@ -582,159 +552,11 @@ class Settings(FramelessResizableMixin, QMainWindow, Ui_MainWindow):
                 'Clumzy Mode',
                 'ZubCut hit an error while changing Clumzy Mode.\n\n'
                 f'{exc}\n\n'
-                'Turn Mobile Hotspot ON in Windows Settings first, wait for it to start, '
-                'then try again. If this keeps happening, send the newest '
+                'If this keeps happening, send the newest '
                 f'%TEMP%\\{APP_BUNDLE_NAME}-crash-ZC-*.log file.'
                 f'{format_build_version_hint()}',
                 Buttons.OK,
             )
-
-    def _begin_clumsy_mode_toggle(self, new_v: bool, old_v: bool) -> None:
-        self._pending_clumsy_new = bool(new_v)
-        self._pending_clumsy_old = bool(old_v)
-        label = 'Preparing Clumzy Mode…' if new_v else 'Restoring network sharing…'
-        dlg = QProgressDialog(label, None, 0, 0, self)
-        dlg.setWindowTitle('Clumzy Mode')
-        dlg.setWindowModality(Qt.ApplicationModal)
-        dlg.setCancelButton(None)
-        dlg.setMinimumDuration(0)
-        dlg.setValue(0)
-        dlg.show()
-        self._clumsy_prep_dialog = dlg
-        self.chkClumsy.setEnabled(False)
-        th = _ClumsyIcsPrepThread(new_v)
-        self._clumsy_prep_thread = th
-        th.finished.connect(self._on_clumsy_ics_prep_finished)
-        th.start()
-
-    def _on_clumsy_ics_prep_finished(self, prep_ok: bool, prep_detail: str) -> None:
-        from tools.user_errors import format_build_version_hint
-
-        dlg = getattr(self, '_clumsy_prep_dialog', None)
-        if dlg is not None:
-            dlg.close()
-            self._clumsy_prep_dialog = None
-        self.chkClumsy.setEnabled(True)
-        th = getattr(self, '_clumsy_prep_thread', None)
-        if th is not None:
-            th.wait(200)
-            self._clumsy_prep_thread = None
-        new_v = bool(getattr(self, '_pending_clumsy_new', False))
-        old_v = bool(getattr(self, '_pending_clumsy_old', False))
-        try:
-            self._apply_clumsy_mode_toggle_after_prep(
-                new_v, old_v, bool(prep_ok), str(prep_detail or '')
-            )
-        except Exception as exc:
-            self._clumsy_toggle_guard = True
-            self.chkClumsy.setChecked(old_v)
-            self._clumsy_toggle_guard = False
-            try:
-                set_settings('clumsy_mode', old_v)
-            except Exception:
-                pass
-            MsgType.ERROR(
-                self,
-                'Clumzy Mode',
-                'ZubCut hit an error while changing Clumzy Mode.\n\n'
-                f'{exc}\n\n'
-                'Turn Mobile Hotspot ON in Windows Settings first, wait for it to start, '
-                'then try again. If this keeps happening, send the newest '
-                f'%TEMP%\\{APP_BUNDLE_NAME}-crash-ZC-*.log file.'
-                f'{format_build_version_hint()}',
-                Buttons.OK,
-            )
-
-    def _apply_clumsy_mode_toggle_after_prep(
-        self,
-        new_v: bool,
-        old_v: bool,
-        prep_ok: bool,
-        prep_detail: str,
-    ) -> None:
-        if new_v:
-            if not prep_ok:
-                detail = format_clumsy_ics_error(
-                    prep_detail or 'Unknown error.',
-                    topology=read_clumsy_topology(),
-                )
-                from tools.user_errors import format_build_version_hint
-
-                MsgType.WARN(
-                    self,
-                    'Clumzy Mode',
-                    'Could not enable Clumzy Mode.\n\n' + detail + format_build_version_hint(),
-                    Buttons.OK,
-                )
-                self._clumsy_toggle_guard = True
-                self.chkClumsy.setChecked(False)
-                self._clumsy_toggle_guard = False
-                try:
-                    set_settings('clumsy_mode', False)
-                except Exception:
-                    pass
-                return
-            self._update_clumsy_path_label()
-            try:
-                cur = (get_settings('iface') or '').strip()
-            except Exception:
-                cur = ''
-            set_settings('iface_before_clumsy', cur)
-        else:
-            ok = prep_ok
-            detail = prep_detail
-            if not ok:
-                if (
-                    MsgType.WARN(
-                        self,
-                        'Clumzy Mode',
-                        'Could not restore sharing automatically.\n\n'
-                        + (detail or 'Unknown error.')
-                        + '\n\nRun hotspot / sharing repair now?',
-                        Buttons.YES | Buttons.NO,
-                    )
-                    == Buttons.YES
-                ):
-                    rok, rdetail = repair_clumsy_network_sharing()
-                    if not rok:
-                        MsgType.ERROR(
-                            self,
-                            'Repair failed',
-                            rdetail or detail or 'Unknown error.',
-                            Buttons.OK,
-                        )
-                        self._clumsy_toggle_guard = True
-                        self.chkClumsy.setChecked(old_v)
-                        self._clumsy_toggle_guard = False
-                        return
-                    detail = rdetail
-                else:
-                    self._clumsy_toggle_guard = True
-                    self.chkClumsy.setChecked(old_v)
-                    self._clumsy_toggle_guard = False
-                    return
-            try:
-                prev = (get_settings('iface_before_clumsy') or '').strip()
-            except Exception:
-                prev = ''
-            if prev:
-                set_settings('iface', prev)
-            set_settings('iface_before_clumsy', '')
-        mark_clumsy_settings_restart_pending()
-        try:
-            set_settings_many(
-                {
-                    'clumsy_persist_across_restart': True,
-                    'clumsy_mode': new_v,
-                }
-            )
-        except Exception:
-            try:
-                set_settings('clumsy_persist_across_restart', True)
-            except Exception:
-                pass
-            set_settings('clumsy_mode', new_v)
-        restart_zubcut(self.app)
 
     def _on_clumsy_install_clicked(self):
         url = (UPDATE_DOWNLOAD_URL_EXPERIMENTAL or '').strip()

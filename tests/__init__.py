@@ -34,11 +34,14 @@ def _cmd_text(cmd) -> str:
     return str(cmd or '')
 
 
-def _popen_no_nmap_uac(cmd, *args, **kwargs):
-    text = _cmd_text(cmd).lower()
-    if any(needle in text for needle in _BLOCK_NEEDLES):
-        raise FileNotFoundError('blocked Npcap/Nmap UAC spawn in tests')
-    return _orig_popen(cmd, *args, **kwargs)
+class _PopenNoNmapUac(_orig_popen):
+    """Keep a real Popen type so asyncio / unittest.mock can still subclass it."""
+
+    def __init__(self, cmd, *args, **kwargs):
+        text = _cmd_text(cmd).lower()
+        if any(needle in text for needle in _BLOCK_NEEDLES):
+            raise FileNotFoundError('blocked Npcap/Nmap UAC spawn in tests')
+        super().__init__(cmd, *args, **kwargs)
 
 
-subprocess.Popen = _popen_no_nmap_uac  # type: ignore[misc]
+subprocess.Popen = _PopenNoNmapUac  # type: ignore[misc]

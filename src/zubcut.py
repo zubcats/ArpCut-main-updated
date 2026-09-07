@@ -484,13 +484,9 @@ if __name__ == "__main__":
     migrate_settings_file()
     if _sys.platform.startswith('win'):
         try:
-            from tools.clumsy_ics import (
-                maybe_ensure_wlan_autoconfig_on_startup,
-                reset_clumsy_mode_on_startup,
-            )
+            from tools.clumsy_ics import reset_clumsy_mode_on_startup
 
             reset_clumsy_mode_on_startup()
-            maybe_ensure_wlan_autoconfig_on_startup()
         except Exception:
             pass
     repair_settings()
@@ -566,7 +562,7 @@ if __name__ == "__main__":
         from tools.utils_gui import is_admin as _is_admin
 
         if _is_admin():
-            GUI.log('Running as Administrator (required for Kill / Clumsy hotspot).', _UI_LOG_RESTORE_FG)
+            GUI.log('Running as Administrator (required for Kill / Clumzy Mode).', _UI_LOG_RESTORE_FG)
         else:
             GUI.log(
                 'Not running as Administrator — approve UAC on launch or reinstall from latest build.',

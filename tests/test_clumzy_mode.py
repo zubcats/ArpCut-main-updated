@@ -70,8 +70,12 @@ class ClumzyModeIsolationTests(unittest.TestCase):
 
     def test_startup_does_not_run_old_ics_repair(self) -> None:
         src = _read('src/zubcut.py')
+        settings = _read('src/gui/settings.py')
         self.assertNotIn('maybe_repair_stale_clumsy_ics_on_startup', src)
-        self.assertIn('maybe_ensure_wlan_autoconfig_on_startup', src)
+        self.assertNotIn('maybe_ensure_wlan_autoconfig_on_startup', src)
+        self.assertNotIn('_ClumsyIcsPrepThread', settings)
+        self.assertNotIn('ensure_clumsy_ics_enabled', settings)
+        self.assertNotIn('repair_clumsy_network_sharing', settings)
 
     def test_advanced_lag_uses_gated_scheduler(self) -> None:
         src = _read('src/gui/clumzy_mode_window.py')

@@ -1,4 +1,4 @@
-"""Regression: f-strings must not mangle _PS_HOTSPOT_HELPERS brace literals."""
+"""Old Clumsy ICS PowerShell helpers must stay gone."""
 
 from __future__ import annotations
 
@@ -15,26 +15,16 @@ from tools import clumsy_ics as ics
 
 
 class ClumsyPsComposeTests(unittest.TestCase):
-    def test_compose_preserves_hotspot_helper_braces(self) -> None:
-        script = ics._compose_ps_script(
-            "header\n",
-            ics._PS_HOTSPOT_HELPERS,
-            "footer\n",
-        )
-        self.assertIn("function Detect-ClumsyConsolePath", script)
-        self.assertIn("NormGuidHotspot", script)
-        self.assertIn("Trim('{','}')", script)
-        self.assertIn("@{ Up = $det.Up; Down = $det.Down }", script)
-        self.assertNotIn("\u2014", ics._PS_HOTSPOT_HELPERS)  # em dash breaks PS 5.1 ANSI parse
-        self.assertIn("port - PC internet on", ics._PS_HOTSPOT_HELPERS)
-
-    def test_enable_script_uses_compose_not_inline_fstring_helpers(self) -> None:
-        import inspect
-
-        # Public wrapper is thin; compose lives in the Windows impl.
-        src = inspect.getsource(ics._ensure_clumsy_ics_enabled_impl)
-        self.assertIn('_compose_ps_script(', src)
-        self.assertNotIn('{_PS_HOTSPOT_HELPERS}', src)
+    def test_hotspot_sharing_powershell_is_gone(self) -> None:
+        self.assertFalse(hasattr(ics, '_PS_HOTSPOT_HELPERS'))
+        self.assertFalse(hasattr(ics, '_compose_ps_script'))
+        self.assertFalse(hasattr(ics, '_ensure_clumsy_ics_enabled_impl'))
+        src_path = os.path.join(_SRC, 'tools', 'clumsy_ics.py')
+        with open(src_path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertNotIn('HNetShare', src)
+        self.assertNotIn('EnableSharing', src)
+        self.assertNotIn('netsh wlan stop hostednetwork', src)
 
 
 if __name__ == '__main__':

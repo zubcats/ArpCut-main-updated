@@ -25,15 +25,14 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   hears another restore. Do not stop the 100% pass-through while leftover
   MITM may still be in use.
 
-## Clumsy enable must not break a working hotspot
+## ZubCut must not configure Windows sharing or hotspot
 
-- **Wrong:** Start `RemoteAccess`, set `IPEnableRouter=1`, rewrite ICS firewall rules, or
-  disable kernel forwarding on the Clumsy restart when SoftAP is already up.
-  Hotspot and Sharing stay "on" but the PS5 loses internet.
-- **Wrong:** Heal/ARP as `192.168.137.1` using the uplink Wi‑Fi MAC (Settings iface).
-- **Right:** If Mobile Hotspot is already ready, only write Clumsy state. Bind heal/ARP
-  to the SoftAP adapter. Skip startup `ensure_home_lan_mitm_forwarding_off` while
-  Clumsy is on.
+- **Wrong:** Keep old Clumsy ICS prep: `HNetShare` Enable/DisableSharing, start/stop
+  `hostednetwork`, add/remove `192.168.137.1`, start `SharedAccess` / `icssvc`,
+  or "repair sharing" on launch / Clumzy toggle.
+- **Right:** Clumzy Mode is the Clumzy engine in ZubCut. The user turns Windows
+  Mobile Hotspot on themselves if they want that path. ZubCut never enables,
+  repairs, or tears down sharing or hotspot.
 
 ## Home LAN IP forwarding
 

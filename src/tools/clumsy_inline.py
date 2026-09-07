@@ -1076,14 +1076,8 @@ def restore_ics_hotspot_connectivity(
 
 
 def maybe_prepare_ics() -> None:
-    if not sys.platform.startswith('win'):
-        return
-    try:
-        from tools.utils import terminal
-
-        terminal('net start SharedAccess', shell=True)
-    except Exception:
-        pass
+    """Old Clumsy leftover. ZubCut must not start the Windows sharing service."""
+    return
 
 
 def _arp_lines_for_scanner(scanner: Scanner) -> str:
