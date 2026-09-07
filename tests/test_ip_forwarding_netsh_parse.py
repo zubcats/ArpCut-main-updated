@@ -95,8 +95,37 @@ class TestIpForwardingNetshParse(unittest.TestCase):
                 'def _iface_forwarding_enabled_netsh'
             )
         ]
-        self.assertIn('if not enabled and prio and not blocking:', fn)
+        self.assertIn('if not enabled and prio and not blocking and not _iface_key_looks_wireless(prio):', fn)
         self.assertIn('_netsh_set_iface_forwarding(prio, False)', fn)
+
+    def test_apply_skips_wireless_netsh_toggle(self) -> None:
+        ns = _load_killer_forwarding_helpers()
+        sample = (
+            'Idx     Met         MTU          State                Name\n'
+            ' 12          25        1500  connected     Wi-Fi\n'
+            ' 15          35        1500  connected     Ethernet\n'
+        )
+        set_calls: list[tuple[str, bool]] = []
+
+        def _fake_set(key, enabled):
+            set_calls.append((str(key), enabled))
+            return True
+
+        ns['run_command'] = lambda *a, **k: SimpleNamespace(
+            returncode=0, stdout=sample, stderr=''
+        )
+        ns['_netsh_set_iface_forwarding'] = _fake_set
+        ns['_apply_windows_ip_forwarding_ifaces'](False, priority_iface='Wi-Fi')
+        keys = [c[0] for c in set_calls]
+        self.assertNotIn('Wi-Fi', keys)
+        self.assertNotIn('12', keys)
+        self.assertIn('15', keys)
+
+        set_calls.clear()
+        ns['_apply_windows_ip_forwarding_ifaces'](
+            False, priority_iface='Wi-Fi', priority_only=True
+        )
+        self.assertEqual(set_calls, [])
 
     def test_source_priority_only_never_falls_through_all_nics(self) -> None:
         path = os.path.join(_SRC, 'networking', 'killer.py')

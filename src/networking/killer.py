@@ -22,6 +22,9 @@ from tools.utils import (
     npcap_iface_tokens,
     bind_scapy_conf_iface,
     _iface_ok_for_lan_mitm,
+    _iface_live_ipv4,
+    _iface_name_looks_softap,
+    _ip_ok_for_bind,
 )
 from constants import *
 from tools.crash_feedback import safe_daemon_target
@@ -95,10 +98,23 @@ def _iface_rows_from_netsh(show_out: str) -> list[tuple[str, str]]:
     return rows
 
 
+def _iface_key_looks_wireless(key: str) -> bool:
+    """True for Wi-Fi / WLAN netsh names — never ``set interface forwarding=`` on these."""
+    blob = str(key or '').strip().lower()
+    if not blob:
+        return False
+    return any(tok in blob for tok in ('wi-fi', 'wifi', 'wlan', 'wireless', '802.11'))
+
+
 def _netsh_set_iface_forwarding(iface_key: str, enabled: bool) -> bool:
     """One fast per-iface netsh toggle. ``iface_key`` is index or interface name."""
     key = str(iface_key or '').strip()
     if not key:
+        return False
+    if _iface_key_looks_wireless(key):
+        # Realtek USB Wi-Fi: this netsh drops the STA. Registry IPEnableRouter
+        # plus the userspace forwarder still seal Kill. OFF cannot bring Wi-Fi
+        # back if the radio already left the AP.
         return False
     flag = 'enabled' if enabled else 'disabled'
     try:
@@ -153,8 +169,14 @@ def _apply_windows_ip_forwarding_ifaces(
     except Exception:
         show_s = ''
     # Kill hot path: flip the active NIC first (sync caller may have done this already).
+    # Never netsh-forwarding on Wi-Fi — that association drop is the "Kill ON
+    # kills this PC's Wi-Fi, OFF does nothing" hole (mesh + ethernet PS5).
+    rows = _iface_rows_from_netsh(show_s)
+    wireless_idxs = {idx for idx, name in rows if _iface_key_looks_wireless(name)}
     prio_keys = _priority_iface_keys(priority_iface, show_s)
     for key in prio_keys:
+        if str(key) in wireless_idxs or _iface_key_looks_wireless(key):
+            continue
         _netsh_set_iface_forwarding(key, enabled)
     # When Clumsy/ICS SoftAP is live, only touch the priority LAN NIC — never
     # blast-disable every adapter (that knocks hotspot clients offline). If the
@@ -186,6 +208,8 @@ def _apply_windows_ip_forwarding_ifaces(
             pass
         return
     for idx in indexes:
+        if str(idx) in wireless_idxs:
+            continue
         try:
             _netsh_set_iface_forwarding(idx, enabled)
         except Exception:
@@ -273,7 +297,7 @@ def _set_windows_ip_forwarding(
     # Registry alone does not change runtime forwarding. Close the cold-Kill leak
     # window by flipping the active NIC synchronously (~tens of ms) before the
     # background drain covers remaining adapters.
-    if not enabled and prio and not blocking:
+    if not enabled and prio and not blocking and not _iface_key_looks_wireless(prio):
         try:
             _netsh_set_iface_forwarding(prio, False)
         except Exception:
@@ -600,12 +624,10 @@ class Killer:
                         continue
                 if round_i == 0:
                     try:
-                        from tools.utils import (
-                            invalidate_ifaces_cache,
-                            try_rebind_npcap_to_live_windows_adapters,
-                        )
+                        from tools.utils import invalidate_ifaces_cache
 
-                        try_rebind_npcap_to_live_windows_adapters()
+                        # Never Restart-Service npcap/npf from Kill. That drops
+                        # USB Wi-Fi; OFF cannot reassociate the radio.
                         invalidate_ifaces_cache(full=True)
                     except Exception:
                         pass
@@ -794,51 +816,111 @@ class Killer:
         if ip and mac_address_is_usable(mac) and mac != mine:
             self._restore_router = {'ip': ip, 'mac': mac}
 
-    def _pin_local_gateway_neighbor_async(self) -> None:
-        """Reinstall this PC's real gateway neighbor so broadcast/reflected poison cannot black-hole us."""
+    def _gateway_pin_iface_names(self) -> list[str]:
+        """Windows names to reinstall the real gateway on — Wi-Fi STA, never SoftAP / Direct."""
+        names: list[str] = []
+        seen: set[str] = set()
+
+        def _take(raw: str) -> None:
+            name = str(raw or '').strip()
+            if not name or name == 'NULL' or name in seen:
+                return
+            if _iface_name_looks_softap(name):
+                return
+            seen.add(name)
+            names.append(name)
+
+        if _iface_ok_for_lan_mitm(self.iface):
+            _take(getattr(self.iface, 'name', ''))
+        # Mesh Wi-Fi PC + ethernet PS5: isolation bind can briefly say Ethernet
+        # (APIPA spare NIC) while this PC's uplink is still Wi-Fi.
+        if not names or not _iface_key_looks_wireless(names[0]):
+            _take('Wi-Fi')
+        return names
+
+    def _gateway_pin_iface_ip(self) -> str:
+        """Local IPv4 for ``arp -s`` — home LAN uplink, not APIPA Ethernet 2 / SoftAP."""
+        live = ''
+        try:
+            live = str(_iface_live_ipv4(self.iface) or '').strip()
+        except Exception:
+            live = ''
+        cached = str(getattr(self.iface, 'ip', '') or '').strip()
+        for cand in (live, cached):
+            if _ip_ok_for_bind(cand):
+                return cand
+        return ''
+
+    def _pin_local_gateway_neighbor(self, *, thorough: bool = False) -> None:
+        """Reinstall this PC's real gateway neighbor so broadcast poison cannot black-hole us.
+
+        Fast path (Kill click): ``arp -s`` only. Thorough netsh neighbors stays
+        off the GUI thread so the first poison is not delayed.
+        """
         if not sys.platform.startswith('win'):
             return
         ip, mac = self._restore_router_endpoint()
         if not ip or not mac_address_is_usable(mac):
             return
-        iface_name = str(getattr(self.iface, 'name', '') or '').strip()
-        if not iface_name or iface_name == 'NULL':
-            return
         mac_hy = good_mac(mac).replace(':', '-').upper()
+        iface_ip = self._gateway_pin_iface_ip()
+        try:
+            cmd = ['arp', '-s', ip, mac_hy]
+            if iface_ip:
+                cmd.append(iface_ip)
+            run_command(cmd, shell=False, timeout=2)
+        except Exception:
+            pass
+        if not thorough:
+            return
+        names = self._gateway_pin_iface_names()
+        if not names:
+            return
+        show_s = ''
+        try:
+            show = run_command(
+                ['netsh', 'interface', 'ipv4', 'show', 'interfaces'],
+                shell=False,
+                timeout=6,
+            )
+            show_s = str(getattr(show, 'stdout', None) or '')
+        except Exception:
+            show_s = ''
+        keys: list[str] = []
+        seen_k: set[str] = set()
+        for name in names:
+            for key in _priority_iface_keys(name, show_s) or [name]:
+                if key in seen_k:
+                    continue
+                seen_k.add(key)
+                keys.append(key)
+        for key in keys:
+            for verb in ('set', 'add'):
+                try:
+                    proc = run_command(
+                        [
+                            'netsh',
+                            'interface',
+                            'ipv4',
+                            verb,
+                            'neighbors',
+                            key,
+                            ip,
+                            mac_hy,
+                        ],
+                        shell=False,
+                        timeout=3,
+                    )
+                    if int(getattr(proc, 'returncode', 1) or 1) == 0:
+                        break
+                except Exception:
+                    continue
+
+    def _pin_local_gateway_neighbor_async(self) -> None:
+        """Background thorough pin (netsh neighbors on the Wi-Fi STA)."""
 
         def _work() -> None:
-            show_s = ''
-            try:
-                show = run_command(
-                    ['netsh', 'interface', 'ipv4', 'show', 'interfaces'],
-                    shell=False,
-                    timeout=6,
-                )
-                show_s = str(getattr(show, 'stdout', None) or '')
-            except Exception:
-                show_s = ''
-            keys = _priority_iface_keys(iface_name, show_s) or [iface_name]
-            for key in keys:
-                for verb in ('set', 'add'):
-                    try:
-                        proc = run_command(
-                            [
-                                'netsh',
-                                'interface',
-                                'ipv4',
-                                verb,
-                                'neighbors',
-                                key,
-                                ip,
-                                mac_hy,
-                            ],
-                            shell=False,
-                            timeout=3,
-                        )
-                        if int(getattr(proc, 'returncode', 1) or 1) == 0:
-                            return
-                    except Exception:
-                        continue
+            self._pin_local_gateway_neighbor(thorough=True)
 
         try:
             threading.Thread(
@@ -962,6 +1044,10 @@ class Killer:
         self._sync_iface_for_victim(victim, refresh_router=not ics_mode)
         self._refresh_victim_mac_from_cache(victim)
         self._remember_restore_router()
+        # Pin the real gateway on this PC *before* victim-targeted broadcast
+        # (mesh Wi-Fi PC + ethernet PS5). Async pin lost the race with the
+        # first burst and taught Windows 192.168.1.1 → our MAC.
+        self._pin_local_gateway_neighbor()
         self._get_socket()
         mac = victim['mac']
         relays = getattr(self, '_unkill_relays', None)
@@ -973,9 +1059,9 @@ class Killer:
         self.killed[mac] = victim
         self._cancel_restore_pass(mac)
         self._stop_forwarder(mac)
-        self._pin_local_gateway_neighbor_async()
         # Instant path first: poison + cut. Forwarding disable / probes come after.
         self._poison_arp_now(victim, seq, repeats=3, delay_s=0)
+        self._pin_local_gateway_neighbor_async()
         self._kill_arp_worker(
             victim,
             wait_after,
@@ -1809,6 +1895,7 @@ class Killer:
         else:
             warmup_remaining = 4
             warmup_gap = 0.08
+        re_pinned = False
         while (
             victim['mac'] in self.killed
             and self.iface.name != 'NULL'
@@ -1822,6 +1909,9 @@ class Killer:
                 ):
                     return
                 self._send_packet(frame)
+            if not re_pinned:
+                re_pinned = True
+                self._pin_local_gateway_neighbor_async()
             if warmup_remaining > 0:
                 warmup_remaining -= 1
                 sleep(warmup_gap)
@@ -1883,6 +1973,7 @@ class Killer:
                     self._stop_forwarder(key)
         else:
             self._ensure_restore_pass(victim, seq, extra_macs=alias_keys)
+            self._pin_local_gateway_neighbor()
             self._pin_local_gateway_neighbor_async()
         # Never send restore ARP or open Npcap on this thread — Wi‑Fi L2 send
         # and conf.L2socket block the UI. The worker's first burst is immediate.
@@ -2219,6 +2310,8 @@ class Killer:
                 unicast_only=unicast_only,
                 allow_async=False,
             )
+            if not unicast_only:
+                self._pin_local_gateway_neighbor()
         if self._op_seq.get(victim['mac']) == seq and victim['mac'] not in self.killed:
             self._remove_pf_block(victim['ip'])
 

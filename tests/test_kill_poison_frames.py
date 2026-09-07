@@ -107,6 +107,7 @@ class TestKillRestoreFrames(unittest.TestCase):
         self.assertNotIn('_refresh_router_mac_for_mitm', self._unkill_block())
         lan = self._unkill_block()
         self.assertIn('_ensure_restore_pass', lan)
+        self.assertIn('_pin_local_gateway_neighbor()', lan)
         self.assertIn('_pin_local_gateway_neighbor_async', lan)
         self.assertIn('_unkill_restore_worker', lan)
         self.assertNotIn('self._restore_arp_now(', lan)
@@ -265,6 +266,7 @@ class TestKillRestoreFrames(unittest.TestCase):
         k._stop_forwarder = mock.Mock()  # type: ignore[method-assign]
         k.resume_percent_cut_live = mock.Mock(return_value=True)  # type: ignore[method-assign]
         k._hold_restore_pass = mock.Mock()  # type: ignore[method-assign]
+        k._pin_local_gateway_neighbor = mock.Mock()  # type: ignore[method-assign]
         k._pin_local_gateway_neighbor_async = mock.Mock()  # type: ignore[method-assign]
         with mock.patch('networking.killer.enable_ip_forwarding') as enable:
             k.unkill(victim, ics_mode=False)
@@ -272,6 +274,7 @@ class TestKillRestoreFrames(unittest.TestCase):
         k._stop_forwarder.assert_not_called()
         k.resume_percent_cut_live.assert_called_once_with(victim['mac'])
         k._hold_restore_pass.assert_called_once()
+        k._pin_local_gateway_neighbor.assert_called()
         k._pin_local_gateway_neighbor_async.assert_called_once()
         enable.assert_not_called()
         self.assertNotIn(victim['mac'], k._unkill_relays)
@@ -329,6 +332,47 @@ class TestKillRestoreFrames(unittest.TestCase):
             src = f.read()
         block = src[src.index('def unkill_all'): src.index('def store')]
         self.assertIn('self.unkill(victim, ics_mode=False)', block)
+
+    def test_gateway_pin_skips_softap_and_apipa_ethernet(self) -> None:
+        k = self._killer(wifi=True)
+        self.assertEqual(k._gateway_pin_iface_names(), ['Wi-Fi'])
+        self.assertEqual(k._gateway_pin_iface_ip(), '192.168.1.56')
+
+        k.iface = _face(
+            'Ethernet 2',
+            r'\Device\NPF_{deadbeef-0000-0000-0000-000000000001}',
+            '169.254.166.225',
+            'bb:bb:bb:bb:bb:bb',
+        )
+        self.assertEqual(k._gateway_pin_iface_names(), ['Wi-Fi'])
+        self.assertEqual(k._gateway_pin_iface_ip(), '')
+
+        k.iface = _face(
+            'Local Area Connection* 10',
+            r'\Device\NPF_{deadbeef-0000-0000-0000-000000000002}',
+            '192.168.137.1',
+            'e8:4e:06:ab:c4:28',
+        )
+        self.assertEqual(k._gateway_pin_iface_names(), ['Wi-Fi'])
+        self.assertEqual(k._gateway_pin_iface_ip(), '')
+
+    def test_gateway_pin_uses_arp_s_before_netsh(self) -> None:
+        k = self._killer(wifi=True)
+        k._restore_router = {'ip': '192.168.1.1', 'mac': '74:24:9f:3a:a3:75'}
+        cmds: list[list[str]] = []
+
+        def _run(cmd, **_kw):
+            cmds.append([str(c) for c in cmd])
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        with mock.patch('networking.killer.run_command', side_effect=_run):
+            with mock.patch('networking.killer.sys') as fake_sys:
+                fake_sys.platform = 'win32'
+                k._pin_local_gateway_neighbor(thorough=False)
+        self.assertTrue(cmds)
+        self.assertEqual(cmds[0][:3], ['arp', '-s', '192.168.1.1'])
+        self.assertIn('192.168.1.56', cmds[0])
+        self.assertFalse(any(c[:3] == ['netsh', 'interface', 'ipv4'] for c in cmds))
 
 
 if __name__ == '__main__':

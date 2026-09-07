@@ -80,6 +80,8 @@ class TestIpForwardingMitm(unittest.TestCase):
             mock.patch.object(Killer, '_kill_arp_worker'),
             mock.patch.object(Killer, '_apply_traffic_cut_sync', return_value=False),
             mock.patch.object(Killer, '_reinforce_full_cut_async'),
+            mock.patch.object(Killer, '_pin_local_gateway_neighbor'),
+            mock.patch.object(Killer, '_pin_local_gateway_neighbor_async'),
             mock.patch('networking.killer.disable_ip_forwarding') as disable,
         ):
             Killer.kill(k, victim, wait_after=0, traffic_cut=True, ics_mode=False)
@@ -159,6 +161,10 @@ class TestIpForwardingMitm(unittest.TestCase):
         cut_at = kill.index('_apply_traffic_cut_sync')
         disable_at = kill.index('disable_ip_forwarding')
         reinforce_at = kill.index('_reinforce_full_cut_async')
+        pin_sync = kill.index('self._pin_local_gateway_neighbor()')
+        pin_async = kill.index('_pin_local_gateway_neighbor_async')
+        self.assertLess(pin_sync, poison_at)
+        self.assertLess(poison_at, pin_async)
         self.assertLess(poison_at, cut_at)
         self.assertLess(cut_at, disable_at)
         self.assertLess(disable_at, reinforce_at)

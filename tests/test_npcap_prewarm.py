@@ -31,9 +31,11 @@ class TestNpcapPrewarm(unittest.TestCase):
         fn = src[src.index('def _get_socket'): src.index('def _send_packet')]
         self.assertIn('_iface_l2_tokens', fn)
         self.assertIn('for tok in self._iface_l2_tokens()', fn)
-        self.assertIn('try_rebind_npcap_to_live_windows_adapters', fn)
+        self.assertIn('invalidate_ifaces_cache', fn)
         self.assertIn('range(2)', fn)
         self.assertIn('ensure_npcap_ethernet_filter', fn)
+        # Restart-Service npcap/npf from Kill drops USB Wi-Fi; OFF cannot recover.
+        self.assertNotIn('try_rebind_npcap_to_live_windows_adapters', fn)
 
     def test_prewarm_l2_socket_exists(self) -> None:
         src = self._killer_py()
