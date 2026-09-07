@@ -211,22 +211,6 @@ class TestKillRestoreFrames(unittest.TestCase):
         )
         self.assertEqual(len(sent), len(k._restore_frames(victim)))
 
-    def test_unicast_followup_restore_skips_broadcast_and_router_sa(self) -> None:
-        from scapy.all import ARP, Ether
-
-        k = self._killer(wifi=True)
-        victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
-        frames = k._restore_frames(victim, unicast_only=True)
-        self.assertTrue(frames)
-        router = '74:24:9f:3a:a3:75'
-        pc = 'aa:aa:aa:aa:aa:aa'
-        for f in frames:
-            self.assertNotEqual(str(f[Ether].dst).lower(), 'ff:ff:ff:ff:ff:ff')
-            self.assertEqual(str(f[Ether].src).lower(), pc)
-            self.assertNotEqual(str(f[Ether].src).lower(), router)
-            if str(f[ARP].psrc) == '192.168.1.1':
-                self.assertEqual(str(f[ARP].hwsrc).lower(), router)
-
     def test_wifi_poison_broadcasts_are_victim_targeted(self) -> None:
         from scapy.all import ARP, Ether
 
@@ -320,11 +304,10 @@ class TestKillRestoreFrames(unittest.TestCase):
         with open(path, encoding='utf-8') as f:
             src = f.read()
         reinforce = src[src.index('def reinforce_restore') : src.index('def _restore_frames')]
-        self.assertIn('unicast_only=False', reinforce)
-        self.assertNotIn('unicast_only=True', reinforce)
+        self.assertNotIn('unicast_only', reinforce)
         worker = src[src.index('def _unkill_restore_worker') : src.index('def kill_all')]
-        lan_plan = worker[worker.index('else:') :]
-        self.assertNotIn(', True)', lan_plan)
+        self.assertNotIn('unicast_only', worker)
+        self.assertIn('(120.0, 2)', worker)
 
     def test_unkill_all_uses_per_device_unkill_for_lan(self) -> None:
         path = os.path.join(_SRC, 'networking', 'killer.py')

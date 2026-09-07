@@ -15,15 +15,15 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 - **Right:** Unicast request+reply to victim MAC and router MAC, plus
   Wi‑Fi victim-targeted broadcast copies so isolation still delivers the
   cut. Do not broadcast ``psrc=victim_ip`` (that GARP re-poisons the router).
-- **Mesh Wi‑Fi PC + ethernet PS5 (Starlink router / mesh node):** ON and
-  OFF are the same ARP stack. Instant OFF worked when both were on the
-  same AP because unicast restore landed. On this split, only the flooded
-  broadcast reaches the console. Keep honest victim-targeted restore
-  broadcast for the **whole** OFF plan (including ``reinforce_restore``).
-  Switching follow-up to unicast-only is the "Kill ON works, OFF leaves
-  the wired PS5 dead" hole — trailing poison wins and the console never
-  hears another restore. Do not stop the 100% pass-through while leftover
-  MITM may still be in use.
+- **Mesh Wi‑Fi PC + ethernet PS5 (Starlink router v3 / mesh node v2):**
+  PC is on the mesh Wi‑Fi hop; PS5 is ethernet on the Starlink. ON and
+  OFF are the same ARP stack. Only victim-targeted broadcast reaches the
+  wired console. The working OFF is ``356215b``: honest broadcast for the
+  **whole** plan (minutes, not a short burst). ``362f266`` short-then-silence
+  and ``f14802b`` unicast-only follow-up (Aug 31, before Clumzy) are the
+  stay-killed hole. Clumzy did not edit ``killer.py``; it shipped on top
+  of that restore. Do not bring unicast-only follow-up back. Do not stop
+  the 100% pass-through while leftover MITM may still be in use.
 
 ## ZubCut must not configure Windows sharing or hotspot
 

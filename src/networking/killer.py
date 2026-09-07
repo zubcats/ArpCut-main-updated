@@ -1900,9 +1900,9 @@ class Killer:
         if not self.l2_socket_ready():
             self.prewarm_l2_socket(join_ms=0)
         # Same delivery as Kill ON: the router-wired PS5 never hears STA unicast.
-        self._restore_arp_now_async(victim, seq, repeats=2, unicast_only=False)
+        self._restore_arp_now_async(victim, seq, repeats=2)
 
-    def _restore_frames(self, victim, *, unicast_only=False):
+    def _restore_frames(self, victim):
         """Undo poison with the same delivery Kill/Dupe ON used.
 
         This PC is on mesh Wi‑Fi; the PS5 is on router ethernet. Isolation
@@ -1916,9 +1916,6 @@ class Killer:
 
         Do not broadcast ``psrc=victim_ip`` from this PC — that re-teaches
         the router the PS5 is here.
-
-        ``unicast_only`` is unused on the LAN OFF path. Switching follow-up
-        to unicast left a router-wired PS5 poisoned after Kill OFF.
         """
         src = self._poison_hwsrc()
         router_ip, router_mac = self._restore_router_endpoint()
@@ -1970,17 +1967,6 @@ class Killer:
             pdst=victim_ip,
             hwdst=victim_mac,
         )
-        if unicast_only:
-            return [
-                to_victim_req,
-                to_victim_reply,
-                to_victim_req,
-                to_victim_reply,
-                to_router_req,
-                to_router_reply,
-                to_router_req,
-                to_router_reply,
-            ]
         frames = [
             to_victim_req,
             to_victim_reply,
@@ -2032,7 +2018,7 @@ class Killer:
         )
         return frames
 
-    def _restore_arp_now_async(self, victim, seq=0, repeats=1, *, unicast_only=False):
+    def _restore_arp_now_async(self, victim, seq=0, repeats=1):
         """Background restore burst — never open Npcap / sendp on the GUI thread."""
         if not isinstance(victim, dict):
             return
@@ -2054,7 +2040,6 @@ class Killer:
                 seq,
                 repeats=repeats,
                 delay_s=0,
-                unicast_only=unicast_only,
                 allow_async=False,
             )
 
@@ -2074,7 +2059,6 @@ class Killer:
         repeats=1,
         delay_s=0.1,
         *,
-        unicast_only=False,
         allow_async=True,
     ):
         """Best-effort ARP restore; aborts if a newer op supersedes this sequence.
@@ -2092,14 +2076,12 @@ class Killer:
         sock = self._socket
         if sock is None or not self.l2_socket_ready():
             if allow_async:
-                self._restore_arp_now_async(
-                    victim, seq, repeats=repeats, unicast_only=unicast_only
-                )
+                self._restore_arp_now_async(victim, seq, repeats=repeats)
                 return
             sock = self._get_socket()
             if sock is None or not self.l2_socket_ready():
                 sock = None
-        frames = self._restore_frames(victim, unicast_only=unicast_only)
+        frames = self._restore_frames(victim)
         if not frames:
             return
         for _ in range(max(1, int(repeats))):
@@ -2119,9 +2101,7 @@ class Killer:
                         self._socket = None
                     sock = None
                     if allow_async:
-                        self._restore_arp_now_async(
-                            victim, seq, repeats=repeats, unicast_only=unicast_only
-                        )
+                        self._restore_arp_now_async(victim, seq, repeats=repeats)
                         return
                     sock = self._get_socket()
                     if sock is not None:
@@ -2170,23 +2150,28 @@ class Killer:
             self._get_socket()
         if quick:
             plan = (
-                (0.0, 2, False),
-                (0.08, 1, False),
+                (0.0, 2),
+                (0.08, 1),
             )
         else:
-            # Keep honest restore broadcast for the whole OFF. Unicast-only
-            # follow-up is what left a router-wired PS5 killed after OFF.
+            # 356215b: mesh Wi‑Fi PC + Starlink-wired PS5. Isolation drops
+            # STA unicast, so every burst must be the same honest broadcast
+            # ON used. A short burst then silence (362f266) or unicast-only
+            # follow-up (f14802b) left this console poisoned after OFF.
             plan = (
-                (0.0, 3, False),
-                (0.2, 2, False),
-                (0.45, 2, False),
-                (0.7, 2, False),
-                (1.0, 2, False),
-                (2.5, 2, False),
-                (5.0, 2, False),
-                (8.0, 2, False),
+                (0.0, 3),
+                (0.2, 2),
+                (0.5, 2),
+                (1.0, 2),
+                (2.5, 3),
+                (5.0, 3),
+                (10.0, 2),
+                (20.0, 2),
+                (40.0, 2),
+                (80.0, 2),
+                (120.0, 2),
             )
-        for wait_s, repeats, unicast_only in plan:
+        for wait_s, repeats in plan:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:
                 return
             if wait_s > 0:
@@ -2202,8 +2187,7 @@ class Killer:
                 victim,
                 seq,
                 repeats=repeats,
-                delay_s=0,
-                unicast_only=unicast_only,
+                delay_s=0.08,
                 allow_async=False,
             )
         if self._op_seq.get(victim['mac']) == seq and victim['mac'] not in self.killed:

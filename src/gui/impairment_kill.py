@@ -759,8 +759,8 @@ class ImpairmentKillMixin:
                         pass
                     self.log('Kill OFF for ' + str(victim.get('ip', '')), UI_LOG_RESTORE_FG)
                     # OFF-only delayed reinforcement; guarded by intent_seq so stale callbacks no-op.
-                    # Same-AP Wi‑Fi PS5 needs later unicast after trailing poison;
-                    # these call reinforce_restore (async) and must not unkill again.
+                    # Same honest restore as Kill ON. Do not unkill again (that
+                    # bumps _op_seq and aborts the restore worker).
                     self._schedule_kill_off_reinforce(mac, my_seq, 25)
                     self._schedule_kill_off_reinforce(mac, my_seq, 100)
                     self._schedule_kill_off_reinforce(mac, my_seq, 400)
