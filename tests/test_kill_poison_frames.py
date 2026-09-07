@@ -38,7 +38,6 @@ class TestKillPoisonFrames(unittest.TestCase):
         block = self._poison_block()
         self.assertIn("dst=victim['mac']", block)
         self.assertIn("dst=self.router['mac']", block)
-        self.assertIn('iface_is_wireless', block)
         self.assertIn('ff:ff:ff:ff:ff:ff', block)
         self.assertIn("pdst=victim['ip']", block)
         self.assertIn('_poison_hwsrc', block)
@@ -235,6 +234,19 @@ class TestKillRestoreFrames(unittest.TestCase):
             self.assertEqual(str(f[ARP].pdst), '192.168.1.248')
             self.assertEqual(str(f[ARP].hwdst).lower(), '00:e4:21:44:ed:0c')
             self.assertEqual(str(f[ARP].psrc), '192.168.1.1')
+
+    def test_ethernet_named_bind_still_broadcasts_for_wired_ps5(self) -> None:
+        """Spare Ethernet bind must not drop isolation broadcast (Wi‑Fi PC + ethernet PS5)."""
+        from scapy.all import ARP, Ether
+
+        k = self._killer(wifi=False)
+        victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
+        frames = k._poison_frames(victim)
+        bcast = [f for f in frames if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff']
+        self.assertEqual(len(bcast), 2)
+        for f in bcast:
+            self.assertEqual(str(f[ARP].pdst), '192.168.1.248')
+            self.assertEqual(str(f[ARP].hwdst).lower(), '00:e4:21:44:ed:0c')
 
     def test_lan_unkill_flips_to_pass_through(self) -> None:
         k = self._killer(wifi=True)

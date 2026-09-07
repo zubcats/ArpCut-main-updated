@@ -122,3 +122,32 @@ class TestIfaceForVictimIp(unittest.TestCase):
         mock_conf.route.routes = []
         got = get_iface_for_victim_ip('192.168.1.248', fallback=eth)
         self.assertEqual(got.guid, wifi.guid)
+
+    @patch('tools.utils._parse_windows_arp_by_interface')
+    @patch('tools.utils.get_ifaces_cached')
+    @patch('tools.utils._iface_live_ipv4')
+    @patch('tools.utils.conf')
+    def test_apipa_ethernet_does_not_steal_wired_ps5_kill(
+        self, mock_conf, mock_live, mock_cached, mock_arp
+    ) -> None:
+        eth = _face('Ethernet 2', r'\\Device\\NPF_{ETH}', '192.168.1.110')
+        wifi = _face('Wi-Fi', r'\\Device\\NPF_{WIFI}', '192.168.1.56')
+        mock_cached.return_value = [eth, wifi]
+        mock_arp.return_value = {
+            '192.168.1.56': {'192.168.1.248', '192.168.1.1'},
+            '192.168.1.110': {'192.168.1.248'},
+        }
+
+        def _live(iface):
+            return {'Wi-Fi': '192.168.1.56'}.get(iface.name, '')
+
+        mock_live.side_effect = _live
+        mock_conf.route.route.return_value = (
+            '0.0.0.0',
+            '0.0.0.0',
+            '0.0.0.0',
+            eth.guid,
+            '169.254.166.225',
+        )
+        got = get_iface_for_victim_ip('192.168.1.248', fallback=eth)
+        self.assertEqual(got.guid, wifi.guid)
