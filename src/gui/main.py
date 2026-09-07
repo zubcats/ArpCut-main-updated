@@ -1673,32 +1673,14 @@ class ZubCutApp(
 
     def _ensure_clean_network_on_startup(self) -> None:
         """Remove leftover Kill/Dupe/Lag blocks from a prior session before the user acts."""
-        from tools.clumsy_ics import (
-            clear_stale_softap_when_tethering_off,
-            purge_clumsy_stale_attack_blocks,
-        )
+        from tools.clumsy_ics import purge_clumsy_stale_attack_blocks
         from tools.pfctl import list_blocked_ips
         from tools.windows_network_tune import ensure_home_lan_mitm_forwarding_off
 
         purge_clumsy_stale_attack_blocks()
-        try:
-            clear_stale_softap_when_tethering_off()
-        except Exception:
-            pass
         ensure_home_lan_mitm_forwarding_off()
         pre = list_blocked_ips()
         summary = self._teardown_all_attacks(log=False)
-        try:
-            from tools.clumsy_inline import heal_all_hotspot_arp_clients
-
-            healed = heal_all_hotspot_arp_clients(self.scanner, self.killer)
-            if healed:
-                self.log(
-                    f'Restored hotspot gateway ARP for {healed} console(s).',
-                    UI_LOG_RESTORE_FG,
-                )
-        except Exception:
-            pass
         removed = int(summary.get('firewall_rules_removed') or 0)
         ips = summary.get('unblocked_ips') or []
         if removed or ips or pre:

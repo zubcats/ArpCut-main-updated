@@ -514,7 +514,8 @@ class ClumsyHotspotSafetyTests(unittest.TestCase):
         src = load_main_window_source()
         block = src.split('def _ensure_clean_network_on_startup', 1)[1].split('\n    def ', 1)[0]
         self.assertNotIn('self.killer.killed.clear()', block)
-        self.assertIn('heal_all_hotspot_arp_clients', block)
+        self.assertNotIn('heal_all_hotspot_arp_clients', block)
+        self.assertNotIn('clear_stale_softap_when_tethering_off', block)
 
     def test_hotspot_heal_binds_softap_iface(self) -> None:
         heal = inspect.getsource(inline.heal_all_hotspot_arp_clients)

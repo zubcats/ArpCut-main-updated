@@ -68,6 +68,11 @@ class ClumzyModeIsolationTests(unittest.TestCase):
         self.assertLess(fork, license_call)
         self.assertLess(license_call, main)
 
+    def test_startup_does_not_run_old_ics_repair(self) -> None:
+        src = _read('src/zubcut.py')
+        self.assertNotIn('maybe_repair_stale_clumsy_ics_on_startup', src)
+        self.assertIn('maybe_ensure_wlan_autoconfig_on_startup', src)
+
     def test_advanced_lag_uses_gated_scheduler(self) -> None:
         src = _read('src/gui/clumzy_mode_window.py')
         self.assertIn('gated_mitm_params', src)
