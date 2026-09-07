@@ -1899,7 +1899,8 @@ class Killer:
         seq = self._op_seq.get(mac, 0)
         if not self.l2_socket_ready():
             self.prewarm_l2_socket(join_ms=0)
-        self._restore_arp_now_async(victim, seq, repeats=2, unicast_only=True)
+        # Same delivery as Kill ON: the router-wired PS5 never hears STA unicast.
+        self._restore_arp_now_async(victim, seq, repeats=2, unicast_only=False)
 
     def _restore_frames(self, victim, *, unicast_only=False):
         """Undo poison with the same delivery Kill/Dupe ON used.
@@ -1916,10 +1917,8 @@ class Killer:
         Do not broadcast ``psrc=victim_ip`` from this PC — that re-teaches
         the router the PS5 is here.
 
-        ``unicast_only``: later OFF follow-up for Wi‑Fi PC + Wi‑Fi PS5 on
-        the same AP. Trailing poison recuts after the short burst; STA
-        unicast restore lands there. Do not include broadcasts or
-        router-SA spoofs — those overwrite a wired PS5 on Starlink.
+        ``unicast_only`` is unused on the LAN OFF path. Switching follow-up
+        to unicast left a router-wired PS5 poisoned after Kill OFF.
         """
         src = self._poison_hwsrc()
         router_ip, router_mac = self._restore_router_endpoint()
@@ -1992,50 +1991,45 @@ class Killer:
             as_router_req,
             as_router_reply,
         ]
-        try:
-            from tools.mitm_probe import iface_is_wireless
-
-            wifi = iface_is_wireless(self.iface)
-        except Exception:
-            wifi = False
-        if wifi:
-            bcast = 'ff:ff:ff:ff:ff:ff'
-            frames.extend(
-                [
-                    Ether(src=src, dst=bcast)
-                    / ARP(
-                        op=1,
-                        psrc=router_ip,
-                        hwsrc=router_mac,
-                        pdst=victim_ip,
-                        hwdst=victim_mac,
-                    ),
-                    Ether(src=src, dst=bcast)
-                    / ARP(
-                        op=2,
-                        psrc=router_ip,
-                        hwsrc=router_mac,
-                        pdst=victim_ip,
-                        hwdst=victim_mac,
-                    ),
-                    Ether(src=router_mac, dst=bcast)
-                    / ARP(
-                        op=1,
-                        psrc=router_ip,
-                        hwsrc=router_mac,
-                        pdst=victim_ip,
-                        hwdst=victim_mac,
-                    ),
-                    Ether(src=router_mac, dst=bcast)
-                    / ARP(
-                        op=2,
-                        psrc=router_ip,
-                        hwsrc=router_mac,
-                        pdst=victim_ip,
-                        hwdst=victim_mac,
-                    ),
-                ]
-            )
+        # Same isolation path as poison: STA unicast never reaches a
+        # router-wired PS5. Do not gate this on the bind name.
+        bcast = 'ff:ff:ff:ff:ff:ff'
+        frames.extend(
+            [
+                Ether(src=src, dst=bcast)
+                / ARP(
+                    op=1,
+                    psrc=router_ip,
+                    hwsrc=router_mac,
+                    pdst=victim_ip,
+                    hwdst=victim_mac,
+                ),
+                Ether(src=src, dst=bcast)
+                / ARP(
+                    op=2,
+                    psrc=router_ip,
+                    hwsrc=router_mac,
+                    pdst=victim_ip,
+                    hwdst=victim_mac,
+                ),
+                Ether(src=router_mac, dst=bcast)
+                / ARP(
+                    op=1,
+                    psrc=router_ip,
+                    hwsrc=router_mac,
+                    pdst=victim_ip,
+                    hwdst=victim_mac,
+                ),
+                Ether(src=router_mac, dst=bcast)
+                / ARP(
+                    op=2,
+                    psrc=router_ip,
+                    hwsrc=router_mac,
+                    pdst=victim_ip,
+                    hwdst=victim_mac,
+                ),
+            ]
+        )
         return frames
 
     def _restore_arp_now_async(self, victim, seq=0, repeats=1, *, unicast_only=False):
@@ -2180,19 +2174,17 @@ class Killer:
                 (0.08, 1, False),
             )
         else:
-            # Short honest burst (including Wi‑Fi broadcast / router-SA) so an
-            # isolated ethernet PS5 still hears OFF. Then unicast-only follow-up:
-            # same-AP Wi‑Fi PS5 needs that against trailing poison; a wired
-            # Starlink PS5 does not hear STA unicast, so we do not overwrite it.
+            # Keep honest restore broadcast for the whole OFF. Unicast-only
+            # follow-up is what left a router-wired PS5 killed after OFF.
             plan = (
                 (0.0, 3, False),
                 (0.2, 2, False),
                 (0.45, 2, False),
-                (0.7, 2, True),
-                (1.0, 2, True),
-                (2.5, 2, True),
-                (5.0, 2, True),
-                (8.0, 2, True),
+                (0.7, 2, False),
+                (1.0, 2, False),
+                (2.5, 2, False),
+                (5.0, 2, False),
+                (8.0, 2, False),
             )
         for wait_s, repeats, unicast_only in plan:
             if self._op_seq.get(victim['mac']) != seq or victim['mac'] in self.killed:

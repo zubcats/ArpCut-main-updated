@@ -104,7 +104,7 @@ class TestKillRestoreFrames(unittest.TestCase):
         self.assertIn('op=1', block)
         self.assertIn('op=2', block)
         self.assertIn('ff:ff:ff:ff:ff:ff', block)
-        self.assertNotIn("psrc=victim_ip", block[block.index("if wifi"):] if 'if wifi' in block else '')
+        self.assertNotIn('if wifi', block)
         self.assertNotIn('_refresh_router_mac_for_mitm', self._unkill_block())
         lan = self._unkill_block()
         self.assertIn('_ensure_restore_pass', lan)
@@ -156,15 +156,19 @@ class TestKillRestoreFrames(unittest.TestCase):
             if str(f[ARP].psrc) == '192.168.1.1':
                 self.assertEqual(str(f[ARP].hwsrc).lower(), '74:24:9f:3a:a3:75')
 
-    def test_ethernet_restore_stays_unicast(self) -> None:
-        from scapy.all import Ether
+    def test_ethernet_named_bind_still_broadcasts_restore(self) -> None:
+        """Router-wired PS5 only hears isolation broadcast; bind name must not drop it."""
+        from scapy.all import ARP, Ether
 
         k = self._killer(wifi=False)
         victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
         frames = k._restore_frames(victim)
         bcast = [f for f in frames if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff']
-        self.assertEqual(bcast, [])
-        self.assertGreaterEqual(len(frames), 4)
+        self.assertEqual(len(bcast), 4)
+        for f in bcast:
+            self.assertEqual(str(f[ARP].psrc), '192.168.1.1')
+            self.assertEqual(str(f[ARP].hwsrc).lower(), '74:24:9f:3a:a3:75')
+            self.assertEqual(str(f[ARP].pdst), '192.168.1.248')
 
     def test_restore_now_sends_all_restore_frames(self) -> None:
         k = self._killer(wifi=True)
@@ -310,6 +314,17 @@ class TestKillRestoreFrames(unittest.TestCase):
         self.assertIn('if pass_all:', block)
         self.assertNotIn('_restore_pass_until', block)
         self.assertNotIn('_unkill_relays', block)
+
+    def test_lan_off_keeps_restore_broadcast(self) -> None:
+        path = os.path.join(_SRC, 'networking', 'killer.py')
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        reinforce = src[src.index('def reinforce_restore') : src.index('def _restore_frames')]
+        self.assertIn('unicast_only=False', reinforce)
+        self.assertNotIn('unicast_only=True', reinforce)
+        worker = src[src.index('def _unkill_restore_worker') : src.index('def kill_all')]
+        lan_plan = worker[worker.index('else:') :]
+        self.assertNotIn(', True)', lan_plan)
 
     def test_unkill_all_uses_per_device_unkill_for_lan(self) -> None:
         path = os.path.join(_SRC, 'networking', 'killer.py')

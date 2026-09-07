@@ -18,11 +18,12 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
 - **Mesh Wi‑Fi PC + ethernet PS5 (Starlink router / mesh node):** ON and
   OFF are the same ARP stack. Instant OFF worked when both were on the
   same AP because unicast restore landed. On this split, only the flooded
-  broadcast reaches the console. One short honest broadcast, then
-  **unicast-only** follow-up (no later broadcast / router-SA flood) so a
-  same-AP Wi‑Fi PS5 still beats trailing poison and the Starlink wired
-  console is not overwritten. Do not stop the 100% pass-through while
-  leftover MITM may still be in use.
+  broadcast reaches the console. Keep honest victim-targeted restore
+  broadcast for the **whole** OFF plan (including ``reinforce_restore``).
+  Switching follow-up to unicast-only is the "Kill ON works, OFF leaves
+  the wired PS5 dead" hole — trailing poison wins and the console never
+  hears another restore. Do not stop the 100% pass-through while leftover
+  MITM may still be in use.
 
 ## Clumsy enable must not break a working hotspot
 
