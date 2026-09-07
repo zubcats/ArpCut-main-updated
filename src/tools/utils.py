@@ -2284,13 +2284,7 @@ def _iface_live_ipv4(iface) -> str:
     cached = str(getattr(iface, 'ip', None) or '').strip()
     # Ghost Npcap GUID often reports APIPA while Windows ipconfig overlay has the LAN IP.
     # Do not trust cached IP when pcap says disconnected (0.0.0.0 / empty).
-    # Spare Ethernet (I219, etc.) really is APIPA when unplugged — do not revive a
-    # stale 192.168.x cache or Kill ON rebinds off Wi‑Fi and the ethernet PS5
-    # never sees poison.
     if str(ip).startswith('169.254.') and _ip_ok_for_bind(cached):
-        name = str(getattr(iface, 'name', '') or '').lower()
-        if 'ethernet' in name or name.startswith('eth'):
-            return ''
         return cached
     return ''
 
@@ -2345,23 +2339,6 @@ def _parse_windows_arp_by_interface() -> dict[str, set[str]]:
     return result
 
 
-def _iface_ok_for_lan_mitm(iface) -> bool:
-    """True when this NIC can carry home-LAN ARP (not APIPA Ethernet / leftover SoftAP)."""
-    if iface is None:
-        return False
-    lip = _iface_live_ipv4(iface)
-    if _ip_ok_for_bind(lip):
-        return True
-    name = str(getattr(iface, 'name', '') or '').lower()
-    cached = str(getattr(iface, 'ip', None) or '').strip()
-    if 'ethernet' in name or name.startswith('eth'):
-        return False
-    if _is_softap_ipv4(cached or lip) and not _softap_bind_allowed():
-        return False
-    # Empty live IP is common in unit tests (fake Npcap GUID not in Windows Up set).
-    return True
-
-
 def _iface_for_victim_arp(victim_ip: str, ifaces) -> 'NetFace | None':
     """Pick the NIC whose OS ARP cache already lists this victim (Wi‑Fi vs Ethernet)."""
     victim_ip = str(victim_ip or '').strip()
@@ -2371,10 +2348,8 @@ def _iface_for_victim_arp(victim_ip: str, ifaces) -> 'NetFace | None':
     if not by_iface:
         return None
     for iface in ifaces:
-        lip = _iface_live_ipv4(iface)
-        if not _ip_ok_for_bind(lip):
-            continue
-        if victim_ip in by_iface.get(lip, set()):
+        lip = _iface_live_ipv4(iface) or str(getattr(iface, 'ip', None) or '').strip()
+        if lip and victim_ip in by_iface.get(lip, set()):
             return iface
     return None
 
@@ -2397,38 +2372,16 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     if not ifaces:
         return fallback if fallback is not None else get_default_iface()
 
-    def _accept(hit):
-        if hit is None:
-            return None
-        if _iface_ok_for_lan_mitm(hit):
-            return hit
-        return None
-
-    def _safe_fallback():
-        ok = _accept(fallback)
-        if ok is not None:
-            return ok
-        for iface in ifaces:
-            ok = _accept(iface)
-            if ok is not None:
-                return ok
-        return fallback if fallback is not None else get_default_iface()
-
     # ARP cache first: when PC has Ethernet + Wi‑Fi on the same /24, the route
     # table often picks Ethernet while the victim (PS5 on Wi‑Fi) is only reachable
     # via the Wi‑Fi ARP segment — poisoning on the wrong NIC does nothing.
-    arp_hit = _accept(_iface_for_victim_arp(victim_ip, ifaces))
+    arp_hit = _iface_for_victim_arp(victim_ip, ifaces)
     if arp_hit is not None:
         return arp_hit
     if fallback is not None:
         live_fb = _iface_live_ipv4(fallback)
-        if (
-            _ip_ok_for_bind(live_fb)
-            and victim_ip in _parse_windows_arp_by_interface().get(live_fb, set())
-        ):
-            ok = _accept(fallback)
-            if ok is not None:
-                return ok
+        if live_fb and victim_ip in _parse_windows_arp_by_interface().get(live_fb, set()):
+            return fallback
 
     def _route_iface(*, resync: bool = False):
         if resync:
@@ -2461,18 +2414,13 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
                 ):
                     by_iface = _parse_windows_arp_by_interface()
                     if live_fb and victim_ip in by_iface.get(live_fb, set()):
-                        ok = _accept(fallback)
-                        if ok is not None:
-                            return ok
+                        return fallback
         except Exception:
             pass
-        ok = _accept(hit)
-        if ok is not None:
-            return ok
+        return hit
     hit = _route_iface(resync=True)
-    ok = _accept(hit)
-    if ok is not None:
-        return ok
+    if hit is not None:
+        return hit
 
     # Fast accept only when fallback still has a live address on the victim's link.
     try:
@@ -2481,9 +2429,7 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
             if live_ip:
                 plen = iface_ipv4_prefix_len(fallback, default=24)
                 if ipv4_same_link(live_ip, victim_ip, prefix_len=plen):
-                    ok = _accept(fallback)
-                    if ok is not None:
-                        return ok
+                    return fallback
     except Exception:
         pass
 
@@ -2491,7 +2437,7 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     try:
         victim_addr = ipaddress.IPv4Address(victim_ip)
     except Exception:
-        return _safe_fallback()
+        return fallback if fallback is not None else get_default_iface()
     best_route = None
     best_prefix = -1
     try:
@@ -2511,9 +2457,7 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
                     best_prefix = prefix
                     break
         if best_route is not None:
-            ok = _accept(best_route)
-            if ok is not None:
-                return ok
+            return best_route
     except Exception:
         pass
 
@@ -2521,13 +2465,15 @@ def get_iface_for_victim_ip(victim_ip: str, fallback=None):
     # Prefer the interface's real prefix; keep /24 as the unknown-mask default.
     for iface in ifaces:
         ip = _iface_live_ipv4(iface)
-        if not _ip_ok_for_bind(ip):
+        if not ip or ip in ('0.0.0.0', '127.0.0.1'):
             continue
         plen = iface_ipv4_prefix_len(iface, default=24)
         if ipv4_same_link(ip, victim_ip, prefix_len=plen):
             return iface
 
-    return _safe_fallback()
+    if fallback is not None and _iface_live_ipv4(fallback):
+        return fallback
+    return ifaces[0] if ifaces else get_default_iface()
 
 
 def pick_best_live_iface():

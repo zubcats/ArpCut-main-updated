@@ -444,13 +444,6 @@ Wireless LAN adapter Wi-Fi:
         with mock.patch('tools.utils.get_my_ip', return_value='169.254.151.57'):
             self.assertEqual(_iface_live_ipv4(wifi), '192.168.1.56')
 
-    def test_live_ipv4_does_not_revive_unplugged_ethernet_cache(self) -> None:
-        from tools.utils import _iface_live_ipv4
-
-        eth = _face('Ethernet 2', '192.168.1.110')
-        with mock.patch('tools.utils.get_my_ip', return_value='169.254.166.225'):
-            self.assertEqual(_iface_live_ipv4(eth), '')
-
     def test_device_list_noise_helpers(self) -> None:
         from tools.utils import ipv4_is_device_list_noise, mac_is_device_list_noise
 

