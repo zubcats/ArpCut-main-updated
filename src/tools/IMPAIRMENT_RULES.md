@@ -14,16 +14,21 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   online is not a reason to remove them.
 - **Right:** Unicast request+reply to victim MAC and router MAC, plus
   Wi‑Fi victim-targeted broadcast copies so isolation still delivers the
-  cut. Do not broadcast ``psrc=victim_ip`` (that GARP re-poisons the router).
+  cut. Do not broadcast ``psrc=victim_ip`` with ``hwsrc`` = this PC
+  (that GARP re-poisons the router).
 - **Mesh Wi‑Fi PC + ethernet PS5 (Starlink router v3 / mesh node v2):**
-  PC is on the mesh Wi‑Fi hop; PS5 is ethernet on the Starlink. ON and
-  OFF are the same ARP stack. Only victim-targeted broadcast reaches the
-  wired console. The working OFF is ``356215b``: honest broadcast for the
-  **whole** plan (minutes, not a short burst). ``362f266`` short-then-silence
-  and ``f14802b`` unicast-only follow-up (Aug 31, before Clumzy) are the
-  stay-killed hole. Clumzy did not edit ``killer.py``; it shipped on top
-  of that restore. Do not bring unicast-only follow-up back. Do not stop
-  the 100% pass-through while leftover MITM may still be in use.
+  PC is on the mesh Wi‑Fi hop; PS5 is ethernet on the Starlink. Poison
+  works because it is a broadcast whose Ethernet source and ``hwsrc`` are
+  both this PC. Wi‑Fi rewrites any other Ethernet source back to this PC,
+  so a restore that claims to be the router is either dropped or ignored,
+  and the PS5 keeps that gateway until its own Wi‑Fi toggle. Repeating
+  that restore (``356215b`` / ``f4c7c07``) did not clear it.
+- **Right:** On OFF, broadcast an ARP who-has for the gateway with
+  ``hwsrc`` = the PS5 MAC (not this PC), and a 0.0.0.0 who-has with
+  ``hwsrc`` = broadcast so a Linux router floods its own reply onto the
+  Ethernet port. Do not broadcast ``psrc=victim_ip`` with ``hwsrc`` = this
+  PC. Do not switch the follow-up to unicast-only. Do not stop the 100%
+  pass-through while leftover MITM may still be in use.
 
 ## ZubCut must not configure Windows sharing or hotspot
 

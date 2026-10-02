@@ -123,25 +123,57 @@ class TestKillRestoreFrames(unittest.TestCase):
         frames = k._restore_frames(victim)
         self.assertTrue(frames)
         bcast = [f for f in frames if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff']
-        self.assertEqual(len(bcast), 4)
+        gateway = [f for f in bcast if str(f[ARP].psrc) == '192.168.1.1']
+        self.assertEqual(len(gateway), 4)
         as_router = [
-            f for f in bcast if str(f[Ether].src).lower() == '74:24:9f:3a:a3:75'
+            f for f in gateway if str(f[Ether].src).lower() == '74:24:9f:3a:a3:75'
         ]
         self.assertEqual(len(as_router), 2)
-        for f in bcast:
-            self.assertEqual(str(f[ARP].psrc), '192.168.1.1')
+        for f in gateway:
             self.assertEqual(str(f[ARP].hwsrc).lower(), '74:24:9f:3a:a3:75')
             self.assertEqual(str(f[ARP].pdst), '192.168.1.248')
             self.assertEqual(str(f[ARP].hwdst).lower(), '00:e4:21:44:ed:0c')
             self.assertNotEqual(str(f[ARP].hwsrc).lower(), 'aa:aa:aa:aa:aa:aa')
-        # Must not GARP the PS5 IP from this PC (re-poisons the router).
-        victim_garp = [
+        # A broadcast who-has may name the PS5 only as the sender MAC.
+        # hwsrc = this PC would re-poison the router.
+        victim_from_pc = [
             f
             for f in frames
             if str(f[ARP].psrc) == '192.168.1.248'
             and str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff'
+            and str(f[ARP].hwsrc).lower() == 'aa:aa:aa:aa:aa:aa'
         ]
-        self.assertEqual(victim_garp, [])
+        self.assertEqual(victim_from_pc, [])
+
+    def test_restore_asks_router_to_answer_ps5(self) -> None:
+        from scapy.all import ARP, Ether
+
+        k = self._killer(wifi=True)
+        victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
+        frames = k._restore_frames(victim)
+        solicit = [
+            f
+            for f in frames
+            if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff'
+            and int(f[ARP].op) == 1
+            and str(f[ARP].psrc) == '192.168.1.248'
+            and str(f[ARP].hwsrc).lower() == '00:e4:21:44:ed:0c'
+            and str(f[ARP].pdst) == '192.168.1.1'
+            and str(f[ARP].hwdst).lower() in ('00:00:00:00:00:00', '0:0:0:0:0:0')
+        ]
+        self.assertGreaterEqual(len(solicit), 1)
+        self.assertEqual(str(solicit[0][Ether].src).lower(), 'aa:aa:aa:aa:aa:aa')
+        dad = [
+            f
+            for f in frames
+            if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff'
+            and int(f[ARP].op) == 1
+            and str(f[ARP].psrc) == '0.0.0.0'
+            and str(f[ARP].hwsrc).lower() == 'ff:ff:ff:ff:ff:ff'
+            and str(f[ARP].pdst) == '192.168.1.1'
+        ]
+        self.assertGreaterEqual(len(dad), 1)
+        self.assertEqual(str(dad[0][Ether].src).lower(), 'aa:aa:aa:aa:aa:aa')
 
     def test_restore_uses_kill_on_gateway_when_cache_points_at_pc(self) -> None:
         from scapy.all import ARP
@@ -164,9 +196,9 @@ class TestKillRestoreFrames(unittest.TestCase):
         victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
         frames = k._restore_frames(victim)
         bcast = [f for f in frames if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff']
-        self.assertEqual(len(bcast), 4)
-        for f in bcast:
-            self.assertEqual(str(f[ARP].psrc), '192.168.1.1')
+        gateway = [f for f in bcast if str(f[ARP].psrc) == '192.168.1.1']
+        self.assertEqual(len(gateway), 4)
+        for f in gateway:
             self.assertEqual(str(f[ARP].hwsrc).lower(), '74:24:9f:3a:a3:75')
             self.assertEqual(str(f[ARP].pdst), '192.168.1.248')
 

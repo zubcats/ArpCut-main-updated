@@ -1914,8 +1914,16 @@ class Killer:
         hwsrc is the shape many stacks ignore. Also flood the honest pair
         (Ether src == hwsrc == router MAC) on the same broadcast path.
 
-        Do not broadcast ``psrc=victim_ip`` from this PC — that re-teaches
-        the router the PS5 is here.
+        Do not broadcast ``psrc=victim_ip`` with ``hwsrc`` set to this PC —
+        that re-teaches the router the PS5 is here.
+
+        Wi‑Fi transmit rewrites Ethernet source to this PC, so a restore
+        whose Ethernet source is the router MAC never reaches the wire as
+        that. The PS5 keeps the poisoned gateway until the Starlink itself
+        answers it. Broadcast a who-has for the gateway with the PS5's real
+        MAC as ``hwsrc`` (same broadcast path poison uses). The router
+        replies on the local Ethernet port with Ethernet source and
+        ``hwsrc`` both equal to the real gateway.
         """
         src = self._poison_hwsrc()
         router_ip, router_mac = self._restore_router_endpoint()
@@ -1980,6 +1988,28 @@ class Killer:
         # Same isolation path as poison: STA unicast never reaches a
         # router-wired PS5. Do not gate this on the bind name.
         bcast = 'ff:ff:ff:ff:ff:ff'
+        # Who-has the gateway, sender is the PS5. hwsrc is the console,
+        # not this PC, so the Starlink learns the real Ethernet MAC and
+        # replies to that port. Broadcast, because that is the copy this
+        # mesh actually delivers.
+        solicit = Ether(src=src, dst=bcast) / ARP(
+            op=1,
+            psrc=victim_ip,
+            hwsrc=victim_mac,
+            pdst=router_ip,
+            hwdst='00:00:00:00:00:00',
+        )
+        # Linux answers a 0.0.0.0 who-has by transmitting the reply itself.
+        # hwsrc is broadcast so that reply is flooded onto the PS5's
+        # Ethernet port (a unicast reply to this PC never reaches it).
+        dad = Ether(src=src, dst=bcast) / ARP(
+            op=1,
+            psrc='0.0.0.0',
+            hwsrc=bcast,
+            pdst=router_ip,
+            hwdst='00:00:00:00:00:00',
+        )
+        frames.extend([solicit, solicit, dad, dad])
         frames.extend(
             [
                 Ether(src=src, dst=bcast)
@@ -2087,42 +2117,23 @@ class Killer:
         for _ in range(max(1, int(repeats))):
             if self._op_seq.get(mac) != seq or mac in self.killed:
                 break
-            sent = False
-            if sock is not None:
-                try:
-                    with self._socket_lock:
-                        for frame in frames:
-                            if self._op_seq.get(mac) != seq or mac in self.killed:
-                                return
-                            sock.send(frame)
-                    sent = True
-                except Exception:
-                    with self._socket_lock:
-                        self._socket = None
-                    sock = None
-                    if allow_async:
-                        self._restore_arp_now_async(victim, seq, repeats=repeats)
-                        return
-                    sock = self._get_socket()
-                    if sock is not None:
-                        try:
-                            with self._socket_lock:
-                                for frame in frames:
-                                    if (
-                                        self._op_seq.get(mac) != seq
-                                        or mac in self.killed
-                                    ):
-                                        return
-                                    sock.send(frame)
-                            sent = True
-                        except Exception:
-                            with self._socket_lock:
-                                self._socket = None
-                            sock = None
-            if not sent and not allow_async:
-                self._send_restore_frames_fallback(frames, mac, seq)
-            elif not sent:
+            if sock is None and not allow_async:
+                sock = self._get_socket()
+            if sock is None and allow_async:
+                self._restore_arp_now_async(victim, seq, repeats=repeats)
                 return
+            # Same send path as poison. A direct sock.send on a stale
+            # Npcap token never reached this mesh.
+            try:
+                for frame in frames:
+                    if self._op_seq.get(mac) != seq or mac in self.killed:
+                        return
+                    self._send_packet(frame)
+            except Exception:
+                if allow_async:
+                    self._restore_arp_now_async(victim, seq, repeats=repeats)
+                    return
+                self._send_restore_frames_fallback(frames, mac, seq)
             if delay_s > 0:
                 sleep(delay_s)
 
@@ -2154,10 +2165,9 @@ class Killer:
                 (0.08, 1),
             )
         else:
-            # 356215b: mesh Wi‑Fi PC + Starlink-wired PS5. Isolation drops
-            # STA unicast, so every burst must be the same honest broadcast
-            # ON used. A short burst then silence (362f266) or unicast-only
-            # follow-up (f14802b) left this console poisoned after OFF.
+            # Mesh Wi‑Fi PC + Starlink-wired PS5. Repeating a PC-sourced
+            # "I am the router" broadcast (356215b) left the console stale.
+            # Each burst also asks the Starlink to answer the PS5 itself.
             plan = (
                 (0.0, 3),
                 (0.2, 2),
