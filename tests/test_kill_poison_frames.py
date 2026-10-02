@@ -157,23 +157,22 @@ class TestKillRestoreFrames(unittest.TestCase):
             if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff'
             and int(f[ARP].op) == 1
             and str(f[ARP].psrc) == '192.168.1.248'
-            and str(f[ARP].hwsrc).lower() == '00:e4:21:44:ed:0c'
+            and str(f[ARP].hwsrc).lower() == 'ff:ff:ff:ff:ff:ff'
             and str(f[ARP].pdst) == '192.168.1.1'
             and str(f[ARP].hwdst).lower() in ('00:00:00:00:00:00', '0:0:0:0:0:0')
         ]
         self.assertGreaterEqual(len(solicit), 1)
         self.assertEqual(str(solicit[0][Ether].src).lower(), 'aa:aa:aa:aa:aa:aa')
-        dad = [
+        discover = [
             f
             for f in frames
             if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff'
             and int(f[ARP].op) == 1
-            and str(f[ARP].psrc) == '0.0.0.0'
-            and str(f[ARP].hwsrc).lower() == 'ff:ff:ff:ff:ff:ff'
-            and str(f[ARP].pdst) == '192.168.1.1'
+            and str(f[ARP].psrc) == '192.168.1.56'
+            and str(f[ARP].hwsrc).lower() == 'aa:aa:aa:aa:aa:aa'
+            and str(f[ARP].pdst) == '192.168.1.248'
         ]
-        self.assertGreaterEqual(len(dad), 1)
-        self.assertEqual(str(dad[0][Ether].src).lower(), 'aa:aa:aa:aa:aa:aa')
+        self.assertGreaterEqual(len(discover), 1)
 
     def test_restore_uses_kill_on_gateway_when_cache_points_at_pc(self) -> None:
         from scapy.all import ARP

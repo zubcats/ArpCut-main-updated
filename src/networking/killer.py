@@ -1918,12 +1918,16 @@ class Killer:
         that re-teaches the router the PS5 is here.
 
         Wi‑Fi transmit rewrites Ethernet source to this PC, so a restore
-        whose Ethernet source is the router MAC never reaches the wire as
-        that. The PS5 keeps the poisoned gateway until the Starlink itself
-        answers it. Broadcast a who-has for the gateway with the PS5's real
-        MAC as ``hwsrc`` (same broadcast path poison uses). The router
-        replies on the local Ethernet port with Ethernet source and
-        ``hwsrc`` both equal to the real gateway.
+        that claims to be the router never arrives as that. This Starlink
+        also drops a who-has whose ``hwsrc`` is the PS5 (it does not match
+        the Ethernet source) and answers a 0.0.0.0 probe with a reply aimed
+        at 0.0.0.0, which the PS5 does not cache.
+
+        Broadcast a who-has for the gateway with ``hwsrc`` = broadcast and
+        ``psrc`` = the PS5 IP. The router then floods an ARP reply whose
+        Ethernet source and ``hwsrc`` are the real gateway and whose target
+        is the PS5. Follow with a normal who-has for the PS5 so its reply
+        puts the real Ethernet MAC back on the router.
         """
         src = self._poison_hwsrc()
         router_ip, router_mac = self._restore_router_endpoint()
@@ -1988,28 +1992,27 @@ class Killer:
         # Same isolation path as poison: STA unicast never reaches a
         # router-wired PS5. Do not gate this on the bind name.
         bcast = 'ff:ff:ff:ff:ff:ff'
-        # Who-has the gateway, sender is the PS5. hwsrc is the console,
-        # not this PC, so the Starlink learns the real Ethernet MAC and
-        # replies to that port. Broadcast, because that is the copy this
-        # mesh actually delivers.
-        solicit = Ether(src=src, dst=bcast) / ARP(
+        # Captured on this mesh: hwsrc=PS5 is ignored; psrc=0.0.0.0 is
+        # answered with target 0.0.0.0. hwsrc=broadcast and psrc=the PS5
+        # makes the Starlink flood a reply aimed at the PS5 IP.
+        ask = Ether(src=src, dst=bcast) / ARP(
             op=1,
             psrc=victim_ip,
-            hwsrc=victim_mac,
-            pdst=router_ip,
-            hwdst='00:00:00:00:00:00',
-        )
-        # Linux answers a 0.0.0.0 who-has by transmitting the reply itself.
-        # hwsrc is broadcast so that reply is flooded onto the PS5's
-        # Ethernet port (a unicast reply to this PC never reaches it).
-        dad = Ether(src=src, dst=bcast) / ARP(
-            op=1,
-            psrc='0.0.0.0',
             hwsrc=bcast,
             pdst=router_ip,
             hwdst='00:00:00:00:00:00',
         )
-        frames.extend([solicit, solicit, dad, dad])
+        frames.extend([ask, ask, ask, ask])
+        my_ip = str(getattr(self.iface, 'ip', '') or '').strip()
+        if my_ip and my_ip not in ('0.0.0.0', '127.0.0.1'):
+            discover = Ether(src=src, dst=bcast) / ARP(
+                op=1,
+                psrc=my_ip,
+                hwsrc=src,
+                pdst=victim_ip,
+                hwdst='00:00:00:00:00:00',
+            )
+            frames.extend([discover, discover])
         frames.extend(
             [
                 Ether(src=src, dst=bcast)

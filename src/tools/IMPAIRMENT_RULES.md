@@ -23,10 +23,12 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   so a restore that claims to be the router is either dropped or ignored,
   and the PS5 keeps that gateway until its own Wi‑Fi toggle. Repeating
   that restore (``356215b`` / ``f4c7c07``) did not clear it.
-- **Right:** On OFF, broadcast an ARP who-has for the gateway with
-  ``hwsrc`` = the PS5 MAC (not this PC), and a 0.0.0.0 who-has with
-  ``hwsrc`` = broadcast so a Linux router floods its own reply onto the
-  Ethernet port. Do not broadcast ``psrc=victim_ip`` with ``hwsrc`` = this
+- **Right:** On OFF, broadcast a who-has for the gateway with
+  ``psrc`` = the PS5 IP and ``hwsrc`` = broadcast. This Starlink then
+  floods a reply whose Ethernet source and ``hwsrc`` are the real gateway
+  and whose target is the PS5. A who-has with ``hwsrc`` = the PS5 MAC is
+  ignored. A 0.0.0.0 probe is answered with target 0.0.0.0, which the PS5
+  does not cache. Do not broadcast ``psrc=victim_ip`` with ``hwsrc`` = this
   PC. Do not switch the follow-up to unicast-only. Do not stop the 100%
   pass-through while leftover MITM may still be in use.
 
