@@ -34,11 +34,12 @@ class TestKillPoisonFrames(unittest.TestCase):
             src = f.read()
         return src[src.index('def _poison_frames'): src.index('def _poison_arp_now')]
 
-    def test_poison_frames_keep_unicast_and_wifi_victim_broadcast(self) -> None:
+    def test_poison_frames_keep_unicast_and_victim_broadcast(self) -> None:
         block = self._poison_block()
         self.assertIn("dst=victim['mac']", block)
         self.assertIn("dst=self.router['mac']", block)
-        self.assertIn('iface_is_wireless', block)
+        self.assertNotIn('iface_is_wireless', block)
+        self.assertNotIn('if wifi', block)
         self.assertIn('ff:ff:ff:ff:ff:ff', block)
         self.assertIn("pdst=victim['ip']", block)
         self.assertIn('_poison_hwsrc', block)
@@ -242,10 +243,10 @@ class TestKillRestoreFrames(unittest.TestCase):
         )
         self.assertEqual(len(sent), len(k._restore_frames(victim)))
 
-    def test_wifi_poison_broadcasts_are_victim_targeted(self) -> None:
+    def _assert_victim_targeted_poison_broadcast(self, *, wifi: bool) -> None:
         from scapy.all import ARP, Ether
 
-        k = self._killer(wifi=True)
+        k = self._killer(wifi=wifi)
         victim = {'ip': '192.168.1.248', 'mac': '00:e4:21:44:ed:0c'}
         frames = k._poison_frames(victim)
         bcast = [f for f in frames if str(f[Ether].dst).lower() == 'ff:ff:ff:ff:ff:ff']
@@ -254,6 +255,14 @@ class TestKillRestoreFrames(unittest.TestCase):
             self.assertEqual(str(f[ARP].pdst), '192.168.1.248')
             self.assertEqual(str(f[ARP].hwdst).lower(), '00:e4:21:44:ed:0c')
             self.assertEqual(str(f[ARP].psrc), '192.168.1.1')
+            self.assertEqual(str(f[ARP].hwsrc).lower(), 'aa:aa:aa:aa:aa:aa')
+            self.assertNotEqual(str(f[ARP].psrc), '192.168.1.248')
+
+    def test_wifi_poison_broadcasts_are_victim_targeted(self) -> None:
+        self._assert_victim_targeted_poison_broadcast(wifi=True)
+
+    def test_ethernet_poison_broadcasts_are_victim_targeted(self) -> None:
+        self._assert_victim_targeted_poison_broadcast(wifi=False)
 
     def test_lan_unkill_flips_to_pass_through(self) -> None:
         k = self._killer(wifi=True)

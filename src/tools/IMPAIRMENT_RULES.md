@@ -13,8 +13,11 @@ changing `main.py`, `ics_windivert_shaper.py`, or `clumsy_inline.py`.
   only showed a cut while those copies existed. The operator PC staying
   online is not a reason to remove them.
 - **Right:** Unicast request+reply to victim MAC and router MAC, plus
-  Wi‑Fi victim-targeted broadcast copies so isolation still delivers the
-  cut. Do not broadcast ``psrc=victim_ip`` with ``hwsrc`` = this PC
+  victim-targeted broadcast copies on every NIC. Wi‑Fi isolation drops
+  STA unicast. A wired gateway that answers its own IP (Orange Livebox)
+  puts the real MAC back over unicast, so the PS5 never stays on this PC
+  and Kill stays a kick with no red chain. Do not gate those copies on
+  Wi‑Fi. Do not broadcast ``psrc=victim_ip`` with ``hwsrc`` = this PC
   (that GARP re-poisons the router).
 - **Mesh Wi‑Fi PC + ethernet PS5 (Starlink router v3 / mesh node v2):**
   PC is on the mesh Wi‑Fi hop; PS5 is ethernet on the Starlink. Poison
