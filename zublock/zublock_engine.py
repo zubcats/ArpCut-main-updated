@@ -15,6 +15,8 @@ INVALID_HANDLE = ctypes.c_void_p(-1).value
 HOTSPOT_PREFIX = '192.168.137.'
 DEFAULT_CONSOLE = '192.168.137.64'
 WINDIVERT_PRIORITY = 0
+ADDR_LEN = 256
+_WD_FLAG_IMPOSTOR = 1 << 19
 SONY_MAC_PREFIXES = (
     'f8-da-0c',
     '00-d9-d1',
@@ -65,6 +67,23 @@ def parse_ipv4(raw: bytes) -> tuple[str, str, str, int, int, str] | None:
         sport, dport = struct.unpack('!HH', raw[ihl : ihl + 4])
         return src, dst, 'UDP', int(sport), int(dport), ''
     return src, dst, 'IP', 0, 0, ''
+
+
+def addr_is_impostor(addr_b: bytes) -> bool:
+    """Reinjections. Sending them again TTL-loops and looks like a full Kill."""
+    if len(addr_b) < 16:
+        return False
+    word = int.from_bytes(addr_b[8:16], 'little')
+    return bool(word & _WD_FLAG_IMPOSTOR)
+
+
+def mark_impostor(addr_b: bytes) -> bytes:
+    if len(addr_b) < 16:
+        return addr_b
+    buf = bytearray(addr_b)
+    word = int.from_bytes(buf[8:16], 'little') | _WD_FLAG_IMPOSTOR
+    buf[8:16] = int(word).to_bytes(8, 'little')
+    return bytes(buf)
 
 
 def _handle_ok(handle) -> bool:
@@ -222,6 +241,17 @@ class DivertDrop:
         self._dll.WinDivertSend.restype = ctypes.c_bool
         self._dll.WinDivertClose.argtypes = [ctypes.c_void_p]
         self._dll.WinDivertClose.restype = ctypes.c_bool
+        self._dll.WinDivertRecvEx.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_uint),
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint),
+            ctypes.c_void_p,
+        ]
+        self._dll.WinDivertRecvEx.restype = ctypes.c_bool
         return ''
 
     def set_rules(self, rules: set[tuple[str, str, int]]) -> None:
@@ -236,24 +266,20 @@ class DivertDrop:
         if _handle_ok(self._handle):
             return ''
         self._filt = capture_filters(self.console_ip)[0].encode('ascii')
-        last_gle = 0
-        for layer, name in (
-            (self.LAYER_FORWARD, 'FORWARD'),
-            (self.LAYER_NETWORK, 'NETWORK'),
-        ):
-            try:
-                ctypes.windll.kernel32.SetLastError(0)
-            except Exception:
-                pass
-            handle = self._dll.WinDivertOpen(self._filt, layer, WINDIVERT_PRIORITY, 0)
-            if _handle_ok(handle):
-                self._handle = handle
-                self.layers = name
-                break
-            last_gle = ctypes.GetLastError()
-        if not _handle_ok(self._handle):
-            self.error = f'WinDivertOpen failed (GLE {last_gle})'
+        # Hotspot ICS is FORWARD only. NETWORK intercepts this PC and black-holes the console.
+        try:
+            ctypes.windll.kernel32.SetLastError(0)
+        except Exception:
+            pass
+        handle = self._dll.WinDivertOpen(
+            self._filt, self.LAYER_FORWARD, WINDIVERT_PRIORITY, 0
+        )
+        if not _handle_ok(handle):
+            gle = ctypes.GetLastError()
+            self.error = f'WinDivertOpen FORWARD failed (GLE {gle})'
             return self.error
+        self._handle = handle
+        self.layers = 'FORWARD'
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name='zublock-divert', daemon=True)
         self._thread.start()
@@ -286,17 +312,30 @@ class DivertDrop:
     def _loop(self) -> None:
         assert self._dll is not None
         buf = ctypes.create_string_buffer(0xFFFF)
-        addr = ctypes.create_string_buffer(80)
+        addr = ctypes.create_string_buffer(ADDR_LEN)
         nread = ctypes.c_uint(0)
+        addr_len = ctypes.c_uint(ADDR_LEN)
         while not self._stop.is_set() and _handle_ok(self._handle):
-            ok = self._dll.WinDivertRecv(
-                self._handle, buf, len(buf), ctypes.byref(nread), addr
+            nread.value = 0
+            addr_len.value = ADDR_LEN
+            ok = self._dll.WinDivertRecvEx(
+                self._handle,
+                buf,
+                len(buf),
+                ctypes.byref(nread),
+                0,
+                addr,
+                ctypes.byref(addr_len),
+                None,
             )
             if not ok:
                 if self._stop.is_set():
                     return
                 continue
             raw = bytes(buf.raw[: int(nread.value)])
+            addr_b = bytes(addr.raw[: int(addr_len.value) or ADDR_LEN])
+            if addr_is_impostor(addr_b):
+                continue
             drop = False
             parsed = parse_ipv4(raw)
             if parsed is not None:
@@ -305,8 +344,10 @@ class DivertDrop:
             if drop:
                 self.dropped += 1
                 continue
+            out = mark_impostor(addr_b)
+            addr_out = ctypes.create_string_buffer(out, len(out))
             sent = ctypes.c_uint(0)
             self._dll.WinDivertSend(
-                self._handle, buf, int(nread.value), ctypes.byref(sent), addr
+                self._handle, buf, int(nread.value), ctypes.byref(sent), addr_out
             )
             self.forwarded += 1

@@ -24,9 +24,9 @@ if (-not (Test-Admin)) {
 
 function Get-PythonW {
     $dirs = @(
-        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313'),
-        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python311'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python310')
     )
     foreach ($dir in $dirs) {
