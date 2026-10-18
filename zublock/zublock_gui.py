@@ -11,12 +11,16 @@ from pathlib import Path
 from tkinter import font as tkfont
 
 from zublock_engine import (
-    DivertDrop,
     discover_hotspot_clients,
     discover_hotspot_console,
     is_hotspot_console_ip,
+    lock_is_on,
+    read_status,
+    set_lock,
+    start_worker,
+    stop_workers,
+    worker_running,
 )
-from zublock_rules import load_ranges
 
 ROOT = Path(__file__).resolve().parent
 BG = '#141414'
@@ -145,9 +149,9 @@ class App(tk.Tk):
         _dark_titlebar(self)
         _apply_taskbar_icon(self)
         self.protocol('WM_DELETE_WINDOW', self._quit)
-        self._divert: DivertDrop | None = None
         self._on_since = 0.0
         self._hotspot_ips = discover_hotspot_clients()
+        stop_workers()
         body = tkfont.Font(family='Segoe UI', size=11)
         big = tkfont.Font(family='Segoe UI', size=16, weight='bold')
         small = tkfont.Font(family='Segoe UI', size=9)
@@ -268,18 +272,13 @@ class App(tk.Tk):
             )
             return
         try:
-            rules = load_ranges()
+            set_lock(True)
         except Exception as exc:
             self.hint.config(text=str(exc))
             return
-        if self._divert is not None:
-            self._divert.stop()
-        self._divert = DivertDrop(ip)
-        self._divert.set_rules(rules)
-        err = self._divert.start()
+        err = start_worker(ip)
         if err:
             self.hint.config(text=err)
-            self._divert = None
             return
         self._hotspot_ips = discover_hotspot_clients()
         self._on_since = time.monotonic()
@@ -289,38 +288,53 @@ class App(tk.Tk):
         self._refresh()
 
     def _off(self) -> None:
-        if self._divert is not None:
-            self._divert.stop()
-            self._divert = None
+        try:
+            set_lock(False)
+        except Exception as exc:
+            self.hint.config(text=str(exc))
+            return
         self.hint.config(text='Lock OFF — the other console can take the session again.')
         self._refresh()
 
     def _refresh(self) -> None:
-        locked = self._divert is not None and self._divert.running
-        parts = [f'Lock: {"ON" if locked else "OFF"}']
+        st = read_status()
+        locked = lock_is_on()
+        running = worker_running() or bool(st.get('running'))
+        parts = [
+            f'Capture: {"running" if running else "not running"}',
+            f'Lock: {"ON" if locked else "OFF"}',
+        ]
         if self._hotspot_ips:
             parts.append('Hotspot console: ' + self._hotspot_ips[0])
-        if locked and self._divert is not None:
-            extra = f'Dropped {self._divert.dropped}  ·  forwarded {self._divert.forwarded}'
-            if self._divert.send_fail:
-                extra += f'  ·  send-fail {self._divert.send_fail}'
-            if self._divert.layers:
-                extra += f'  ·  {self._divert.layers}'
+        dropped = int(st.get('dropped') or 0)
+        forwarded = int(st.get('forwarded') or 0)
+        send_fail = int(st.get('send_fail') or 0)
+        layers = str(st.get('layers') or '')
+        err = str(st.get('error') or '')
+        if running or locked:
+            extra = f'Dropped {dropped}  ·  forwarded {forwarded}'
+            if send_fail:
+                extra += f'  ·  send-fail {send_fail}'
+            if layers:
+                extra += f'  ·  {layers}'
             parts.append(extra)
-            if self._divert.send_fail:
-                self.hint.config(
-                    text='Packets are not going back on the wire. Lock OFF, close ZubLock, then open it again.'
-                )
-            idle = (
-                self._divert.dropped == 0
-                and self._divert.forwarded == 0
-                and self._on_since
-                and (time.monotonic() - self._on_since) > 6
+        if err:
+            self.hint.config(text=err)
+        elif send_fail:
+            self.hint.config(
+                text='Packets are not going back on the wire. Lock OFF, close ZubLock, then open it again.'
             )
-            if idle and not self._divert.send_fail:
-                self.hint.config(
-                    text='Still 0 packets. Console must be on this PC hotspot. Close this window, reopen ZubLock, Lock ON again.'
-                )
+        idle = (
+            locked
+            and dropped == 0
+            and forwarded == 0
+            and self._on_since
+            and (time.monotonic() - self._on_since) > 6
+        )
+        if idle and not send_fail and not err:
+            self.hint.config(
+                text='Still 0 packets. Console must be on this PC hotspot. Close this window, reopen ZubLock, Lock ON again.'
+            )
         if not _admin():
             parts.append('Need Administrator')
         self.status.config(text='\n'.join(parts))
@@ -332,9 +346,11 @@ class App(tk.Tk):
         self.after(1000, self._tick)
 
     def _quit(self) -> None:
-        if self._divert is not None:
-            self._divert.stop()
-            self._divert = None
+        try:
+            set_lock(False)
+        except Exception:
+            pass
+        stop_workers()
         self.destroy()
 
 

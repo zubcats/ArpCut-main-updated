@@ -5,6 +5,7 @@ import inspect
 import struct
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import zublock_engine
 import zublock_gui
@@ -116,10 +117,12 @@ class TestEngineParse(unittest.TestCase):
 
     def test_capture_filter_is_the_working_host_filter(self) -> None:
         filt = zublock_engine.capture_filters('192.168.137.64')
-        joined = '\n'.join(filt)
-        self.assertIn('ip.SrcAddr == 192.168.137.64', joined)
-        self.assertIn('!impostor', filt[0])
-        self.assertNotIn('0/24', joined)
+        self.assertEqual(
+            filt,
+            ['ip and (ip.SrcAddr == 192.168.137.64 or ip.DstAddr == 192.168.137.64)'],
+        )
+        self.assertNotIn('!impostor', filt[0])
+        self.assertNotIn('0/24', filt[0])
         self.assertEqual(zublock_engine.WINDIVERT_PRIORITY, 0)
         self.assertEqual(zublock_engine.DivertDrop.LAYER_FORWARD, 1)
         self.assertEqual(zublock_engine.ADDR_LEN, 80)
@@ -129,13 +132,26 @@ class TestEngineParse(unittest.TestCase):
         self.assertFalse(zublock_engine.is_hotspot_console_ip('192.168.1.248'))
         self.assertFalse(zublock_engine.is_hotspot_console_ip('192.168.137.1'))
 
-    def test_start_opens_forward_only(self) -> None:
+    def test_start_matches_working_session_lock(self) -> None:
         src = inspect.getsource(zublock_engine.DivertDrop.start)
         self.assertIn('LAYER_FORWARD', src)
-        self.assertNotIn('LAYER_NETWORK', src)
-        self.assertIn('WinDivertRecv', inspect.getsource(zublock_engine.DivertDrop._loop))
-        self.assertNotIn('WinDivertRecvEx', inspect.getsource(zublock_engine.DivertDrop._loop))
-        self.assertIn('WinDivertShutdown', inspect.getsource(zublock_engine.DivertDrop.stop))
+        self.assertIn('LAYER_NETWORK', src)
+        self.assertLess(src.index('LAYER_FORWARD'), src.index('LAYER_NETWORK'))
+        loop = inspect.getsource(zublock_engine.DivertDrop._loop)
+        self.assertIn('WinDivertRecv', loop)
+        self.assertNotIn('WinDivertRecvEx', loop)
+        engine = Path(zublock_engine.__file__).read_text(encoding='utf-8')
+        self.assertIn('--daemon', engine)
+        self.assertIn('DROP on', engine)
+
+    def test_set_lock_writes_aws_ranges(self) -> None:
+        with TemporaryDirectory() as raw:
+            drop = Path(raw) / 'drop_keys.txt'
+            zublock_engine.set_lock(True, drop_path=drop, ranges_path=ROOT / 'lock_ranges.txt')
+            self.assertTrue(zublock_engine.lock_is_on(drop))
+            self.assertIn('44.234.0.0/16', drop.read_text(encoding='utf-8'))
+            zublock_engine.set_lock(False, drop_path=drop, ranges_path=ROOT / 'lock_ranges.txt')
+            self.assertFalse(zublock_engine.lock_is_on(drop))
 
 
 class TestInstaller(unittest.TestCase):
@@ -164,6 +180,9 @@ class TestGuiTheme(unittest.TestCase):
         self.assertIn('zublock_taskbar.ico', src)
         self.assertIn('is_hotspot_console_ip', src)
         self.assertIn('192.168.137.x', src)
+        self.assertIn('start_worker', src)
+        self.assertIn('set_lock', src)
+        self.assertNotIn('from zublock_engine import DivertDrop', src)
 
 
 if __name__ == '__main__':

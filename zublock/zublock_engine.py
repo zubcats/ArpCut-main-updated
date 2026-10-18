@@ -1,24 +1,34 @@
-"""WinDivert session lock. Stdlib + WinDivert only — not part of ZubCut."""
+"""WinDivert session lock. Stdlib + WinDivert only — not part of ZubCut.
+
+Same capture path as the lock that already worked: python.exe daemon,
+host filter, Recv then Send, FORWARD then NETWORK, AWS HTTPS drop list.
+"""
 from __future__ import annotations
 
-import atexit
+import argparse
 import ctypes
+import json
 import os
 import struct
 import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 
-from zublock_rules import should_drop
+from zublock_rules import RANGES_PATH, parse_drop_keys, should_drop
 
 ROOT = Path(__file__).resolve().parent
 INVALID_HANDLE = ctypes.c_void_p(-1).value
 HOTSPOT_PREFIX = '192.168.137.'
 DEFAULT_CONSOLE = '192.168.137.64'
 WINDIVERT_PRIORITY = 0
-# WinDivert 2.2 WINDIVERT_ADDRESS is 80 bytes. A larger RecvEx addrLen mis-reads flags.
 ADDR_LEN = 80
 WINDIVERT_SHUTDOWN_BOTH = 3
+DROP_PATH = ROOT / 'drop_keys.txt'
+STATUS_PATH = ROOT / 'zublock_status.json'
+WORKER_LOG = ROOT / 'worker.log'
+OFF_TEXT = '# Empty = forward everything.\n'
 SONY_MAC_PREFIXES = (
     'f8-da-0c',
     '00-d9-d1',
@@ -91,10 +101,125 @@ def is_hotspot_console_ip(ip: str) -> bool:
 
 
 def capture_filters(console_ip: str = '') -> list[str]:
-    """Host filter on the hotspot console. Prefer !impostor so reinjects stay on the stack."""
+    """Exact filter from the lock that already worked."""
     ip = (console_ip or '').strip() or DEFAULT_CONSOLE
-    host = f'ip and (ip.SrcAddr == {ip} or ip.DstAddr == {ip})'
-    return [f'({host}) and !impostor', host]
+    return [f'ip and (ip.SrcAddr == {ip} or ip.DstAddr == {ip})']
+
+
+def python_exe() -> str:
+    exe = sys.executable or ''
+    if exe.lower().endswith('pythonw.exe'):
+        cand = exe[:-11] + 'python.exe'
+        if Path(cand).is_file():
+            return cand
+    return exe
+
+
+def ranges_text(path: Path = RANGES_PATH) -> str:
+    text = path.read_text(encoding='utf-8')
+    if not parse_drop_keys(text):
+        raise RuntimeError(f'no lock rules in {path}')
+    return text if text.endswith('\n') else text + '\n'
+
+
+def lock_is_on(drop_path: Path = DROP_PATH) -> bool:
+    try:
+        text = drop_path.read_text(encoding='utf-8')
+    except OSError:
+        return False
+    return bool(parse_drop_keys(text))
+
+
+def set_lock(on: bool, drop_path: Path = DROP_PATH, ranges_path: Path = RANGES_PATH) -> None:
+    drop_path.parent.mkdir(parents=True, exist_ok=True)
+    if on:
+        drop_path.write_text(ranges_text(ranges_path), encoding='utf-8')
+    else:
+        drop_path.write_text(OFF_TEXT, encoding='utf-8')
+
+
+def worker_pids() -> list[int]:
+    try:
+        proc = subprocess.run(
+            [
+                'powershell',
+                '-NoProfile',
+                '-Command',
+                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" |"
+                " Where-Object { $_.CommandLine -like '*zublock_engine.py*' -and $_.CommandLine -like '*--daemon*' } |"
+                ' Select-Object -ExpandProperty ProcessId',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except Exception:
+        return []
+    out: list[int] = []
+    for part in (proc.stdout or '').split():
+        if part.strip().isdigit():
+            out.append(int(part.strip()))
+    return out
+
+
+def worker_running() -> bool:
+    return bool(worker_pids())
+
+
+def start_worker(console_ip: str) -> str:
+    if worker_running():
+        return ''
+    ip = (console_ip or '').strip() or DEFAULT_CONSOLE
+    WORKER_LOG.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(WORKER_LOG, 'a', encoding='utf-8', errors='replace')
+    try:
+        handle.write(f'\nstart {time.strftime("%H:%M:%S")} ps4={ip} py={python_exe()}\n')
+        handle.flush()
+    except Exception:
+        pass
+    subprocess.Popen(
+        [
+            python_exe(),
+            '-u',
+            str(ROOT / 'zublock_engine.py'),
+            '--ps4',
+            ip,
+            '--daemon',
+        ],
+        cwd=str(ROOT),
+        stdout=handle,
+        stderr=handle,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+    )
+    return ''
+
+
+def stop_workers() -> None:
+    for pid in worker_pids():
+        try:
+            subprocess.run(
+                ['taskkill', '/PID', str(pid), '/T', '/F'],
+                capture_output=True,
+                timeout=8,
+            )
+        except Exception:
+            pass
+
+
+def read_status() -> dict:
+    try:
+        return json.loads(STATUS_PATH.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def write_status(payload: dict) -> None:
+    tmp = STATUS_PATH.with_suffix('.tmp')
+    try:
+        tmp.write_text(json.dumps(payload), encoding='utf-8')
+        tmp.replace(STATUS_PATH)
+    except Exception:
+        pass
 
 
 def _ping_alive(ip: str) -> bool:
@@ -253,30 +378,27 @@ class DivertDrop:
             return err
         if _handle_ok(self._handle):
             return ''
+        self._filt = capture_filters(self.console_ip)[0].encode('ascii')
         last_gle = 0
-        # FORWARD only. NETWORK on ICS swallows forwarded packets (full cut).
-        for filt in capture_filters(self.console_ip):
-            encoded = filt.encode('ascii')
+        for layer, name in (
+            (self.LAYER_FORWARD, 'FORWARD'),
+            (self.LAYER_NETWORK, 'NETWORK'),
+        ):
             try:
                 ctypes.windll.kernel32.SetLastError(0)
             except Exception:
                 pass
             handle = self._dll.WinDivertOpen(
-                encoded, self.LAYER_FORWARD, WINDIVERT_PRIORITY, 0
+                self._filt, layer, WINDIVERT_PRIORITY, 0
             )
             if _handle_ok(handle):
                 self._handle = handle
-                self._filt = encoded
-                self.layers = 'FORWARD'
+                self.layers = name
                 break
             last_gle = ctypes.GetLastError()
         if not _handle_ok(self._handle):
-            self.error = (
-                f'WinDivertOpen FORWARD failed (GLE {last_gle}). '
-                'Run as Administrator and keep ZubCut closed.'
-            )
+            self.error = f'WinDivertOpen failed (GLE {last_gle})'
             return self.error
-        atexit.register(self.stop)
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name='zublock-divert', daemon=True)
         self._thread.start()
@@ -301,6 +423,7 @@ class DivertDrop:
         self._thread = None
         if thread is not None:
             thread.join(timeout=2.0)
+        self.layers = ''
 
     @property
     def running(self) -> bool:
@@ -341,3 +464,70 @@ class DivertDrop:
                 self.forwarded += 1
             else:
                 self.send_fail += 1
+
+
+def _run_daemon(console_ip: str) -> int:
+    """Same control loop as session_lock.py --daemon: watch drop_keys, start/stop DivertDrop."""
+    divert = DivertDrop(console_ip)
+    last_mtime = None
+    print(f'daemon ps4={console_ip} drop={DROP_PATH}', flush=True)
+    try:
+        while True:
+            try:
+                mtime = DROP_PATH.stat().st_mtime
+                text = DROP_PATH.read_text(encoding='utf-8')
+            except OSError:
+                mtime = -1
+                text = ''
+            if mtime != last_mtime:
+                last_mtime = mtime
+                rules = parse_drop_keys(text)
+                divert.set_rules(rules)
+                if rules:
+                    err = divert.start()
+                    if err:
+                        print(f'DROP start failed: {err}', flush=True)
+                    else:
+                        keys = ', '.join(
+                            sorted(f'{p}/{h}:{port}' for p, h, port in rules)
+                        )
+                        print(f'DROP on {keys} layer={divert.layers}', flush=True)
+                else:
+                    divert.stop()
+                    print('DROP off', flush=True)
+            write_status(
+                {
+                    'running': divert.running,
+                    'locked': bool(parse_drop_keys(text)) if text else False,
+                    'dropped': divert.dropped,
+                    'forwarded': divert.forwarded,
+                    'send_fail': divert.send_fail,
+                    'layers': divert.layers,
+                    'error': divert.error,
+                    'ps4': divert.console_ip,
+                }
+            )
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        divert.stop()
+        set_lock(False)
+        write_status({'running': False, 'locked': False, 'dropped': 0, 'forwarded': 0})
+        print('stopped', flush=True)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description='ZubLock WinDivert worker')
+    ap.add_argument('--ps4', default=DEFAULT_CONSOLE)
+    ap.add_argument('--daemon', action='store_true')
+    args = ap.parse_args(argv)
+    if args.daemon:
+        return _run_daemon(str(args.ps4).strip() or DEFAULT_CONSOLE)
+    ap.print_help()
+    return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
