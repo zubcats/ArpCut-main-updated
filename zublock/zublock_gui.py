@@ -5,11 +5,12 @@ from __future__ import annotations
 import ctypes
 import ipaddress
 import sys
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import font as tkfont
 
-from zublock_engine import DivertDrop, discover_hotspot_console
+from zublock_engine import DivertDrop, discover_hotspot_clients, discover_hotspot_console
 from zublock_rules import load_ranges
 
 ROOT = Path(__file__).resolve().parent
@@ -70,6 +71,8 @@ class App(tk.Tk):
         _dark_titlebar(self)
         self.protocol('WM_DELETE_WINDOW', self._quit)
         self._divert: DivertDrop | None = None
+        self._on_since = 0.0
+        self._hotspot_ips = discover_hotspot_clients()
         body = tkfont.Font(family='Segoe UI', size=11)
         big = tkfont.Font(family='Segoe UI', size=16, weight='bold')
         small = tkfont.Font(family='Segoe UI', size=9)
@@ -77,7 +80,7 @@ class App(tk.Tk):
         tk.Label(self, text='ZubLock', fg=TEXT, bg=BG, font=big).pack(pady=(18, 4))
         tk.Label(
             self,
-            text='Keep a PlayStation session on this PC hotspot. Same look as other Zub apps — not part of ZubCut.',
+            text='Keep a PlayStation session on this PC hotspot. Locks the whole 192.168.137 hotspot, not one IP.',
             fg=MUTED,
             bg=BG,
             font=body,
@@ -167,7 +170,8 @@ class App(tk.Tk):
         self.after(400, self._tick)
 
     def _find(self) -> None:
-        self.ip_var.set(discover_hotspot_console())
+        self._hotspot_ips = discover_hotspot_clients()
+        self.ip_var.set(self._hotspot_ips[0] if self._hotspot_ips else discover_hotspot_console())
 
     def _console_ip(self) -> str:
         raw = (self.ip_var.get() or '').strip()
@@ -181,8 +185,8 @@ class App(tk.Tk):
         try:
             ip = self._console_ip()
         except Exception:
-            self.hint.config(text='Enter a valid console IPv4 (hotspot is usually 192.168.137.x).')
-            return
+            ip = discover_hotspot_console()
+            self.ip_var.set(ip)
         try:
             rules = load_ranges()
         except Exception as exc:
@@ -197,7 +201,11 @@ class App(tk.Tk):
             self.hint.config(text=err)
             self._divert = None
             return
-        self.hint.config(text='Lock ON — PSN session HTTPS dropped. Game traffic stays up. Keep this window open.')
+        self._hotspot_ips = discover_hotspot_clients()
+        self._on_since = time.monotonic()
+        self.hint.config(
+            text='Lock ON. Keep this window open. Game UDP stays up; PSN session HTTPS is dropped.'
+        )
         self._refresh()
 
     def _off(self) -> None:
@@ -210,8 +218,23 @@ class App(tk.Tk):
     def _refresh(self) -> None:
         locked = self._divert is not None and self._divert.running
         parts = [f'Lock: {"ON" if locked else "OFF"}']
+        if self._hotspot_ips:
+            parts.append('Hotspot: ' + ', '.join(self._hotspot_ips))
         if locked and self._divert is not None:
-            parts.append(f'Dropped {self._divert.dropped}  ·  forwarded {self._divert.forwarded}')
+            extra = f'Dropped {self._divert.dropped}  ·  forwarded {self._divert.forwarded}'
+            if self._divert.layers:
+                extra += f'  ·  {self._divert.layers}'
+            parts.append(extra)
+            idle = (
+                self._divert.dropped == 0
+                and self._divert.forwarded == 0
+                and self._on_since
+                and (time.monotonic() - self._on_since) > 6
+            )
+            if idle:
+                self.hint.config(
+                    text='Still 0 packets. Console must be on this PC hotspot. Close this window, reopen ZubLock, Lock ON again.'
+                )
         if not _admin():
             parts.append('Need Administrator')
         self.status.config(text='\n'.join(parts))

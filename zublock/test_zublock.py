@@ -105,6 +105,25 @@ class TestEngineParse(unittest.TestCase):
         )
         self.assertEqual(zublock_engine.discover_hotspot_console(arp), '192.168.137.64')
 
+    def test_hotspot_lists_both_sony_leases(self) -> None:
+        arp = (
+            'Interface: 192.168.137.1 --- 0xd\n'
+            '  192.168.137.64           f8-da-0c-db-e3-b5     static\n'
+            '  192.168.137.248          f8-da-0c-db-e3-b5     static\n'
+        )
+        self.assertEqual(
+            zublock_engine.discover_hotspot_clients(arp),
+            ['192.168.137.64', '192.168.137.248'],
+        )
+
+    def test_capture_filter_is_whole_hotspot_not_one_ip(self) -> None:
+        filt = zublock_engine.capture_filters('192.168.137.64')
+        self.assertTrue(filt[0].startswith('('))
+        self.assertIn('192.168.137.0/24', filt[0])
+        self.assertNotIn('192.168.137.64', filt[0])
+        self.assertIn('!impostor', filt[0])
+        self.assertGreater(zublock_engine.WINDIVERT_PRIORITY, 0)
+
 
 class TestInstaller(unittest.TestCase):
     def test_setup_script_and_inno_are_named_zublock(self) -> None:
