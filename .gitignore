@@ -161,6 +161,7 @@ zublock/drop_keys.txt
 zublock/zublock_status.json
 zublock/zublock_status.tmp
 zublock/worker.log
+zublock/worker.pid
 
 # WinDivert x64 binaries (downloaded by installer/fetch_windivert.ps1 before Inno compile)
 installer/windivert/WinDivert.dll

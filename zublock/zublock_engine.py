@@ -27,8 +27,10 @@ ADDR_LEN = 80
 WINDIVERT_SHUTDOWN_BOTH = 3
 DROP_PATH = ROOT / 'drop_keys.txt'
 STATUS_PATH = ROOT / 'zublock_status.json'
+PID_PATH = ROOT / 'worker.pid'
 WORKER_LOG = ROOT / 'worker.log'
 OFF_TEXT = '# Empty = forward everything.\n'
+CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
 SONY_MAC_PREFIXES = (
     'f8-da-0c',
     '00-d9-d1',
@@ -138,28 +140,54 @@ def set_lock(on: bool, drop_path: Path = DROP_PATH, ranges_path: Path = RANGES_P
         drop_path.write_text(OFF_TEXT, encoding='utf-8')
 
 
+def _hidden_kwargs() -> dict:
+    if os.name != 'nt':
+        return {}
+    return {'creationflags': CREATE_NO_WINDOW}
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name != 'nt':
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    handle = ctypes.windll.kernel32.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
+    )
+    if handle:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    return False
+
+
+def write_worker_pid(pid: int) -> None:
+    try:
+        PID_PATH.write_text(str(int(pid)), encoding='utf-8')
+    except Exception:
+        pass
+
+
+def clear_worker_pid() -> None:
+    try:
+        PID_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def worker_pids() -> list[int]:
     try:
-        proc = subprocess.run(
-            [
-                'powershell',
-                '-NoProfile',
-                '-Command',
-                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" |"
-                " Where-Object { $_.CommandLine -like '*zublock_engine.py*' -and $_.CommandLine -like '*--daemon*' } |"
-                ' Select-Object -ExpandProperty ProcessId',
-            ],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
+        pid = int(PID_PATH.read_text(encoding='utf-8').strip())
     except Exception:
         return []
-    out: list[int] = []
-    for part in (proc.stdout or '').split():
-        if part.strip().isdigit():
-            out.append(int(part.strip()))
-    return out
+    if _pid_alive(pid):
+        return [pid]
+    clear_worker_pid()
+    return []
 
 
 def worker_running() -> bool:
@@ -177,7 +205,7 @@ def start_worker(console_ip: str) -> str:
         handle.flush()
     except Exception:
         pass
-    subprocess.Popen(
+    proc = subprocess.Popen(
         [
             python_exe(),
             '-u',
@@ -189,8 +217,9 @@ def start_worker(console_ip: str) -> str:
         cwd=str(ROOT),
         stdout=handle,
         stderr=handle,
-        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        **_hidden_kwargs(),
     )
+    write_worker_pid(proc.pid)
     return ''
 
 
@@ -201,9 +230,11 @@ def stop_workers() -> None:
                 ['taskkill', '/PID', str(pid), '/T', '/F'],
                 capture_output=True,
                 timeout=8,
+                **_hidden_kwargs(),
             )
         except Exception:
             pass
+    clear_worker_pid()
 
 
 def read_status() -> dict:
@@ -228,6 +259,7 @@ def _ping_alive(ip: str) -> bool:
             ['ping', '-n', '1', '-w', '400', ip],
             capture_output=True,
             timeout=2,
+            **_hidden_kwargs(),
         )
         return proc.returncode == 0
     except Exception:
@@ -246,6 +278,7 @@ def discover_hotspot_clients(arp_text: str = '') -> list[str]:
                 text=True,
                 timeout=6,
                 errors='replace',
+                **_hidden_kwargs(),
             )
             text = proc.stdout or ''
         except Exception:
@@ -468,6 +501,7 @@ class DivertDrop:
 
 def _run_daemon(console_ip: str) -> int:
     """Same control loop as session_lock.py --daemon: watch drop_keys, start/stop DivertDrop."""
+    write_worker_pid(os.getpid())
     divert = DivertDrop(console_ip)
     last_mtime = None
     print(f'daemon ps4={console_ip} drop={DROP_PATH}', flush=True)
@@ -514,6 +548,7 @@ def _run_daemon(console_ip: str) -> int:
         divert.stop()
         set_lock(False)
         write_status({'running': False, 'locked': False, 'dropped': 0, 'forwarded': 0})
+        clear_worker_pid()
         print('stopped', flush=True)
     return 0
 

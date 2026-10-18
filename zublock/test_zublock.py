@@ -144,6 +144,13 @@ class TestEngineParse(unittest.TestCase):
         self.assertIn('--daemon', engine)
         self.assertIn('DROP on', engine)
 
+    def test_worker_check_does_not_launch_powershell(self) -> None:
+        src = inspect.getsource(zublock_engine.worker_pids)
+        self.assertNotIn('powershell', src.lower())
+        self.assertIn('PID_PATH', src)
+        refresh = inspect.getsource(zublock_gui.App._refresh)
+        self.assertNotIn('powershell', refresh.lower())
+
     def test_set_lock_writes_aws_ranges(self) -> None:
         with TemporaryDirectory() as raw:
             drop = Path(raw) / 'drop_keys.txt'

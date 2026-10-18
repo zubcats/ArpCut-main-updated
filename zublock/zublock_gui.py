@@ -299,7 +299,7 @@ class App(tk.Tk):
     def _refresh(self) -> None:
         st = read_status()
         locked = lock_is_on()
-        running = worker_running() or bool(st.get('running'))
+        running = bool(st.get('running')) or worker_running()
         parts = [
             f'Capture: {"running" if running else "not running"}',
             f'Lock: {"ON" if locked else "OFF"}',
