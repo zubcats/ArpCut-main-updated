@@ -2,7 +2,7 @@
 ; Copies the small Tk app, then Install-ZubLock.ps1 fetches WinDivert / Python+Tk if needed.
 
 #define MyAppName "ZubLock"
-#define MyAppVersion "1.0.3"
+#define MyAppVersion "1.0.4"
 #define MyAppPublisher "ZubOnTop"
 #define MyAppURL "https://github.com/zubcats/ArpCut-main-updated"
 

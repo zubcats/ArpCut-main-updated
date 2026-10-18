@@ -52,6 +52,19 @@ SONY_MAC_PREFIXES = (
 )
 
 
+def _payload_offset(raw: bytes) -> int:
+    """0 for raw IP; 14 when WinDivert includes Ethernet."""
+    if len(raw) >= 14:
+        et = int.from_bytes(raw[12:14], 'big')
+        if et in (0x0800, 0x86DD):
+            return 14
+        if et == 0x8100 and len(raw) >= 18:
+            inner = int.from_bytes(raw[16:18], 'big')
+            if inner in (0x0800, 0x86DD):
+                return 18
+    return 0
+
+
 def parse_ipv4(raw: bytes) -> tuple[str, str, str, int, int, str] | None:
     """Return (src, dst, proto, sport, dport, tcp_flags) from a raw IPv4 packet."""
     if len(raw) < 20:
@@ -83,6 +96,79 @@ def parse_ipv4(raw: bytes) -> tuple[str, str, str, int, int, str] | None:
     return src, dst, 'IP', 0, 0, ''
 
 
+def parse_ipv6(raw: bytes) -> tuple[str, str, str, int, int, str] | None:
+    if len(raw) < 40:
+        return None
+    if (raw[0] >> 4) != 6:
+        return None
+    nh = raw[6]
+    src = _ipv6_text(raw[8:24])
+    dst = _ipv6_text(raw[24:40])
+    if nh == 6:
+        if len(raw) < 60:
+            return src, dst, 'TCP', 0, 0, ''
+        sport, dport = struct.unpack('!HH', raw[40:44])
+        fl = raw[53] if len(raw) > 53 else 0
+        flags = ''
+        if fl & 0x02:
+            flags += 'S'
+        if fl & 0x10:
+            flags += 'A'
+        return src, dst, 'TCP', int(sport), int(dport), flags
+    if nh == 17:
+        if len(raw) < 48:
+            return src, dst, 'UDP', 0, 0, ''
+        sport, dport = struct.unpack('!HH', raw[40:44])
+        return src, dst, 'UDP', int(sport), int(dport), ''
+    return src, dst, 'IP6', 0, 0, ''
+
+
+def _ipv6_text(raw: bytes) -> str:
+    parts = []
+    for i in range(0, 16, 2):
+        parts.append(f'{int.from_bytes(raw[i : i + 2], "big"):x}')
+    return ':'.join(parts)
+
+
+def parse_packet(raw: bytes) -> tuple[str, str, str, int, int, str] | None:
+    off = _payload_offset(raw)
+    body = raw[off:]
+    if not body:
+        return None
+    ver = body[0] >> 4
+    if ver == 4:
+        return parse_ipv4(body)
+    if ver == 6:
+        return parse_ipv6(body)
+    return None
+
+
+def is_ipv6_global(addr: str) -> bool:
+    if ':' not in (addr or ''):
+        return False
+    a = addr.lower().split('%')[0]
+    if a in ('::', '::1') or a.startswith('fe80:') or a.startswith('ff'):
+        return False
+    if len(a) >= 2 and a[0] == 'f' and a[1] in 'cd':
+        return False
+    return True
+
+
+def packet_should_drop(
+    src: str,
+    dst: str,
+    proto: str,
+    sport: int,
+    dport: int,
+    rules: set[tuple[str, str, int]],
+    flags: str = '',
+) -> bool:
+    if proto == 'TCP' and 443 in (sport, dport) and (':' in src or ':' in dst):
+        if is_ipv6_global(src) or is_ipv6_global(dst):
+            return True
+    return should_drop(src, dst, proto, sport, dport, rules, flags=flags)
+
+
 def _handle_ok(handle) -> bool:
     if handle is None:
         return False
@@ -103,9 +189,21 @@ def is_hotspot_console_ip(ip: str) -> bool:
 
 
 def capture_filters(console_ip: str = '') -> list[str]:
-    """Exact filter from the lock that already worked."""
+    """IPv4 host filter, plus forwarded IPv6 so PSN steal over IPv6 is not missed."""
     ip = (console_ip or '').strip() or DEFAULT_CONSOLE
-    return [f'ip and (ip.SrcAddr == {ip} or ip.DstAddr == {ip})']
+    host = f'ip and (ip.SrcAddr == {ip} or ip.DstAddr == {ip})'
+    return [f'({host}) or ipv6', host]
+
+
+def open_plan(console_ip: str = '') -> list[tuple[int, str, str]]:
+    """FORWARD with IPv6 first. Never open NETWORK with a bare ipv6 filter."""
+    host = capture_filters(console_ip)[-1]
+    wide = capture_filters(console_ip)[0]
+    return [
+        (1, 'FORWARD', wide),
+        (1, 'FORWARD', host),
+        (0, 'NETWORK', host),
+    ]
 
 
 def python_exe() -> str:
@@ -345,6 +443,10 @@ class DivertDrop:
         self.dropped = 0
         self.forwarded = 0
         self.send_fail = 0
+        self.parsed = 0
+        self.tcp443: list[str] = []
+        self._tcp443_seen: set[str] = set()
+        self._sample_logged = False
         self.error = ''
         self.layers = ''
 
@@ -411,21 +513,19 @@ class DivertDrop:
             return err
         if _handle_ok(self._handle):
             return ''
-        self._filt = capture_filters(self.console_ip)[0].encode('ascii')
         last_gle = 0
-        for layer, name in (
-            (self.LAYER_FORWARD, 'FORWARD'),
-            (self.LAYER_NETWORK, 'NETWORK'),
-        ):
+        for layer, name, filt in open_plan(self.console_ip):
+            encoded = filt.encode('ascii')
             try:
                 ctypes.windll.kernel32.SetLastError(0)
             except Exception:
                 pass
             handle = self._dll.WinDivertOpen(
-                self._filt, layer, WINDIVERT_PRIORITY, 0
+                encoded, layer, WINDIVERT_PRIORITY, 0
             )
             if _handle_ok(handle):
                 self._handle = handle
+                self._filt = encoded
                 self.layers = name
                 break
             last_gle = ctypes.GetLastError()
@@ -465,7 +565,17 @@ class DivertDrop:
     def _match(self, src: str, dst: str, proto: str, sport: int, dport: int, flags: str) -> bool:
         with self._lock:
             rules = set(self._rules)
-        return should_drop(src, dst, proto, sport, dport, rules, flags=flags)
+        return packet_should_drop(src, dst, proto, sport, dport, rules, flags=flags)
+
+    def _note_tcp443(self, src: str, dst: str) -> None:
+        remote = dst
+        if dst == self.console_ip or dst.startswith(HOTSPOT_PREFIX):
+            remote = src
+        key = f'{remote}:443'
+        if key in self._tcp443_seen or len(self.tcp443) >= 16:
+            return
+        self._tcp443_seen.add(key)
+        self.tcp443.append(key)
 
     def _loop(self) -> None:
         assert self._dll is not None
@@ -481,10 +591,16 @@ class DivertDrop:
                     return
                 continue
             raw = bytes(buf.raw[: int(nread.value)])
+            if not self._sample_logged:
+                print(f'sample n={int(nread.value)} hex={raw[:24].hex()}', flush=True)
+                self._sample_logged = True
             drop = False
-            parsed = parse_ipv4(raw)
+            parsed = parse_packet(raw)
             if parsed is not None:
                 src, dst, proto, sport, dport, flags = parsed
+                self.parsed += 1
+                if proto == 'TCP' and 443 in (sport, dport):
+                    self._note_tcp443(src, dst)
                 drop = self._match(src, dst, proto, sport, dport, flags)
             if drop:
                 self.dropped += 1
@@ -535,10 +651,12 @@ def _run_daemon(console_ip: str) -> int:
                     'locked': bool(parse_drop_keys(text)) if text else False,
                     'dropped': divert.dropped,
                     'forwarded': divert.forwarded,
+                    'parsed': divert.parsed,
                     'send_fail': divert.send_fail,
                     'layers': divert.layers,
                     'error': divert.error,
                     'ps4': divert.console_ip,
+                    'tcp443': divert.tcp443,
                 }
             )
             time.sleep(1.0)

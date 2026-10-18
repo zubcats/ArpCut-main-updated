@@ -117,15 +117,47 @@ class TestEngineParse(unittest.TestCase):
 
     def test_capture_filter_is_the_working_host_filter(self) -> None:
         filt = zublock_engine.capture_filters('192.168.137.64')
-        self.assertEqual(
-            filt,
-            ['ip and (ip.SrcAddr == 192.168.137.64 or ip.DstAddr == 192.168.137.64)'],
-        )
-        self.assertNotIn('!impostor', filt[0])
-        self.assertNotIn('0/24', filt[0])
+        host = 'ip and (ip.SrcAddr == 192.168.137.64 or ip.DstAddr == 192.168.137.64)'
+        self.assertEqual(filt[-1], host)
+        self.assertIn('ipv6', filt[0])
+        self.assertNotIn('!impostor', ''.join(filt))
+        self.assertNotIn('0/24', ''.join(filt))
+        plan = zublock_engine.open_plan('192.168.137.64')
+        self.assertEqual(plan[0][1], 'FORWARD')
+        self.assertIn('ipv6', plan[0][2])
+        self.assertEqual(plan[-1], (0, 'NETWORK', host))
         self.assertEqual(zublock_engine.WINDIVERT_PRIORITY, 0)
         self.assertEqual(zublock_engine.DivertDrop.LAYER_FORWARD, 1)
         self.assertEqual(zublock_engine.ADDR_LEN, 80)
+
+    def test_parse_ethernet_ipv4_and_ipv6_https(self) -> None:
+        inner = _ipv4_tcp('192.168.137.64', '44.234.1.1', 50000, 443, flags=0x18)
+        eth = bytes.fromhex('ffffffffffff0011223344550800') + inner
+        got = zublock_engine.parse_packet(eth)
+        self.assertEqual(got[:5], ('192.168.137.64', '44.234.1.1', 'TCP', 50000, 443))
+        src = bytes.fromhex('26050000000000000000000000000001')
+        dst = bytes.fromhex('26000000000000000000000000000002')
+        ip6 = bytes([0x60, 0, 0, 0, 0, 20, 6, 64]) + src + dst
+        tcp = struct.pack('!HHIIBBHHH', 9, 443, 0, 0, 5 << 4, 0x18, 8192, 0, 0)
+        parsed = zublock_engine.parse_ipv6(ip6 + tcp)
+        self.assertEqual(parsed[2], 'TCP')
+        self.assertEqual(parsed[4], 443)
+        self.assertTrue(zublock_engine.is_ipv6_global(parsed[0]))
+        self.assertTrue(
+            zublock_engine.packet_should_drop(
+                parsed[0], parsed[1], 'TCP', 9, 443, set()
+            )
+        )
+        self.assertFalse(
+            zublock_engine.packet_should_drop(
+                'fe80::1', 'fe80::2', 'TCP', 9, 443, set()
+            )
+        )
+        self.assertFalse(
+            zublock_engine.packet_should_drop(
+                'fd48:7444:872d:d:1', 'fd48:7444:872d:d:2', 'TCP', 9, 443, set()
+            )
+        )
 
     def test_hotspot_ip_rejects_house_lan(self) -> None:
         self.assertTrue(zublock_engine.is_hotspot_console_ip('192.168.137.64'))
@@ -134,11 +166,10 @@ class TestEngineParse(unittest.TestCase):
 
     def test_start_matches_working_session_lock(self) -> None:
         src = inspect.getsource(zublock_engine.DivertDrop.start)
-        self.assertIn('LAYER_FORWARD', src)
-        self.assertIn('LAYER_NETWORK', src)
-        self.assertLess(src.index('LAYER_FORWARD'), src.index('LAYER_NETWORK'))
+        self.assertIn('open_plan', src)
         loop = inspect.getsource(zublock_engine.DivertDrop._loop)
         self.assertIn('WinDivertRecv', loop)
+        self.assertIn('parse_packet', loop)
         self.assertNotIn('WinDivertRecvEx', loop)
         engine = Path(zublock_engine.__file__).read_text(encoding='utf-8')
         self.assertIn('--daemon', engine)

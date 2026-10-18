@@ -318,6 +318,9 @@ class App(tk.Tk):
             if layers:
                 extra += f'  ·  {layers}'
             parts.append(extra)
+            seen443 = st.get('tcp443') or []
+            if seen443:
+                parts.append('443 ' + ', '.join(str(x) for x in seen443[:6]))
         if err:
             self.hint.config(text=err)
         elif send_fail:
