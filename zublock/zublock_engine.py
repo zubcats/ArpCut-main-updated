@@ -14,9 +14,7 @@ ROOT = Path(__file__).resolve().parent
 INVALID_HANDLE = ctypes.c_void_p(-1).value
 HOTSPOT_PREFIX = '192.168.137.'
 DEFAULT_CONSOLE = '192.168.137.64'
-# Above ZubCut/Clumzy (priority 0) so this lock actually sees hotspot packets.
-WINDIVERT_PRIORITY = 800
-ADDR_LEN = 256
+WINDIVERT_PRIORITY = 0
 SONY_MAC_PREFIXES = (
     'f8-da-0c',
     '00-d9-d1',
@@ -80,19 +78,9 @@ def _handle_ok(handle) -> bool:
 
 
 def capture_filters(console_ip: str = '') -> list[str]:
-    """WinDivert rejects CIDR like 192.168.137.0/24 (GLE 87). Use host + range."""
+    """Same filter as the lock that already worked: one console IPv4, priority 0."""
     ip = (console_ip or '').strip() or DEFAULT_CONSOLE
-    host = f'ip.SrcAddr == {ip} or ip.DstAddr == {ip}'
-    subnet = (
-        f'(ip.SrcAddr >= 192.168.137.2 and ip.SrcAddr <= 192.168.137.254) or '
-        f'(ip.DstAddr >= 192.168.137.2 and ip.DstAddr <= 192.168.137.254)'
-    )
-    out: list[str] = []
-    for inner in (host, subnet):
-        base = f'ip and ({inner})'
-        out.append(f'({base}) and !impostor')
-        out.append(base)
-    return out
+    return [f'ip and (ip.SrcAddr == {ip} or ip.DstAddr == {ip})']
 
 
 def _ping_alive(ip: str) -> bool:
@@ -174,14 +162,14 @@ class DivertDrop:
     LAYER_FORWARD = 1
 
     def __init__(self, console_ip: str = '') -> None:
-        self.console_ip = console_ip
+        self.console_ip = console_ip or DEFAULT_CONSOLE
         self._dll = None
-        self._handles: list = []
-        self._threads: list[threading.Thread] = []
+        self._handle = None
+        self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._rules: set[tuple[str, str, int]] = set()
         self._lock = threading.Lock()
-        self._filt_bytes: list[bytes] = []
+        self._filt = b''
         self.dropped = 0
         self.forwarded = 0
         self.error = ''
@@ -240,100 +228,69 @@ class DivertDrop:
         with self._lock:
             self._rules = set(rules)
 
-    def _open(self, filt: bytes, layer: int):
-        assert self._dll is not None
-        try:
-            ctypes.windll.kernel32.SetLastError(0)
-        except Exception:
-            pass
-        handle = self._dll.WinDivertOpen(
-            ctypes.c_char_p(filt),
-            ctypes.c_int(layer),
-            ctypes.c_int16(WINDIVERT_PRIORITY),
-            ctypes.c_uint64(0),
-        )
-        if _handle_ok(handle):
-            return handle, 0
-        return None, ctypes.GetLastError()
-
     def start(self) -> str:
         err = self.load()
         if err:
             self.error = err
             return err
-        if self.running:
+        if _handle_ok(self._handle):
             return ''
+        self._filt = capture_filters(self.console_ip)[0].encode('ascii')
         last_gle = 0
-        names: list[str] = []
-        for filt in capture_filters(self.console_ip):
-            raw = filt.encode('ascii')
-            self._filt_bytes.append(raw)
-            got: list = []
-            labels: list[str] = []
-            for layer, name in (
-                (self.LAYER_FORWARD, 'FORWARD'),
-                (self.LAYER_NETWORK, 'NETWORK'),
-            ):
-                handle, gle = self._open(raw, layer)
-                if handle is not None:
-                    got.append(handle)
-                    labels.append(name)
-                else:
-                    last_gle = gle
-            if got:
-                self._handles = got
-                names = labels
+        for layer, name in (
+            (self.LAYER_FORWARD, 'FORWARD'),
+            (self.LAYER_NETWORK, 'NETWORK'),
+        ):
+            try:
+                ctypes.windll.kernel32.SetLastError(0)
+            except Exception:
+                pass
+            handle = self._dll.WinDivertOpen(self._filt, layer, WINDIVERT_PRIORITY, 0)
+            if _handle_ok(handle):
+                self._handle = handle
+                self.layers = name
                 break
-        if not self._handles:
+            last_gle = ctypes.GetLastError()
+        if not _handle_ok(self._handle):
             self.error = f'WinDivertOpen failed (GLE {last_gle})'
             return self.error
-        self.layers = '+'.join(names)
         self._stop.clear()
-        for i, handle in enumerate(self._handles):
-            thread = threading.Thread(
-                target=self._loop,
-                args=(handle,),
-                name=f'zublock-divert-{i}',
-                daemon=True,
-            )
-            thread.start()
-            self._threads.append(thread)
+        self._thread = threading.Thread(target=self._loop, name='zublock-divert', daemon=True)
+        self._thread.start()
         self.error = ''
         return ''
 
     def stop(self) -> None:
         self._stop.set()
-        handles = list(self._handles)
-        self._handles = []
-        if self._dll:
-            for handle in handles:
-                if _handle_ok(handle):
-                    try:
-                        self._dll.WinDivertClose(handle)
-                    except Exception:
-                        pass
-        threads = list(self._threads)
-        self._threads = []
-        for thread in threads:
+        handle = self._handle
+        self._handle = None
+        if _handle_ok(handle) and self._dll:
+            try:
+                self._dll.WinDivertClose(handle)
+            except Exception:
+                pass
+        thread = self._thread
+        self._thread = None
+        if thread is not None:
             thread.join(timeout=1.0)
 
     @property
     def running(self) -> bool:
-        return any(_handle_ok(h) for h in self._handles)
+        return _handle_ok(self._handle)
 
     def _match(self, src: str, dst: str, proto: str, sport: int, dport: int, flags: str) -> bool:
         with self._lock:
             rules = set(self._rules)
         return should_drop(src, dst, proto, sport, dport, rules, flags=flags)
 
-    def _loop(self, handle) -> None:
+    def _loop(self) -> None:
         assert self._dll is not None
         buf = ctypes.create_string_buffer(0xFFFF)
-        addr = ctypes.create_string_buffer(ADDR_LEN)
+        addr = ctypes.create_string_buffer(80)
         nread = ctypes.c_uint(0)
-        while not self._stop.is_set() and _handle_ok(handle):
+        while not self._stop.is_set() and _handle_ok(self._handle):
             ok = self._dll.WinDivertRecv(
-                handle, buf, len(buf), ctypes.byref(nread), addr
+                self._handle, buf, len(buf), ctypes.byref(nread), addr
             )
             if not ok:
                 if self._stop.is_set():
@@ -350,6 +307,6 @@ class DivertDrop:
                 continue
             sent = ctypes.c_uint(0)
             self._dll.WinDivertSend(
-                handle, buf, int(nread.value), ctypes.byref(sent), addr
+                self._handle, buf, int(nread.value), ctypes.byref(sent), addr
             )
             self.forwarded += 1

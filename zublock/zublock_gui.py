@@ -150,7 +150,7 @@ class App(tk.Tk):
         tk.Label(self, text='ZubLock', fg=TEXT, bg=BG, font=big).pack(pady=(18, 4))
         tk.Label(
             self,
-            text='Keep a PlayStation session on this PC hotspot. Locks the whole 192.168.137 hotspot, not one IP.',
+            text='Keep a PlayStation session on this PC hotspot. Other devices stay on house Wi-Fi.',
             fg=MUTED,
             bg=BG,
             font=body,
