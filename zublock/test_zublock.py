@@ -113,11 +113,13 @@ class TestEngineParse(unittest.TestCase):
         )
         self.assertEqual(zublock_engine.discover_hotspot_clients(arp), ['192.168.137.64'])
 
-    def test_capture_filter_is_whole_hotspot_not_one_ip(self) -> None:
+    def test_capture_filters_use_host_and_range_not_cidr(self) -> None:
         filt = zublock_engine.capture_filters('192.168.137.64')
-        self.assertTrue(filt[0].startswith('('))
-        self.assertIn('192.168.137.0/24', filt[0])
-        self.assertNotIn('192.168.137.64', filt[0])
+        joined = '\n'.join(filt)
+        self.assertIn('ip.SrcAddr == 192.168.137.64', joined)
+        self.assertIn('192.168.137.2', joined)
+        self.assertIn('192.168.137.254', joined)
+        self.assertNotIn('0/24', joined)
         self.assertIn('!impostor', filt[0])
         self.assertGreater(zublock_engine.WINDIVERT_PRIORITY, 0)
 

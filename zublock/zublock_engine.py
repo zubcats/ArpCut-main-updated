@@ -13,7 +13,6 @@ from zublock_rules import should_drop
 ROOT = Path(__file__).resolve().parent
 INVALID_HANDLE = ctypes.c_void_p(-1).value
 HOTSPOT_PREFIX = '192.168.137.'
-HOTSPOT_NET = '192.168.137.0/24'
 DEFAULT_CONSOLE = '192.168.137.64'
 # Above ZubCut/Clumzy (priority 0) so this lock actually sees hotspot packets.
 WINDIVERT_PRIORITY = 800
@@ -81,13 +80,19 @@ def _handle_ok(handle) -> bool:
 
 
 def capture_filters(console_ip: str = '') -> list[str]:
-    """Whole hotspot LAN, not one ARP row (.64 vs .248 on the same console)."""
-    inner = f'ip.SrcAddr == {HOTSPOT_NET} or ip.DstAddr == {HOTSPOT_NET}'
-    ip = (console_ip or '').strip()
-    if ip and not ip.startswith(HOTSPOT_PREFIX):
-        inner = f'({inner}) or ip.SrcAddr == {ip} or ip.DstAddr == {ip}'
-    base = f'ip and ({inner})'
-    return [f'({base}) and !impostor', base]
+    """WinDivert rejects CIDR like 192.168.137.0/24 (GLE 87). Use host + range."""
+    ip = (console_ip or '').strip() or DEFAULT_CONSOLE
+    host = f'ip.SrcAddr == {ip} or ip.DstAddr == {ip}'
+    subnet = (
+        f'(ip.SrcAddr >= 192.168.137.2 and ip.SrcAddr <= 192.168.137.254) or '
+        f'(ip.DstAddr >= 192.168.137.2 and ip.DstAddr <= 192.168.137.254)'
+    )
+    out: list[str] = []
+    for inner in (host, subnet):
+        base = f'ip and ({inner})'
+        out.append(f'({base}) and !impostor')
+        out.append(base)
+    return out
 
 
 def _ping_alive(ip: str) -> bool:
@@ -242,10 +247,10 @@ class DivertDrop:
         except Exception:
             pass
         handle = self._dll.WinDivertOpen(
-            filt,
-            layer,
-            WINDIVERT_PRIORITY,
-            0,
+            ctypes.c_char_p(filt),
+            ctypes.c_int(layer),
+            ctypes.c_int16(WINDIVERT_PRIORITY),
+            ctypes.c_uint64(0),
         )
         if _handle_ok(handle):
             return handle, 0
