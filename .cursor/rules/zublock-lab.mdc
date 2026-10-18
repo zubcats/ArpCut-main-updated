@@ -1,0 +1,26 @@
+---
+description: Freeze shipped ZubLock zip; experiments go in the local Lab copy only.
+alwaysApply: true
+---
+
+# ZubLock ship vs lab
+
+The zip/installer friends download is frozen at the working AWS TCP 443 lock. Do not change it until the user explicitly says to **ship ZubLock**.
+
+## Frozen (do not touch until ship)
+
+- `%LOCALAPPDATA%\ZubLock` — the working desktop app
+- `zublock/` and `installer/ZubLock.iss` in git — pushing those rebuilds `zublock-latest`
+
+Do not edit, copy-over, commit, or push those paths for trial-and-error.
+
+## Experiments
+
+- `%LOCALAPPDATA%\ZubLockLab` — local Lab copy + **ZubLock Lab** desktop shortcut
+- Change only files under ZubLockLab
+- Do not merge Lab experiments into `zublock/` or the frozen install unless the user says the Lab version is good **and** to ship the zip
+
+## When the user says ship ZubLock
+
+1. Copy the proven Lab files into repo `zublock/` (and Inno if needed).
+2. Then follow the normal experimental / push-to-both release workflow so CI refreshes `zublock-latest`.
