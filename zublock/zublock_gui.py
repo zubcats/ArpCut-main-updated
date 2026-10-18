@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""ZubLock desktop toggle. Standalone — not part of ZubCut."""
+from __future__ import annotations
+
+import ctypes
+import ipaddress
+import sys
+import tkinter as tk
+from pathlib import Path
+from tkinter import font as tkfont
+
+from zublock_engine import DivertDrop, discover_hotspot_console
+from zublock_rules import load_ranges
+
+ROOT = Path(__file__).resolve().parent
+BG = '#141414'
+BTN = '#2b2b2b'
+BORDER = '#3d3d3d'
+ACCENT = '#316E69'
+TEXT = '#e8eaed'
+MUTED = '#9a9a9a'
+ICO = ROOT / 'zublock.ico'
+
+
+def _admin() -> bool:
+    if not sys.platform.startswith('win'):
+        return True
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _relaunch_admin() -> bool:
+    if _admin():
+        return True
+    script = str(Path(__file__).resolve())
+    params = f'"{script}"'
+    rc = ctypes.windll.shell32.ShellExecuteW(None, 'runas', sys.executable, params, None, 1)
+    return int(rc) > 32
+
+
+def _dark_titlebar(root: tk.Tk) -> None:
+    if not sys.platform.startswith('win'):
+        return
+    try:
+        root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id()) or root.winfo_id()
+        value = ctypes.c_int(1)
+        for attr in (20, 19):
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)
+            )
+    except Exception:
+        pass
+
+
+class App(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title('ZubLock')
+        self.configure(bg=BG)
+        self.geometry('440x420')
+        self.resizable(False, False)
+        if ICO.is_file():
+            try:
+                self.iconbitmap(str(ICO))
+            except Exception:
+                pass
+        _dark_titlebar(self)
+        self.protocol('WM_DELETE_WINDOW', self._quit)
+        self._divert: DivertDrop | None = None
+        body = tkfont.Font(family='Segoe UI', size=11)
+        big = tkfont.Font(family='Segoe UI', size=16, weight='bold')
+        small = tkfont.Font(family='Segoe UI', size=9)
+
+        tk.Label(self, text='ZubLock', fg=TEXT, bg=BG, font=big).pack(pady=(18, 4))
+        tk.Label(
+            self,
+            text='Keep a PlayStation session on this PC hotspot. Same look as other Zub apps — not part of ZubCut.',
+            fg=MUTED,
+            bg=BG,
+            font=body,
+            wraplength=400,
+            justify='center',
+        ).pack(padx=20)
+
+        ip_row = tk.Frame(self, bg=BG)
+        ip_row.pack(pady=(16, 4))
+        tk.Label(ip_row, text='Console IP', fg=MUTED, bg=BG, font=small).pack(side='left', padx=(0, 8))
+        self.ip_var = tk.StringVar(value=discover_hotspot_console())
+        self.ip_entry = tk.Entry(
+            ip_row,
+            textvariable=self.ip_var,
+            width=18,
+            bg=BTN,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief='flat',
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=ACCENT,
+            font=body,
+        )
+        self.ip_entry.pack(side='left')
+        tk.Button(
+            ip_row,
+            text='Find',
+            command=self._find,
+            bg=BTN,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief='flat',
+            padx=10,
+            font=small,
+        ).pack(side='left', padx=(8, 0))
+
+        self.status = tk.Label(self, text='Lock OFF', fg=TEXT, bg=BG, font=body, justify='left')
+        self.status.pack(pady=(14, 8))
+
+        row = tk.Frame(self, bg=BG)
+        row.pack(pady=8)
+        self.on_btn = tk.Button(
+            row,
+            text='Lock ON',
+            font=big,
+            width=12,
+            command=self._on,
+            bg=ACCENT,
+            fg=TEXT,
+            activebackground=ACCENT,
+            activeforeground=TEXT,
+            relief='flat',
+            padx=8,
+            pady=10,
+        )
+        self.on_btn.pack(side='left', padx=8)
+        self.off_btn = tk.Button(
+            row,
+            text='Lock OFF',
+            font=big,
+            width=12,
+            command=self._off,
+            bg=BTN,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            relief='flat',
+            padx=8,
+            pady=10,
+        )
+        self.off_btn.pack(side='left', padx=8)
+
+        self.hint = tk.Label(
+            self,
+            text='Put the console on this PC hotspot. Leave this window open while locked.',
+            fg=MUTED,
+            bg=BG,
+            font=small,
+            wraplength=400,
+            justify='center',
+        )
+        self.hint.pack(pady=(16, 0), padx=20)
+        if not _admin():
+            self.hint.config(text='Administrator is required. Close this window and open ZubLock again to approve UAC.')
+        self.after(400, self._tick)
+
+    def _find(self) -> None:
+        self.ip_var.set(discover_hotspot_console())
+
+    def _console_ip(self) -> str:
+        raw = (self.ip_var.get() or '').strip()
+        ipaddress.IPv4Address(raw)
+        return raw
+
+    def _on(self) -> None:
+        if not _admin():
+            self.hint.config(text='Run ZubLock as Administrator (UAC).')
+            return
+        try:
+            ip = self._console_ip()
+        except Exception:
+            self.hint.config(text='Enter a valid console IPv4 (hotspot is usually 192.168.137.x).')
+            return
+        try:
+            rules = load_ranges()
+        except Exception as exc:
+            self.hint.config(text=str(exc))
+            return
+        if self._divert is not None:
+            self._divert.stop()
+        self._divert = DivertDrop(ip)
+        self._divert.set_rules(rules)
+        err = self._divert.start()
+        if err:
+            self.hint.config(text=err)
+            self._divert = None
+            return
+        self.hint.config(text='Lock ON — PSN session HTTPS dropped. Game traffic stays up. Keep this window open.')
+        self._refresh()
+
+    def _off(self) -> None:
+        if self._divert is not None:
+            self._divert.stop()
+            self._divert = None
+        self.hint.config(text='Lock OFF — the other console can take the session again.')
+        self._refresh()
+
+    def _refresh(self) -> None:
+        locked = self._divert is not None and self._divert.running
+        parts = [f'Lock: {"ON" if locked else "OFF"}']
+        if locked and self._divert is not None:
+            parts.append(f'Dropped {self._divert.dropped}  ·  forwarded {self._divert.forwarded}')
+        if not _admin():
+            parts.append('Need Administrator')
+        self.status.config(text='\n'.join(parts))
+        self.on_btn.config(bg=BTN if locked else ACCENT)
+        self.off_btn.config(bg=ACCENT if locked else BTN)
+
+    def _tick(self) -> None:
+        self._refresh()
+        self.after(1000, self._tick)
+
+    def _quit(self) -> None:
+        if self._divert is not None:
+            self._divert.stop()
+            self._divert = None
+        self.destroy()
+
+
+def main() -> int:
+    if sys.platform.startswith('win') and not _admin():
+        if _relaunch_admin():
+            return 0
+    try:
+        App().mainloop()
+    except tk.TclError as exc:
+        print('Tk failed. Run Install-ZubLock.cmd so Python includes Tcl/Tk.', exc)
+        return 2
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

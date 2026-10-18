@@ -155,6 +155,9 @@ PRN
 # macOS
 .DS_Store
 
+# ZubLock downloads (Install-ZubLock.ps1 fetches WinDivert)
+zublock/windivert/
+
 # WinDivert x64 binaries (downloaded by installer/fetch_windivert.ps1 before Inno compile)
 installer/windivert/WinDivert.dll
 installer/windivert/WinDivert64.sys

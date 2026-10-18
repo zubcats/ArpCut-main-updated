@@ -1,0 +1,56 @@
+# ZubLock zip — standalone hotspot session lock (not ZubCut).
+# Push to main or experimental when zublock/ changes → tag zublock-latest.
+# Does not touch ZubCut stable/experimental installer tags.
+
+name: Build ZubLock zip
+
+on:
+  push:
+    branches:
+      - main
+      - experimental
+    paths:
+      - 'zublock/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zublock-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pack-zublock:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Pack ZubLock.zip
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File "zublock/pack.ps1"
+          if (-not (Test-Path "output/ZubLock.zip")) { throw "output/ZubLock.zip missing" }
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ZubLock
+          path: output/ZubLock.zip
+
+      - name: Publish zublock-latest
+        uses: softprops/action-gh-release@v2.6.2
+        with:
+          tag_name: zublock-latest
+          name: ZubLock
+          target_commitish: ${{ github.sha }}
+          prerelease: false
+          make_latest: false
+          files: output/ZubLock.zip
+          body: |
+            Standalone hotspot session lock. Not part of ZubCut.
+
+            Unzip and run `Install-ZubLock.cmd`. That puts **ZubLock** on the desktop and downloads WinDivert (and Python+Tk if needed).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

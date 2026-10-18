@@ -1,0 +1,5 @@
+# PSN session HTTPS on the hotspot. Game UDP/CDN is left alone.
+# Edit this file if Sony moves AWS edges.
+TCP/44.234.0.0/16:443
+TCP/35.164.0.0/15:443
+TCP/35.155.0.0/16:443
