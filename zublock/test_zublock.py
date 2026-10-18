@@ -106,6 +106,18 @@ class TestEngineParse(unittest.TestCase):
         self.assertEqual(zublock_engine.discover_hotspot_console(arp), '192.168.137.64')
 
 
+class TestInstaller(unittest.TestCase):
+    def test_setup_script_and_inno_are_named_zublock(self) -> None:
+        self.assertTrue((ROOT / 'ZubLock-Setup.cmd').is_file())
+        iss = ROOT.parent / 'installer' / 'ZubLock.iss'
+        text = iss.read_text(encoding='utf-8')
+        self.assertIn('#define MyAppName "ZubLock"', text)
+        self.assertIn(r'{autodesktop}\{#MyAppName}', text)
+        self.assertIn('zublock.ico', text)
+        self.assertIn('OutputBaseFilename=ZubLock-Setup', text)
+        self.assertNotIn('#19232D', text)
+
+
 class TestGuiTheme(unittest.TestCase):
     def test_charcoal_tokens_and_title(self) -> None:
         self.assertEqual(zublock_gui.BG, '#141414')

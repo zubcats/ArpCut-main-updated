@@ -30,6 +30,7 @@ on:
       - 'tools/crash_reports_admin.py'
       - '.github/workflows/build-control-panel-windows.yml'
       - 'zublock/**'
+      - 'installer/ZubLock.iss'
       - '.github/workflows/build-zublock.yml'
   workflow_dispatch:
     inputs:

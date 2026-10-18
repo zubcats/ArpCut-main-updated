@@ -4,6 +4,9 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $Src = $PSScriptRoot
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'files\zublock_gui.py')) {
+    $Src = Join-Path $PSScriptRoot 'files'
+}
 $Dest = Join-Path $env:LOCALAPPDATA 'ZubLock'
 $PyVer = '3.11.9'
 $PyUrl = "https://www.python.org/ftp/python/$PyVer/python-$PyVer-amd64.exe"
@@ -183,7 +186,11 @@ function Install-Files {
             if ($name -eq 'README.md') { continue }
             throw "Missing $name - unzip the whole ZubLock folder."
         }
-        Copy-Item -LiteralPath $from -Destination (Join-Path $Dest $name) -Force
+        $to = Join-Path $Dest $name
+        $fromFull = [IO.Path]::GetFullPath($from)
+        $toFull = [IO.Path]::GetFullPath($to)
+        if ($fromFull -eq $toFull) { continue }
+        Copy-Item -LiteralPath $from -Destination $to -Force
     }
     Write-Step "Files copied to $Dest"
 }

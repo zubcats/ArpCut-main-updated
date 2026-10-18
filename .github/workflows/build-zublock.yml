@@ -1,6 +1,6 @@
 # ZubLock zip — standalone hotspot session lock (not ZubCut).
 # Push to main or experimental when zublock/ changes → tag zublock-latest.
-# Does not touch ZubCut stable/experimental installer tags.
+# Zip contains ZubLock-Setup.exe. Does not touch ZubCut installer tags.
 
 name: Build ZubLock zip
 
@@ -11,6 +11,7 @@ on:
       - experimental
     paths:
       - 'zublock/**'
+      - 'installer/ZubLock.iss'
   workflow_dispatch:
 
 permissions:
@@ -27,17 +28,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
       - name: Pack ZubLock.zip
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File "zublock/pack.ps1"
+          if (-not (Test-Path "output/ZubLock-Setup.exe")) { throw "output/ZubLock-Setup.exe missing" }
           if (-not (Test-Path "output/ZubLock.zip")) { throw "output/ZubLock.zip missing" }
 
-      - name: Upload zip artifact
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v6
         with:
           name: ZubLock
-          path: output/ZubLock.zip
+          path: |
+            output/ZubLock-Setup.exe
+            output/ZubLock.zip
 
       - name: Publish zublock-latest
         uses: softprops/action-gh-release@v2.6.2
@@ -47,10 +54,12 @@ jobs:
           target_commitish: ${{ github.sha }}
           prerelease: false
           make_latest: false
-          files: output/ZubLock.zip
+          files: |
+            output/ZubLock-Setup.exe
+            output/ZubLock.zip
           body: |
             Standalone hotspot session lock. Not part of ZubCut.
 
-            Unzip and run `Install-ZubLock.cmd`. That puts **ZubLock** on the desktop and downloads WinDivert (and Python+Tk if needed).
+            Download **ZubLock-Setup.exe** (or unzip ZubLock.zip and run that setup). It puts ZubLock on the desktop and downloads WinDivert (and Python+Tk if needed).
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
