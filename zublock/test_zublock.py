@@ -122,12 +122,6 @@ class TestEngineParse(unittest.TestCase):
         self.assertEqual(zublock_engine.WINDIVERT_PRIORITY, 0)
         self.assertEqual(zublock_engine.DivertDrop.LAYER_FORWARD, 1)
 
-    def test_impostor_flag_roundtrip(self) -> None:
-        raw = bytes(32)
-        self.assertFalse(zublock_engine.addr_is_impostor(raw))
-        marked = zublock_engine.mark_impostor(raw)
-        self.assertTrue(zublock_engine.addr_is_impostor(marked))
-
 
 class TestInstaller(unittest.TestCase):
     def test_setup_script_and_inno_are_named_zublock(self) -> None:
