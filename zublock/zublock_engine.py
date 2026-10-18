@@ -90,8 +90,22 @@ def capture_filters(console_ip: str = '') -> list[str]:
     return [f'({base}) and !impostor', base]
 
 
+def _ping_alive(ip: str) -> bool:
+    try:
+        proc = subprocess.run(
+            ['ping', '-n', '1', '-w', '400', ip],
+            capture_output=True,
+            timeout=2,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
 def discover_hotspot_clients(arp_text: str = '') -> list[str]:
+    """Live hotspot clients only. One IP per MAC so a stale extra ARP row is ignored."""
     text = arp_text
+    live_check = not bool(arp_text)
     if not text:
         try:
             proc = subprocess.run(
@@ -106,7 +120,8 @@ def discover_hotspot_clients(arp_text: str = '') -> list[str]:
             return []
     in_hotspot = False
     found: list[tuple[str, str]] = []
-    seen: set[str] = set()
+    seen_ip: set[str] = set()
+    seen_mac: set[str] = set()
     for line in text.splitlines():
         low = line.lower()
         if 'interface:' in low and HOTSPOT_PREFIX in low:
@@ -120,23 +135,27 @@ def discover_hotspot_clients(arp_text: str = '') -> list[str]:
         parts = line.split()
         if len(parts) < 2:
             continue
-        ip, mac = parts[0], parts[1].lower()
+        ip, mac = parts[0], parts[1].lower().replace(':', '-')
         if not ip.startswith(HOTSPOT_PREFIX):
             continue
         if ip.endswith('.1') or ip.endswith('.255'):
             continue
-        if ip in seen:
+        if ip in seen_ip or mac in seen_mac:
             continue
-        seen.add(ip)
+        seen_ip.add(ip)
+        seen_mac.add(mac)
         found.append((ip, mac))
     sony = [
         ip
         for ip, mac in found
-        if any(mac.replace(':', '-').startswith(p) for p in SONY_MAC_PREFIXES)
+        if any(mac.startswith(p) for p in SONY_MAC_PREFIXES)
     ]
-    if sony:
-        return sony
-    return [ip for ip, _mac in found]
+    ips = sony if sony else [ip for ip, _mac in found]
+    if live_check:
+        live = [ip for ip in ips if _ping_alive(ip)]
+        if live:
+            return live
+    return ips
 
 
 def discover_hotspot_console(arp_text: str = '') -> str:

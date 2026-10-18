@@ -219,7 +219,7 @@ class App(tk.Tk):
         locked = self._divert is not None and self._divert.running
         parts = [f'Lock: {"ON" if locked else "OFF"}']
         if self._hotspot_ips:
-            parts.append('Hotspot: ' + ', '.join(self._hotspot_ips))
+            parts.append('Hotspot console: ' + self._hotspot_ips[0])
         if locked and self._divert is not None:
             extra = f'Dropped {self._divert.dropped}  ·  forwarded {self._divert.forwarded}'
             if self._divert.layers:
