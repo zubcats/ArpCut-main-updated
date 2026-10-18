@@ -33,15 +33,11 @@ def _ipv4_udp(src: str, dst: str, sport: int, dport: int) -> bytes:
 class TestRules(unittest.TestCase):
     def test_default_ranges_drop_psn_aws_https_only(self) -> None:
         rules = zublock_rules.load_ranges(ROOT / 'lock_ranges.txt')
-        self.assertEqual(
-            rules,
-            {
-                ('TCP', '44.234.0.0/16', 443),
-                ('TCP', '35.164.0.0/15', 443),
-                ('TCP', '35.155.0.0/16', 443),
-                ('TCP', '100.20.0.0/14', 443),
-            },
-        )
+        self.assertEqual(rules, {('AWS', '', 443)})
+        self.assertTrue(zublock_rules.is_aws_ipv4('100.22.14.251'))
+        self.assertTrue(zublock_rules.is_aws_ipv4('44.234.12.9'))
+        self.assertFalse(zublock_rules.is_aws_ipv4('23.222.17.202'))
+        self.assertFalse(zublock_rules.is_aws_ipv4('8.8.8.8'))
         self.assertTrue(
             zublock_rules.should_drop(
                 '192.168.137.64', '44.234.12.9', 'TCP', 12345, 443, rules
@@ -54,7 +50,12 @@ class TestRules(unittest.TestCase):
         )
         self.assertTrue(
             zublock_rules.should_drop(
-                '192.168.137.64', '35.165.189.106', 'TCP', 9, 443, rules
+                '192.168.137.64', '100.22.14.251', 'TCP', 50000, 443, rules
+            )
+        )
+        self.assertTrue(
+            zublock_rules.should_drop(
+                '192.168.137.64', '52.84.1.1', 'TCP', 9, 443, rules
             )
         )
         self.assertFalse(
@@ -65,11 +66,6 @@ class TestRules(unittest.TestCase):
         self.assertFalse(
             zublock_rules.should_drop(
                 '192.168.137.64', '23.222.17.202', 'TCP', 12345, 443, rules
-            )
-        )
-        self.assertTrue(
-            zublock_rules.should_drop(
-                '192.168.137.64', '100.22.14.251', 'TCP', 50000, 443, rules
             )
         )
 
@@ -193,7 +189,7 @@ class TestEngineParse(unittest.TestCase):
             drop = Path(raw) / 'drop_keys.txt'
             zublock_engine.set_lock(True, drop_path=drop, ranges_path=ROOT / 'lock_ranges.txt')
             self.assertTrue(zublock_engine.lock_is_on(drop))
-            self.assertIn('44.234.0.0/16', drop.read_text(encoding='utf-8'))
+            self.assertIn('AWS', drop.read_text(encoding='utf-8'))
             zublock_engine.set_lock(False, drop_path=drop, ranges_path=ROOT / 'lock_ranges.txt')
             self.assertFalse(zublock_engine.lock_is_on(drop))
 
@@ -207,6 +203,8 @@ class TestInstaller(unittest.TestCase):
         self.assertIn(r'{autodesktop}\{#MyAppName}', text)
         self.assertIn('zublock.ico', text)
         self.assertIn('OutputBaseFilename=ZubLock-Setup', text)
+        self.assertIn('aws_ipv4.txt', text)
+        self.assertTrue((ROOT / 'aws_ipv4.txt').is_file())
         self.assertNotIn('#19232D', text)
 
 

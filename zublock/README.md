@@ -22,6 +22,6 @@ If you still have the older zip with lots of files in it, double-click **Install
 4. Confirm the IP is `192.168.137.x` (this PC hotspot). House Wi-Fi IPs will not lock.
 5. **Lock ON** - keep the window open while you play. **Lock OFF** or close the window to release the lock.
 
-Lock only drops PSN session HTTPS on a few AWS ranges. Game UDP and CDN stay up. Close the window before you quit — that puts every packet back.
+Lock drops **AWS TCP 443** (PSN session). Game UDP and Akamai CDN stay up. Close the window before you quit — that puts every packet back.
 
 Needs 64-bit Windows and Administrator for the lock itself. If install says Windows blocked WinDivert, allow it in Windows Security and run the installer again.

@@ -2,7 +2,7 @@
 ; Copies the small Tk app, then Install-ZubLock.ps1 fetches WinDivert / Python+Tk if needed.
 
 #define MyAppName "ZubLock"
-#define MyAppVersion "1.0.5"
+#define MyAppVersion "1.0.6"
 #define MyAppPublisher "ZubOnTop"
 #define MyAppURL "https://github.com/zubcats/ArpCut-main-updated"
 
@@ -37,6 +37,7 @@ Source: "..\zublock\zublock_gui.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\zublock\zublock_engine.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\zublock\zublock_rules.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\zublock\lock_ranges.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\zublock\aws_ipv4.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\zublock\zublock.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\zublock\zublock_taskbar.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\zublock\Install-ZubLock.ps1"; DestDir: "{app}"; Flags: ignoreversion

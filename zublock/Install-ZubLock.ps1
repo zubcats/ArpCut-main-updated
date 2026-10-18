@@ -22,6 +22,7 @@ $Runtime = @(
     'zublock_engine.py',
     'zublock_rules.py',
     'lock_ranges.txt',
+    'aws_ipv4.txt',
     'zublock.ico',
     'zublock_taskbar.ico',
     'Launch-ZubLock.ps1',

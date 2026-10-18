@@ -347,6 +347,11 @@ class App(tk.Tk):
             self.hint.config(
                 text='Still 0 packets. Console must be on this PC hotspot. Close this window, reopen ZubLock, Lock ON again.'
             )
+        if locked and not running and _admin():
+            try:
+                start_worker(self._console_ip())
+            except Exception:
+                pass
         if not _admin():
             parts.append('Need Administrator')
         self.status.config(text='\n'.join(parts))
