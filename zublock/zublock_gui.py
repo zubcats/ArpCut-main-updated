@@ -21,6 +21,8 @@ ACCENT = '#316E69'
 TEXT = '#e8eaed'
 MUTED = '#9a9a9a'
 ICO = ROOT / 'zublock.ico'
+TASKBAR_ICO = ROOT / 'zublock_taskbar.ico'
+APP_USER_MODEL_ID = 'ZubOnTop.ZubLock'
 
 
 def _admin() -> bool:
@@ -39,6 +41,73 @@ def _relaunch_admin() -> bool:
     params = f'"{script}"'
     rc = ctypes.windll.shell32.ShellExecuteW(None, 'runas', sys.executable, params, None, 1)
     return int(rc) > 32
+
+
+def _set_app_user_model_id() -> None:
+    if not sys.platform.startswith('win'):
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:
+        pass
+
+
+def _apply_taskbar_icon(root: tk.Tk) -> None:
+    """White ZC mark on the Windows taskbar (same as other Zub apps). pythonw defaults to a snake."""
+    if not sys.platform.startswith('win'):
+        return
+    ico = TASKBAR_ICO if TASKBAR_ICO.is_file() else ICO
+    if not ico.is_file():
+        return
+    try:
+        from ctypes import wintypes
+
+        root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id()) or root.winfo_id()
+        user32 = ctypes.windll.user32
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x0010
+        WM_SETICON = 0x0080
+        ICON_SMALL = 0
+        ICON_BIG = 1
+        GCL_HICON = -14
+        GCL_HICONSM = -34
+        user32.LoadImageW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.c_uint,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        user32.LoadImageW.restype = ctypes.c_void_p
+        path = str(ico.resolve())
+        h_sm = int(user32.LoadImageW(None, path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE) or 0)
+        h_lg = int(user32.LoadImageW(None, path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE) or 0)
+        if not h_sm and not h_lg:
+            return
+        user32.SendMessageW.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        if h_sm:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_sm)
+        if h_lg:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_lg)
+        try:
+            set_cls = user32.SetClassLongPtrW
+            set_cls.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_size_t]
+            set_cls.restype = ctypes.c_size_t
+        except AttributeError:
+            set_cls = user32.SetClassLongW
+        if h_lg:
+            set_cls(hwnd, GCL_HICON, h_lg)
+        if h_sm:
+            set_cls(hwnd, GCL_HICONSM, h_sm)
+    except Exception:
+        pass
 
 
 def _dark_titlebar(root: tk.Tk) -> None:
@@ -69,6 +138,7 @@ class App(tk.Tk):
             except Exception:
                 pass
         _dark_titlebar(self)
+        _apply_taskbar_icon(self)
         self.protocol('WM_DELETE_WINDOW', self._quit)
         self._divert: DivertDrop | None = None
         self._on_since = 0.0
@@ -253,9 +323,11 @@ class App(tk.Tk):
 
 
 def main() -> int:
+    _set_app_user_model_id()
     if sys.platform.startswith('win') and not _admin():
         if _relaunch_admin():
             return 0
+        _set_app_user_model_id()
     try:
         App().mainloop()
     except tk.TclError as exc:

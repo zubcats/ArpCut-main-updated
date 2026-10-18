@@ -142,6 +142,10 @@ class TestGuiTheme(unittest.TestCase):
         self.assertEqual(zublock_gui.ACCENT, '#316E69')
         self.assertNotIn('#19232D', Path(zublock_gui.__file__).read_text(encoding='utf-8'))
         self.assertTrue((ROOT / 'zublock.ico').is_file())
+        self.assertTrue((ROOT / 'zublock_taskbar.ico').is_file())
+        src = Path(zublock_gui.__file__).read_text(encoding='utf-8')
+        self.assertIn('ZubOnTop.ZubLock', src)
+        self.assertIn('zublock_taskbar.ico', src)
 
 
 if __name__ == '__main__':

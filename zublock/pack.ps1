@@ -9,6 +9,10 @@ $Ico = Join-Path $Here 'zublock.ico'
 if (-not (Test-Path -LiteralPath $Ico)) {
     Copy-Item -LiteralPath (Join-Path $Repo 'exe\zubcut_shell.ico') -Destination $Ico -Force
 }
+$TaskbarIco = Join-Path $Here 'zublock_taskbar.ico'
+if (-not (Test-Path -LiteralPath $TaskbarIco)) {
+    Copy-Item -LiteralPath (Join-Path $Repo 'exe\clumzy-icon.ico') -Destination $TaskbarIco -Force
+}
 
 function Get-Iscc {
     $cands = @(
@@ -43,6 +47,7 @@ $Names = @(
     'zublock_rules.py',
     'lock_ranges.txt',
     'zublock.ico',
+    'zublock_taskbar.ico',
     'Install-ZubLock.ps1',
     'Install-ZubLock.cmd',
     'Launch-ZubLock.ps1',

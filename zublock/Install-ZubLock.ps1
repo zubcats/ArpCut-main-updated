@@ -23,6 +23,7 @@ $Runtime = @(
     'zublock_rules.py',
     'lock_ranges.txt',
     'zublock.ico',
+    'zublock_taskbar.ico',
     'Launch-ZubLock.ps1',
     'Launch-ZubLock.cmd',
     'Launch-ZubLock.vbs',
@@ -180,6 +181,10 @@ function Install-Files {
         $from = Join-Path $Src $name
         if ($name -eq 'zublock.ico' -and -not (Test-Path -LiteralPath $from)) {
             $repoIco = Join-Path (Split-Path $Src -Parent) 'exe\zubcut_shell.ico'
+            if (Test-Path -LiteralPath $repoIco) { $from = $repoIco }
+        }
+        if ($name -eq 'zublock_taskbar.ico' -and -not (Test-Path -LiteralPath $from)) {
+            $repoIco = Join-Path (Split-Path $Src -Parent) 'exe\clumzy-icon.ico'
             if (Test-Path -LiteralPath $repoIco) { $from = $repoIco }
         }
         if (-not (Test-Path -LiteralPath $from)) {

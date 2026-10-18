@@ -38,6 +38,7 @@ Source: "..\zublock\zublock_engine.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\zublock\zublock_rules.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\zublock\lock_ranges.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\zublock\zublock.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\zublock\zublock_taskbar.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\zublock\Install-ZubLock.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\zublock\Install-ZubLock.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\zublock\Launch-ZubLock.ps1"; DestDir: "{app}"; Flags: ignoreversion
