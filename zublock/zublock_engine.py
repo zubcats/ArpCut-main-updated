@@ -1,6 +1,7 @@
 """WinDivert session lock. Stdlib + WinDivert only — not part of ZubCut."""
 from __future__ import annotations
 
+import atexit
 import ctypes
 import os
 import struct
@@ -15,6 +16,9 @@ INVALID_HANDLE = ctypes.c_void_p(-1).value
 HOTSPOT_PREFIX = '192.168.137.'
 DEFAULT_CONSOLE = '192.168.137.64'
 WINDIVERT_PRIORITY = 0
+# WinDivert 2.2 WINDIVERT_ADDRESS is 80 bytes. A larger RecvEx addrLen mis-reads flags.
+ADDR_LEN = 80
+WINDIVERT_SHUTDOWN_BOTH = 3
 SONY_MAC_PREFIXES = (
     'f8-da-0c',
     '00-d9-d1',
@@ -77,10 +81,20 @@ def _handle_ok(handle) -> bool:
     return value not in (0, -1, INVALID_HANDLE)
 
 
+def is_hotspot_console_ip(ip: str) -> bool:
+    """True for a client on this PC's Mobile Hotspot LAN (not the gateway, not house Wi-Fi)."""
+    raw = (ip or '').strip()
+    if not raw.startswith(HOTSPOT_PREFIX):
+        return False
+    last = raw.rsplit('.', 1)[-1]
+    return last not in ('0', '1', '255')
+
+
 def capture_filters(console_ip: str = '') -> list[str]:
-    """Same filter as the lock that already worked: one console IPv4, priority 0."""
+    """Host filter on the hotspot console. Prefer !impostor so reinjects stay on the stack."""
     ip = (console_ip or '').strip() or DEFAULT_CONSOLE
-    return [f'ip and (ip.SrcAddr == {ip} or ip.DstAddr == {ip})']
+    host = f'ip and (ip.SrcAddr == {ip} or ip.DstAddr == {ip})'
+    return [f'({host}) and !impostor', host]
 
 
 def _ping_alive(ip: str) -> bool:
@@ -172,6 +186,7 @@ class DivertDrop:
         self._filt = b''
         self.dropped = 0
         self.forwarded = 0
+        self.send_fail = 0
         self.error = ''
         self.layers = ''
 
@@ -222,6 +237,9 @@ class DivertDrop:
         self._dll.WinDivertSend.restype = ctypes.c_bool
         self._dll.WinDivertClose.argtypes = [ctypes.c_void_p]
         self._dll.WinDivertClose.restype = ctypes.c_bool
+        if hasattr(self._dll, 'WinDivertShutdown'):
+            self._dll.WinDivertShutdown.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            self._dll.WinDivertShutdown.restype = ctypes.c_bool
         return ''
 
     def set_rules(self, rules: set[tuple[str, str, int]]) -> None:
@@ -235,25 +253,30 @@ class DivertDrop:
             return err
         if _handle_ok(self._handle):
             return ''
-        self._filt = capture_filters(self.console_ip)[0].encode('ascii')
         last_gle = 0
-        for layer, name in (
-            (self.LAYER_FORWARD, 'FORWARD'),
-            (self.LAYER_NETWORK, 'NETWORK'),
-        ):
+        # FORWARD only. NETWORK on ICS swallows forwarded packets (full cut).
+        for filt in capture_filters(self.console_ip):
+            encoded = filt.encode('ascii')
             try:
                 ctypes.windll.kernel32.SetLastError(0)
             except Exception:
                 pass
-            handle = self._dll.WinDivertOpen(self._filt, layer, WINDIVERT_PRIORITY, 0)
+            handle = self._dll.WinDivertOpen(
+                encoded, self.LAYER_FORWARD, WINDIVERT_PRIORITY, 0
+            )
             if _handle_ok(handle):
                 self._handle = handle
-                self.layers = name
+                self._filt = encoded
+                self.layers = 'FORWARD'
                 break
             last_gle = ctypes.GetLastError()
         if not _handle_ok(self._handle):
-            self.error = f'WinDivertOpen failed (GLE {last_gle})'
+            self.error = (
+                f'WinDivertOpen FORWARD failed (GLE {last_gle}). '
+                'Run as Administrator and keep ZubCut closed.'
+            )
             return self.error
+        atexit.register(self.stop)
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name='zublock-divert', daemon=True)
         self._thread.start()
@@ -266,13 +289,18 @@ class DivertDrop:
         self._handle = None
         if _handle_ok(handle) and self._dll:
             try:
+                if hasattr(self._dll, 'WinDivertShutdown'):
+                    self._dll.WinDivertShutdown(handle, WINDIVERT_SHUTDOWN_BOTH)
+            except Exception:
+                pass
+            try:
                 self._dll.WinDivertClose(handle)
             except Exception:
                 pass
         thread = self._thread
         self._thread = None
         if thread is not None:
-            thread.join(timeout=1.0)
+            thread.join(timeout=2.0)
 
     @property
     def running(self) -> bool:
@@ -286,7 +314,7 @@ class DivertDrop:
     def _loop(self) -> None:
         assert self._dll is not None
         buf = ctypes.create_string_buffer(0xFFFF)
-        addr = ctypes.create_string_buffer(256)
+        addr = ctypes.create_string_buffer(ADDR_LEN)
         nread = ctypes.c_uint(0)
         while not self._stop.is_set() and _handle_ok(self._handle):
             ok = self._dll.WinDivertRecv(
@@ -306,7 +334,10 @@ class DivertDrop:
                 self.dropped += 1
                 continue
             sent = ctypes.c_uint(0)
-            self._dll.WinDivertSend(
+            sent_ok = self._dll.WinDivertSend(
                 self._handle, buf, int(nread.value), ctypes.byref(sent), addr
             )
-            self.forwarded += 1
+            if sent_ok:
+                self.forwarded += 1
+            else:
+                self.send_fail += 1

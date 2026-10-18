@@ -10,7 +10,12 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import font as tkfont
 
-from zublock_engine import DivertDrop, discover_hotspot_clients, discover_hotspot_console
+from zublock_engine import (
+    DivertDrop,
+    discover_hotspot_clients,
+    discover_hotspot_console,
+    is_hotspot_console_ip,
+)
 from zublock_rules import load_ranges
 
 ROOT = Path(__file__).resolve().parent
@@ -245,18 +250,23 @@ class App(tk.Tk):
 
     def _console_ip(self) -> str:
         raw = (self.ip_var.get() or '').strip()
-        ipaddress.IPv4Address(raw)
+        try:
+            raw = str(ipaddress.IPv4Address(raw))
+        except Exception:
+            raw = discover_hotspot_console()
+            self.ip_var.set(raw)
         return raw
 
     def _on(self) -> None:
         if not _admin():
             self.hint.config(text='Run ZubLock as Administrator (UAC).')
             return
-        try:
-            ip = self._console_ip()
-        except Exception:
-            ip = discover_hotspot_console()
-            self.ip_var.set(ip)
+        ip = self._console_ip()
+        if not is_hotspot_console_ip(ip):
+            self.hint.config(
+                text='Console must be on this PC hotspot (192.168.137.x). House Wi-Fi IPs will not lock.'
+            )
+            return
         try:
             rules = load_ranges()
         except Exception as exc:
@@ -292,16 +302,22 @@ class App(tk.Tk):
             parts.append('Hotspot console: ' + self._hotspot_ips[0])
         if locked and self._divert is not None:
             extra = f'Dropped {self._divert.dropped}  ·  forwarded {self._divert.forwarded}'
+            if self._divert.send_fail:
+                extra += f'  ·  send-fail {self._divert.send_fail}'
             if self._divert.layers:
                 extra += f'  ·  {self._divert.layers}'
             parts.append(extra)
+            if self._divert.send_fail:
+                self.hint.config(
+                    text='Packets are not going back on the wire. Lock OFF, close ZubLock, then open it again.'
+                )
             idle = (
                 self._divert.dropped == 0
                 and self._divert.forwarded == 0
                 and self._on_since
                 and (time.monotonic() - self._on_since) > 6
             )
-            if idle:
+            if idle and not self._divert.send_fail:
                 self.hint.config(
                     text='Still 0 packets. Console must be on this PC hotspot. Close this window, reopen ZubLock, Lock ON again.'
                 )
