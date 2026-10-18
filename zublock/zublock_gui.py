@@ -139,7 +139,7 @@ class App(tk.Tk):
         super().__init__()
         self.title('ZubLock')
         self.configure(bg=BG)
-        self.geometry('440x420')
+        self.geometry('500x520')
         self.resizable(False, False)
         if ICO.is_file():
             try:
@@ -198,8 +198,17 @@ class App(tk.Tk):
             font=small,
         ).pack(side='left', padx=(8, 0))
 
-        self.status = tk.Label(self, text='Lock OFF', fg=TEXT, bg=BG, font=body, justify='left')
-        self.status.pack(pady=(14, 8))
+        self.status = tk.Label(
+            self,
+            text='Lock OFF',
+            fg=TEXT,
+            bg=BG,
+            font=body,
+            justify='left',
+            wraplength=460,
+            anchor='w',
+        )
+        self.status.pack(pady=(14, 8), padx=24, fill='x')
 
         row = tk.Frame(self, bg=BG)
         row.pack(pady=8)
@@ -312,15 +321,15 @@ class App(tk.Tk):
         layers = str(st.get('layers') or '')
         err = str(st.get('error') or '')
         if running or locked:
-            extra = f'Dropped {dropped}  ·  forwarded {forwarded}'
+            extra = f'Dropped {dropped}   forwarded {forwarded}'
             if send_fail:
-                extra += f'  ·  send-fail {send_fail}'
+                extra += f'   send-fail {send_fail}'
             if layers:
-                extra += f'  ·  {layers}'
+                extra += f'   {layers}'
             parts.append(extra)
             seen443 = st.get('tcp443') or []
             if seen443:
-                parts.append('443 ' + ', '.join(str(x) for x in seen443[:6]))
+                parts.append('HTTPS ' + ', '.join(str(x) for x in seen443[:8]))
         if err:
             self.hint.config(text=err)
         elif send_fail:

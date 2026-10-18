@@ -39,6 +39,7 @@ class TestRules(unittest.TestCase):
                 ('TCP', '44.234.0.0/16', 443),
                 ('TCP', '35.164.0.0/15', 443),
                 ('TCP', '35.155.0.0/16', 443),
+                ('TCP', '100.20.0.0/14', 443),
             },
         )
         self.assertTrue(
@@ -64,6 +65,11 @@ class TestRules(unittest.TestCase):
         self.assertFalse(
             zublock_rules.should_drop(
                 '192.168.137.64', '23.222.17.202', 'TCP', 12345, 443, rules
+            )
+        )
+        self.assertTrue(
+            zublock_rules.should_drop(
+                '192.168.137.64', '100.22.14.251', 'TCP', 50000, 443, rules
             )
         )
 
